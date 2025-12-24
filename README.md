@@ -51,6 +51,12 @@ Implementing this API is the **top priority** for Immich Uploader.
 - 🖼 **JPEG + RAW upload support**
   - Correctly uploads both resources from Apple Photos
 
+## Screenshots
+
+| Login Page| Import Database | Photo Viewer | Settings |
+| --- | --- | --- | --- |
+| <img src="docs/screenshots/login_page.PNG" alt="Login Page" width="200" /> | <img src="docs/screenshots/onboarding.PNG" alt="Import Immich Database" width="200" /> | <img src="docs/screenshots/photo_viewer.PNG" alt="Photo Viewer" width="200" /> | <img src="docs/screenshots/settings.PNG" alt="Settings" width="200" /> |
+
 ## Planned Features / Roadmap
 
 - 🚀 **iOS 26.1 Background Upload Support** (Top Priority)
