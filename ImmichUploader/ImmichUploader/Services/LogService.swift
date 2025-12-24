@@ -89,7 +89,7 @@ class LogService {
     private let osLog = OSLog(subsystem: Bundle.main.bundleIdentifier ?? "com.immich.uploader", category: "ImmichUploader")
     
     private var logEntries: [LogEntry] = []
-    private let logQueue = DispatchQueue(label: "com.immichuploader.logservice", qos: .utility)
+    private let logQueue = DispatchQueue(label: "com.immich_uploader.logservice", qos: .utility)
     private let maxLogEntries = 10000
     private let logFileName = "immich_uploader.log"
     

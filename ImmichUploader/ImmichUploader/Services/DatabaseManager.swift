@@ -7,7 +7,7 @@ class DatabaseManager {
     private var db: OpaquePointer?
     private let dbName = "immich_uploader.sqlite"
     
-    private let dbQueue = DispatchQueue(label: "com.immichuploader.database", qos: .userInitiated)
+    private let dbQueue = DispatchQueue(label: "com.immich_uploader.database", qos: .userInitiated)
     
     private var isInitialized = false
     private let initLock = NSLock()

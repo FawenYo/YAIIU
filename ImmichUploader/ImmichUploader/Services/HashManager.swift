@@ -17,8 +17,8 @@ class HashManager: ObservableObject {
     private var isHashingActive = false
     private var isCheckingActive = false
     
-    private let hashQueue = DispatchQueue(label: "com.immichuploader.hash", qos: .utility)
-    private let checkQueue = DispatchQueue(label: "com.immichuploader.check", qos: .utility)
+    private let hashQueue = DispatchQueue(label: "com.immich_uploader.hash", qos: .utility)
+    private let checkQueue = DispatchQueue(label: "com.immich_uploader.check", qos: .utility)
     
     /// Number of concurrent hash calculations (adjust based on device capability)
     private let hashConcurrency = 3

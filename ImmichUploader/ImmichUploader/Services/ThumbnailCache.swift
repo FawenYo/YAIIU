@@ -7,7 +7,7 @@ final class ThumbnailCache {
     static let shared = ThumbnailCache()
     
     private let cache = NSCache<NSString, UIImage>()
-    private let requestQueue = DispatchQueue(label: "com.immichuploader.thumbnail", qos: .userInitiated, attributes: .concurrent)
+    private let requestQueue = DispatchQueue(label: "com.immich_uploader.thumbnail", qos: .userInitiated, attributes: .concurrent)
     private var pendingRequests: [String: [(UIImage?) -> Void]] = [:]
     private let pendingLock = NSLock()
     
