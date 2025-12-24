@@ -30,6 +30,7 @@
 		2A0000420000000000000001 /* LogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000430000000000000001 /* LogService.swift */; };
 		2A0000440000000000000001 /* ThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000450000000000000001 /* ThumbnailCache.swift */; };
 		2A0000460000000000000001 /* OnboardingImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000470000000000000001 /* OnboardingImportView.swift */; };
+		2A0000480000000000000001 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000490000000000000001 /* PhotoDetailView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -73,6 +74,7 @@
 		2A0000430000000000000001 /* LogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogService.swift; sourceTree = "<group>"; };
 		2A0000450000000000000001 /* ThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailCache.swift; sourceTree = "<group>"; };
 		2A0000470000000000000001 /* OnboardingImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingImportView.swift; sourceTree = "<group>"; };
+		2A0000490000000000000001 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoDetailView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -124,6 +126,7 @@
 				2A0000080000000000000001 /* LoginView.swift */,
 				2A00000A0000000000000001 /* PhotoGridView.swift */,
 				2A00000C0000000000000001 /* PhotoThumbnailView.swift */,
+				2A0000490000000000000001 /* PhotoDetailView.swift */,
 				2A00001A0000000000000001 /* UploadProgressView.swift */,
 				2A0000350000000000000001 /* ImportDatabaseView.swift */,
 				2A0000470000000000000001 /* OnboardingImportView.swift */,
@@ -266,6 +269,7 @@
 				2A0000420000000000000001 /* LogService.swift in Sources */,
 				2A0000440000000000000001 /* ThumbnailCache.swift in Sources */,
 				2A0000460000000000000001 /* OnboardingImportView.swift in Sources */,
+				2A0000480000000000000001 /* PhotoDetailView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

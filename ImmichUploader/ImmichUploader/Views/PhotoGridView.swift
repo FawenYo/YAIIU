@@ -14,6 +14,12 @@ struct PhotoGridView: View {
     @State private var hasAppeared = false
     @State private var visibleRange: Range<Int>?
     
+    // Photo detail view states
+    @State private var selectedPhotoForDetail: PHAsset?
+    @State private var showingPhotoDetail = false
+    @State private var selectedThumbnail: UIImage?
+    @Namespace private var photoTransitionNamespace
+    
     private let columns = [
         GridItem(.flexible(), spacing: 2),
         GridItem(.flexible(), spacing: 2),
@@ -24,55 +30,70 @@ struct PhotoGridView: View {
     private let prefetchBuffer = 30
     
     var body: some View {
-        NavigationView {
-            Group {
-                if photoLibraryManager.authorizationStatus == .authorized ||
-                   photoLibraryManager.authorizationStatus == .limited {
-                    photoGridContent
-                } else if photoLibraryManager.authorizationStatus == .notDetermined {
-                    requestPermissionView
-                } else {
-                    deniedPermissionView
-                }
-            }
-            .navigationTitle(L10n.PhotoGrid.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if isSelectionMode {
-                        Button(L10n.PhotoGrid.cancel) {
-                            isSelectionMode = false
-                            selectedAssets.removeAll()
-                        }
+        ZStack {
+            NavigationView {
+                Group {
+                    if photoLibraryManager.authorizationStatus == .authorized ||
+                       photoLibraryManager.authorizationStatus == .limited {
+                        photoGridContent
+                    } else if photoLibraryManager.authorizationStatus == .notDetermined {
+                        requestPermissionView
                     } else {
-                        processingStatusView
+                        deniedPermissionView
                     }
                 }
-                
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if !isSelectionMode {
-                        Button(L10n.PhotoGrid.select) {
-                            isSelectionMode = true
+                .navigationTitle(L10n.PhotoGrid.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        if isSelectionMode {
+                            Button(L10n.PhotoGrid.cancel) {
+                                isSelectionMode = false
+                                selectedAssets.removeAll()
+                            }
+                        } else {
+                            processingStatusView
                         }
-                        .disabled(photoLibraryManager.assets.isEmpty)
-                    } else {
-                        Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
-                            showingUploadConfirmation = true
+                    }
+                    
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        if !isSelectionMode {
+                            Button(L10n.PhotoGrid.select) {
+                                isSelectionMode = true
+                            }
+                            .disabled(photoLibraryManager.assets.isEmpty)
+                        } else {
+                            Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
+                                showingUploadConfirmation = true
+                            }
+                            .disabled(selectedAssets.isEmpty)
                         }
-                        .disabled(selectedAssets.isEmpty)
                     }
                 }
-            }
-            .alert(L10n.PhotoGrid.confirmTitle, isPresented: $showingUploadConfirmation) {
-                Button(L10n.PhotoGrid.confirmCancel, role: .cancel) { }
-                Button(L10n.PhotoGrid.confirmUpload) {
-                    uploadSelectedPhotos()
+                .alert(L10n.PhotoGrid.confirmTitle, isPresented: $showingUploadConfirmation) {
+                    Button(L10n.PhotoGrid.confirmCancel, role: .cancel) { }
+                    Button(L10n.PhotoGrid.confirmUpload) {
+                        uploadSelectedPhotos()
+                    }
+                } message: {
+                    Text(L10n.PhotoGrid.confirmMessage(selectedAssets.count))
                 }
-            } message: {
-                Text(L10n.PhotoGrid.confirmMessage(selectedAssets.count))
+            }
+            .navigationViewStyle(.stack)
+            .toolbar(showingPhotoDetail ? .hidden : .visible, for: .tabBar)
+            .animation(.easeInOut(duration: 0.2), value: showingPhotoDetail)
+            
+            // Full screen photo detail overlay
+            if showingPhotoDetail, let selectedAsset = selectedPhotoForDetail {
+                PhotoDetailView(
+                    asset: selectedAsset,
+                    namespace: photoTransitionNamespace,
+                    isPresented: $showingPhotoDetail
+                )
+                .zIndex(1)
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
         }
-        .navigationViewStyle(.stack)
         .onAppear {
             if !hasAppeared {
                 hasAppeared = true
@@ -152,7 +173,8 @@ struct PhotoGridView: View {
                             asset: asset,
                             isSelected: selectedAssets.contains(asset.localIdentifier),
                             isSelectionMode: isSelectionMode,
-                            syncStatus: syncStatus
+                            syncStatus: syncStatus,
+                            namespace: photoTransitionNamespace
                         )
                         .aspectRatio(1, contentMode: .fill)
                         .clipped()
@@ -160,6 +182,9 @@ struct PhotoGridView: View {
                         .onTapGesture {
                             if isSelectionMode {
                                 toggleSelection(for: asset)
+                            } else {
+                                // Open photo detail view with animation
+                                openPhotoDetail(asset: asset)
                             }
                         }
                         .onLongPressGesture {
@@ -180,6 +205,14 @@ struct PhotoGridView: View {
                 await refreshPhotosAsync()
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+        }
+    }
+    
+    /// Opens the photo detail view with animation
+    private func openPhotoDetail(asset: PHAsset) {
+        selectedPhotoForDetail = asset
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            showingPhotoDetail = true
         }
     }
     

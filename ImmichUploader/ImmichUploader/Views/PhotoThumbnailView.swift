@@ -26,6 +26,7 @@ struct PhotoThumbnailView: View {
     let isSelected: Bool
     let isSelectionMode: Bool
     let syncStatus: PhotoSyncStatus
+    let namespace: Namespace.ID?
     
     @State private var thumbnail: UIImage?
     @State private var hasRAW: Bool = false
@@ -39,6 +40,7 @@ struct PhotoThumbnailView: View {
         self.isSelected = isSelected
         self.isSelectionMode = isSelectionMode
         self.syncStatus = isUploaded ? .uploaded : .pending
+        self.namespace = nil
     }
     
     init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, syncStatus: PhotoSyncStatus) {
@@ -46,25 +48,23 @@ struct PhotoThumbnailView: View {
         self.isSelected = isSelected
         self.isSelectionMode = isSelectionMode
         self.syncStatus = syncStatus
+        self.namespace = nil
+    }
+    
+    init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, syncStatus: PhotoSyncStatus, namespace: Namespace.ID?) {
+        self.asset = asset
+        self.isSelected = isSelected
+        self.isSelectionMode = isSelectionMode
+        self.syncStatus = syncStatus
+        self.namespace = namespace
     }
     
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topTrailing) {
                 // Thumbnail Image
-                if let thumbnail = thumbnail {
-                    Image(uiImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                } else {
-                    Rectangle()
-                        .fill(Color.gray.opacity(0.3))
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .overlay(
-                            ProgressView()
-                        )
-                }
+                thumbnailImage(geometry: geometry)
+                
                 
                 // Video Duration Badge
                 if isVideo {
@@ -194,6 +194,32 @@ struct PhotoThumbnailView: View {
             }
         }
         .padding(4)
+    }
+    
+    /// Returns the thumbnail image view with optional matched geometry effect
+    @ViewBuilder
+    private func thumbnailImage(geometry: GeometryProxy) -> some View {
+        if let thumbnail = thumbnail {
+            let imageView = Image(uiImage: thumbnail)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: geometry.size.width, height: geometry.size.height)
+            
+            // Apply matched geometry effect if namespace is provided
+            if let namespace = namespace {
+                imageView
+                    .matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
+            } else {
+                imageView
+            }
+        } else {
+            Rectangle()
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .overlay(
+                    ProgressView()
+                )
+        }
     }
     
     private func loadAssetInfo() {
