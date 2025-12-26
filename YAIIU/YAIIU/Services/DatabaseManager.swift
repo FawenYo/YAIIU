@@ -40,14 +40,36 @@ class DatabaseManager {
     // MARK: - Database Setup
     
     private func openDatabase() {
-        let fileURL = getDocumentsDirectory().appendingPathComponent(dbName)
+        // Use App Group container to share database with BackgroundUploadExtension
+        let appGroupIdentifier = "group.com.fawenyo.yaiiu"
+        
+        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else {
+            logError("Failed to get app group container URL", category: .database)
+            // Fallback to Documents directory
+            let fileURL = getDocumentsDirectory().appendingPathComponent(dbName)
+            openDatabaseAtPath(fileURL.path)
+            return
+        }
+        
+        let fileURL = containerURL.appendingPathComponent(dbName)
         logDebug("Opening database at: \(fileURL.path)", category: .database)
         
-        if sqlite3_open(fileURL.path, &db) != SQLITE_OK {
+        openDatabaseAtPath(fileURL.path)
+    }
+    
+    private func openDatabaseAtPath(_ path: String) {
+        if sqlite3_open(path, &db) != SQLITE_OK {
             let errorMsg = String(cString: sqlite3_errmsg(db))
             logError("Failed to open database: \(errorMsg)", category: .database)
         } else {
             logDebug("Database opened successfully", category: .database)
+            
+            // Enable WAL mode to support multi-process access
+            var statement: OpaquePointer?
+            if sqlite3_prepare_v2(db, "PRAGMA journal_mode=WAL;", -1, &statement, nil) == SQLITE_OK {
+                sqlite3_step(statement)
+            }
+            sqlite3_finalize(statement)
         }
     }
     

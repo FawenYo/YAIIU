@@ -28,7 +28,7 @@ class BackgroundUploadDatabase {
             return
         }
         
-        let dbURL = containerURL.appendingPathComponent("background_uploads.sqlite")
+        let dbURL = containerURL.appendingPathComponent("yaiiu.sqlite")
         
         if sqlite3_open(dbURL.path, &db) != SQLITE_OK {
             print("[BackgroundUploadDatabase] Failed to open database at: \(dbURL.path)")
@@ -299,13 +299,12 @@ class BackgroundUploadDatabase {
     ) {
         dbQueue.sync {
             let sql = """
-                INSERT OR REPLACE INTO uploaded_assets 
-                (asset_local_identifier, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
+                INSERT OR REPLACE INTO uploaded_assets
+                (local_identifier, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP);
             """
             
             var statement: OpaquePointer?
-            let now = Date().timeIntervalSince1970
             
             if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
                 sqlite3_bind_text(statement, 1, assetLocalIdentifier, -1, SQLITE_TRANSIENT)
@@ -314,8 +313,18 @@ class BackgroundUploadDatabase {
                 sqlite3_bind_text(statement, 4, immichId, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_int64(statement, 5, fileSize)
                 sqlite3_bind_int(statement, 6, isDuplicate ? 1 : 0)
-                sqlite3_bind_double(statement, 7, now)
                 
+                sqlite3_step(statement)
+            }
+            sqlite3_finalize(statement)
+            
+            let updateHashSql = """
+                UPDATE hash_cache SET is_on_server = 1, sync_status = 'checked', checked_at = CURRENT_TIMESTAMP
+                WHERE local_identifier = ?;
+            """
+            
+            if sqlite3_prepare_v2(db, updateHashSql, -1, &statement, nil) == SQLITE_OK {
+                sqlite3_bind_text(statement, 1, assetLocalIdentifier, -1, SQLITE_TRANSIENT)
                 sqlite3_step(statement)
             }
             sqlite3_finalize(statement)
@@ -328,8 +337,8 @@ class BackgroundUploadDatabase {
         
         dbQueue.sync {
             let sql = """
-                SELECT COUNT(*) FROM uploaded_assets 
-                WHERE asset_local_identifier = ? AND resource_type = ?;
+                SELECT COUNT(*) FROM uploaded_assets
+                WHERE local_identifier = ? AND resource_type = ?;
             """
             
             var statement: OpaquePointer?
@@ -353,8 +362,8 @@ class BackgroundUploadDatabase {
         
         dbQueue.sync {
             let sql = """
-                SELECT COUNT(*) FROM uploaded_assets 
-                WHERE asset_local_identifier = ?;
+                SELECT COUNT(*) FROM uploaded_assets
+                WHERE local_identifier = ?;
             """
             
             var statement: OpaquePointer?
@@ -376,13 +385,31 @@ class BackgroundUploadDatabase {
         var identifiers: Set<String> = []
         
         dbQueue.sync {
-            let sql = "SELECT DISTINCT asset_local_identifier FROM uploaded_assets;"
+            let sql1 = "SELECT DISTINCT asset_local_identifier FROM uploaded_assets WHERE asset_local_identifier IS NOT NULL;"
             
             var statement: OpaquePointer?
-            if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_prepare_v2(db, sql1, -1, &statement, nil) == SQLITE_OK {
                 while sqlite3_step(statement) == SQLITE_ROW {
-                    let identifier = String(cString: sqlite3_column_text(statement, 0))
-                    identifiers.insert(identifier)
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        let identifier = String(cString: cString)
+                        if !identifier.isEmpty {
+                            identifiers.insert(identifier)
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+            
+            let sql2 = "SELECT DISTINCT local_identifier FROM uploaded_assets WHERE local_identifier IS NOT NULL;"
+            
+            if sqlite3_prepare_v2(db, sql2, -1, &statement, nil) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        let identifier = String(cString: cString)
+                        if !identifier.isEmpty {
+                            identifiers.insert(identifier)
+                        }
+                    }
                 }
             }
             sqlite3_finalize(statement)
@@ -551,13 +578,32 @@ class BackgroundUploadDatabase {
         var identifiers: Set<String> = []
         
         dbQueue.sync {
-            let sql = "SELECT asset_local_identifier FROM assets_on_server;"
+            let sql1 = "SELECT asset_local_identifier FROM assets_on_server;"
             
             var statement: OpaquePointer?
-            if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_prepare_v2(db, sql1, -1, &statement, nil) == SQLITE_OK {
                 while sqlite3_step(statement) == SQLITE_ROW {
-                    let identifier = String(cString: sqlite3_column_text(statement, 0))
-                    identifiers.insert(identifier)
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        let identifier = String(cString: cString)
+                        identifiers.insert(identifier)
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+            
+            let sql2 = """
+                SELECT local_identifier FROM hash_cache
+                WHERE is_on_server = 1 AND local_identifier IS NOT NULL;
+            """
+            
+            if sqlite3_prepare_v2(db, sql2, -1, &statement, nil) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        let identifier = String(cString: cString)
+                        if !identifier.isEmpty {
+                            identifiers.insert(identifier)
+                        }
+                    }
                 }
             }
             sqlite3_finalize(statement)
@@ -600,17 +646,15 @@ class BackgroundUploadDatabase {
         dbQueue.sync {
             let sql = """
                 INSERT OR REPLACE INTO hash_cache
-                (asset_local_identifier, sha1_hash, calculated_at)
-                VALUES (?, ?, ?);
+                (local_identifier, sha1_hash, file_size, sync_status, is_on_server, calculated_at)
+                VALUES (?, ?, 0, 'pending', 0, CURRENT_TIMESTAMP);
             """
             
             var statement: OpaquePointer?
-            let now = Date().timeIntervalSince1970
             
             if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
                 sqlite3_bind_text(statement, 1, assetLocalIdentifier, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_text(statement, 2, sha1Hash, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_double(statement, 3, now)
                 
                 sqlite3_step(statement)
             }
@@ -623,7 +667,7 @@ class BackgroundUploadDatabase {
         var hash: String?
         
         dbQueue.sync {
-            let sql = "SELECT sha1_hash FROM hash_cache WHERE asset_local_identifier = ?;"
+            let sql = "SELECT sha1_hash FROM hash_cache WHERE local_identifier = ?;"
             
             var statement: OpaquePointer?
             if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -647,23 +691,39 @@ class BackgroundUploadDatabase {
     func recordHashCheckedAsset(assetLocalIdentifier: String, sha1Hash: String, isOnServer: Bool) {
         dbQueue.sync {
             let sql = """
-                INSERT OR REPLACE INTO hash_checked
-                (asset_local_identifier, sha1_hash, is_on_server, checked_at)
-                VALUES (?, ?, ?, ?);
+                UPDATE hash_cache
+                SET is_on_server = ?, sync_status = 'checked', checked_at = CURRENT_TIMESTAMP
+                WHERE local_identifier = ?;
             """
             
             var statement: OpaquePointer?
-            let now = Date().timeIntervalSince1970
             
             if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_text(statement, 1, assetLocalIdentifier, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(statement, 2, sha1Hash, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_int(statement, 3, isOnServer ? 1 : 0)
-                sqlite3_bind_double(statement, 4, now)
+                sqlite3_bind_int(statement, 1, isOnServer ? 1 : 0)
+                sqlite3_bind_text(statement, 2, assetLocalIdentifier, -1, SQLITE_TRANSIENT)
                 
                 sqlite3_step(statement)
             }
             sqlite3_finalize(statement)
+            
+            // If the record doesn't exist, insert it
+            let rowsAffected = sqlite3_changes(db)
+            if rowsAffected == 0 {
+                let insertSql = """
+                    INSERT OR REPLACE INTO hash_cache
+                    (local_identifier, sha1_hash, file_size, sync_status, is_on_server, calculated_at, checked_at)
+                    VALUES (?, ?, 0, 'checked', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                """
+                
+                if sqlite3_prepare_v2(db, insertSql, -1, &statement, nil) == SQLITE_OK {
+                    sqlite3_bind_text(statement, 1, assetLocalIdentifier, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_text(statement, 2, sha1Hash, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_int(statement, 3, isOnServer ? 1 : 0)
+                    
+                    sqlite3_step(statement)
+                }
+                sqlite3_finalize(statement)
+            }
         }
     }
     
@@ -672,13 +732,16 @@ class BackgroundUploadDatabase {
         var identifiers: Set<String> = []
         
         dbQueue.sync {
-            let sql = "SELECT asset_local_identifier FROM hash_checked WHERE is_on_server = 1;"
+            let sql = "SELECT local_identifier FROM hash_cache WHERE is_on_server = 1 AND local_identifier IS NOT NULL;"
             
             var statement: OpaquePointer?
             if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
                 while sqlite3_step(statement) == SQLITE_ROW {
                     if let cString = sqlite3_column_text(statement, 0) {
-                        identifiers.insert(String(cString: cString))
+                        let identifier = String(cString: cString)
+                        if !identifier.isEmpty {
+                            identifiers.insert(identifier)
+                        }
                     }
                 }
             }
