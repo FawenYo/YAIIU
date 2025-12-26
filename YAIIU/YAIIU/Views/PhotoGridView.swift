@@ -169,12 +169,15 @@ struct PhotoGridView: View {
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(Array(photoLibraryManager.assets.enumerated()), id: \.element.localIdentifier) { index, asset in
                         let syncStatus = hashManager.getSyncStatus(for: asset.localIdentifier)
+                        // When detail view is showing, the selected thumbnail should not be the geometry source
+                        let isThisAssetSelected = showingPhotoDetail && selectedPhotoForDetail?.localIdentifier == asset.localIdentifier
                         PhotoThumbnailView(
                             asset: asset,
                             isSelected: selectedAssets.contains(asset.localIdentifier),
                             isSelectionMode: isSelectionMode,
                             syncStatus: syncStatus,
-                            namespace: photoTransitionNamespace
+                            namespace: photoTransitionNamespace,
+                            isGeometrySource: !isThisAssetSelected
                         )
                         .aspectRatio(1, contentMode: .fill)
                         .clipped()

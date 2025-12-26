@@ -254,8 +254,9 @@ struct PhotoDetailView: View {
     @ViewBuilder
     private func videoContent(geometry: GeometryProxy) -> some View {
         ZStack {
-            // Show thumbnail while video is loading or as background
-            if let image = fullImage {
+            // Show thumbnail while video is loading
+            // Only use matchedGeometryEffect when player is not ready yet
+            if let image = fullImage, player == nil {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -266,6 +267,7 @@ struct PhotoDetailView: View {
             if let player = player {
                 VideoPlayer(player: player)
                     .aspectRatio(CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight), contentMode: .fit)
+                    .matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
                     .onAppear {
                         // Auto-play when video player appears
                         player.play()
