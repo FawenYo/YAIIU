@@ -133,13 +133,16 @@ class BackgroundUploadManager: ObservableObject {
     /// Update statistics
     func updateStatistics() {
         // Perform database operations on background thread
-        let uploaded = database.getUploadedCount()
-        let pending = database.getPendingJobs().count
-        
-        // Update published properties on main thread
-        DispatchQueue.main.async { [weak self] in
-            self?.uploadedCount = uploaded
-            self?.pendingCount = pending
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let uploaded = self.database.getUploadedCount()
+            let pending = self.database.getPendingJobs().count
+
+            // Update published properties on main thread
+            DispatchQueue.main.async {
+                self.uploadedCount = uploaded
+                self.pendingCount = pending
+            }
         }
     }
     
