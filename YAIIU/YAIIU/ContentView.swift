@@ -1,5 +1,10 @@
 import SwiftUI
 
+// MARK: - URL Identifiable Extension for sheet(item:) support
+extension URL: @retroactive Identifiable {
+    public var id: String { absoluteString }
+}
+
 struct ContentView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var uploadManager: UploadManager
@@ -50,7 +55,6 @@ struct SettingsView: View {
     @EnvironmentObject var uploadManager: UploadManager
     @State private var showingLogoutAlert = false
     @State private var showingImportView = false
-    @State private var showingLogExportSheet = false
     @State private var showingClearLogsAlert = false
     @State private var hashCacheStats: (total: Int, checked: Int, onServer: Int) = (0, 0, 0)
     @State private var logFileSize: String = "0 KB"
@@ -214,10 +218,8 @@ struct SettingsView: View {
                         loadHashCacheStats()
                     }
             }
-            .sheet(isPresented: $showingLogExportSheet) {
-                if let url = exportedLogURL {
-                    ShareSheet(activityItems: [url])
-                }
+            .sheet(item: $exportedLogURL) { url in
+                ShareSheet(activityItems: [url])
             }
         }
     }
@@ -237,7 +239,6 @@ struct SettingsView: View {
         logInfo("User requested log export", category: .app)
         if let url = LogService.shared.exportLogsToFile() {
             exportedLogURL = url
-            showingLogExportSheet = true
         }
     }
 }
