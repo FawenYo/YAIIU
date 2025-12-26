@@ -100,6 +100,20 @@ struct SettingsView: View {
                     }
                 }
                 
+                // iOS 26.1+ Background Upload Settings
+                if #available(iOS 26.1, *) {
+                    Section(header: Text(L10n.BackgroundUpload.sectionAutoUpload)) {
+                        NavigationLink(destination: BackgroundUploadSettingsView()) {
+                            HStack {
+                                Image(systemName: "arrow.up.circle.badge.clock")
+                                    .foregroundColor(.blue)
+                                Text(L10n.BackgroundUpload.settingsTitle)
+                                    .foregroundColor(.primary)
+                            }
+                        }
+                    }
+                }
+                
                 Section(header: Text(L10n.Settings.dataManagement)) {
                     Button(action: {
                         showingImportView = true

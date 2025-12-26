@@ -132,3 +132,24 @@
 "onboarding.changeFile" = "Change";
 "onboarding.validation.success" = "Found %d records ready to import";
 "onboarding.startImport" = "Start Import";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "Background Upload";
+"backgroundUpload.settingsTitle" = "Background Upload Settings";
+"backgroundUpload.enabled" = "Enabled";
+"backgroundUpload.disabled" = "Disabled";
+"backgroundUpload.description" = "When enabled, new photos will be automatically uploaded to Immich server in the background";
+"backgroundUpload.requiresIOS26" = "Requires iOS 26.1 or later";
+"backgroundUpload.section.autoUpload" = "Auto Upload";
+"backgroundUpload.section.statistics" = "Statistics";
+"backgroundUpload.section.debug" = "Debug";
+"backgroundUpload.uploadedCount" = "Uploaded Count";
+"backgroundUpload.pendingCount" = "Pending Count";
+"backgroundUpload.viewLogs" = "View Logs";
+"backgroundUpload.clearLogs" = "Clear Logs";
+"backgroundUpload.logsTitle" = "Background Upload Logs";
+"backgroundUpload.noLogs" = "No logs available";
+"backgroundUpload.notSupported" = "Feature not supported";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "Full photo library access is required to enable background upload";
+"backgroundUpload.error.notLoggedIn" = "Please login to Immich server first";
+"backgroundUpload.error.extensionNotAvailable" = "Background upload extension is not available";

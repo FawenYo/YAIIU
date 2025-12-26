@@ -132,3 +132,24 @@
 "onboarding.changeFile" = "更換";
 "onboarding.validation.success" = "找到 %d 筆可匯入的記錄";
 "onboarding.startImport" = "開始匯入";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "背景上傳";
+"backgroundUpload.settingsTitle" = "背景上傳設定";
+"backgroundUpload.enabled" = "已啟用";
+"backgroundUpload.disabled" = "已停用";
+"backgroundUpload.description" = "啟用後，新照片將在背景自動上傳到 Immich 伺服器";
+"backgroundUpload.requiresIOS26" = "需要 iOS 26.1 或更新版本";
+"backgroundUpload.section.autoUpload" = "自動上傳";
+"backgroundUpload.section.statistics" = "統計資訊";
+"backgroundUpload.section.debug" = "除錯";
+"backgroundUpload.uploadedCount" = "已上傳數量";
+"backgroundUpload.pendingCount" = "待上傳數量";
+"backgroundUpload.viewLogs" = "查看日誌";
+"backgroundUpload.clearLogs" = "清除日誌";
+"backgroundUpload.logsTitle" = "背景上傳日誌";
+"backgroundUpload.noLogs" = "沒有日誌";
+"backgroundUpload.notSupported" = "不支援此功能";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "需要完整的照片庫存取權限才能啟用背景上傳";
+"backgroundUpload.error.notLoggedIn" = "請先登入 Immich 伺服器";
+"backgroundUpload.error.extensionNotAvailable" = "背景上傳擴充功能無法使用";

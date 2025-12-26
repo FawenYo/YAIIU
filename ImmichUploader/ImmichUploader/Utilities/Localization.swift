@@ -184,4 +184,27 @@ enum L10n {
         }
         static let startImport = "onboarding.startImport".localized
     }
+    
+    // MARK: - Background Upload (iOS 26.1+)
+    enum BackgroundUpload {
+        static let title = "backgroundUpload.title".localized
+        static let settingsTitle = "backgroundUpload.settingsTitle".localized
+        static let enabled = "backgroundUpload.enabled".localized
+        static let disabled = "backgroundUpload.disabled".localized
+        static let description = "backgroundUpload.description".localized
+        static let requiresIOS26 = "backgroundUpload.requiresIOS26".localized
+        static let sectionAutoUpload = "backgroundUpload.section.autoUpload".localized
+        static let sectionStatistics = "backgroundUpload.section.statistics".localized
+        static let sectionDebug = "backgroundUpload.section.debug".localized
+        static let uploadedCount = "backgroundUpload.uploadedCount".localized
+        static let pendingCount = "backgroundUpload.pendingCount".localized
+        static let viewLogs = "backgroundUpload.viewLogs".localized
+        static let clearLogs = "backgroundUpload.clearLogs".localized
+        static let logsTitle = "backgroundUpload.logsTitle".localized
+        static let noLogs = "backgroundUpload.noLogs".localized
+        static let notSupported = "backgroundUpload.notSupported".localized
+        static let errorPhotoLibraryNotAuthorized = "backgroundUpload.error.photoLibraryNotAuthorized".localized
+        static let errorNotLoggedIn = "backgroundUpload.error.notLoggedIn".localized
+        static let errorExtensionNotAvailable = "backgroundUpload.error.extensionNotAvailable".localized
+    }
 }
