@@ -1,6 +1,8 @@
-# Immich Uploader (iOS)
+# YAIIU - Yet Another Immich iOS Uploader
 
-**Immich Uploader** is a lightweight, unofficial iOS app designed to complement the official Immich iOS app — not replace it.
+[![GitHub license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](
+
+**YAIIU** is a lightweight, unofficial iOS app designed to complement the official Immich iOS app — not replace it.
 
 This project focuses on solving a few specific pain points that currently affect certain Immich users on iOS, especially photographers who rely on **JPEG + RAW workflows** and **background uploads**.
 
@@ -34,7 +36,7 @@ Apple introduced a new PhotoKit API in iOS 26.1 that enables **true background u
 
 At the moment, this is **not yet supported** by the official Immich iOS app.
 
-**Immich Uploader now supports this feature!** However, due to iOS limitations with background upload extensions, you need to deploy an additional [immich-proxy](immich-proxy/README.md) server that sits between your iOS device and Immich server.
+**YAIIU now supports this feature!** However, due to iOS limitations with background upload extensions, you need to deploy an additional [immich-proxy](immich-proxy/README.md) server that sits between your iOS device and Immich server.
 
 ## Requirements
 

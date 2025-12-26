@@ -1,0 +1,8 @@
+/* 
+  InfoPlist.strings (Traditional Chinese)
+  YAIIU
+*/
+
+"NSPhotoLibraryUsageDescription" = "需要存取您的照片庫以選擇照片上傳到 Immich 伺服器";
+"NSPhotoLibraryAddUsageDescription" = "需要存取您的照片庫以選擇照片上傳到 Immich 伺服器";
+"CFBundleDisplayName" = "YAIIU";

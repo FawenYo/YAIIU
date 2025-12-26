@@ -1,0 +1,155 @@
+/* 
+  Localizable.strings (Traditional Chinese)
+  YAIIU
+*/
+
+// MARK: - Tab Items
+"tab.photos" = "照片";
+"tab.upload" = "上傳";
+"tab.settings" = "設定";
+
+// MARK: - Login View
+"login.title" = "YAIIU";
+"login.subtitle" = "將您的照片上傳到 Immich 伺服器";
+"login.serverURL" = "伺服器 URL";
+"login.serverURL.placeholder" = "例如: http://192.168.1.100:2283";
+"login.apiKey" = "API Key";
+"login.apiKey.placeholder" = "輸入您的 API Key";
+"login.button" = "登入";
+"login.button.connecting" = "連線中...";
+"login.error.title" = "連線錯誤";
+"login.error.invalidApiKey" = "無法驗證 API Key，請確認您的 API Key 是否正確";
+"login.error.connectionFailed" = "無法連接到伺服器: %@";
+"login.error.ok" = "確定";
+
+// MARK: - Settings View
+"settings.title" = "設定";
+"settings.serverInfo" = "伺服器資訊";
+"settings.serverURL" = "伺服器 URL";
+"settings.apiKey" = "API Key";
+"settings.statistics" = "統計資訊";
+"settings.uploadedCount" = "已上傳照片數";
+"settings.cachedHashCount" = "已快取 Hash 數";
+"settings.confirmedOnCloud" = "已確認在雲端";
+"settings.dataManagement" = "資料管理";
+"settings.importImmichData" = "匯入 Immich App 資料";
+"settings.logout" = "登出";
+"settings.logout.confirm.title" = "確認登出";
+"settings.logout.confirm.message" = "確定要登出嗎？";
+"settings.logout.cancel" = "取消";
+"settings.logs" = "日誌";
+"settings.logCount" = "日誌筆數";
+"settings.logFileSize" = "日誌檔案大小";
+"settings.exportLogs" = "匯出日誌";
+"settings.clearLogs" = "清除日誌";
+"settings.clearLogs.confirm.title" = "清除日誌";
+"settings.clearLogs.confirm.message" = "確定要清除所有日誌嗎？此操作無法復原。";
+"settings.clearLogs.cancel" = "取消";
+
+// MARK: - Photo Grid View
+"photoGrid.title" = "照片庫";
+"photoGrid.select" = "選擇";
+"photoGrid.cancel" = "取消";
+"photoGrid.upload" = "上傳 (%d)";
+"photoGrid.confirm.title" = "確認上傳";
+"photoGrid.confirm.message" = "確定要上傳 %d 張照片/影片嗎？";
+"photoGrid.confirm.cancel" = "取消";
+"photoGrid.confirm.upload" = "上傳";
+"photoGrid.processing.preparing" = "準備中";
+"photoGrid.processing.comparing" = "比對 %d/%d";
+"photoGrid.processing.checking" = "比對中";
+"photoGrid.processing.default" = "...";
+"photoGrid.permission.title" = "需要存取您的照片庫";
+"photoGrid.permission.message" = "請授權存取照片庫以選擇要上傳的照片";
+"photoGrid.permission.grant" = "授權存取";
+"photoGrid.permission.denied.title" = "無法存取照片庫";
+"photoGrid.permission.denied.message" = "請在設定中允許存取照片庫";
+"photoGrid.permission.openSettings" = "開啟設定";
+
+// MARK: - Upload Progress View
+"uploadProgress.title" = "上傳進度";
+"uploadProgress.pause" = "暫停";
+"uploadProgress.resume" = "繼續";
+"uploadProgress.empty.title" = "沒有正在上傳的項目";
+"uploadProgress.empty.message" = "選擇照片後點擊上傳即可開始";
+"uploadProgress.empty.success" = "已成功上傳 %d 個項目";
+"uploadProgress.overall" = "上傳進度";
+"uploadProgress.uploading" = "上傳中...";
+"uploadProgress.paused" = "已暫停";
+"uploadProgress.files" = "(%d/%d 檔案)";
+"uploadProgress.fileCount" = "%d 檔";
+"uploadProgress.video" = "影片";
+
+// MARK: - Upload Item Status
+"uploadStatus.pending" = "等待中";
+"uploadStatus.uploading" = "上傳中 %d%%";
+"uploadStatus.completed" = "已完成";
+"uploadStatus.failed" = "失敗";
+
+// MARK: - Import Database View
+"import.title" = "匯入 Hash 資料";
+"import.cancel" = "取消";
+"import.done" = "完成";
+"import.instruction.title" = "使用說明";
+"import.instruction.description" = "此功能可讓您匯入 Immich iOS App 已計算好的 hash 資料，避免重新計算所有照片的 hash 值。";
+"import.instruction.step1" = "在 Immich iOS App 中，點擊右上角的使用者頭像，進入「設定」";
+"import.instruction.step2" = "選擇「同步狀態」，點擊「匯出資料庫」，將 SQLite 檔案儲存到「檔案」App";
+"import.instruction.step3" = "點擊下方按鈕，選擇剛剛匯出的 SQLite 檔案進行匯入";
+"import.selectFile" = "選擇 SQLite 檔案";
+"import.reselectFile" = "重新選擇檔案";
+"import.validation.success" = "檔案驗證成功";
+"import.validation.failed" = "檔案驗證失敗";
+"import.validation.recordCount" = "可匯入的記錄數：";
+"import.validation.records" = "%d 筆";
+"import.statistics.title" = "資料庫統計";
+"import.statistics.totalAssets" = "總資產數";
+"import.statistics.assetsWithHash" = "有 Hash 的資產";
+"import.statistics.imageCount" = "圖片數量";
+"import.statistics.videoCount" = "影片數量";
+"import.statistics.serverSync" = "伺服器同步狀態";
+"import.statistics.remoteAssets" = "伺服器上的資產";
+"import.statistics.localSynced" = "本地已同步";
+"import.import.button" = "開始匯入";
+"import.import.importing" = "匯入中...";
+"import.import.progress" = "已處理 %d / %d 筆";
+"import.result.success" = "匯入完成";
+"import.result.error" = "匯入時發生問題";
+"import.result.totalRecords" = "讀取記錄數：";
+"import.result.importedRecords" = "成功匯入：";
+"import.result.alreadyOnServer" = "已在伺服器上：";
+"import.result.skippedRecords" = "跳過記錄：";
+"import.result.tip" = "💡 已在伺服器上的照片/影片將不會再次上傳";
+"import.alert.ok" = "確定";
+"import.alert.importFailed" = "匯入失敗";
+
+// MARK: - Onboarding Import View
+"onboarding.title" = "匯入現有資料？";
+"onboarding.description" = "如果您之前使用過 Immich iOS App，可以匯入其資料庫以避免重新計算所有照片的 hash 值。";
+"onboarding.import.button" = "從 Immich App 匯入";
+"onboarding.import.description" = "匯入已計算好的 hash 資料";
+"onboarding.skip" = "稍後再說";
+"onboarding.continue" = "繼續";
+"onboarding.changeFile" = "更換";
+"onboarding.validation.success" = "找到 %d 筆可匯入的記錄";
+"onboarding.startImport" = "開始匯入";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "背景上傳";
+"backgroundUpload.settingsTitle" = "背景上傳設定";
+"backgroundUpload.enabled" = "已啟用";
+"backgroundUpload.disabled" = "已停用";
+"backgroundUpload.description" = "啟用後，新照片將在背景自動上傳到 Immich 伺服器";
+"backgroundUpload.requiresIOS26" = "需要 iOS 26.1 或更新版本";
+"backgroundUpload.section.autoUpload" = "自動上傳";
+"backgroundUpload.section.statistics" = "統計資訊";
+"backgroundUpload.section.debug" = "除錯";
+"backgroundUpload.uploadedCount" = "已上傳數量";
+"backgroundUpload.pendingCount" = "待上傳數量";
+"backgroundUpload.viewLogs" = "查看日誌";
+"backgroundUpload.clearLogs" = "清除日誌";
+"backgroundUpload.logsTitle" = "背景上傳日誌";
+"backgroundUpload.noLogs" = "沒有日誌";
+"backgroundUpload.notSupported" = "不支援此功能";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "需要完整的照片庫存取權限才能啟用背景上傳";
+"backgroundUpload.error.notLoggedIn" = "請先登入 Immich 伺服器";
+"backgroundUpload.error.extensionNotAvailable" = "背景上傳擴充功能無法使用";
