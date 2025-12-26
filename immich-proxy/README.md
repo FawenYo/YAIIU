@@ -123,10 +123,10 @@ ingress:
           pathType: Prefix
 EOF
 
-# Install the chart
-helm install immich-proxy ./deployment/immich-proxy -f my-values.yaml
+# Install / Upgrade the chart
+helm upgrade -i immich-proxy ./deployment/immich-proxy -f my-values.yaml
 
-# Or install with inline values
-helm install immich-proxy ./deployment/immich-proxy \
+# Or install / upgrade with inline values
+helm upgrade -i immich-proxy ./deployment/immich-proxy \
   --set config.immichServerURL=http://immich-server:2283
 ```
