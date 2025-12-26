@@ -34,7 +34,7 @@ Apple introduced a new PhotoKit API in iOS 26.1 that enables **true background u
 
 At the moment, this is **not yet supported** by the official Immich iOS app.
 
-Implementing this API is the **top priority** for Immich Uploader.
+**Immich Uploader now supports this feature!** However, due to iOS limitations with background upload extensions, you need to deploy an additional [immich-proxy](immich-proxy/README.md) server that sits between your iOS device and Immich server.
 
 ## Requirements
 
@@ -50,6 +50,10 @@ Implementing this API is the **top priority** for Immich Uploader.
   - Avoids re-hashing all photos and videos
 - 🖼 **JPEG + RAW upload support**
   - Correctly uploads both resources from Apple Photos
+- 🚀 **iOS 26.1+ Background Upload Support**
+  - Utilizes Apple's new `PHBackgroundResourceUploadExtension` API
+  - Enables true background photo uploads
+  - **Requires deploying [immich-proxy](immich-proxy/README.md)** - a proxy server that converts Apple background upload data to Immich-compatible multipart format
 
 ## Screenshots
 
@@ -59,8 +63,6 @@ Implementing this API is the **top priority** for Immich Uploader.
 
 ## Planned Features / Roadmap
 
-- 🚀 **iOS 26.1 Background Upload Support** (Top Priority)
-  - Contributions and PRs are highly welcome!
 - 🌐 **Browse remote photos from Immich server**
   - In addition to local Photos library
 
