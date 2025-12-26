@@ -1,9 +1,10 @@
 import SwiftUI
 import Photos
 import CoreLocation
+import AVKit
 
 // MARK: - Photo Detail View
-/// A full-screen photo viewer with Apple Photos-like aesthetics and animations
+/// A full-screen photo/video viewer with Apple Photos-like aesthetics and animations
 struct PhotoDetailView: View {
     let asset: PHAsset
     let namespace: Namespace.ID
@@ -16,6 +17,11 @@ struct PhotoDetailView: View {
     @State private var isDragging: Bool = false
     @State private var dragProgress: CGFloat = 0
     @State private var imageLoadTask: Task<Void, Never>?
+    
+    // Video playback states
+    @State private var player: AVPlayer?
+    @State private var isVideoLoading: Bool = false
+    @State private var isVideoPlaying: Bool = false
     
     // Info panel states
     @State private var showInfoPanel: Bool = false
@@ -71,11 +77,19 @@ struct PhotoDetailView: View {
         )
         .statusBar(hidden: true)
         .onAppear {
-            loadFullImage()
+            if asset.mediaType == .video {
+                loadVideoThumbnail()
+                loadVideo()
+            } else {
+                loadFullImage()
+            }
             loadMetadata()
         }
         .onDisappear {
             imageLoadTask?.cancel()
+            // Clean up video player
+            player?.pause()
+            player = nil
         }
     }
     
@@ -160,9 +174,21 @@ struct PhotoDetailView: View {
         }
     }
     
-    // MARK: - Photo Content
+    // MARK: - Media Content (Photo or Video)
     @ViewBuilder
     private func photoContent(geometry: GeometryProxy) -> some View {
+        if asset.mediaType == .video {
+            // Video content with player
+            videoContent(geometry: geometry)
+        } else {
+            // Photo content
+            imageContent(geometry: geometry)
+        }
+    }
+    
+    // MARK: - Image Content
+    @ViewBuilder
+    private func imageContent(geometry: GeometryProxy) -> some View {
         if let image = fullImage {
             Image(uiImage: image)
                 .resizable()
@@ -216,6 +242,77 @@ struct PhotoDetailView: View {
             ProgressView()
                 .scaleEffect(1.5)
                 .tint(.white)
+        }
+    }
+    
+    // MARK: - Video Content
+    @ViewBuilder
+    private func videoContent(geometry: GeometryProxy) -> some View {
+        ZStack {
+            // Show thumbnail while video is loading or as background
+            if let image = fullImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
+            }
+            
+            // Video player overlay
+            if let player = player {
+                VideoPlayer(player: player)
+                    .aspectRatio(CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight), contentMode: .fit)
+                    .onAppear {
+                        // Auto-play when video player appears
+                        player.play()
+                        isVideoPlaying = true
+                    }
+            } else if isVideoLoading {
+                // Show loading indicator while video is being fetched
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(.white)
+                    Text("Loading video...")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white.opacity(0.8))
+                }
+            } else if fullImage == nil {
+                // Initial loading state
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .tint(.white)
+            }
+            
+            // Play button overlay (shown when video is paused and player exists)
+            if player != nil && !isVideoPlaying && !isVideoLoading {
+                Button {
+                    player?.play()
+                    isVideoPlaying = true
+                } label: {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 72))
+                        .foregroundStyle(.white.opacity(0.9), .black.opacity(0.3))
+                        .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
+                }
+            }
+        }
+        .onTapGesture {
+            if showInfoPanel {
+                // Close info panel on tap
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                    showInfoPanel = false
+                    photoVerticalOffset = 0
+                }
+            } else if let player = player {
+                // Toggle play/pause on tap
+                if isVideoPlaying {
+                    player.pause()
+                    isVideoPlaying = false
+                } else {
+                    player.play()
+                    isVideoPlaying = true
+                }
+            }
         }
     }
     
@@ -459,6 +556,64 @@ struct PhotoDetailView: View {
                         if !isDegraded {
                             continuation.resume()
                         }
+                    }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Video Loading
+    
+    /// Load video thumbnail for initial display
+    private func loadVideoThumbnail() {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        
+        let targetSize = CGSize(
+            width: UIScreen.main.bounds.width * UIScreen.main.scale,
+            height: UIScreen.main.bounds.height * UIScreen.main.scale
+        )
+        
+        PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { image, info in
+            Task { @MainActor in
+                if let image = image {
+                    self.fullImage = image
+                }
+            }
+        }
+    }
+    
+    /// Load and prepare the video player
+    private func loadVideo() {
+        isVideoLoading = true
+        
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .automatic
+        
+        PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
+            Task { @MainActor in
+                self.isVideoLoading = false
+                
+                if let playerItem = playerItem {
+                    let avPlayer = AVPlayer(playerItem: playerItem)
+                    self.player = avPlayer
+                    
+                    // Set up observer for video end to enable replay
+                    NotificationCenter.default.addObserver(
+                        forName: .AVPlayerItemDidPlayToEndTime,
+                        object: playerItem,
+                        queue: .main
+                    ) { _ in
+                        // Reset video to beginning when it ends
+                        avPlayer.seek(to: .zero)
+                        self.isVideoPlaying = false
                     }
                 }
             }
