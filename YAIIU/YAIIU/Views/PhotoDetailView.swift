@@ -22,6 +22,7 @@ struct PhotoDetailView: View {
     @State private var player: AVPlayer?
     @State private var isVideoLoading: Bool = false
     @State private var isVideoPlaying: Bool = false
+    @State private var playerEndObserver: NSObjectProtocol?
     
     // Info panel states
     @State private var showInfoPanel: Bool = false
@@ -87,9 +88,13 @@ struct PhotoDetailView: View {
         }
         .onDisappear {
             imageLoadTask?.cancel()
-            // Clean up video player
+            // Clean up video player and observer
             player?.pause()
             player = nil
+            if let observer = playerEndObserver {
+                NotificationCenter.default.removeObserver(observer)
+                playerEndObserver = nil
+            }
         }
     }
     
@@ -606,13 +611,13 @@ struct PhotoDetailView: View {
                     self.player = avPlayer
                     
                     // Set up observer for video end to enable replay
-                    NotificationCenter.default.addObserver(
+                    self.playerEndObserver = NotificationCenter.default.addObserver(
                         forName: .AVPlayerItemDidPlayToEndTime,
                         object: playerItem,
                         queue: .main
-                    ) { _ in
+                    ) { [weak avPlayer] _ in
                         // Reset video to beginning when it ends
-                        avPlayer.seek(to: .zero)
+                        avPlayer?.seek(to: .zero)
                         self.isVideoPlaying = false
                     }
                 }
