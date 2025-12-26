@@ -1,5 +1,6 @@
 import SwiftUI
 import Photos
+import Combine
 
 /// BackgroundUploadSettingsView - Background upload settings view
 /// Allows users to enable/disable iOS 26.1 background upload feature
@@ -126,10 +127,33 @@ class BackgroundUploadSettingsViewModel: ObservableObject {
     @Published var pendingCount: Int = 0
     @Published var isSupported: Bool = false
     
+    private var cancellables = Set<AnyCancellable>()
+    // Use Any? to avoid @available restriction on stored properties
+    private var managerRef: Any?
+    
     init() {
         // Check if iOS 26.1 is supported
         if #available(iOS 26.1, *) {
             isSupported = true
+            let manager = BackgroundUploadManager.shared
+            managerRef = manager
+            
+            // Subscribe to manager's published properties
+            manager.$isEnabled
+                .receive(on: DispatchQueue.main)
+                .assign(to: &$isEnabled)
+            
+            manager.$errorMessage
+                .receive(on: DispatchQueue.main)
+                .assign(to: &$errorMessage)
+            
+            manager.$uploadedCount
+                .receive(on: DispatchQueue.main)
+                .assign(to: &$uploadedCount)
+            
+            manager.$pendingCount
+                .receive(on: DispatchQueue.main)
+                .assign(to: &$pendingCount)
         } else {
             isSupported = false
         }
@@ -140,12 +164,9 @@ class BackgroundUploadSettingsViewModel: ObservableObject {
         guard isSupported else { return }
         
         if #available(iOS 26.1, *) {
-            let manager = BackgroundUploadManager.shared
-            manager.checkExtensionStatus()
-            isEnabled = manager.isEnabled
-            uploadedCount = manager.uploadedCount
-            pendingCount = manager.pendingCount
-            errorMessage = manager.errorMessage
+            if let manager = managerRef as? BackgroundUploadManager {
+                manager.checkExtensionStatus()
+            }
         }
     }
     
@@ -153,7 +174,7 @@ class BackgroundUploadSettingsViewModel: ObservableObject {
         guard isSupported else { return }
         
         if #available(iOS 26.1, *) {
-            let manager = BackgroundUploadManager.shared
+            guard let manager = managerRef as? BackgroundUploadManager else { return }
             guard enabled != manager.isEnabled else { return }
             
             isLoading = true
