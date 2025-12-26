@@ -1,7 +1,5 @@
 # YAIIU - Yet Another Immich iOS Uploader
 
-[![GitHub license](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](
-
 **YAIIU** is a lightweight, unofficial iOS app designed to complement the official Immich iOS app — not replace it.
 
 This project focuses on solving a few specific pain points that currently affect certain Immich users on iOS, especially photographers who rely on **JPEG + RAW workflows** and **background uploads**.
