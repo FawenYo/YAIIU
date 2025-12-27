@@ -27,6 +27,9 @@ struct PhotoThumbnailView: View {
     let isSelectionMode: Bool
     let syncStatus: PhotoSyncStatus
     let namespace: Namespace.ID?
+    /// When true, this view is the source of the matched geometry effect.
+    /// Set to false when the detail view is showing to avoid duplicate sources.
+    let isGeometrySource: Bool
     
     @State private var thumbnail: UIImage?
     @State private var hasRAW: Bool = false
@@ -41,6 +44,7 @@ struct PhotoThumbnailView: View {
         self.isSelectionMode = isSelectionMode
         self.syncStatus = isUploaded ? .uploaded : .pending
         self.namespace = nil
+        self.isGeometrySource = true
     }
     
     init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, syncStatus: PhotoSyncStatus) {
@@ -49,14 +53,16 @@ struct PhotoThumbnailView: View {
         self.isSelectionMode = isSelectionMode
         self.syncStatus = syncStatus
         self.namespace = nil
+        self.isGeometrySource = true
     }
     
-    init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, syncStatus: PhotoSyncStatus, namespace: Namespace.ID?) {
+    init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, syncStatus: PhotoSyncStatus, namespace: Namespace.ID?, isGeometrySource: Bool = true) {
         self.asset = asset
         self.isSelected = isSelected
         self.isSelectionMode = isSelectionMode
         self.syncStatus = syncStatus
         self.namespace = namespace
+        self.isGeometrySource = isGeometrySource
     }
     
     var body: some View {
@@ -206,9 +212,10 @@ struct PhotoThumbnailView: View {
                 .frame(width: geometry.size.width, height: geometry.size.height)
             
             // Apply matched geometry effect if namespace is provided
+            // Use isSource parameter to control which view is the source of the geometry
             if let namespace = namespace {
                 imageView
-                    .matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
+                    .matchedGeometryEffect(id: asset.localIdentifier, in: namespace, isSource: isGeometrySource)
             } else {
                 imageView
             }
