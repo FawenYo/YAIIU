@@ -1,0 +1,104 @@
+# macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode
+## User settings
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad
+
+## Build generated
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Various settings
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+## Obj-C/Swift specific
+*.hmap
+
+## App packaging
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcworkspace/contents.xcworkspacedata
+
+# CocoaPods (if used in future)
+Pods/
+*.xcworkspace
+!default.xcworkspace
+
+# Carthage (if used in future)
+Carthage/Build/
+
+# Go
+## Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+immich-proxy/immich-proxy
+
+## Test binary, built with `go test -c`
+*.test
+
+## Output of the go coverage tool
+*.out
+
+## Go workspace file
+go.work
+
+# IDEs
+## VSCode
+.vscode/
+*.code-workspace
+
+## JetBrains
+.idea/
+*.iml
+
+# Project specific
+overrides.yml
+
+# Logs and databases
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Temporary files
+*.swp
+*.swo
+*~
+.tmp/

@@ -1,0 +1,789 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 70;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2A0000010000000000000001 /* YAIIUApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000020000000000000001 /* YAIIUApp.swift */; };
+		2A0000030000000000000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000040000000000000001 /* ContentView.swift */; };
+		2A0000050000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000060000000000000001 /* Assets.xcassets */; };
+		2A0000070000000000000001 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000080000000000000001 /* LoginView.swift */; };
+		2A0000090000000000000001 /* PhotoGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00000A0000000000000001 /* PhotoGridView.swift */; };
+		2A00000B0000000000000001 /* PhotoThumbnailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00000C0000000000000001 /* PhotoThumbnailView.swift */; };
+		2A00000D0000000000000001 /* ImmichAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00000E0000000000000001 /* ImmichAPIService.swift */; };
+		2A00000F0000000000000001 /* PhotoLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000100000000000000001 /* PhotoLibraryManager.swift */; };
+		2A0000110000000000000001 /* DatabaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000120000000000000001 /* DatabaseManager.swift */; };
+		2A0000130000000000000001 /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000140000000000000001 /* SettingsManager.swift */; };
+		2A0000150000000000000001 /* UploadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000160000000000000001 /* UploadManager.swift */; };
+		2A0000170000000000000001 /* PhotoAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000180000000000000001 /* PhotoAsset.swift */; };
+		2A0000190000000000000001 /* UploadProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00001A0000000000000001 /* UploadProgressView.swift */; };
+		2A00002E0000000000000001 /* HashService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00002F0000000000000001 /* HashService.swift */; };
+		2A0000300000000000000001 /* HashManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000310000000000000001 /* HashManager.swift */; };
+		2A0000320000000000000001 /* ImmichSQLiteImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000330000000000000001 /* ImmichSQLiteImporter.swift */; };
+		2A0000340000000000000001 /* ImportDatabaseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000350000000000000001 /* ImportDatabaseView.swift */; };
+		2A0000360000000000000001 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000370000000000000001 /* Localization.swift */; };
+		2A0000380000000000000001 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000390000000000000001 /* Localizable.strings */; };
+		2A00003E0000000000000001 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 2A00003F0000000000000001 /* InfoPlist.strings */; };
+		2A0000420000000000000001 /* LogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000430000000000000001 /* LogService.swift */; };
+		2A0000440000000000000001 /* ThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000450000000000000001 /* ThumbnailCache.swift */; };
+		2A0000460000000000000001 /* OnboardingImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000470000000000000001 /* OnboardingImportView.swift */; };
+		2A0000480000000000000001 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000490000000000000001 /* PhotoDetailView.swift */; };
+		2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */; };
+		2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004D0000000000000001 /* BackgroundUploadManager.swift */; };
+		2A00004E0000000000000001 /* LogViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004F0000000000000001 /* LogViewerView.swift */; };
+		2A0000550000000000000001 /* InitialSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000560000000000000001 /* InitialSetupView.swift */; };
+		2A0000570000000000000001 /* RestartRequiredView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000580000000000000001 /* RestartRequiredView.swift */; };
+		BC4F08F22F04C74C009E5C3E /* ServerAssetSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */; };
+		BC4F08F42F04C75D009E5C3E /* FavoriteSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */; };
+		BC7F351D2EFED85E00747537 /* BackgroundUploadExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = BC7F35162EFED85E00747537 /* BackgroundUploadExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BC7F35272EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */; };
+		BC7F35282EFED8F200747537 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35252EFED8F200747537 /* SharedSettings.swift */; };
+		BC7F35292EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */; };
+		BC7F352A2EFED8F200747537 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35252EFED8F200747537 /* SharedSettings.swift */; };
+		BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
+		BC7F352D2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
+		DB0000010000000000000001 /* SQLiteConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000020000000000000001 /* SQLiteConnection.swift */; };
+		DB0000030000000000000001 /* DatabaseModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000040000000000000001 /* DatabaseModels.swift */; };
+		DB0000050000000000000001 /* UploadRecordRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000060000000000000001 /* UploadRecordRepository.swift */; };
+		DB0000070000000000000001 /* HashCacheRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000080000000000000001 /* HashCacheRepository.swift */; };
+		DB0000090000000000000001 /* ServerAssetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000A0000000000000001 /* ServerAssetRepository.swift */; };
+		DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000C0000000000000001 /* FavoriteRepository.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BC7F351B2EFED85E00747537 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2A0000280000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BC7F35152EFED85E00747537;
+			remoteInfo = BackgroundUploadExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BCA8201D2EFAF34700245A14 /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				BC7F351D2EFED85E00747537 /* BackgroundUploadExtension.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		2A0000020000000000000001 /* YAIIUApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YAIIUApp.swift; sourceTree = "<group>"; };
+		2A0000040000000000000001 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		2A0000060000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		2A0000080000000000000001 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		2A00000A0000000000000001 /* PhotoGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoGridView.swift; sourceTree = "<group>"; };
+		2A00000C0000000000000001 /* PhotoThumbnailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoThumbnailView.swift; sourceTree = "<group>"; };
+		2A00000E0000000000000001 /* ImmichAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmichAPIService.swift; sourceTree = "<group>"; };
+		2A0000100000000000000001 /* PhotoLibraryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryManager.swift; sourceTree = "<group>"; };
+		2A0000120000000000000001 /* DatabaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseManager.swift; sourceTree = "<group>"; };
+		2A0000140000000000000001 /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
+		2A0000160000000000000001 /* UploadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadManager.swift; sourceTree = "<group>"; };
+		2A0000180000000000000001 /* PhotoAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoAsset.swift; sourceTree = "<group>"; };
+		2A00001A0000000000000001 /* UploadProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadProgressView.swift; sourceTree = "<group>"; };
+		2A00001B0000000000000001 /* YAIIU.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YAIIU.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2A00001C0000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2A00002F0000000000000001 /* HashService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashService.swift; sourceTree = "<group>"; };
+		2A0000310000000000000001 /* HashManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashManager.swift; sourceTree = "<group>"; };
+		2A0000330000000000000001 /* ImmichSQLiteImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmichSQLiteImporter.swift; sourceTree = "<group>"; };
+		2A0000350000000000000001 /* ImportDatabaseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportDatabaseView.swift; sourceTree = "<group>"; };
+		2A0000370000000000000001 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
+		2A00003A0000000000000001 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		2A00003B0000000000000001 /* zh-Hant */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hant"; path = "zh-Hant.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		2A0000400000000000000001 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		2A0000410000000000000001 /* zh-Hant */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hant"; path = "zh-Hant.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		2A0000430000000000000001 /* LogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogService.swift; sourceTree = "<group>"; };
+		2A0000450000000000000001 /* ThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailCache.swift; sourceTree = "<group>"; };
+		2A0000470000000000000001 /* OnboardingImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingImportView.swift; sourceTree = "<group>"; };
+		2A0000490000000000000001 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoDetailView.swift; sourceTree = "<group>"; };
+		2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadSettingsView.swift; sourceTree = "<group>"; };
+		2A00004D0000000000000001 /* BackgroundUploadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadManager.swift; sourceTree = "<group>"; };
+		2A00004F0000000000000001 /* LogViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViewerView.swift; sourceTree = "<group>"; };
+		2A0000560000000000000001 /* InitialSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InitialSetupView.swift; sourceTree = "<group>"; };
+		2A0000580000000000000001 /* RestartRequiredView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RestartRequiredView.swift; sourceTree = "<group>"; };
+		BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetSyncService.swift; sourceTree = "<group>"; };
+		BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteSyncService.swift; sourceTree = "<group>"; };
+		BC7F35162EFED85E00747537 /* BackgroundUploadExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = BackgroundUploadExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		BC7F35232EFED87C00747537 /* YAIIU.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = YAIIU.entitlements; sourceTree = "<group>"; };
+		BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadDatabase.swift; sourceTree = "<group>"; };
+		BC7F35252EFED8F200747537 /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
+		BC7F352C2EFED90000747537 /* SharedLogTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedLogTypes.swift; sourceTree = "<group>"; };
+		DB0000020000000000000001 /* SQLiteConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteConnection.swift; sourceTree = "<group>"; };
+		DB0000040000000000000001 /* DatabaseModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseModels.swift; sourceTree = "<group>"; };
+		DB0000060000000000000001 /* UploadRecordRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadRecordRepository.swift; sourceTree = "<group>"; };
+		DB0000080000000000000001 /* HashCacheRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashCacheRepository.swift; sourceTree = "<group>"; };
+		DB00000A0000000000000001 /* ServerAssetRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetRepository.swift; sourceTree = "<group>"; };
+		DB00000C0000000000000001 /* FavoriteRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteRepository.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		BC7F35202EFED85E00747537 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = BC7F35152EFED85E00747537 /* BackgroundUploadExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		BC7F35172EFED85E00747537 /* BackgroundUploadExtension */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (BC7F35202EFED85E00747537 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = BackgroundUploadExtension; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		2A00001D0000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC7F35132EFED85E00747537 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		2A00001E0000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				BC7F35262EFED8F200747537 /* Shared */,
+				2A00001F0000000000000001 /* YAIIU */,
+				BC7F35172EFED85E00747537 /* BackgroundUploadExtension */,
+				2A0000200000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		2A00001F0000000000000001 /* YAIIU */ = {
+			isa = PBXGroup;
+			children = (
+				BC7F35232EFED87C00747537 /* YAIIU.entitlements */,
+				2A0000020000000000000001 /* YAIIUApp.swift */,
+				2A0000040000000000000001 /* ContentView.swift */,
+				2A0000210000000000000001 /* Views */,
+				2A0000220000000000000001 /* Services */,
+				2A0000230000000000000001 /* Models */,
+				2A00003C0000000000000001 /* Utilities */,
+				2A00003D0000000000000001 /* Resources */,
+				2A0000060000000000000001 /* Assets.xcassets */,
+				2A00001C0000000000000001 /* Info.plist */,
+			);
+			path = YAIIU;
+			sourceTree = "<group>";
+		};
+		2A0000200000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2A00001B0000000000000001 /* YAIIU.app */,
+				BC7F35162EFED85E00747537 /* BackgroundUploadExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		2A0000210000000000000001 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				2A0000080000000000000001 /* LoginView.swift */,
+				2A00000A0000000000000001 /* PhotoGridView.swift */,
+				2A00000C0000000000000001 /* PhotoThumbnailView.swift */,
+				2A0000490000000000000001 /* PhotoDetailView.swift */,
+				2A00001A0000000000000001 /* UploadProgressView.swift */,
+				2A0000350000000000000001 /* ImportDatabaseView.swift */,
+				2A0000470000000000000001 /* OnboardingImportView.swift */,
+				2A0000560000000000000001 /* InitialSetupView.swift */,
+				2A0000580000000000000001 /* RestartRequiredView.swift */,
+				2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */,
+				2A00004F0000000000000001 /* LogViewerView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		2A0000220000000000000001 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				DB0000500000000000000001 /* Database */,
+				DB0000510000000000000001 /* Import */,
+				BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */,
+				BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */,
+				2A00000E0000000000000001 /* ImmichAPIService.swift */,
+				2A0000100000000000000001 /* PhotoLibraryManager.swift */,
+				2A0000140000000000000001 /* SettingsManager.swift */,
+				2A0000160000000000000001 /* UploadManager.swift */,
+				2A00002F0000000000000001 /* HashService.swift */,
+				2A0000310000000000000001 /* HashManager.swift */,
+				2A0000430000000000000001 /* LogService.swift */,
+				2A0000450000000000000001 /* ThumbnailCache.swift */,
+				2A00004D0000000000000001 /* BackgroundUploadManager.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		2A0000230000000000000001 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				2A0000180000000000000001 /* PhotoAsset.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		2A00003C0000000000000001 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				2A0000370000000000000001 /* Localization.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		2A00003D0000000000000001 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				2A0000390000000000000001 /* Localizable.strings */,
+				2A00003F0000000000000001 /* InfoPlist.strings */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		BC7F35262EFED8F200747537 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */,
+				BC7F35252EFED8F200747537 /* SharedSettings.swift */,
+				BC7F352C2EFED90000747537 /* SharedLogTypes.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		DB0000500000000000000001 /* Database */ = {
+			isa = PBXGroup;
+			children = (
+				2A0000120000000000000001 /* DatabaseManager.swift */,
+				DB0000520000000000000001 /* Core */,
+				DB0000530000000000000001 /* Models */,
+				DB0000540000000000000001 /* Repositories */,
+			);
+			path = Database;
+			sourceTree = "<group>";
+		};
+		DB0000510000000000000001 /* Import */ = {
+			isa = PBXGroup;
+			children = (
+				2A0000330000000000000001 /* ImmichSQLiteImporter.swift */,
+			);
+			path = Import;
+			sourceTree = "<group>";
+		};
+		DB0000520000000000000001 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				DB0000020000000000000001 /* SQLiteConnection.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		DB0000530000000000000001 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				DB0000040000000000000001 /* DatabaseModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		DB0000540000000000000001 /* Repositories */ = {
+			isa = PBXGroup;
+			children = (
+				DB0000060000000000000001 /* UploadRecordRepository.swift */,
+				DB0000080000000000000001 /* HashCacheRepository.swift */,
+				DB00000A0000000000000001 /* ServerAssetRepository.swift */,
+				DB00000C0000000000000001 /* FavoriteRepository.swift */,
+			);
+			path = Repositories;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		2A0000240000000000000001 /* YAIIU */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2A0000250000000000000001 /* Build configuration list for PBXNativeTarget "YAIIU" */;
+			buildPhases = (
+				2A0000260000000000000001 /* Sources */,
+				2A00001D0000000000000001 /* Frameworks */,
+				2A0000270000000000000001 /* Resources */,
+				BCA8201D2EFAF34700245A14 /* Embed ExtensionKit Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BC7F351C2EFED85E00747537 /* PBXTargetDependency */,
+			);
+			name = YAIIU;
+			productName = YAIIU;
+			productReference = 2A00001B0000000000000001 /* YAIIU.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BC7F35152EFED85E00747537 /* BackgroundUploadExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BC7F35212EFED85E00747537 /* Build configuration list for PBXNativeTarget "BackgroundUploadExtension" */;
+			buildPhases = (
+				BC7F35122EFED85E00747537 /* Sources */,
+				BC7F35132EFED85E00747537 /* Frameworks */,
+				BC7F35142EFED85E00747537 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				BC7F35172EFED85E00747537 /* BackgroundUploadExtension */,
+			);
+			name = BackgroundUploadExtension;
+			packageProductDependencies = (
+			);
+			productName = BackgroundUploadExtension;
+			productReference = BC7F35162EFED85E00747537 /* BackgroundUploadExtension.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2A0000280000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2620;
+				TargetAttributes = {
+					2A0000240000000000000001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					BC7F35152EFED85E00747537 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+				};
+			};
+			buildConfigurationList = 2A0000290000000000000001 /* Build configuration list for PBXProject "YAIIU" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hant",
+			);
+			mainGroup = 2A00001E0000000000000001;
+			productRefGroup = 2A0000200000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2A0000240000000000000001 /* YAIIU */,
+				BC7F35152EFED85E00747537 /* BackgroundUploadExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		2A0000270000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2A0000050000000000000001 /* Assets.xcassets in Resources */,
+				2A0000380000000000000001 /* Localizable.strings in Resources */,
+				2A00003E0000000000000001 /* InfoPlist.strings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC7F35142EFED85E00747537 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2A0000260000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2A0000010000000000000001 /* YAIIUApp.swift in Sources */,
+				2A0000030000000000000001 /* ContentView.swift in Sources */,
+				2A0000070000000000000001 /* LoginView.swift in Sources */,
+				2A0000090000000000000001 /* PhotoGridView.swift in Sources */,
+				2A00000B0000000000000001 /* PhotoThumbnailView.swift in Sources */,
+				2A00000D0000000000000001 /* ImmichAPIService.swift in Sources */,
+				2A00000F0000000000000001 /* PhotoLibraryManager.swift in Sources */,
+				2A0000110000000000000001 /* DatabaseManager.swift in Sources */,
+				DB0000010000000000000001 /* SQLiteConnection.swift in Sources */,
+				DB0000030000000000000001 /* DatabaseModels.swift in Sources */,
+				DB0000050000000000000001 /* UploadRecordRepository.swift in Sources */,
+				DB0000070000000000000001 /* HashCacheRepository.swift in Sources */,
+				DB0000090000000000000001 /* ServerAssetRepository.swift in Sources */,
+				DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */,
+				2A0000130000000000000001 /* SettingsManager.swift in Sources */,
+				2A0000150000000000000001 /* UploadManager.swift in Sources */,
+				2A0000170000000000000001 /* PhotoAsset.swift in Sources */,
+				2A0000190000000000000001 /* UploadProgressView.swift in Sources */,
+				2A00002E0000000000000001 /* HashService.swift in Sources */,
+				2A0000300000000000000001 /* HashManager.swift in Sources */,
+				BC7F35272EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */,
+				BC7F35282EFED8F200747537 /* SharedSettings.swift in Sources */,
+				BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */,
+				2A0000320000000000000001 /* ImmichSQLiteImporter.swift in Sources */,
+				2A0000340000000000000001 /* ImportDatabaseView.swift in Sources */,
+				2A0000360000000000000001 /* Localization.swift in Sources */,
+				2A0000420000000000000001 /* LogService.swift in Sources */,
+				BC4F08F22F04C74C009E5C3E /* ServerAssetSyncService.swift in Sources */,
+				BC4F08F42F04C75D009E5C3E /* FavoriteSyncService.swift in Sources */,
+				2A0000440000000000000001 /* ThumbnailCache.swift in Sources */,
+				2A0000460000000000000001 /* OnboardingImportView.swift in Sources */,
+				2A0000550000000000000001 /* InitialSetupView.swift in Sources */,
+				2A0000570000000000000001 /* RestartRequiredView.swift in Sources */,
+				2A0000480000000000000001 /* PhotoDetailView.swift in Sources */,
+				2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */,
+				2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */,
+				2A00004E0000000000000001 /* LogViewerView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BC7F35122EFED85E00747537 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BC7F35292EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */,
+				BC7F352A2EFED8F200747537 /* SharedSettings.swift in Sources */,
+				BC7F352D2EFED90000747537 /* SharedLogTypes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BC7F351C2EFED85E00747537 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BC7F35152EFED85E00747537 /* BackgroundUploadExtension */;
+			targetProxy = BC7F351B2EFED85E00747537 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		2A0000390000000000000001 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				2A00003A0000000000000001 /* en */,
+				2A00003B0000000000000001 /* zh-Hant */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+		2A00003F0000000000000001 /* InfoPlist.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				2A0000400000000000000001 /* en */,
+				2A0000410000000000000001 /* zh-Hant */,
+			);
+			name = InfoPlist.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		2A00002A0000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = U46W9497DX;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		2A00002B0000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = U46W9497DX;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		2A00002C0000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = YAIIU/YAIIU.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = YAIIU/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = YAIIU;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		2A00002D0000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = YAIIU/YAIIU.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = YAIIU/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = YAIIU;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		BC7F351E2EFED85E00747537 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = BackgroundUploadExtension/BackgroundUploadExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = BackgroundUploadExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = BackgroundUploadExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu.BackgroundUploadExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		BC7F351F2EFED85E00747537 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = BackgroundUploadExtension/BackgroundUploadExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = BackgroundUploadExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = BackgroundUploadExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu.BackgroundUploadExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2A0000250000000000000001 /* Build configuration list for PBXNativeTarget "YAIIU" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2A00002C0000000000000001 /* Debug */,
+				2A00002D0000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2A0000290000000000000001 /* Build configuration list for PBXProject "YAIIU" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2A00002A0000000000000001 /* Debug */,
+				2A00002B0000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BC7F35212EFED85E00747537 /* Build configuration list for PBXNativeTarget "BackgroundUploadExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BC7F351E2EFED85E00747537 /* Debug */,
+				BC7F351F2EFED85E00747537 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 2A0000280000000000000001 /* Project object */;
+}

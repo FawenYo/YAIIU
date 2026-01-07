@@ -1,0 +1,196 @@
+/* 
+  Localizable.strings (English)
+  YAIIU
+*/
+
+// MARK: - Tab Items
+"tab.photos" = "Photos";
+"tab.upload" = "Upload";
+"tab.settings" = "Settings";
+
+// MARK: - Login View
+"login.title" = "YAIIU";
+"login.subtitle" = "Upload your photos to Immich server";
+"login.serverURL" = "Server URL";
+"login.serverURL.placeholder" = "e.g.: http://192.168.1.100:2283";
+"login.apiKey" = "API Key";
+"login.apiKey.placeholder" = "Enter your API Key";
+"login.button" = "Login";
+"login.button.connecting" = "Connecting...";
+"login.error.title" = "Connection Error";
+"login.error.invalidApiKey" = "Unable to validate API Key, please check if your API Key is correct";
+"login.error.connectionFailed" = "Unable to connect to server: %@";
+"login.error.ok" = "OK";
+"login.backgroundUploadNote.title" = "💡 iOS 26.1+ Background Upload Note";
+"login.backgroundUploadNote.message" = "If you are using iOS 26.1 or later and want to use the background upload feature, you need to deploy immich-proxy separately.";
+"login.backgroundUploadNote.learnMore" = "Learn More";
+"login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
+
+// MARK: - Settings View
+"settings.title" = "Settings";
+"settings.serverInfo" = "Server Information";
+"settings.serverURL" = "Server URL";
+"settings.apiKey" = "API Key";
+"settings.statistics" = "Statistics";
+"settings.uploadedCount" = "Uploaded Photos";
+"settings.cachedHashCount" = "Cached Hash Count";
+"settings.confirmedOnCloud" = "Confirmed on Cloud";
+"settings.dataManagement" = "Data Management";
+"settings.importImmichData" = "Import Immich App Data";
+"settings.logout" = "Logout";
+"settings.logout.confirm.title" = "Confirm Logout";
+"settings.logout.confirm.message" = "Are you sure you want to logout?";
+"settings.logout.cancel" = "Cancel";
+"settings.logs" = "Logs";
+"settings.logCount" = "Log Entries";
+"settings.logFileSize" = "Log File Size";
+"settings.viewLogs" = "View Logs";
+"settings.exportLogs" = "Export Logs";
+"settings.clearLogs" = "Clear Logs";
+"settings.clearLogs.confirm.title" = "Clear Logs";
+"settings.clearLogs.confirm.message" = "Are you sure you want to clear all logs? This action cannot be undone.";
+"settings.clearLogs.cancel" = "Cancel";
+"settings.searchLogs" = "Search logs...";
+"settings.filterAll" = "All";
+"settings.refreshLogs" = "Refresh";
+"settings.scrollToBottom" = "Scroll to Bottom";
+"settings.noLogsAvailable" = "No logs available";
+
+// MARK: - Photo Grid View
+"photoGrid.title" = "Photo Library";
+"photoGrid.select" = "Select";
+"photoGrid.cancel" = "Cancel";
+"photoGrid.upload" = "Upload (%d)";
+"photoGrid.confirm.title" = "Confirm Upload";
+"photoGrid.confirm.message" = "Are you sure you want to upload %d photos/videos?";
+"photoGrid.confirm.cancel" = "Cancel";
+"photoGrid.confirm.upload" = "Upload";
+"photoGrid.processing.preparing" = "Preparing";
+"photoGrid.processing.comparing" = "Comparing %d/%d";
+"photoGrid.processing.checking" = "Checking";
+"photoGrid.processing.default" = "...";
+"photoGrid.permission.title" = "Photo Library Access Required";
+"photoGrid.permission.message" = "Please grant access to photo library to select photos for upload";
+"photoGrid.permission.grant" = "Grant Access";
+"photoGrid.permission.denied.title" = "Cannot Access Photo Library";
+"photoGrid.permission.denied.message" = "Please allow photo library access in Settings";
+"photoGrid.permission.openSettings" = "Open Settings";
+"photoGrid.filter.all" = "All Photos";
+"photoGrid.filter.notUploaded" = "Not Uploaded";
+"photoGrid.filter.active" = "Showing %d items";
+
+// MARK: - Upload Progress View
+"uploadProgress.title" = "Upload Progress";
+"uploadProgress.pause" = "Pause";
+"uploadProgress.resume" = "Resume";
+"uploadProgress.empty.title" = "No Items Uploading";
+"uploadProgress.empty.message" = "Select photos and tap upload to start";
+"uploadProgress.empty.success" = "Successfully uploaded %d items";
+"uploadProgress.overall" = "Upload Progress";
+"uploadProgress.uploading" = "Uploading...";
+"uploadProgress.paused" = "Paused";
+"uploadProgress.files" = "(%d/%d files)";
+"uploadProgress.fileCount" = "%d files";
+"uploadProgress.video" = "Video";
+
+// MARK: - Upload Item Status
+"uploadStatus.pending" = "Pending";
+"uploadStatus.uploading" = "Uploading %d%%";
+"uploadStatus.completed" = "Completed";
+"uploadStatus.failed" = "Failed";
+
+// MARK: - Import Database View
+"import.title" = "Import Hash Data";
+"import.cancel" = "Cancel";
+"import.done" = "Done";
+"import.instruction.title" = "Instructions";
+"import.instruction.description" = "This feature allows you to import pre-calculated hash data from Immich iOS App, avoiding recalculation of all photo hashes.";
+"import.instruction.step1" = "In the Immich iOS app, tap the user avatar in the top-right corner and go to Settings";
+"import.instruction.step2" = "Select Sync Status, then tap Export Database to save the SQLite file to the Files app";
+"import.instruction.step3" = "Tap the button below and select the exported SQLite file to import";
+"import.selectFile" = "Select SQLite File";
+"import.reselectFile" = "Select Another File";
+"import.validation.success" = "File Validation Successful";
+"import.validation.failed" = "File Validation Failed";
+"import.validation.recordCount" = "Records available for import:";
+"import.validation.records" = "%d records";
+"import.statistics.title" = "Database Statistics";
+"import.statistics.totalAssets" = "Total Assets";
+"import.statistics.assetsWithHash" = "Assets with Hash";
+"import.statistics.imageCount" = "Image Count";
+"import.statistics.videoCount" = "Video Count";
+"import.statistics.serverSync" = "Server Sync Status";
+"import.statistics.remoteAssets" = "Assets on Server";
+"import.statistics.localSynced" = "Local Synced";
+"import.import.button" = "Start Import";
+"import.import.importing" = "Importing...";
+"import.import.progress" = "Processed %d / %d records";
+"import.result.success" = "Import Complete";
+"import.result.error" = "Import Error";
+"import.result.totalRecords" = "Records read:";
+"import.result.importedRecords" = "Successfully imported:";
+"import.result.alreadyOnServer" = "Already on server:";
+"import.result.skippedRecords" = "Skipped records:";
+"import.result.tip" = "💡 Photos/videos already on server will not be uploaded again";
+"import.alert.ok" = "OK";
+"import.alert.importFailed" = "Import Failed";
+
+// MARK: - Onboarding Import View
+"onboarding.title" = "Import Existing Data?";
+"onboarding.description" = "If you have previously used the Immich iOS app, you can import its database to avoid re-calculating all photo hashes.";
+"onboarding.import.button" = "Import from Immich App";
+"onboarding.import.description" = "Import pre-calculated hash data";
+"onboarding.skip" = "Skip for now";
+"onboarding.continue" = "Continue";
+"onboarding.changeFile" = "Change";
+"onboarding.validation.success" = "Found %d records ready to import";
+"onboarding.startImport" = "Start Import";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "Background Upload";
+"backgroundUpload.settingsTitle" = "Background Upload Settings";
+"backgroundUpload.enabled" = "Enabled";
+"backgroundUpload.disabled" = "Disabled";
+"backgroundUpload.description" = "When enabled, new photos will be automatically uploaded to Immich server in the background";
+"backgroundUpload.requiresIOS26" = "Requires iOS 26.1 or later";
+"backgroundUpload.section.autoUpload" = "Auto Upload";
+"backgroundUpload.section.statistics" = "Statistics";
+"backgroundUpload.section.debug" = "Debug";
+"backgroundUpload.uploadedCount" = "Uploaded Count";
+"backgroundUpload.pendingCount" = "Pending Count";
+"backgroundUpload.viewLogs" = "View Logs";
+"backgroundUpload.clearLogs" = "Clear Logs";
+"backgroundUpload.logsTitle" = "Background Upload Logs";
+"backgroundUpload.noLogs" = "No logs available";
+"backgroundUpload.notSupported" = "Feature not supported";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "Full photo library access is required to enable background upload";
+"backgroundUpload.error.notLoggedIn" = "Please login to Immich server first";
+"backgroundUpload.error.extensionNotAvailable" = "Background upload extension is not available";
+
+// MARK: - Initial Setup View
+"initialSetup.title" = "Setting Up";
+"initialSetup.description" = "Preparing your app for first use";
+"initialSetup.syncing" = "Syncing with Server";
+"initialSetup.syncingDescription" = "Fetching your photo library data...";
+"initialSetup.completed" = "Sync Complete";
+"initialSetup.completedDescription" = "Your server data has been synced successfully";
+"initialSetup.failed" = "Sync Failed";
+"initialSetup.failedDescription" = "An error occurred during sync";
+"initialSetup.syncedAssets" = "Synced Assets";
+"initialSetup.continue" = "Continue";
+"initialSetup.retry" = "Retry";
+"initialSetup.skip" = "Skip for now";
+"initialSetup.fetchedAssets" = "%d assets fetched";
+"initialSetup.phase.connecting" = "Connecting to server...";
+"initialSetup.phase.fetchingUserInfo" = "Fetching user info...";
+"initialSetup.phase.fetchingPartners" = "Fetching shared partners...";
+"initialSetup.phase.fetchingAssets" = "Fetching assets (%d)...";
+"initialSetup.phase.fetchingAssetsInitial" = "Fetching assets...";
+"initialSetup.phase.processingAssets" = "Processing %d assets...";
+"initialSetup.phase.savingToDatabase" = "Saving to local database...";
+
+// MARK: - Restart Required View
+"restartRequired.title" = "App Restart Required";
+"restartRequired.description" = "To enable background upload feature, please restart the app";
+"restartRequired.instructions" = "Close this app completely and reopen it.";
+"restartRequired.closeApp" = "Close App";
