@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Photos
 import UIKit
@@ -299,6 +300,7 @@ class UploadManager: ObservableObject {
             
             let createdAt = item.asset.creationDate ?? Date()
             let modifiedAt = item.asset.modificationDate ?? Date()
+            let timezone = getTimezone(for: item.asset)
             
             let response = try await ImmichAPIService.shared.uploadAsset(
                 fileData: fileData,
@@ -309,7 +311,8 @@ class UploadManager: ObservableObject {
                 modifiedAt: modifiedAt,
                 isFavorite: isFavorite,
                 serverURL: serverURL,
-                apiKey: apiKey
+                apiKey: apiKey,
+                timezone: timezone
             ) { progress in
                 // progressHandler is already called on main queue by ImmichAPIService
                 let baseProgress = Double(index) / Double(totalResources)
@@ -401,5 +404,29 @@ class UploadManager: ObservableObject {
         uploadTask?.cancel()
         isUploading = false
         uploadQueue.removeAll()
+    }
+    
+    // MARK: - Timezone Helper
+    
+    /// Attempts to determine the timezone for an asset based on its GPS location.
+    /// Uses CLGeocoder for accurate timezone including daylight saving time.
+    /// Falls back to device's current timezone if no location or geocoding fails.
+    private func getTimezone(for asset: PHAsset) -> TimeZone {
+        guard let location = asset.location else {
+            return TimeZone.current
+        }
+        
+        // Use CLGeocoder to get accurate timezone (handles DST correctly)
+        let geocoder = CLGeocoder()
+        var resultTimezone: TimeZone?
+        let semaphore = DispatchSemaphore(value: 0)
+        
+        geocoder.reverseGeocodeLocation(location) { placemarks, _ in
+            resultTimezone = placemarks?.first?.timeZone
+            semaphore.signal()
+        }
+        
+        _ = semaphore.wait(timeout: .now() + 5)
+        return resultTimezone ?? TimeZone.current
     }
 }

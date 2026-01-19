@@ -29,6 +29,7 @@ class ImmichAPIService: NSObject {
         isFavorite: Bool,
         serverURL: String,
         apiKey: String,
+        timezone: TimeZone? = nil,
         progressHandler: ((Double) -> Void)? = nil
     ) async throws -> UploadResponse {
         let fileSizeMB = Double(fileData.count) / 1024.0 / 1024.0
@@ -54,7 +55,8 @@ class ImmichAPIService: NSObject {
             deviceAssetId: deviceAssetId,
             createdAt: createdAt,
             modifiedAt: modifiedAt,
-            isFavorite: isFavorite
+            isFavorite: isFavorite,
+            timezone: timezone
         )
         
         return try await withCheckedThrowingContinuation { continuation in
@@ -90,10 +92,13 @@ class ImmichAPIService: NSObject {
         deviceAssetId: String,
         createdAt: Date,
         modifiedAt: Date,
-        isFavorite: Bool
+        isFavorite: Bool,
+        timezone: TimeZone?
     ) -> Data {
         var body = Data()
         let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withTimeZone]
+        dateFormatter.timeZone = timezone ?? TimeZone.current
         
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"deviceAssetId\"\r\n\r\n".data(using: .utf8)!)

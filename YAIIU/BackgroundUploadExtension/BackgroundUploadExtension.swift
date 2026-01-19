@@ -1,4 +1,5 @@
 import CommonCrypto
+import CoreLocation
 import ExtensionFoundation
 import Photos
 import os.lock
@@ -293,12 +294,19 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             return nil
         }
 
-        let created =
-            fetchAssetDate(for: resource, keyPath: \.creationDate) ?? Date()
-        let modified =
-            fetchAssetDate(for: resource, keyPath: \.modificationDate) ?? Date()
-        let isFavorite = fetchAssetFavorite(for: resource)
+        let asset = fetchAsset(for: resource)
+        let created = asset?.creationDate ?? Date()
+        let modified = asset?.modificationDate ?? Date()
+        let isFavorite = asset?.isFavorite ?? false
+        
+        // Determine timezone for the asset:
+        // 1. Try to get timezone from GPS location (most accurate for photos with location)
+        // 2. Fall back to device's current timezone (reasonable for screenshots/local photos)
+        let timezone = getTimezone(for: asset) ?? TimeZone.current
+        
         let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
+        fmt.timeZone = timezone
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -437,23 +445,31 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             ?? "application/octet-stream"
     }
 
-    private func fetchAssetDate(
-        for resource: PHAssetResource,
-        keyPath: KeyPath<PHAsset, Date?>
-    ) -> Date? {
+    private func fetchAsset(for resource: PHAssetResource) -> PHAsset? {
         PHAsset.fetchAssets(
             withLocalIdentifiers: [resource.assetLocalIdentifier],
             options: nil
-        )
-        .firstObject?[keyPath: keyPath]
+        ).firstObject
     }
     
-    private func fetchAssetFavorite(for resource: PHAssetResource) -> Bool {
-        PHAsset.fetchAssets(
-            withLocalIdentifiers: [resource.assetLocalIdentifier],
-            options: nil
-        )
-        .firstObject?.isFavorite ?? false
+    /// Attempts to determine the timezone for an asset based on its GPS location.
+    /// Uses CLGeocoder for accurate timezone including daylight saving time.
+    /// Falls back to nil if no location or geocoding fails, allowing caller to use device timezone.
+    private func getTimezone(for asset: PHAsset?) -> TimeZone? {
+        guard let location = asset?.location else {
+            return nil
+        }
+        let geocoder = CLGeocoder()
+        var resultTimezone: TimeZone?
+        let semaphore = DispatchSemaphore(value: 0)
+        
+        geocoder.reverseGeocodeLocation(location) { placemarks, _ in
+            resultTimezone = placemarks?.first?.timeZone
+            semaphore.signal()
+        }
+        
+        _ = semaphore.wait(timeout: .now() + 5)
+        return resultTimezone
     }
 
     // MARK: - Logging
