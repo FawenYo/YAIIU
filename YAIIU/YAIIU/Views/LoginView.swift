@@ -30,22 +30,32 @@ struct LoginView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     
     @State private var serverURL: String = ""
+    @State private var internalServerURL: String = ""
+    @State private var wifiSSID: String = ""
     @State private var apiKey: String = ""
     @State private var isLoading: Bool = false
     @State private var showError: Bool = false
     @State private var errorMessage: String = ""
+    @State private var showAdvancedSettings: Bool = false
+    @State private var currentSSID: String?
     
     // Use FocusState for better keyboard management and visual feedback
     @FocusState private var focusedField: Field?
     
     enum Field: Hashable {
         case serverURL
+        case internalServerURL
+        case wifiSSID
         case apiKey
     }
     
     // Cache trimmed values to avoid repeated computation during rendering
     private var trimmedServerURL: String {
         serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private var trimmedInternalServerURL: String {
+        internalServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private var trimmedApiKey: String {
@@ -133,14 +143,14 @@ struct LoginView: View {
     // MARK: - Input Fields Section
     private var inputFieldsSection: some View {
         VStack(spacing: 24) {
-            // Server URL Field
+            // Server URL Field (External/Public)
             VStack(alignment: .leading, spacing: 10) {
                 Label {
                     Text(L10n.Login.serverURL)
                         .font(.subheadline)
                         .fontWeight(.semibold)
                 } icon: {
-                    Image(systemName: "server.rack")
+                    Image(systemName: "globe")
                         .font(.subheadline)
                 }
                 .foregroundColor(.primary)
@@ -152,10 +162,17 @@ struct LoginView: View {
                     .focused($focusedField, equals: .serverURL)
                     .submitLabel(.next)
                     .onSubmit {
-                        focusedField = .apiKey
+                        if showAdvancedSettings {
+                            focusedField = .internalServerURL
+                        } else {
+                            focusedField = .apiKey
+                        }
                     }
                     .enhancedTextFieldStyle(isFocused: focusedField == .serverURL)
             }
+            
+            // Advanced Settings Toggle
+            advancedSettingsSection
             
             // API Key Field
             VStack(alignment: .leading, spacing: 10) {
@@ -182,6 +199,118 @@ struct LoginView: View {
                     .enhancedTextFieldStyle(isFocused: focusedField == .apiKey)
             }
         }
+    }
+    
+    // MARK: - Advanced Settings Section
+    private var advancedSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showAdvancedSettings.toggle()
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: showAdvancedSettings ? "chevron.down" : "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text(L10n.Login.advancedSettings)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            
+            if showAdvancedSettings {
+                VStack(spacing: 20) {
+                    // Internal Server URL Field
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label {
+                            Text(L10n.Login.internalServerURL)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                        } icon: {
+                            Image(systemName: "network")
+                                .font(.subheadline)
+                        }
+                        .foregroundColor(.primary)
+                        
+                        TextField(L10n.Login.internalServerURLPlaceholder, text: $internalServerURL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .focused($focusedField, equals: .internalServerURL)
+                            .submitLabel(.next)
+                            .onSubmit {
+                                focusedField = .wifiSSID
+                            }
+                            .enhancedTextFieldStyle(isFocused: focusedField == .internalServerURL)
+                        
+                        Text(L10n.Login.internalServerURLHint)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    
+                    // WiFi SSID Field
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label {
+                            Text(L10n.Settings.wifiSSID)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                        } icon: {
+                            Image(systemName: "wifi")
+                                .font(.subheadline)
+                        }
+                        .foregroundColor(.primary)
+                        
+                        TextField(L10n.Settings.wifiSSIDPlaceholder, text: $wifiSSID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focusedField, equals: .wifiSSID)
+                            .submitLabel(.next)
+                            .onSubmit {
+                                focusedField = .apiKey
+                            }
+                            .enhancedTextFieldStyle(isFocused: focusedField == .wifiSSID)
+                        
+                        // Use current WiFi button
+                        if let currentSSID = currentSSID, !currentSSID.isEmpty {
+                            Button(action: {
+                                wifiSSID = currentSSID
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "wifi")
+                                        .font(.caption)
+                                    Text(L10n.Settings.useCurrentWiFi)
+                                        .font(.caption)
+                                    Text("(\(currentSSID))")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.blue)
+                        }
+                        
+                        Text(L10n.Settings.wifiSSIDHint)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .top)),
+                    removal: .opacity
+                ))
+                .onAppear {
+                    currentSSID = NetworkReachability.shared.getCurrentWiFiSSID()
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
     
     // MARK: - Login Button Section
@@ -275,18 +404,17 @@ struct LoginView: View {
         )
     }
     
+    private var trimmedWifiSSID: String {
+        wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
     // MARK: - Login Action
     private func login() {
         isLoading = true
         
-        var formattedURL = trimmedServerURL
-        if !formattedURL.hasPrefix("http://") && !formattedURL.hasPrefix("https://") {
-            formattedURL = "http://" + formattedURL
-        }
-        if formattedURL.hasSuffix("/") {
-            formattedURL = String(formattedURL.dropLast())
-        }
-        
+        let formattedURL = formatURL(trimmedServerURL)
+        let formattedInternalURL = trimmedInternalServerURL.isEmpty ? nil : formatURL(trimmedInternalServerURL)
+        let ssidToUse = trimmedWifiSSID.isEmpty ? nil : trimmedWifiSSID
         let apiKeyToUse = trimmedApiKey
         
         Task {
@@ -300,7 +428,9 @@ struct LoginView: View {
                     isLoading = false
                     settingsManager.login(
                         serverURL: formattedURL,
-                        apiKey: apiKeyToUse
+                        apiKey: apiKeyToUse,
+                        internalServerURL: formattedInternalURL,
+                        ssid: ssidToUse
                     )
                 }
             } catch {
@@ -311,6 +441,18 @@ struct LoginView: View {
                 }
             }
         }
+    }
+    
+    /// Formats a URL by adding protocol prefix and removing trailing slash
+    private func formatURL(_ url: String) -> String {
+        var formatted = url
+        if !formatted.hasPrefix("http://") && !formatted.hasPrefix("https://") {
+            formatted = "http://" + formatted
+        }
+        if formatted.hasSuffix("/") {
+            formatted = String(formatted.dropLast())
+        }
+        return formatted
     }
 }
 

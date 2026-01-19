@@ -3,6 +3,8 @@ import SwiftUI
 
 class SettingsManager: ObservableObject {
     @Published var serverURL: String = ""
+    @Published var internalServerURL: String = ""
+    @Published var internalNetworkSSID: String = ""
     @Published var apiKey: String = ""
     @Published var isLoggedIn: Bool = false
     @Published var hasCompletedOnboarding: Bool = false
@@ -10,6 +12,8 @@ class SettingsManager: ObservableObject {
     @Published var needsAppRestart: Bool = false
     
     private let serverURLKey = "immich_server_url"
+    private let internalServerURLKey = "immich_internal_server_url"
+    private let internalNetworkSSIDKey = "immich_internal_network_ssid"
     private let apiKeyKey = "immich_api_key"
     private let isLoggedInKey = "immich_is_logged_in"
     private let hasCompletedOnboardingKey = "immich_has_completed_onboarding"
@@ -22,6 +26,8 @@ class SettingsManager: ObservableObject {
     
     private func loadSettings() {
         serverURL = UserDefaults.standard.string(forKey: serverURLKey) ?? ""
+        internalServerURL = UserDefaults.standard.string(forKey: internalServerURLKey) ?? ""
+        internalNetworkSSID = UserDefaults.standard.string(forKey: internalNetworkSSIDKey) ?? ""
         apiKey = loadAPIKeyFromKeychain() ?? ""
         isLoggedIn = UserDefaults.standard.bool(forKey: isLoggedInKey)
         hasCompletedOnboarding = UserDefaults.standard.bool(forKey: hasCompletedOnboardingKey)
@@ -38,10 +44,16 @@ class SettingsManager: ObservableObject {
             isLoggedIn = false
             UserDefaults.standard.set(false, forKey: isLoggedInKey)
         }
+        
+        if !internalNetworkSSID.isEmpty {
+            NetworkReachability.shared.configure(ssid: internalNetworkSSID)
+        }
     }
     
     private func saveSettings() {
         UserDefaults.standard.set(serverURL, forKey: serverURLKey)
+        UserDefaults.standard.set(internalServerURL, forKey: internalServerURLKey)
+        UserDefaults.standard.set(internalNetworkSSID, forKey: internalNetworkSSIDKey)
         UserDefaults.standard.set(isLoggedIn, forKey: isLoggedInKey)
         UserDefaults.standard.set(hasCompletedOnboarding, forKey: hasCompletedOnboardingKey)
         UserDefaults.standard.set(hasCompletedInitialSetup, forKey: hasCompletedInitialSetupKey)
@@ -49,27 +61,64 @@ class SettingsManager: ObservableObject {
         saveAPIKeyToKeychain(apiKey)
     }
     
-    func login(serverURL: String, apiKey: String) {
+    var activeServerURL: String {
+        return NetworkReachability.shared.resolveServerURL(
+            externalURL: serverURL,
+            internalURL: internalServerURL.isEmpty ? nil : internalServerURL,
+            ssid: internalNetworkSSID.isEmpty ? nil : internalNetworkSSID
+        )
+    }
+    
+    func login(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) {
         self.serverURL = serverURL
+        self.internalServerURL = internalServerURL ?? ""
+        self.internalNetworkSSID = ssid ?? ""
         self.apiKey = apiKey
         self.isLoggedIn = true
-        // Reset onboarding and initial setup status for new login
         self.hasCompletedOnboarding = false
         self.hasCompletedInitialSetup = false
-        saveSettings()
         
-        // Sync settings to SharedSettings for background upload extension
+        if let ssid = ssid, !ssid.isEmpty {
+            NetworkReachability.shared.configure(ssid: ssid)
+        }
+        
+        saveSettings()
+        syncToSharedSettings()
+    }
+    
+    func updateServerURL(_ url: String) {
+        self.serverURL = url
+        UserDefaults.standard.set(url, forKey: serverURLKey)
+        syncToSharedSettings()
+    }
+    
+    func updateInternalNetworkSettings(url: String, ssid: String) {
+        self.internalServerURL = url
+        self.internalNetworkSSID = ssid
+        
+        UserDefaults.standard.set(url, forKey: internalServerURLKey)
+        UserDefaults.standard.set(ssid, forKey: internalNetworkSSIDKey)
+        
+        NetworkReachability.shared.configure(ssid: ssid.isEmpty ? nil : ssid)
+        
+        syncToSharedSettings()
+    }
+    
+    private func syncToSharedSettings() {
         if #available(iOS 26.1, *) {
             BackgroundUploadManager.shared.syncSettings(
                 serverURL: serverURL,
-                apiKey: apiKey
+                apiKey: apiKey,
+                internalServerURL: internalServerURL.isEmpty ? nil : internalServerURL,
+                ssid: internalNetworkSSID.isEmpty ? nil : internalNetworkSSID
             )
         } else {
-            // For iOS versions below 26.1, still sync to SharedSettings
             SharedSettings.shared.syncFromMainApp(
                 serverURL: serverURL,
                 apiKey: apiKey,
-                isLoggedIn: true
+                isLoggedIn: true,
+                internalServerURL: internalServerURL.isEmpty ? nil : internalServerURL,
+                ssid: internalNetworkSSID.isEmpty ? nil : internalNetworkSSID
             )
         }
     }
@@ -91,10 +140,14 @@ class SettingsManager: ObservableObject {
     
     func logout() {
         self.serverURL = ""
+        self.internalServerURL = ""
+        self.internalNetworkSSID = ""
         self.apiKey = ""
         self.isLoggedIn = false
         
         UserDefaults.standard.removeObject(forKey: serverURLKey)
+        UserDefaults.standard.removeObject(forKey: internalServerURLKey)
+        UserDefaults.standard.removeObject(forKey: internalNetworkSSIDKey)
         UserDefaults.standard.removeObject(forKey: isLoggedInKey)
         deleteAPIKeyFromKeychain()
         
@@ -104,7 +157,6 @@ class SettingsManager: ObservableObject {
                 await BackgroundUploadManager.shared.handleLogout()
             }
         } else {
-            // For iOS versions below 26.1, still clear SharedSettings
             SharedSettings.shared.clearAll()
         }
     }

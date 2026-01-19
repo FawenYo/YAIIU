@@ -13,6 +13,8 @@
 	<string>Access to photo library is required to select photos for upload to Immich server</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Access to photo library is required to select photos for upload to Immich server</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Location access is required to detect your WiFi network for automatic server URL selection.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 // MARK: - URL Identifiable Extension for sheet(item:) support
@@ -74,16 +75,42 @@ struct SettingsView: View {
     @State private var backgroundUploadLoading = false
     @State private var backgroundUploadError: String?
     
+    @ObservedObject private var networkReachability = NetworkReachability.shared
+    
+    private var currentServerURL: String {
+        if networkReachability.isOnInternalNetwork && !settingsManager.internalServerURL.isEmpty {
+            return settingsManager.internalServerURL
+        }
+        return settingsManager.serverURL
+    }
+    
+    private var isUsingInternalNetwork: Bool {
+        networkReachability.isOnInternalNetwork && !settingsManager.internalServerURL.isEmpty
+    }
+    
     var body: some View {
         NavigationView {
             List {
                 Section(header: Text(L10n.Settings.serverInfo)) {
-                    HStack {
-                        Text(L10n.Settings.serverURL)
-                        Spacer()
-                        Text(settingsManager.serverURL)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+                    // Network Settings - shows current status and allows editing
+                    NavigationLink(destination: NetworkSettingsView()) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(L10n.Settings.networkSettings)
+                                HStack(spacing: 4) {
+                                    Image(systemName: isUsingInternalNetwork ? "house.fill" : "globe")
+                                        .font(.caption)
+                                    Text(isUsingInternalNetwork ? L10n.Settings.usingInternalNetwork : L10n.Settings.usingExternalNetwork)
+                                        .font(.caption)
+                                }
+                                .foregroundColor(isUsingInternalNetwork ? .green : .blue)
+                            }
+                            Spacer()
+                            Text(currentServerURL)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .font(.caption)
+                        }
                     }
                     
                     HStack {
@@ -322,6 +349,237 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+// MARK: - Network Settings View
+
+struct NetworkSettingsView: View {
+    @EnvironmentObject var settingsManager: SettingsManager
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var networkReachability = NetworkReachability.shared
+    
+    @State private var externalURL: String = ""
+    @State private var internalURL: String = ""
+    @State private var wifiSSID: String = ""
+    @FocusState private var focusedField: Field?
+    
+    private enum Field {
+        case externalURL, internalURL, ssid
+    }
+    
+    private var needsLocationPermission: Bool {
+        let status = networkReachability.locationAuthorizationStatus
+        return status == .notDetermined || status == .denied || status == .restricted
+    }
+    
+    private var needsPreciseLocation: Bool {
+        let status = networkReachability.locationAuthorizationStatus
+        let hasPermission = status == .authorizedWhenInUse || status == .authorizedAlways
+        return hasPermission && !networkReachability.isPreciseLocationEnabled
+    }
+    
+    private var isUsingInternalNetwork: Bool {
+        networkReachability.isOnInternalNetwork && !settingsManager.internalServerURL.isEmpty
+    }
+    
+    var body: some View {
+        Form {
+            // Current status section
+            Section(header: Text(L10n.Settings.currentStatus)) {
+                HStack {
+                    Image(systemName: isUsingInternalNetwork ? "house.fill" : "globe")
+                        .foregroundColor(isUsingInternalNetwork ? .green : .blue)
+                    Text(isUsingInternalNetwork ? L10n.Settings.usingInternalNetwork : L10n.Settings.usingExternalNetwork)
+                    Spacer()
+                    if let ssid = networkReachability.currentSSID {
+                        HStack(spacing: 4) {
+                            Image(systemName: "wifi")
+                                .font(.caption)
+                            Text(ssid)
+                                .font(.caption)
+                        }
+                        .foregroundColor(.secondary)
+                    }
+                }
+            }
+            
+            // External URL section
+            Section(header: Text(L10n.Settings.externalServerURL), footer: Text(L10n.Settings.externalServerURLHint).font(.caption)) {
+                TextField(L10n.Settings.externalServerURLPlaceholder, text: $externalURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .focused($focusedField, equals: .externalURL)
+            }
+            
+            // Internal URL section
+            Section(header: Text(L10n.Settings.internalServerURL), footer: Text(L10n.Settings.internalServerURLHint).font(.caption)) {
+                TextField(L10n.Settings.internalServerURLPlaceholder, text: $internalURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .focused($focusedField, equals: .internalURL)
+            }
+            
+            // WiFi SSID section
+            Section(header: Text(L10n.Settings.wifiSSID), footer: Text(L10n.Settings.wifiSSIDHint).font(.caption)) {
+                TextField(L10n.Settings.wifiSSIDPlaceholder, text: $wifiSSID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($focusedField, equals: .ssid)
+                
+                // Use published currentSSID from networkReachability
+                if let detectedSSID = networkReachability.currentSSID, !detectedSSID.isEmpty {
+                    Button(action: {
+                        wifiSSID = detectedSSID
+                    }) {
+                        HStack {
+                            Image(systemName: "wifi")
+                            Text(L10n.Settings.useCurrentWiFi)
+                            Spacer()
+                            Text(detectedSSID)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } else if !needsLocationPermission && !needsPreciseLocation {
+                    HStack {
+                        Image(systemName: "wifi.slash")
+                            .foregroundColor(.secondary)
+                        Text(L10n.Settings.wifiNotDetected)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            
+            // Location permission warning
+            if needsLocationPermission {
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "location.slash.fill")
+                                .foregroundColor(.orange)
+                            Text(L10n.Settings.locationPermissionRequired)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                        }
+                        
+                        Text(L10n.Settings.locationPermissionHint)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Button(action: {
+                            NetworkReachability.shared.requestLocationPermission()
+                        }) {
+                            HStack {
+                                Image(systemName: "location.fill")
+                                Text(L10n.Settings.grantLocationPermission)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            
+            // Precise location warning
+            if needsPreciseLocation {
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "location.slash.fill")
+                                .foregroundColor(.orange)
+                            Text(L10n.Settings.preciseLocationRequired)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                        }
+                        
+                        Text(L10n.Settings.preciseLocationHint)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Button(action: {
+                            openLocationSettings()
+                        }) {
+                            HStack {
+                                Image(systemName: "gear")
+                                Text(L10n.Settings.openSettings)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            
+            // Save button
+            Section {
+                Button(action: saveSettings) {
+                    HStack {
+                        Spacer()
+                        Text(L10n.Settings.save)
+                            .fontWeight(.semibold)
+                        Spacer()
+                    }
+                }
+                .disabled(externalURL.isEmpty)
+            }
+        }
+        .navigationTitle(L10n.Settings.networkSettings)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            externalURL = settingsManager.serverURL
+            internalURL = settingsManager.internalServerURL
+            wifiSSID = settingsManager.internalNetworkSSID
+            // Trigger refresh to update currentSSID via async method
+            NetworkReachability.shared.refresh()
+        }
+    }
+    
+    private func saveSettings() {
+        var external = externalURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        var internal_ = internalURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ssid = wifiSSID.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Format external URL
+        if !external.isEmpty {
+            if !external.hasPrefix("http://") && !external.hasPrefix("https://") {
+                external = "https://" + external
+            }
+            if external.hasSuffix("/") {
+                external = String(external.dropLast())
+            }
+        }
+        
+        // Format internal URL
+        if !internal_.isEmpty {
+            if !internal_.hasPrefix("http://") && !internal_.hasPrefix("https://") {
+                internal_ = "http://" + internal_
+            }
+            if internal_.hasSuffix("/") {
+                internal_ = String(internal_.dropLast())
+            }
+        }
+        
+        // Update external URL if changed
+        if external != settingsManager.serverURL && !external.isEmpty {
+            settingsManager.updateServerURL(external)
+        }
+        
+        // Update internal network settings
+        settingsManager.updateInternalNetworkSettings(url: internal_, ssid: ssid)
+        dismiss()
+    }
+    
+    private func openLocationSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
     }
 }

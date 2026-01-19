@@ -51,6 +51,7 @@
 		DB0000070000000000000001 /* HashCacheRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000080000000000000001 /* HashCacheRepository.swift */; };
 		DB0000090000000000000001 /* ServerAssetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000A0000000000000001 /* ServerAssetRepository.swift */; };
 		DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000C0000000000000001 /* FavoriteRepository.swift */; };
+		NR0000010000000000000001 /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = NR0000020000000000000001 /* NetworkReachability.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -124,6 +125,7 @@
 		DB0000080000000000000001 /* HashCacheRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashCacheRepository.swift; sourceTree = "<group>"; };
 		DB00000A0000000000000001 /* ServerAssetRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetRepository.swift; sourceTree = "<group>"; };
 		DB00000C0000000000000001 /* FavoriteRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteRepository.swift; sourceTree = "<group>"; };
+		NR0000020000000000000001 /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -220,6 +222,7 @@
 				BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */,
 				BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */,
 				2A00000E0000000000000001 /* ImmichAPIService.swift */,
+				NR0000020000000000000001 /* NetworkReachability.swift */,
 				2A0000100000000000000001 /* PhotoLibraryManager.swift */,
 				2A0000140000000000000001 /* SettingsManager.swift */,
 				2A0000160000000000000001 /* UploadManager.swift */,
@@ -435,6 +438,7 @@
 				DB0000090000000000000001 /* ServerAssetRepository.swift in Sources */,
 				DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */,
 				2A0000130000000000000001 /* SettingsManager.swift in Sources */,
+				NR0000010000000000000001 /* NetworkReachability.swift in Sources */,
 				2A0000150000000000000001 /* UploadManager.swift in Sources */,
 				2A0000170000000000000001 /* PhotoAsset.swift in Sources */,
 				2A0000190000000000000001 /* UploadProgressView.swift in Sources */,
@@ -649,7 +653,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -683,7 +687,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -699,8 +703,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = BackgroundUploadExtension/BackgroundUploadExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = U46W9497DX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BackgroundUploadExtension/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = BackgroundUploadExtension;
@@ -711,9 +717,10 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu.BackgroundUploadExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -728,8 +735,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = BackgroundUploadExtension/BackgroundUploadExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = U46W9497DX;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = BackgroundUploadExtension/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = BackgroundUploadExtension;
@@ -740,9 +749,10 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.0.1;
+				MARKETING_VERSION = 0.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.fawenyo.yaiiu.BackgroundUploadExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

@@ -11,6 +11,8 @@ class SharedSettings {
     
     // MARK: - Keys
     private let serverURLKey = "immich_server_url"
+    private let internalServerURLKey = "immich_internal_server_url"
+    private let internalNetworkSSIDKey = "immich_internal_network_ssid"
     private let isLoggedInKey = "immich_is_logged_in"
     private let backgroundUploadEnabledKey = "immich_background_upload_enabled"
     private let lastProcessedChangeTokenKey = "immich_last_processed_change_token"
@@ -36,7 +38,26 @@ class SharedSettings {
         }
         set {
             userDefaults?.set(newValue, forKey: serverURLKey)
-            userDefaults?.synchronize()
+        }
+    }
+    
+    /// Internal server URL for local network access (optional)
+    var internalServerURL: String {
+        get {
+            return userDefaults?.string(forKey: internalServerURLKey) ?? ""
+        }
+        set {
+            userDefaults?.set(newValue, forKey: internalServerURLKey)
+        }
+    }
+    
+    /// WiFi SSID for internal network detection
+    var internalNetworkSSID: String {
+        get {
+            return userDefaults?.string(forKey: internalNetworkSSIDKey) ?? ""
+        }
+        set {
+            userDefaults?.set(newValue, forKey: internalNetworkSSIDKey)
         }
     }
     
@@ -55,7 +76,6 @@ class SharedSettings {
         }
         set {
             userDefaults?.set(newValue, forKey: isLoggedInKey)
-            userDefaults?.synchronize()
         }
     }
     
@@ -67,7 +87,6 @@ class SharedSettings {
         }
         set {
             userDefaults?.set(newValue, forKey: backgroundUploadEnabledKey)
-            userDefaults?.synchronize()
         }
     }
     
@@ -79,7 +98,6 @@ class SharedSettings {
         }
         set {
             userDefaults?.set(newValue, forKey: lastProcessedChangeTokenKey)
-            userDefaults?.synchronize()
         }
     }
     
@@ -94,7 +112,6 @@ class SharedSettings {
         }
         set {
             userDefaults?.set(Array(newValue), forKey: uploadedAssetIdentifiersKey)
-            userDefaults?.synchronize()
         }
     }
     
@@ -110,14 +127,18 @@ class SharedSettings {
     
     // MARK: - Sync Settings from Main App
 
-    func syncFromMainApp(serverURL: String, apiKey: String, isLoggedIn: Bool) {
+    func syncFromMainApp(serverURL: String, apiKey: String, isLoggedIn: Bool, internalServerURL: String? = nil, ssid: String? = nil) {
         self.serverURL = serverURL
+        self.internalServerURL = internalServerURL ?? ""
+        self.internalNetworkSSID = ssid ?? ""
         self.apiKey = apiKey
         self.isLoggedIn = isLoggedIn
     }
     
     func clearAll() {
         serverURL = ""
+        internalServerURL = ""
+        internalNetworkSSID = ""
         apiKey = ""
         isLoggedIn = false
         backgroundUploadEnabled = false

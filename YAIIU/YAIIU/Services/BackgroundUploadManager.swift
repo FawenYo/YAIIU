@@ -136,11 +136,13 @@ class BackgroundUploadManager: ObservableObject {
         }
     }
     
-    func syncSettings(serverURL: String, apiKey: String) {
+    func syncSettings(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) {
         sharedSettings.syncFromMainApp(
             serverURL: serverURL,
             apiKey: apiKey,
-            isLoggedIn: true
+            isLoggedIn: true,
+            internalServerURL: internalServerURL,
+            ssid: ssid
         )
     }
     
