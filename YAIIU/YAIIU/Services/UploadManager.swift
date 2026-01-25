@@ -300,7 +300,7 @@ class UploadManager: ObservableObject {
             
             let createdAt = item.asset.creationDate ?? Date()
             let modifiedAt = item.asset.modificationDate ?? Date()
-            let timezone = getTimezone(for: item.asset)
+            let timezone = await getTimezone(for: item.asset)
             
             let response = try await ImmichAPIService.shared.uploadAsset(
                 fileData: fileData,
@@ -411,22 +411,20 @@ class UploadManager: ObservableObject {
     /// Attempts to determine the timezone for an asset based on its GPS location.
     /// Uses CLGeocoder for accurate timezone including daylight saving time.
     /// Falls back to device's current timezone if no location or geocoding fails.
-    private func getTimezone(for asset: PHAsset) -> TimeZone {
+    private func getTimezone(for asset: PHAsset) async -> TimeZone {
         guard let location = asset.location else {
             return TimeZone.current
         }
         
         // Use CLGeocoder to get accurate timezone (handles DST correctly)
         let geocoder = CLGeocoder()
-        var resultTimezone: TimeZone?
-        let semaphore = DispatchSemaphore(value: 0)
         
-        geocoder.reverseGeocodeLocation(location) { placemarks, _ in
-            resultTimezone = placemarks?.first?.timeZone
-            semaphore.signal()
+        do {
+            let placemarks = try await geocoder.reverseGeocodeLocation(location)
+            return placemarks.first?.timeZone ?? TimeZone.current
+        } catch {
+            logDebug("Failed to get timezone from location: \(error.localizedDescription)", category: .upload)
+            return TimeZone.current
         }
-        
-        _ = semaphore.wait(timeout: .now() + 5)
-        return resultTimezone ?? TimeZone.current
     }
 }

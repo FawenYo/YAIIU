@@ -299,10 +299,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         let modified = asset?.modificationDate ?? Date()
         let isFavorite = asset?.isFavorite ?? false
         
-        // Determine timezone for the asset:
-        // 1. Try to get timezone from GPS location (most accurate for photos with location)
-        // 2. Fall back to device's current timezone (reasonable for screenshots/local photos)
-        let timezone = getTimezone(for: asset) ?? TimeZone.current
+        // Use device's current timezone for background extension
+        // Note: We cannot use CLGeocoder in background extension due to strict execution time limits
+        // The system may terminate the extension if we block for network calls
+        let timezone = TimeZone.current
         
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
@@ -452,26 +452,6 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         ).firstObject
     }
     
-    /// Attempts to determine the timezone for an asset based on its GPS location.
-    /// Uses CLGeocoder for accurate timezone including daylight saving time.
-    /// Falls back to nil if no location or geocoding fails, allowing caller to use device timezone.
-    private func getTimezone(for asset: PHAsset?) -> TimeZone? {
-        guard let location = asset?.location else {
-            return nil
-        }
-        let geocoder = CLGeocoder()
-        var resultTimezone: TimeZone?
-        let semaphore = DispatchSemaphore(value: 0)
-        
-        geocoder.reverseGeocodeLocation(location) { placemarks, _ in
-            resultTimezone = placemarks?.first?.timeZone
-            semaphore.signal()
-        }
-        
-        _ = semaphore.wait(timeout: .now() + 5)
-        return resultTimezone
-    }
-
     // MARK: - Logging
     
     private static let logCategory = LogCategory.backgroundUpload.rawValue
