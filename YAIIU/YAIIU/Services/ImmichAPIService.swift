@@ -84,6 +84,147 @@ class ImmichAPIService: NSObject {
         }
     }
     
+    /// Uploads an asset from a file URL using streaming to avoid memory pressure.
+    func uploadAssetFromFile(
+        fileURL: URL,
+        filename: String,
+        mimeType: String,
+        deviceAssetId: String,
+        createdAt: Date,
+        modifiedAt: Date,
+        isFavorite: Bool,
+        serverURL: String,
+        apiKey: String,
+        timezone: TimeZone? = nil,
+        progressHandler: ((Double) -> Void)? = nil
+    ) async throws -> UploadResponse {
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+        let fileSizeMB = Double(fileSize) / 1024.0 / 1024.0
+        logInfo("Starting file-based upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)", category: .api)
+        
+        guard let url = URL(string: "\(serverURL)/api/assets") else {
+            logError("Invalid upload URL: \(serverURL)/api/assets", category: .api)
+            throw ImmichAPIError.invalidURL
+        }
+        
+        let boundary = UUID().uuidString
+        
+        // Build multipart body file on disk to avoid memory issues
+        let multipartFileURL = try buildMultipartFile(
+            boundary: boundary,
+            sourceFileURL: fileURL,
+            filename: filename,
+            mimeType: mimeType,
+            deviceAssetId: deviceAssetId,
+            createdAt: createdAt,
+            modifiedAt: modifiedAt,
+            isFavorite: isFavorite,
+            timezone: timezone
+        )
+        
+        defer {
+            try? FileManager.default.removeItem(at: multipartFileURL)
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            let taskDelegate = UploadTaskDelegate(
+                filename: filename,
+                progressHandler: progressHandler,
+                completion: { result in
+                    switch result {
+                    case .success(let response):
+                        continuation.resume(returning: response)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
+                    }
+                }
+            )
+            
+            let task = uploadSession.uploadTask(with: request, fromFile: multipartFileURL)
+            let taskId = task.taskIdentifier
+            
+            delegateQueue.async(flags: .barrier) {
+                self.uploadDelegates[taskId] = taskDelegate
+            }
+            
+            task.resume()
+        }
+    }
+    
+    /// Builds a multipart form file on disk for streaming upload.
+    private func buildMultipartFile(
+        boundary: String,
+        sourceFileURL: URL,
+        filename: String,
+        mimeType: String,
+        deviceAssetId: String,
+        createdAt: Date,
+        modifiedAt: Date,
+        isFavorite: Bool,
+        timezone: TimeZone?
+    ) throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory
+        let multipartURL = tempDir.appendingPathComponent(UUID().uuidString + "_multipart.tmp")
+        
+        FileManager.default.createFile(atPath: multipartURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: multipartURL)
+        
+        defer {
+            try? handle.close()
+        }
+        
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withTimeZone]
+        dateFormatter.timeZone = timezone ?? TimeZone.current
+        
+        // Write form fields
+        func writeField(name: String, value: String) throws {
+            let fieldData = "--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n"
+            if let data = fieldData.data(using: .utf8) {
+                try handle.write(contentsOf: data)
+            }
+        }
+        
+        try writeField(name: "deviceAssetId", value: deviceAssetId)
+        try writeField(name: "deviceId", value: "ios-fawenyo-yaiiu")
+        try writeField(name: "fileCreatedAt", value: dateFormatter.string(from: createdAt))
+        try writeField(name: "fileModifiedAt", value: dateFormatter.string(from: modifiedAt))
+        try writeField(name: "isFavorite", value: String(isFavorite))
+        
+        // Write file header
+        let fileHeader = "--\(boundary)\r\nContent-Disposition: form-data; name=\"assetData\"; filename=\"\(filename)\"\r\nContent-Type: \(mimeType)\r\n\r\n"
+        if let headerData = fileHeader.data(using: .utf8) {
+            try handle.write(contentsOf: headerData)
+        }
+        
+        // Stream source file content in chunks to avoid loading entire file into memory
+        let sourceHandle = try FileHandle(forReadingFrom: sourceFileURL)
+        defer {
+            try? sourceHandle.close()
+        }
+        
+        let chunkSize = 1024 * 1024 // 1MB chunks
+        while true {
+            let chunk = sourceHandle.readData(ofLength: chunkSize)
+            if chunk.isEmpty { break }
+            try handle.write(contentsOf: chunk)
+        }
+        
+        // Write closing boundary
+        let footer = "\r\n--\(boundary)--\r\n"
+        if let footerData = footer.data(using: .utf8) {
+            try handle.write(contentsOf: footerData)
+        }
+        
+        return multipartURL
+    }
+    
     private func buildMultipartBody(
         boundary: String,
         fileData: Data,

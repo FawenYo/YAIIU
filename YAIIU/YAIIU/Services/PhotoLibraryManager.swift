@@ -189,6 +189,44 @@ class PhotoLibraryManager: ObservableObject {
         }
     }
     
+    /// Exports a resource to a temporary file for memory-efficient large file handling.
+    func exportResourceToFile(for resource: PHAssetResource) async throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory
+        let filename = resource.originalFilename
+        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + "_" + filename)
+        
+        // Remove any existing file at the path
+        try? FileManager.default.removeItem(at: fileURL)
+        
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            PHAssetResourceManager.default().writeData(
+                for: resource,
+                toFile: fileURL,
+                options: options
+            ) { error in
+                if let error = error {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: fileURL)
+                }
+            }
+        }
+    }
+    
+    /// Checks if a resource should use file-based export (for large files like videos).
+    func shouldUseFileExport(for resource: PHAssetResource) -> Bool {
+        let uti = resource.uniformTypeIdentifier.lowercased()
+        let isVideo = resource.type == .video ||
+                      resource.type == .fullSizeVideo ||
+                      uti.contains("video") ||
+                      uti.contains("movie")
+        return isVideo
+    }
+    
     func getThumbnail(for asset: PHAsset, targetSize: CGSize = CGSize(width: 200, height: 200), completion: @escaping (UIImage?) -> Void) {
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic

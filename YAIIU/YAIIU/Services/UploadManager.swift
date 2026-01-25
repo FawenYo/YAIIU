@@ -308,37 +308,68 @@ class UploadManager: ObservableObject {
         logDebug("Uploading \(totalResources) resource(s) for: \(item.filename)", category: .upload)
         
         let isFavorite = item.asset.isFavorite
+        let createdAt = item.asset.creationDate ?? Date()
+        let modifiedAt = item.asset.modificationDate ?? Date()
+        let timezone = await getTimezone(for: item.asset)
         
         for (index, resource) in resources.enumerated() {
             let resourceType = getResourceType(for: resource)
             let filename = photoLibraryManager.getFilename(for: resource)
-            
-            logDebug("Fetching resource data: \(filename) (type: \(resourceType))", category: .upload)
-            let fileData = try await photoLibraryManager.getResourceData(for: resource)
-            
             let mimeType = photoLibraryManager.getMimeType(for: resource)
             let deviceAssetId = "\(item.localIdentifier)-\(resourceType)-\(filename)"
             
-            let createdAt = item.asset.creationDate ?? Date()
-            let modifiedAt = item.asset.modificationDate ?? Date()
-            let timezone = await getTimezone(for: item.asset)
+            let useFileExport = photoLibraryManager.shouldUseFileExport(for: resource)
+            var uploadedFileSize: Int64 = 0
             
-            let response = try await ImmichAPIService.shared.uploadAsset(
-                fileData: fileData,
-                filename: filename,
-                mimeType: mimeType,
-                deviceAssetId: deviceAssetId,
-                createdAt: createdAt,
-                modifiedAt: modifiedAt,
-                isFavorite: isFavorite,
-                serverURL: serverURL,
-                apiKey: apiKey,
-                timezone: timezone
-            ) { progress in
-                // progressHandler is already called on main queue by ImmichAPIService
-                let baseProgress = Double(index) / Double(totalResources)
-                let resourceProgress = progress / Double(totalResources)
-                item.progress = baseProgress + resourceProgress
+            let response: UploadResponse
+            
+            if useFileExport {
+                // Stream large files (videos) from disk to prevent OOM crashes
+                let fileURL = try await photoLibraryManager.exportResourceToFile(for: resource)
+                defer {
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
+                
+                let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+                uploadedFileSize = (fileAttrs[.size] as? Int64) ?? 0
+                
+                response = try await ImmichAPIService.shared.uploadAssetFromFile(
+                    fileURL: fileURL,
+                    filename: filename,
+                    mimeType: mimeType,
+                    deviceAssetId: deviceAssetId,
+                    createdAt: createdAt,
+                    modifiedAt: modifiedAt,
+                    isFavorite: isFavorite,
+                    serverURL: serverURL,
+                    apiKey: apiKey,
+                    timezone: timezone
+                ) { progress in
+                    let baseProgress = Double(index) / Double(totalResources)
+                    let resourceProgress = progress / Double(totalResources)
+                    item.progress = baseProgress + resourceProgress
+                }
+            } else {
+                // Load smaller files (photos) into memory
+                let fileData = try await photoLibraryManager.getResourceData(for: resource)
+                uploadedFileSize = Int64(fileData.count)
+                
+                response = try await ImmichAPIService.shared.uploadAsset(
+                    fileData: fileData,
+                    filename: filename,
+                    mimeType: mimeType,
+                    deviceAssetId: deviceAssetId,
+                    createdAt: createdAt,
+                    modifiedAt: modifiedAt,
+                    isFavorite: isFavorite,
+                    serverURL: serverURL,
+                    apiKey: apiKey,
+                    timezone: timezone
+                ) { progress in
+                    let baseProgress = Double(index) / Double(totalResources)
+                    let resourceProgress = progress / Double(totalResources)
+                    item.progress = baseProgress + resourceProgress
+                }
             }
             
             DatabaseManager.shared.recordUploadedAsset(
@@ -346,7 +377,7 @@ class UploadManager: ObservableObject {
                 resourceType: resourceType,
                 filename: filename,
                 immichId: response.id,
-                fileSize: Int64(fileData.count),
+                fileSize: uploadedFileSize,
                 isDuplicate: response.duplicate ?? false,
                 isFavorite: isFavorite
             )
