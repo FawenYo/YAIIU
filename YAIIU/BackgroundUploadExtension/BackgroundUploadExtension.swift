@@ -1,4 +1,5 @@
 import CommonCrypto
+import CoreLocation
 import ExtensionFoundation
 import Photos
 import os.lock
@@ -293,12 +294,24 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             return nil
         }
 
-        let created =
-            fetchAssetDate(for: resource, keyPath: \.creationDate) ?? Date()
-        let modified =
-            fetchAssetDate(for: resource, keyPath: \.modificationDate) ?? Date()
-        let isFavorite = fetchAssetFavorite(for: resource)
+        // Ensure we can fetch the asset; skip if not found to avoid incorrect metadata
+        guard let asset = fetchAsset(for: resource) else {
+            logWarning("Could not fetch asset for resource: \(resource.originalFilename), skipping upload")
+            return nil
+        }
+        
+        let created = asset.creationDate ?? Date()
+        let modified = asset.modificationDate ?? Date()
+        let isFavorite = asset.isFavorite
+        
+        // Use device's current timezone for background extension
+        // Note: We cannot use CLGeocoder in background extension due to strict execution time limits
+        // The system may terminate the extension if we block for network calls
+        let timezone = TimeZone.current
+        
         let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
+        fmt.timeZone = timezone
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -437,25 +450,13 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             ?? "application/octet-stream"
     }
 
-    private func fetchAssetDate(
-        for resource: PHAssetResource,
-        keyPath: KeyPath<PHAsset, Date?>
-    ) -> Date? {
+    private func fetchAsset(for resource: PHAssetResource) -> PHAsset? {
         PHAsset.fetchAssets(
             withLocalIdentifiers: [resource.assetLocalIdentifier],
             options: nil
-        )
-        .firstObject?[keyPath: keyPath]
+        ).firstObject
     }
     
-    private func fetchAssetFavorite(for resource: PHAssetResource) -> Bool {
-        PHAsset.fetchAssets(
-            withLocalIdentifiers: [resource.assetLocalIdentifier],
-            options: nil
-        )
-        .firstObject?.isFavorite ?? false
-    }
-
     // MARK: - Logging
     
     private static let logCategory = LogCategory.backgroundUpload.rawValue

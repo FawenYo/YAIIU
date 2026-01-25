@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Photos
 import UIKit
@@ -65,6 +66,24 @@ class UploadItem: Identifiable, ObservableObject {
     }
 }
 
+/// Errors that can occur during timezone geocoding
+enum TimezoneGeocodingError: Error, LocalizedError {
+    case geocodingFailed(underlying: Error)
+    case rateLimited
+    case noPlacemarkFound
+    
+    var errorDescription: String? {
+        switch self {
+        case .geocodingFailed(let underlying):
+            return "Geocoding failed: \(underlying.localizedDescription)"
+        case .rateLimited:
+            return "Geocoding rate limited"
+        case .noPlacemarkFound:
+            return "No placemark found for location"
+        }
+    }
+}
+
 class UploadManager: ObservableObject {
     @Published var uploadQueue: [UploadItem] = []
     @Published var isUploading: Bool = false
@@ -76,6 +95,9 @@ class UploadManager: ObservableObject {
     
     /// Number of concurrent uploads
     private let uploadConcurrency = 2
+    
+    /// Shared CLGeocoder instance for timezone lookups (reused across all uploads)
+    private let geocoder = CLGeocoder()
     
     var completedCount: Int {
         uploadQueue.filter { $0.status == .completed }.count
@@ -299,6 +321,7 @@ class UploadManager: ObservableObject {
             
             let createdAt = item.asset.creationDate ?? Date()
             let modifiedAt = item.asset.modificationDate ?? Date()
+            let timezone = await getTimezone(for: item.asset)
             
             let response = try await ImmichAPIService.shared.uploadAsset(
                 fileData: fileData,
@@ -309,7 +332,8 @@ class UploadManager: ObservableObject {
                 modifiedAt: modifiedAt,
                 isFavorite: isFavorite,
                 serverURL: serverURL,
-                apiKey: apiKey
+                apiKey: apiKey,
+                timezone: timezone
             ) { progress in
                 // progressHandler is already called on main queue by ImmichAPIService
                 let baseProgress = Double(index) / Double(totalResources)
@@ -401,5 +425,50 @@ class UploadManager: ObservableObject {
         uploadTask?.cancel()
         isUploading = false
         uploadQueue.removeAll()
+    }
+    
+    // MARK: - Timezone Helper
+    
+    /// Attempts to determine the timezone for an asset based on its GPS location.
+    /// Uses shared CLGeocoder instance for accurate timezone including daylight saving time.
+    /// Throws errors for rate limiting or other failures to allow caller to implement retry strategy.
+    /// - Parameter asset: The PHAsset to get timezone for
+    /// - Returns: TimeZone from GPS location
+    /// - Throws: TimezoneGeocodingError if geocoding fails
+    private func getTimezoneFromLocation(for asset: PHAsset) async throws -> TimeZone {
+        guard let location = asset.location else {
+            return TimeZone.current
+        }
+        
+        do {
+            let placemarks = try await geocoder.reverseGeocodeLocation(location)
+            guard let timezone = placemarks.first?.timeZone else {
+                throw TimezoneGeocodingError.noPlacemarkFound
+            }
+            return timezone
+        } catch let error as CLError where error.code == .network {
+            // Network errors might indicate rate limiting
+            throw TimezoneGeocodingError.rateLimited
+        } catch let error as TimezoneGeocodingError {
+            throw error
+        } catch {
+            throw TimezoneGeocodingError.geocodingFailed(underlying: error)
+        }
+    }
+    
+    /// Attempts to determine the timezone for an asset based on its GPS location.
+    /// Falls back to device's current timezone if geocoding fails.
+    /// - Parameter asset: The PHAsset to get timezone for
+    /// - Returns: TimeZone from GPS location or device's current timezone as fallback
+    private func getTimezone(for asset: PHAsset) async -> TimeZone {
+        do {
+            return try await getTimezoneFromLocation(for: asset)
+        } catch TimezoneGeocodingError.rateLimited {
+            logWarning("Geocoding rate limited, using device timezone", category: .upload)
+            return TimeZone.current
+        } catch {
+            logDebug("Failed to get timezone from location: \(error.localizedDescription)", category: .upload)
+            return TimeZone.current
+        }
     }
 }
