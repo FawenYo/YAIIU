@@ -730,6 +730,7 @@ struct PhotoDetailView: View {
     let initialIndex: Int
     let namespace: Namespace.ID
     @Binding var isPresented: Bool
+    @Environment(\.colorScheme) private var colorScheme
     
     @State private var currentIndex: Int
     @State private var fullImage: UIImage?
@@ -1119,13 +1120,31 @@ struct PhotoDetailView: View {
     
     // MARK: - Info Panel
     
+    private var infoPanelBackground: Color {
+        colorScheme == .dark
+            ? Color(white: 0.12)
+            : Color(UIColor.systemBackground)
+    }
+    
+    private var infoPanelSectionBackground: Color {
+        colorScheme == .dark
+            ? Color(white: 0.18)
+            : Color(UIColor.secondarySystemGroupedBackground)
+    }
+    
+    private var infoPanelHandleColor: Color {
+        colorScheme == .dark
+            ? Color(white: 0.4)
+            : Color(white: 0.5)
+    }
+    
     @ViewBuilder
     private func infoPanelView(geometry: GeometryProxy) -> some View {
         let panelHeight = infoPanelHeight(for: geometry)
         
         VStack(spacing: 0) {
             Capsule()
-                .fill(Color(white: 0.5))
+                .fill(infoPanelHandleColor)
                 .frame(width: 36, height: 5)
                 .padding(.top, 8)
                 .padding(.bottom, 16)
@@ -1152,8 +1171,8 @@ struct PhotoDetailView: View {
         .frame(height: panelHeight)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(UIColor.systemBackground))
-                .shadow(color: .black.opacity(0.15), radius: 20, y: -5)
+                .fill(infoPanelBackground)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.15), radius: 20, y: -5)
         )
         .offset(y: geometry.size.height - panelHeight + infoPanelCurrentOffset(for: geometry))
     }
@@ -1162,17 +1181,15 @@ struct PhotoDetailView: View {
         HStack(spacing: 0) {
             if let date = currentAsset.creationDate {
                 Text(formatDateTime(date))
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
     }
     
     private var cameraSection: some View {
@@ -1183,7 +1200,6 @@ struct PhotoDetailView: View {
                 .frame(width: 28)
             
             VStack(alignment: .leading, spacing: 2) {
-                // Camera model with optional lens info on same line
                 if let camera = cameraInfo {
                     if let lens = lensInfo {
                         Text("\(camera) · \(lens)")
@@ -1213,7 +1229,7 @@ struct PhotoDetailView: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .background(infoPanelSectionBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
@@ -1258,7 +1274,7 @@ struct PhotoDetailView: View {
                     )
             }
         }
-        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .background(infoPanelSectionBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
@@ -1270,12 +1286,11 @@ struct PhotoDetailView: View {
                 .frame(width: 28)
             
             VStack(alignment: .leading, spacing: 1) {
-                Text(fileName ?? "Unknown")
+                Text(fileName ?? L10n.PhotoDetail.fileNameUnknown)
                     .font(.system(size: 14))
                     .foregroundColor(.primary)
                     .lineLimit(1)
                 
-                // Combine all metadata in a single line
                 Text(fileMetadataString)
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
@@ -1286,7 +1301,7 @@ struct PhotoDetailView: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .background(infoPanelSectionBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
@@ -1623,7 +1638,7 @@ struct LocationMapView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.up.right.square")
                         .font(.system(size: 12, weight: .medium))
-                    Text("Open")
+                    Text(L10n.PhotoDetail.openInMaps)
                         .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(.white)
@@ -1664,7 +1679,7 @@ private struct LocationPin: Identifiable {
     ZStack {
         Color.gray
         if isPresented {
-            Text("Preview requires a real PHAsset array")
+            Text(L10n.PhotoDetail.previewRequiresAssets)
                 .foregroundColor(.white)
         }
     }
