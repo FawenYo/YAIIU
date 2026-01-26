@@ -118,11 +118,7 @@ class PhotoLibraryManager: ObservableObject {
                 var batchAssets: [PHAsset] = []
                 batchAssets.reserveCapacity(batchEnd - currentIndex)
                 
-                let range = NSRange(location: currentIndex, length: batchEnd - currentIndex)
-                guard let swiftRange = Range(range) else {
-                    break
-                }
-                let indexSet = IndexSet(integersIn: swiftRange)
+                let indexSet = IndexSet(integersIn: currentIndex..<batchEnd)
                 
                 result.enumerateObjects(at: indexSet, options: []) { asset, _, _ in
                     batchAssets.append(asset)
