@@ -2,17 +2,22 @@ import SwiftUI
 import Photos
 import CoreLocation
 import AVKit
+import AVFoundation
 import UIKit
+import MapKit
 
 // MARK: - ZoomableScrollView
-final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
+
+final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let imageView = UIImageView()
+    private var interactivePanGesture: UIPanGestureRecognizer!
     
     var onScaleChanged: ((CGFloat) -> Void)?
     var onDoubleTap: (() -> Void)?
     var onSingleTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
     
-    // Track image size to detect actual image changes and preserve zoom state
     private var currentImageSize: CGSize = .zero
     private var isInitialSetupDone = false
     
@@ -36,7 +41,6 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
         bounces = true
         bouncesZoom = true
         contentInsetAdjustmentBehavior = .never
-        // Match Apple Photos app behavior
         decelerationRate = .normal
         isScrollEnabled = true
         isMultipleTouchEnabled = true
@@ -57,9 +61,39 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
         
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
         singleTap.numberOfTapsRequired = 1
-        // Wait for double tap to fail before triggering single tap
         singleTap.require(toFail: doubleTap)
         imageView.addGestureRecognizer(singleTap)
+        
+        interactivePanGesture = UIPanGestureRecognizer(target: self, action: #selector(handleInteractivePan(_:)))
+        interactivePanGesture.delegate = self
+        addGestureRecognizer(interactivePanGesture)
+    }
+    
+    // MARK: - UIGestureRecognizerDelegate
+    
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === interactivePanGesture {
+            return zoomScale <= 1.0
+        }
+        return true
+    }
+    
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+    
+    @objc private func handleInteractivePan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: self)
+        
+        switch gesture.state {
+        case .changed:
+            onDragChanged?(translation)
+        case .ended, .cancelled:
+            let velocity = gesture.velocity(in: self)
+            onDragEnded?(translation, velocity)
+        default:
+            break
+        }
     }
     
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -119,7 +153,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
         imageView.frame = frameToCenter
     }
     
-    // MARK: - Public Methods
+    // MARK: - Public
     
     func setImage(_ image: UIImage?) {
         guard let image = image else {
@@ -129,10 +163,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
             return
         }
         
-        // Skip reconfiguration if same image to preserve zoom state during SwiftUI updates
-        if currentImageSize == image.size && isInitialSetupDone {
-            return
-        }
+        if currentImageSize == image.size && isInitialSetupDone { return }
         
         currentImageSize = image.size
         imageView.image = image
@@ -188,13 +219,471 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
     
     override func layoutSubviews() {
         super.layoutSubviews()
-        
-        // Only configure on first valid layout to preserve zoom state
         guard !isInitialSetupDone, currentImageSize != .zero else { return }
         
         if bounds.width > 0 && bounds.height > 0, let image = imageView.image {
             configureImageSize(for: image)
             isInitialSetupDone = true
+        }
+    }
+}
+
+// MARK: - NativeVideoPlayerView
+
+/// Custom video player using AVPlayerLayer for native rendering performance.
+/// Provides minimal controls that match the photo viewer aesthetic.
+final class VideoPlayerUIView: UIView {
+    var onTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
+    
+    private var interactivePanGesture: UIPanGestureRecognizer!
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        setupGestures()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override class var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+    
+    private var videoPlayerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+    
+    private func setupGestures() {
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        addGestureRecognizer(tapGesture)
+        
+        interactivePanGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        addGestureRecognizer(interactivePanGesture)
+    }
+    
+    @objc private func handleTap() {
+        onTap?()
+    }
+    
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: self)
+        
+        switch gesture.state {
+        case .changed:
+            onDragChanged?(translation)
+        case .ended, .cancelled:
+            let velocity = gesture.velocity(in: self)
+            onDragEnded?(translation, velocity)
+        default:
+            break
+        }
+    }
+    
+    func setPlayer(_ player: AVPlayer?) {
+        videoPlayerLayer.player = player
+        videoPlayerLayer.videoGravity = .resizeAspect
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        videoPlayerLayer.frame = bounds
+    }
+}
+
+/// SwiftUI wrapper for the native video player view.
+struct NativeVideoPlayerView: UIViewRepresentable {
+    let player: AVPlayer?
+    let aspectRatio: CGFloat
+    var onTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
+    
+    func makeUIView(context: Context) -> VideoPlayerUIView {
+        let view = VideoPlayerUIView()
+        view.onTap = onTap
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+        return view
+    }
+    
+    func updateUIView(_ uiView: VideoPlayerUIView, context: Context) {
+        uiView.setPlayer(player)
+        uiView.onTap = onTap
+        uiView.onDragChanged = onDragChanged
+        uiView.onDragEnded = onDragEnded
+    }
+}
+
+// MARK: - AirPlayButton
+
+/// UIKit wrapper for AVRoutePickerView to enable AirPlay functionality.
+struct AirPlayButton: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let routePickerView = AVRoutePickerView()
+        routePickerView.tintColor = .white
+        routePickerView.activeTintColor = .systemBlue
+        routePickerView.prioritizesVideoDevices = true
+        return routePickerView
+    }
+    
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+// MARK: - VideoControlsOverlay
+
+/// Playback controls overlay with skip, speed, and AirPlay support.
+struct VideoControlsOverlay: View {
+    let player: AVPlayer
+    let duration: TimeInterval
+    @Binding var isPlaying: Bool
+    @Binding var isVisible: Bool
+    
+    @State private var currentTime: TimeInterval = 0
+    @State private var isSeeking: Bool = false
+    @State private var hideTimer: Timer?
+    @State private var timeObserver: Any?
+    @State private var playbackRate: Float = 1.0
+    @State private var showSpeedPicker: Bool = false
+    
+    private let skipInterval: TimeInterval = 5
+    private let availableSpeeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    
+    private var progress: Double {
+        guard duration > 0 else { return 0 }
+        return currentTime / duration
+    }
+    
+    var body: some View {
+        ZStack {
+            // Gradient overlays for control visibility
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [.black.opacity(0.3), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 80)
+                
+                Spacer()
+                
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.5)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 120)
+            }
+            .allowsHitTesting(false)
+            
+            VStack {
+                // Top bar with AirPlay and speed
+                topControlsBar
+                
+                Spacer()
+                
+                // Center playback controls
+                centerControls
+                
+                Spacer()
+                
+                // Bottom bar with progress and time
+                bottomControlsBar
+            }
+            
+            // Speed picker overlay
+            if showSpeedPicker {
+                speedPickerOverlay
+            }
+        }
+        .opacity(isVisible ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: isVisible)
+        .onAppear {
+            setupTimeObserver()
+            scheduleHide()
+        }
+        .onDisappear {
+            hideTimer?.invalidate()
+            if let observer = timeObserver {
+                player.removeTimeObserver(observer)
+                timeObserver = nil
+            }
+        }
+        .onChange(of: isVisible) { _, visible in
+            if visible {
+                scheduleHide()
+            } else {
+                showSpeedPicker = false
+            }
+        }
+    }
+    
+    // MARK: - Top Controls
+    
+    private var topControlsBar: some View {
+        HStack {
+            Spacer()
+            
+            // Speed button
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showSpeedPicker.toggle()
+                }
+                cancelHideTimer()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 14, weight: .medium))
+                    Text(formatSpeed(playbackRate))
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial.opacity(0.8))
+                .clipShape(Capsule())
+            }
+            
+            // AirPlay button
+            AirPlayButton()
+                .frame(width: 36, height: 36)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+    
+    // MARK: - Center Controls
+    
+    private var centerControls: some View {
+        HStack(spacing: 48) {
+            // Skip backward
+            Button {
+                skipBackward()
+                scheduleHide()
+            } label: {
+                Image(systemName: "gobackward.5")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 60, height: 60)
+                    .contentShape(Circle())
+            }
+            
+            // Play/Pause
+            Button {
+                togglePlayback()
+                scheduleHide()
+            } label: {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 72, height: 72)
+                    .contentShape(Circle())
+            }
+            
+            // Skip forward
+            Button {
+                skipForward()
+                scheduleHide()
+            } label: {
+                Image(systemName: "goforward.5")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 60, height: 60)
+                    .contentShape(Circle())
+            }
+        }
+    }
+    
+    // MARK: - Bottom Controls
+    
+    private var bottomControlsBar: some View {
+        VStack(spacing: 8) {
+            progressSlider
+                .padding(.horizontal, 16)
+            
+            HStack {
+                Text(formatTime(currentTime))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.9))
+                
+                Spacer()
+                
+                Text("-" + formatTime(duration - currentTime))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+            .padding(.horizontal, 20)
+        }
+        .padding(.bottom, 16)
+    }
+    
+    // MARK: - Progress Slider
+    
+    private var progressSlider: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                // Track background
+                Capsule()
+                    .fill(Color.white.opacity(0.3))
+                    .frame(height: 4)
+                
+                // Progress fill
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: max(0, geometry.size.width * progress), height: 4)
+                
+                // Thumb indicator (enlarged when seeking)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: isSeeking ? 16 : 8, height: isSeeking ? 16 : 8)
+                    .offset(x: max(0, geometry.size.width * progress - (isSeeking ? 8 : 4)))
+                    .animation(.easeOut(duration: 0.15), value: isSeeking)
+            }
+            .frame(height: 24)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isSeeking = true
+                        cancelHideTimer()
+                        let fraction = max(0, min(1, value.location.x / geometry.size.width))
+                        currentTime = duration * fraction
+                        // Seek while scrubbing for real-time preview
+                        let seekTime = CMTime(seconds: currentTime, preferredTimescale: 600)
+                        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
+                    }
+                    .onEnded { _ in
+                        isSeeking = false
+                        scheduleHide()
+                    }
+            )
+        }
+        .frame(height: 24)
+    }
+    
+    // MARK: - Speed Picker
+    
+    private var speedPickerOverlay: some View {
+        VStack(spacing: 0) {
+            ForEach(availableSpeeds, id: \.self) { speed in
+                Button {
+                    setPlaybackRate(speed)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSpeedPicker = false
+                    }
+                    scheduleHide()
+                } label: {
+                    HStack {
+                        Text(formatSpeed(speed))
+                            .font(.system(size: 15, weight: speed == playbackRate ? .semibold : .regular))
+                        
+                        Spacer()
+                        
+                        if speed == playbackRate {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+                
+                if speed != availableSpeeds.last {
+                    Divider()
+                        .background(Color.white.opacity(0.2))
+                }
+            }
+        }
+        .frame(width: 140)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+        .position(x: UIScreen.main.bounds.width - 90, y: 140)
+    }
+    
+    // MARK: - Actions
+    
+    private func togglePlayback() {
+        if isPlaying {
+            player.pause()
+        } else {
+            player.play()
+            player.rate = playbackRate
+        }
+        isPlaying.toggle()
+    }
+    
+    private func skipForward() {
+        let newTime = min(currentTime + skipInterval, duration)
+        let seekTime = CMTime(seconds: newTime, preferredTimescale: 600)
+        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        currentTime = newTime
+    }
+    
+    private func skipBackward() {
+        let newTime = max(currentTime - skipInterval, 0)
+        let seekTime = CMTime(seconds: newTime, preferredTimescale: 600)
+        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        currentTime = newTime
+    }
+    
+    private func setPlaybackRate(_ rate: Float) {
+        playbackRate = rate
+        if isPlaying {
+            player.rate = rate
+        }
+    }
+    
+    // MARK: - Time Observer
+    
+    private func setupTimeObserver() {
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
+            guard !isSeeking else { return }
+            currentTime = time.seconds
+        }
+    }
+    
+    private func scheduleHide() {
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+            if isPlaying && !showSpeedPicker {
+                withAnimation {
+                    isVisible = false
+                }
+            }
+        }
+    }
+    
+    private func cancelHideTimer() {
+        hideTimer?.invalidate()
+    }
+    
+    // MARK: - Formatting
+    
+    private func formatTime(_ seconds: TimeInterval) -> String {
+        let totalSeconds = Int(max(0, seconds))
+        let mins = totalSeconds / 60
+        let secs = totalSeconds % 60
+        if mins >= 60 {
+            let hours = mins / 60
+            let remainingMins = mins % 60
+            return String(format: "%d:%02d:%02d", hours, remainingMins, secs)
+        }
+        return String(format: "%d:%02d", mins, secs)
+    }
+    
+    private func formatSpeed(_ rate: Float) -> String {
+        if rate == 1.0 {
+            return "1×"
+        } else if rate == floor(rate) {
+            return String(format: "%.0f×", rate)
+        } else {
+            return String(format: "%.2g×", rate)
         }
     }
 }
@@ -205,6 +694,8 @@ struct ZoomableImageView: UIViewRepresentable {
     @Binding var scale: CGFloat
     var onDoubleTap: (() -> Void)?
     var onSingleTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
     
     func makeUIView(context: Context) -> ZoomableScrollView {
         let scrollView = ZoomableScrollView()
@@ -215,11 +706,15 @@ struct ZoomableImageView: UIViewRepresentable {
         }
         scrollView.onDoubleTap = onDoubleTap
         scrollView.onSingleTap = onSingleTap
+        scrollView.onDragChanged = onDragChanged
+        scrollView.onDragEnded = onDragEnded
         return scrollView
     }
     
     func updateUIView(_ uiView: ZoomableScrollView, context: Context) {
         uiView.setImage(image)
+        uiView.onDragChanged = onDragChanged
+        uiView.onDragEnded = onDragEnded
     }
 }
 
@@ -229,12 +724,12 @@ struct PhotoDetailView: View {
     let initialIndex: Int
     let namespace: Namespace.ID
     @Binding var isPresented: Bool
+    @Environment(\.colorScheme) private var colorScheme
     
     @State private var currentIndex: Int
     @State private var fullImage: UIImage?
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
-    @State private var isDragging: Bool = false
     @State private var dragProgress: CGFloat = 0
     @State private var imageLoadTask: Task<Void, Never>?
     
@@ -242,11 +737,9 @@ struct PhotoDetailView: View {
     @State private var isVideoLoading: Bool = false
     @State private var isVideoPlaying: Bool = false
     @State private var playerEndObserver: NSObjectProtocol?
+    @State private var showVideoControls: Bool = true
     
-    @State private var showInfoPanel: Bool = false
-    @State private var infoPanelDragOffset: CGFloat = 0
-    @State private var photoVerticalOffset: CGFloat = 0
-    
+    @State private var infoPanelProgress: CGFloat = 0
     @State private var location: CLLocation?
     @State private var locationName: String?
     @State private var cameraInfo: String?
@@ -254,31 +747,33 @@ struct PhotoDetailView: View {
     @State private var exposureInfo: String?
     @State private var fileName: String?
     @State private var fileSize: Int64?
-    
-    // Horizontal swipe navigation states
     @State private var horizontalOffset: CGFloat = 0
-    @State private var isHorizontalDragging: Bool = false
-    
-    // Track whether user has navigated away from initial photo
     @State private var hasNavigated: Bool = false
+    @State private var currentDragMode: DragMode = .none
+    
+    private enum DragMode {
+        case none
+        case horizontal
+        case openPanel
+        case closePanel
+        case dismiss
+    }
     
     private let dismissThreshold: CGFloat = 150
-    private let swipeUpThreshold: CGFloat = 60
     private let horizontalSwipeThreshold: CGFloat = 80
     
-    /// Calculates info panel height based on screen size for better iPad support.
-    /// Uses 60% of screen height on iPad, capped between 450-700 points.
     private func infoPanelHeight(for geometry: GeometryProxy) -> CGFloat {
+        // Panel height scales with screen size but stays within practical bounds.
+        // When location is available, allocate extra space for the embedded map.
         let screenHeight = geometry.size.height
-        let isCompactHeight = screenHeight < 700
-        
-        if isCompactHeight {
-            return min(screenHeight * 0.7, 450)
+        let hasMap = location != nil
+        let baseHeight: CGFloat
+        if screenHeight < 700 {
+            baseHeight = hasMap ? 520 : 380
+        } else {
+            baseHeight = hasMap ? 560 : 420
         }
-        
-        // For taller screens (iPad), use proportional height
-        let proportionalHeight = screenHeight * 0.6
-        return min(max(proportionalHeight, 450), 700)
+        return min(baseHeight, screenHeight * 0.65)
     }
     
     private var currentAsset: PHAsset {
@@ -289,6 +784,10 @@ struct PhotoDetailView: View {
         !hasNavigated && currentIndex == initialIndex
     }
     
+    private var isInfoPanelVisible: Bool {
+        infoPanelProgress > 0
+    }
+    
     init(assets: [PHAsset], initialIndex: Int, namespace: Namespace.ID, isPresented: Binding<Bool>) {
         self.assets = assets
         self.initialIndex = initialIndex
@@ -297,22 +796,12 @@ struct PhotoDetailView: View {
         self._currentIndex = State(initialValue: initialIndex)
     }
     
-    /// Calculates photo vertical offset when info panel is shown.
-    /// Moves photo up by half the panel height to make room for EXIF info.
     private func computedPhotoOffset(for geometry: GeometryProxy) -> CGFloat {
-        if showInfoPanel {
-            let panelHeight = infoPanelHeight(for: geometry)
-            return -(panelHeight / 2) + photoVerticalOffset
-        }
-        return photoVerticalOffset
+        -(infoPanelHeight(for: geometry) / 2) * infoPanelProgress
     }
     
-    /// Calculates info panel Y offset based on visibility state and drag gesture.
     private func infoPanelCurrentOffset(for geometry: GeometryProxy) -> CGFloat {
-        let panelHeight = infoPanelHeight(for: geometry)
-        return showInfoPanel
-            ? infoPanelDragOffset
-            : panelHeight + infoPanelDragOffset
+        infoPanelHeight(for: geometry) * (1 - infoPanelProgress)
     }
     
     var body: some View {
@@ -331,17 +820,6 @@ struct PhotoDetailView: View {
                 infoPanelView(geometry: geometry)
             }
         }
-        .gesture(
-            // Disable drag gesture when zoomed to let UIScrollView handle panning
-            DragGesture(minimumDistance: 10)
-                .onChanged { value in
-                    handleDragChange(value: value)
-                }
-                .onEnded { value in
-                    handleDragEnd(value: value)
-                },
-            isEnabled: scale <= 1.0
-        )
         .statusBar(hidden: true)
         .onAppear {
             loadCurrentAsset()
@@ -349,8 +827,7 @@ struct PhotoDetailView: View {
         .onDisappear {
             cleanupCurrentAsset()
         }
-        .onChange(of: currentIndex) { oldValue, newValue in
-            // Reset states and reload when switching to a different photo
+        .onChange(of: currentIndex) { _, _ in
             cleanupCurrentAsset()
             resetAssetStates()
             loadCurrentAsset()
@@ -359,87 +836,78 @@ struct PhotoDetailView: View {
     
     // MARK: - Drag Handling
     
-    private func handleDragChange(value: DragGesture.Value) {
-        guard scale <= 1.0 else { return }
+    private func handleUIKitDragChanged(translation: CGPoint) {
+        let dx = translation.x
+        let dy = translation.y
         
-        let horizontalTranslation = value.translation.width
-        let verticalTranslation = value.translation.height
-        
-        // Determine drag direction based on initial movement
-        let isHorizontalGesture = abs(horizontalTranslation) > abs(verticalTranslation)
-        
-        if showInfoPanel {
-            // When info panel is open, only handle vertical drag to dismiss it
-            if verticalTranslation > 0 {
-                infoPanelDragOffset = verticalTranslation
-                photoVerticalOffset = verticalTranslation * 0.5
+        if currentDragMode == .none {
+            let isHorizontal = abs(dx) > abs(dy)
+            if infoPanelProgress > 0.5 && dy > 5 {
+                currentDragMode = .closePanel
+            } else if isHorizontal && abs(dx) > 5 {
+                currentDragMode = .horizontal
+            } else if dy < -5 && infoPanelProgress < 0.9 {
+                currentDragMode = .openPanel
+            } else if dy > 5 && infoPanelProgress < 0.1 {
+                currentDragMode = .dismiss
             }
-        } else if isHorizontalGesture && !isDragging {
-            // Horizontal swipe for photo navigation (only when not in vertical dismiss drag)
-            isHorizontalDragging = true
-            horizontalOffset = horizontalTranslation
-        } else if !isHorizontalDragging {
-            // Vertical handling for info panel and dismiss
-            if verticalTranslation < 0 {
-                infoPanelDragOffset = verticalTranslation
-                photoVerticalOffset = verticalTranslation * 0.3
-            } else if verticalTranslation > 0 {
-                isDragging = true
-                offset = value.translation
-                let verticalProgress = verticalTranslation / dismissThreshold
-                dragProgress = min(verticalProgress, 1.0)
-            }
+        }
+        
+        let panelDragRange: CGFloat = 200
+        switch currentDragMode {
+        case .horizontal:
+            horizontalOffset = dx
+        case .openPanel:
+            infoPanelProgress = max(0, min(1, -dy / panelDragRange))
+        case .closePanel:
+            infoPanelProgress = max(0, min(1, 1.0 - dy / panelDragRange))
+        case .dismiss:
+            offset = CGSize(width: dx, height: dy)
+            dragProgress = min(1, max(0, dy / dismissThreshold))
+        case .none:
+            break
         }
     }
     
-    private func handleDragEnd(value: DragGesture.Value) {
-        guard scale <= 1.0 else { return }
+    private func handleUIKitDragEnded(translation: CGPoint, velocity: CGPoint) {
+        let horizontalTranslation = translation.x
+        let verticalTranslation = translation.y
+        let horizontalVelocity = velocity.x
+        let verticalVelocity = velocity.y
         
-        let horizontalTranslation = value.translation.width
-        let verticalTranslation = value.translation.height
-        let horizontalVelocity = value.predictedEndTranslation.width - horizontalTranslation
-        let verticalVelocity = value.predictedEndTranslation.height - verticalTranslation
+        let mode = currentDragMode
+        currentDragMode = .none
         
-        if isHorizontalDragging {
-            // Handle horizontal swipe for navigation
+        switch mode {
+        case .horizontal:
             let shouldNavigate = abs(horizontalTranslation) > horizontalSwipeThreshold || abs(horizontalVelocity) > 300
-            
             if shouldNavigate {
                 if horizontalTranslation > 0 || horizontalVelocity > 300 {
-                    // Swipe right - go to previous photo
                     navigateToPrevious()
                 } else {
-                    // Swipe left - go to next photo
                     navigateToNext()
                 }
             } else {
-                // Snap back to center
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                     horizontalOffset = 0
                 }
             }
-            isHorizontalDragging = false
-        } else if showInfoPanel {
-            if verticalTranslation > 80 || verticalVelocity > 300 {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    showInfoPanel = false
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
-                }
-            } else {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
-                }
+            
+        case .openPanel:
+            let shouldOpen = infoPanelProgress > 0.3 || verticalVelocity < -300
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                infoPanelProgress = shouldOpen ? 1 : 0
             }
-        } else {
-            if verticalTranslation < -swipeUpThreshold || verticalVelocity < -300 {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    showInfoPanel = true
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
-                }
-            } else if verticalTranslation > dismissThreshold || verticalVelocity > 500 {
+            
+        case .closePanel:
+            let shouldClose = infoPanelProgress < 0.7 || verticalVelocity > 300
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                infoPanelProgress = shouldClose ? 0 : 1
+            }
+            
+        case .dismiss:
+            let shouldDismiss = dragProgress > 0.5 || verticalVelocity > 500
+            if shouldDismiss {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                     isPresented = false
                 }
@@ -447,10 +915,21 @@ struct PhotoDetailView: View {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     offset = .zero
                     dragProgress = 0
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
                 }
-                isDragging = false
+            }
+            
+        case .none:
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                if infoPanelProgress > 0 && infoPanelProgress < 1 {
+                    infoPanelProgress = infoPanelProgress > 0.5 ? 1 : 0
+                }
+                if offset != .zero {
+                    offset = .zero
+                    dragProgress = 0
+                }
+                if horizontalOffset != 0 {
+                    horizontalOffset = 0
+                }
             }
         }
     }
@@ -467,46 +946,22 @@ struct PhotoDetailView: View {
     
     private func navigateToPrevious() {
         guard canNavigateToPrevious else {
-            // Bounce back animation when at the first photo
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                horizontalOffset = 0
-            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { horizontalOffset = 0 }
             return
         }
-        
         hasNavigated = true
-        
-        // Animate slide out to right, then update index
-        withAnimation(.easeOut(duration: 0.2)) {
-            horizontalOffset = UIScreen.main.bounds.width
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            currentIndex -= 1
-            horizontalOffset = 0
-        }
+        withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = UIScreen.main.bounds.width }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex -= 1; horizontalOffset = 0 }
     }
     
     private func navigateToNext() {
         guard canNavigateToNext else {
-            // Bounce back animation when at the last photo
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                horizontalOffset = 0
-            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { horizontalOffset = 0 }
             return
         }
-        
         hasNavigated = true
-        
-        // Animate slide out to left, then update index
-        withAnimation(.easeOut(duration: 0.2)) {
-            horizontalOffset = -UIScreen.main.bounds.width
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            currentIndex += 1
-            horizontalOffset = 0
-        }
+        withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = -UIScreen.main.bounds.width }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex += 1; horizontalOffset = 0 }
     }
     
     // MARK: - Content Views
@@ -531,16 +986,20 @@ struct PhotoDetailView: View {
                 scale: $scale,
                 onDoubleTap: {},
                 onSingleTap: {
-                    if showInfoPanel {
+                    if isInfoPanelVisible {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                            showInfoPanel = false
-                            photoVerticalOffset = 0
+                            infoPanelProgress = 0
                         }
                     }
+                },
+                onDragChanged: { translation in
+                    handleUIKitDragChanged(translation: translation)
+                },
+                onDragEnded: { translation, velocity in
+                    handleUIKitDragEnded(translation: translation, velocity: velocity)
                 }
             )
             
-            // Only apply matchedGeometryEffect for the initial photo
             if shouldUseGeometryEffect {
                 zoomableView
                     .matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
@@ -556,77 +1015,77 @@ struct PhotoDetailView: View {
     
     @ViewBuilder
     private func videoContent(geometry: GeometryProxy) -> some View {
+        let aspectRatio = CGFloat(currentAsset.pixelWidth) / CGFloat(currentAsset.pixelHeight)
+        
         ZStack {
+            // Thumbnail placeholder while video loads
             if let image = fullImage, player == nil {
-                let thumbnailImage = Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                
-                // Only apply matchedGeometryEffect for the initial photo
+                let thumbnailImage = Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
                 if shouldUseGeometryEffect {
-                    thumbnailImage
-                        .matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    thumbnailImage.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
                 } else {
                     thumbnailImage
                 }
             }
             
+            // Native video player with custom controls
             if let player = player {
-                let videoView = VideoPlayer(player: player)
-                    .aspectRatio(CGFloat(currentAsset.pixelWidth) / CGFloat(currentAsset.pixelHeight), contentMode: .fit)
-                    .onAppear {
-                        player.play()
-                        isVideoPlaying = true
-                    }
+                let videoContainer = ZStack {
+                    NativeVideoPlayerView(
+                        player: player,
+                        aspectRatio: aspectRatio,
+                        onTap: {
+                            handleVideoTap()
+                        },
+                        onDragChanged: { translation in
+                            handleUIKitDragChanged(translation: translation)
+                        },
+                        onDragEnded: { translation, velocity in
+                            handleUIKitDragEnded(translation: translation, velocity: velocity)
+                        }
+                    )
+                    .aspectRatio(aspectRatio, contentMode: .fit)
+                    
+                    // Controls overlay
+                    VideoControlsOverlay(
+                        player: player,
+                        duration: currentAsset.duration,
+                        isPlaying: $isVideoPlaying,
+                        isVisible: $showVideoControls
+                    )
+                    .aspectRatio(aspectRatio, contentMode: .fit)
+                }
+                .onAppear {
+                    player.play()
+                    isVideoPlaying = true
+                }
                 
-                // Only apply matchedGeometryEffect for the initial photo
                 if shouldUseGeometryEffect {
-                    videoView
-                        .matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    videoContainer.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
                 } else {
-                    videoView
+                    videoContainer
                 }
             } else if isVideoLoading {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .scaleEffect(1.5)
-                        .tint(.white)
-                    Text("Loading video...")
-                        .font(.system(size: 14))
-                        .foregroundColor(.white.opacity(0.8))
-                }
+                // Loading indicator
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .tint(.white)
             } else if fullImage == nil {
                 ProgressView()
                     .scaleEffect(1.5)
                     .tint(.white)
             }
-            
-            if player != nil && !isVideoPlaying && !isVideoLoading {
-                Button {
-                    player?.play()
-                    isVideoPlaying = true
-                } label: {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 72))
-                        .foregroundStyle(.white.opacity(0.9), .black.opacity(0.3))
-                        .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
-                }
-            }
         }
-        .onTapGesture {
-            if showInfoPanel {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    showInfoPanel = false
-                    photoVerticalOffset = 0
-                }
-            } else if let player = player {
-                if isVideoPlaying {
-                    player.pause()
-                    isVideoPlaying = false
-                } else {
-                    player.play()
-                    isVideoPlaying = true
-                }
+    }
+    
+    private func handleVideoTap() {
+        if isInfoPanelVisible {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                infoPanelProgress = 0
+            }
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showVideoControls.toggle()
             }
         }
     }
@@ -650,10 +1109,28 @@ struct PhotoDetailView: View {
             }
             Spacer()
         }
-        .opacity(showInfoPanel ? 0.5 : 1.0)
+        .opacity(isInfoPanelVisible ? 0.5 : 1.0)
     }
     
     // MARK: - Info Panel
+    
+    private var infoPanelBackground: Color {
+        colorScheme == .dark
+            ? Color(white: 0.12)
+            : Color(UIColor.systemBackground)
+    }
+    
+    private var infoPanelSectionBackground: Color {
+        colorScheme == .dark
+            ? Color(white: 0.18)
+            : Color(UIColor.secondarySystemGroupedBackground)
+    }
+    
+    private var infoPanelHandleColor: Color {
+        colorScheme == .dark
+            ? Color(white: 0.4)
+            : Color(white: 0.5)
+    }
     
     @ViewBuilder
     private func infoPanelView(geometry: GeometryProxy) -> some View {
@@ -661,21 +1138,17 @@ struct PhotoDetailView: View {
         
         VStack(spacing: 0) {
             Capsule()
-                .fill(Color(white: 0.5))
+                .fill(infoPanelHandleColor)
                 .frame(width: 36, height: 5)
                 .padding(.top, 8)
                 .padding(.bottom, 16)
             
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 12) {
+                VStack(spacing: 10) {
                     dateTimeSection
                     
-                    if cameraInfo != nil || exposureInfo != nil {
+                    if cameraInfo != nil || exposureInfo != nil || lensInfo != nil {
                         cameraSection
-                    }
-                    
-                    if lensInfo != nil {
-                        lensSection
                     }
                     
                     if locationName != nil || location != nil {
@@ -685,171 +1158,164 @@ struct PhotoDetailView: View {
                     fileInfoSection
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 40)
+                .padding(.bottom, 32)
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: panelHeight)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(UIColor.systemBackground))
-                .shadow(color: .black.opacity(0.15), radius: 20, y: -5)
+                .fill(infoPanelBackground)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.15), radius: 20, y: -5)
         )
         .offset(y: geometry.size.height - panelHeight + infoPanelCurrentOffset(for: geometry))
     }
     
     private var dateTimeSection: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 0) {
             if let date = currentAsset.creationDate {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(formatDateLine(date))
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(.primary)
-                    Text(formatTimeLine(date))
-                        .font(.system(size: 15))
-                        .foregroundColor(.secondary)
-                }
+                Text(formatDateTime(date))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
     }
     
     private var cameraSection: some View {
         HStack(spacing: 12) {
             Image(systemName: "camera.fill")
-                .font(.system(size: 22))
+                .font(.system(size: 20))
                 .foregroundColor(.secondary)
-                .frame(width: 32)
+                .frame(width: 28)
             
             VStack(alignment: .leading, spacing: 2) {
                 if let camera = cameraInfo {
-                    Text(camera)
-                        .font(.system(size: 15, weight: .medium))
+                    if let lens = lensInfo {
+                        Text("\(camera) · \(lens)")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    } else {
+                        Text(camera)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                    }
+                } else if let lens = lensInfo {
+                    Text(lens)
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.primary)
                 }
                 
                 if let exposure = exposureInfo {
                     Text(exposure)
-                        .font(.system(size: 13))
+                        .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
             }
             
             Spacer()
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
         .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-    
-    private var lensSection: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "circle.circle")
-                .font(.system(size: 22))
-                .foregroundColor(.secondary)
-                .frame(width: 32)
-            
-            if let lens = lensInfo {
-                Text(lens)
-                    .font(.system(size: 15))
-                    .foregroundColor(.primary)
-            }
-            
-            Spacer()
-        }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .background(infoPanelSectionBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
     private var locationSection: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "map.fill")
-                .font(.system(size: 22))
-                .foregroundColor(.secondary)
-                .frame(width: 32)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                if let name = locationName {
-                    Text(name)
-                        .font(.system(size: 15))
-                        .foregroundColor(.primary)
-                        .lineLimit(2)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "location.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.secondary)
+                    .frame(width: 28)
+                
+                VStack(alignment: .leading, spacing: 1) {
+                    if let name = locationName {
+                        Text(name)
+                            .font(.system(size: 14))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                    }
+                    
+                    if let loc = location {
+                        Text(formatCoordinates(loc))
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
-                if let loc = location {
-                    Text(formatCoordinates(loc))
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                }
+                Spacer()
             }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
             
-            Spacer()
+            if let loc = location {
+                LocationMapView(coordinate: loc.coordinate, locationName: locationName)
+                    .frame(height: 140)
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 0,
+                            bottomLeadingRadius: 12,
+                            bottomTrailingRadius: 12,
+                            topTrailingRadius: 0
+                        )
+                    )
+            }
         }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .background(infoPanelSectionBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
     private var fileInfoSection: some View {
         HStack(spacing: 12) {
             Image(systemName: "doc.fill")
-                .font(.system(size: 22))
+                .font(.system(size: 20))
                 .foregroundColor(.secondary)
-                .frame(width: 32)
+                .frame(width: 28)
             
-            VStack(alignment: .leading, spacing: 2) {
-                Text(fileName ?? "Unknown")
-                    .font(.system(size: 15))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(fileName ?? L10n.PhotoDetail.fileNameUnknown)
+                    .font(.system(size: 14))
                     .foregroundColor(.primary)
+                    .lineLimit(1)
                 
-                HStack(spacing: 4) {
-                    Text("\(currentAsset.pixelWidth) × \(currentAsset.pixelHeight)")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                    
-                    if let size = fileSize {
-                        Text("·")
-                            .foregroundColor(.secondary)
-                        Text(formatFileSize(size))
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    if currentAsset.mediaType == .video {
-                        Text("·")
-                            .foregroundColor(.secondary)
-                        Text(formatDuration(currentAsset.duration))
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                    }
-                }
+                Text(fileMetadataString)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
             
             Spacer()
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
         .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .background(infoPanelSectionBackground)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
-    private func formatDateLine(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy/M/d EEEE"
-        return formatter.string(from: date)
+    private var fileMetadataString: String {
+        var parts: [String] = []
+        parts.append("\(currentAsset.pixelWidth)×\(currentAsset.pixelHeight)")
+        if let size = fileSize {
+            parts.append(formatFileSize(size))
+        }
+        if currentAsset.mediaType == .video {
+            parts.append(formatDuration(currentAsset.duration))
+        }
+        return parts.joined(separator: " · ")
     }
     
-    private func formatTimeLine(_ date: Date) -> String {
+    private func formatDateTime(_ date: Date) -> String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
+        formatter.dateStyle = .long
+        formatter.timeStyle = .medium
+        formatter.doesRelativeDateFormatting = false
         return formatter.string(from: date)
     }
     
@@ -861,7 +1327,6 @@ struct PhotoDetailView: View {
     
     // MARK: - Asset Lifecycle
     
-    /// Loads the current asset's content based on its media type
     private func loadCurrentAsset() {
         if currentAsset.mediaType == .video {
             loadVideoThumbnail()
@@ -872,7 +1337,6 @@ struct PhotoDetailView: View {
         loadMetadata()
     }
     
-    /// Cleans up resources for the current asset before switching or dismissing
     private func cleanupCurrentAsset() {
         imageLoadTask?.cancel()
         player?.pause()
@@ -883,18 +1347,16 @@ struct PhotoDetailView: View {
         }
     }
     
-    /// Resets all asset-specific state variables for fresh loading
     private func resetAssetStates() {
         fullImage = nil
         scale = 1.0
         offset = .zero
         dragProgress = 0
-        isDragging = false
+        currentDragMode = .none
         isVideoLoading = false
         isVideoPlaying = false
-        showInfoPanel = false
-        infoPanelDragOffset = 0
-        photoVerticalOffset = 0
+        showVideoControls = true
+        infoPanelProgress = 0
         location = nil
         locationName = nil
         cameraInfo = nil
@@ -996,7 +1458,6 @@ struct PhotoDetailView: View {
         let assetToLoad = currentAsset
         location = assetToLoad.location
         
-        // Load resource info and file size on background thread
         Task.detached(priority: .userInitiated) {
             let resources = PHAssetResource.assetResources(for: assetToLoad)
             guard let primaryResource = resources.first else { return }
@@ -1007,7 +1468,6 @@ struct PhotoDetailView: View {
                 self.fileName = resourceFilename
             }
             
-            // Load file size asynchronously via streaming
             var size: Int64 = 0
             PHAssetResourceManager.default().requestData(
                 for: primaryResource,
@@ -1046,9 +1506,7 @@ struct PhotoDetailView: View {
                             self.locationName = locationString
                         }
                     }
-                } catch {
-                    // Geocoding failed, location name remains nil
-                }
+                } catch { }
             }
         }
         
@@ -1056,7 +1514,6 @@ struct PhotoDetailView: View {
             let options = PHContentEditingInputRequestOptions()
             options.isNetworkAccessAllowed = true
             
-            // Use continuation to bridge callback-based API to async/await
             let metadataResult: (exif: [String: Any]?, tiff: [String: Any]?)? = await withCheckedContinuation { continuation in
                 assetToLoad.requestContentEditingInput(with: options) { input, info in
                     guard let url = input?.fullSizeImageURL,
@@ -1112,7 +1569,6 @@ struct PhotoDetailView: View {
                 
                 if let model = model {
                     var cameraName = model
-                    // Avoid duplicate manufacturer name in camera string
                     if let make = make, !model.lowercased().contains(make.lowercased()) {
                         cameraName = "\(make) \(model)"
                     }
@@ -1146,6 +1602,69 @@ struct PhotoDetailView: View {
     
 }
 
+// MARK: - LocationMapView
+
+struct LocationMapView: View {
+    let coordinate: CLLocationCoordinate2D
+    var locationName: String?
+    
+    @State private var region: MKCoordinateRegion
+    
+    init(coordinate: CLLocationCoordinate2D, locationName: String? = nil) {
+        self.coordinate = coordinate
+        self.locationName = locationName
+        _region = State(initialValue: MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        ))
+    }
+    
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Map(coordinateRegion: $region, annotationItems: [LocationPin(coordinate: coordinate)]) { pin in
+                MapMarker(coordinate: pin.coordinate, tint: .red)
+            }
+            .disabled(true)
+            
+            Button {
+                openInMaps()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 12, weight: .medium))
+                    Text(L10n.PhotoDetail.openInMaps)
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+            }
+            .padding(8)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            openInMaps()
+        }
+    }
+    
+    private func openInMaps() {
+        let placemark = MKPlacemark(coordinate: coordinate)
+        let mapItem = MKMapItem(placemark: placemark)
+        mapItem.name = locationName
+        mapItem.openInMaps(launchOptions: [
+            MKLaunchOptionsMapCenterKey: NSValue(mkCoordinate: coordinate),
+            MKLaunchOptionsMapSpanKey: NSValue(mkCoordinateSpan: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
+        ])
+    }
+}
+
+private struct LocationPin: Identifiable {
+    let id = UUID()
+    let coordinate: CLLocationCoordinate2D
+}
+
 // MARK: - Preview
 #Preview {
     @Previewable @Namespace var namespace
@@ -1154,7 +1673,7 @@ struct PhotoDetailView: View {
     ZStack {
         Color.gray
         if isPresented {
-            Text("Preview requires a real PHAsset array")
+            Text(L10n.PhotoDetail.previewRequiresAssets)
                 .foregroundColor(.white)
         }
     }

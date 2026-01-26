@@ -296,4 +296,11 @@ enum L10n {
         static let errorNotLoggedIn = "backgroundUpload.error.notLoggedIn".localized
         static let errorExtensionNotAvailable = "backgroundUpload.error.extensionNotAvailable".localized
     }
+    
+    // MARK: - Photo Detail
+    enum PhotoDetail {
+        static let fileNameUnknown = "photoDetail.fileNameUnknown".localized
+        static let openInMaps = "photoDetail.openInMaps".localized
+        static let previewRequiresAssets = "photoDetail.previewRequiresAssets".localized
+    }
 }
