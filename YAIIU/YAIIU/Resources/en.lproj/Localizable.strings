@@ -81,6 +81,7 @@
 "settings.clearLogs.confirm.title" = "Clear Logs";
 "settings.clearLogs.confirm.message" = "Are you sure you want to clear all logs? This action cannot be undone.";
 "settings.clearLogs.cancel" = "Cancel";
+"settings.appVersion" = "Version";
 "settings.searchLogs" = "Search logs...";
 "settings.filterAll" = "All";
 "settings.refreshLogs" = "Refresh";

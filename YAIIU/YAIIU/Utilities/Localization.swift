@@ -103,6 +103,7 @@ enum L10n {
         static let clearLogsConfirmTitle = "settings.clearLogs.confirm.title".localized
         static let clearLogsConfirmMessage = "settings.clearLogs.confirm.message".localized
         static let clearLogsCancel = "settings.clearLogs.cancel".localized
+        static let appVersion = "settings.appVersion".localized
         static let searchLogs = "settings.searchLogs".localized
         static let filterAll = "settings.filterAll".localized
         static let refreshLogs = "settings.refreshLogs".localized
