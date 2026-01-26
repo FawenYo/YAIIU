@@ -97,6 +97,7 @@ class PhotoLibraryManager: ObservableObject {
             if Task.isCancelled { return }
             
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 self.assets = initialAssets
                 self.loadedCount = initialAssets.count
             }
@@ -130,6 +131,7 @@ class PhotoLibraryManager: ObservableObject {
                 if Task.isCancelled { return }
                 
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
                     self.assets.append(contentsOf: batchAssets)
                     self.loadedCount = self.assets.count
                 }
