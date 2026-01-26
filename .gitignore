@@ -88,6 +88,9 @@ go.work
 # Project specific
 overrides.yml
 
+# Auto-generated files
+YAIIU/YAIIU/Generated/BuildInfo.swift
+
 # Logs and databases
 *.log
 *.sqlite

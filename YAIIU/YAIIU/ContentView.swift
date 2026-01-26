@@ -256,6 +256,10 @@ struct SettingsView: View {
                             Spacer()
                         }
                     }
+                } footer: {
+                    Text("\(L10n.Settings.appVersion): \(BuildInfo.version) (\(BuildInfo.gitSHA))")
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
                 }
             }
             .navigationTitle(L10n.Settings.title)

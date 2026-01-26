@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BI0000010000000000000001 /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = BI0000020000000000000001 /* BuildInfo.swift */; };
 		2A0000010000000000000001 /* YAIIUApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000020000000000000001 /* YAIIUApp.swift */; };
 		2A0000030000000000000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000040000000000000001 /* ContentView.swift */; };
 		2A0000050000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000060000000000000001 /* Assets.xcassets */; };
@@ -126,6 +127,7 @@
 		DB00000A0000000000000001 /* ServerAssetRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetRepository.swift; sourceTree = "<group>"; };
 		DB00000C0000000000000001 /* FavoriteRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteRepository.swift; sourceTree = "<group>"; };
 		NR0000020000000000000001 /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
+		BI0000020000000000000001 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -181,6 +183,7 @@
 				2A0000230000000000000001 /* Models */,
 				2A00003C0000000000000001 /* Utilities */,
 				2A00003D0000000000000001 /* Resources */,
+				BI0000030000000000000001 /* Generated */,
 				2A0000060000000000000001 /* Assets.xcassets */,
 				2A00001C0000000000000001 /* Info.plist */,
 			);
@@ -316,6 +319,14 @@
 			path = Repositories;
 			sourceTree = "<group>";
 		};
+		BI0000030000000000000001 /* Generated */ = {
+			isa = PBXGroup;
+			children = (
+				BI0000020000000000000001 /* BuildInfo.swift */,
+			);
+			path = Generated;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -323,6 +334,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 2A0000250000000000000001 /* Build configuration list for PBXNativeTarget "YAIIU" */;
 			buildPhases = (
+				BI0000040000000000000001 /* Generate Build Info */,
 				2A0000260000000000000001 /* Sources */,
 				2A00001D0000000000000001 /* Frameworks */,
 				2A0000270000000000000001 /* Resources */,
@@ -461,6 +473,7 @@
 				2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */,
 				2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */,
 				2A00004E0000000000000001 /* LogViewerView.swift in Sources */,
+				BI0000010000000000000001 /* BuildInfo.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -483,6 +496,30 @@
 			targetProxy = BC7F351B2EFED85E00747537 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		BI0000040000000000000001 /* Generate Build Info */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Scripts/set_build_info.sh",
+			);
+			name = "Generate Build Info";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/YAIIU/Generated/BuildInfo.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"${SRCROOT}/Scripts/set_build_info.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXVariantGroup section */
 		2A0000390000000000000001 /* Localizable.strings */ = {
