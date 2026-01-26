@@ -356,6 +356,7 @@ struct VideoControlsOverlay: View {
     @State private var currentTime: TimeInterval = 0
     @State private var isSeeking: Bool = false
     @State private var hideTimer: Timer?
+    @State private var timeObserver: Any?
     @State private var playbackRate: Float = 1.0
     @State private var showSpeedPicker: Bool = false
     
@@ -417,6 +418,10 @@ struct VideoControlsOverlay: View {
         }
         .onDisappear {
             hideTimer?.invalidate()
+            if let observer = timeObserver {
+                player.removeTimeObserver(observer)
+                timeObserver = nil
+            }
         }
         .onChange(of: isVisible) { _, visible in
             if visible {
@@ -648,7 +653,7 @@ struct VideoControlsOverlay: View {
     
     private func setupTimeObserver() {
         let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
-        player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
             guard !isSeeking else { return }
             currentTime = time.seconds
         }
