@@ -75,6 +75,7 @@ class PhotoLibraryManager: ObservableObject {
                     self.assets = []
                     self.isLoading = false
                 }
+                await self.triggerFavoriteSync()
                 return
             }
             
