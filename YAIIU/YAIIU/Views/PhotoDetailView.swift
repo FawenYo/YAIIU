@@ -19,7 +19,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
     var onDragEnded: ((CGPoint, CGPoint) -> Void)?
     
     private var currentImageSize: CGSize = .zero
-    private var isInitialSetupDone = false
+    private var lastLayoutBounds: CGSize = .zero
     
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -159,20 +159,20 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         guard let image = image else {
             imageView.image = nil
             currentImageSize = .zero
-            isInitialSetupDone = false
+            lastLayoutBounds = .zero
             return
         }
         
-        if currentImageSize == image.size && isInitialSetupDone { return }
+        // Skip redundant updates for same image when bounds unchanged
+        if currentImageSize == image.size && lastLayoutBounds == bounds.size { return }
         
         currentImageSize = image.size
         imageView.image = image
         zoomScale = 1.0
-        isInitialSetupDone = false
         
         if bounds.width > 0 && bounds.height > 0 {
             configureImageSize(for: image)
-            isInitialSetupDone = true
+            lastLayoutBounds = bounds.size
         }
     }
     
@@ -219,11 +219,14 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
     
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard !isInitialSetupDone, currentImageSize != .zero else { return }
+        guard currentImageSize != .zero,
+              bounds.width > 0 && bounds.height > 0,
+              let image = imageView.image else { return }
         
-        if bounds.width > 0 && bounds.height > 0, let image = imageView.image {
+        // Reconfigure image frame when bounds change (e.g., device rotation)
+        if lastLayoutBounds != bounds.size {
             configureImageSize(for: image)
-            isInitialSetupDone = true
+            lastLayoutBounds = bounds.size
         }
     }
 }
@@ -763,17 +766,39 @@ struct PhotoDetailView: View {
     private let horizontalSwipeThreshold: CGFloat = 80
     
     private func infoPanelHeight(for geometry: GeometryProxy) -> CGFloat {
-        // Panel height scales with screen size but stays within practical bounds.
-        // When location is available, allocate extra space for the embedded map.
-        let screenHeight = geometry.size.height
+        let isPhone = UIDevice.current.userInterfaceIdiom == .phone
+        let isLandscape = geometry.size.width > geometry.size.height
+        let hasCamera = cameraInfo != nil || exposureInfo != nil || lensInfo != nil
         let hasMap = location != nil
-        let baseHeight: CGFloat
-        if screenHeight < 700 {
-            baseHeight = hasMap ? 520 : 380
+        let hasLocation = locationName != nil || location != nil
+        
+        var ratio: CGFloat
+        var maxRatio: CGFloat
+        
+        if isPhone {
+            ratio = 0.42
+            if hasCamera { ratio += 0.10 }
+            if hasMap { ratio += 0.20 }
+            else if hasLocation { ratio += 0.10 }
+            maxRatio = 0.72
+        } else if isLandscape {
+            // iPad landscape
+            ratio = 0.38
+            if hasCamera { ratio += 0.08 }
+            if hasMap { ratio += 0.18 }
+            else if hasLocation { ratio += 0.08 }
+            maxRatio = 0.68
         } else {
-            baseHeight = hasMap ? 560 : 420
+            // iPad portrait
+            ratio = 0.32
+            if hasCamera { ratio += 0.06 }
+            if hasMap { ratio += 0.15 }
+            else if hasLocation { ratio += 0.06 }
+            maxRatio = 0.58
         }
-        return min(baseHeight, screenHeight * 0.65)
+        
+        let screenHeight = geometry.size.height
+        return screenHeight * min(ratio, maxRatio)
     }
     
     private var currentAsset: PHAsset {
