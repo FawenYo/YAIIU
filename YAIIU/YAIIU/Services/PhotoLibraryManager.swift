@@ -109,8 +109,6 @@ class PhotoLibraryManager: ObservableObject {
             
             // Continue loading remaining assets in batches
             var currentIndex = initialCount
-            var allAssets = initialAssets
-            allAssets.reserveCapacity(total)
             
             while currentIndex < total {
                 if Task.isCancelled { return }
@@ -126,14 +124,13 @@ class PhotoLibraryManager: ObservableObject {
                     batchAssets.append(asset)
                 }
                 
-                allAssets.append(contentsOf: batchAssets)
                 currentIndex = batchEnd
                 
                 if Task.isCancelled { return }
                 
                 await MainActor.run {
-                    self.assets = allAssets
-                    self.loadedCount = allAssets.count
+                    self.assets.append(contentsOf: batchAssets)
+                    self.loadedCount = self.assets.count
                 }
                 
                 try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
