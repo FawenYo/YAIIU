@@ -56,6 +56,7 @@ class PhotoLibraryManager: ObservableObject {
             await MainActor.run {
                 self.isLoading = true
                 self.loadedCount = 0
+                self.assets.removeAll()
             }
             
             let fetchOptions = PHFetchOptions()
