@@ -233,11 +233,6 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
 /// Custom video player using AVPlayerLayer for native rendering performance.
 /// Provides minimal controls that match the photo viewer aesthetic.
 final class VideoPlayerUIView: UIView {
-    
-    private var playerLayer: AVPlayerLayer?
-    private var player: AVPlayer? { playerLayer?.player }
-    private var timeObserver: Any?
-    
     var onTap: (() -> Void)?
     var onDragChanged: ((CGPoint) -> Void)?
     var onDragEnded: ((CGPoint, CGPoint) -> Void)?
@@ -296,12 +291,6 @@ final class VideoPlayerUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         videoPlayerLayer.frame = bounds
-    }
-    
-    deinit {
-        if let observer = timeObserver, let player = player {
-            player.removeTimeObserver(observer)
-        }
     }
 }
 
