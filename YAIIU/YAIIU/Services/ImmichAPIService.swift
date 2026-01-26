@@ -202,7 +202,8 @@ class ImmichAPIService: NSObject {
         }
         
         try writeField(name: "deviceAssetId", value: deviceAssetId)
-        try writeField(name: "deviceId", value: "ios-fawenyo-yaiiu")
+        let deviceId = UIDevice.current.identifierForVendor?.uuidString ?? "ios-fawenyo-yaiiu"
+        try writeField(name: "deviceId", value: deviceId)
         try writeField(name: "fileCreatedAt", value: dateFormatter.string(from: createdAt))
         try writeField(name: "fileModifiedAt", value: dateFormatter.string(from: modifiedAt))
         try writeField(name: "isFavorite", value: String(isFavorite))
