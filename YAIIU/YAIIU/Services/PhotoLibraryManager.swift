@@ -5,8 +5,18 @@ import UIKit
 class PhotoLibraryManager: ObservableObject {
     @Published var assets: [PHAsset] = []
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
+    @Published private(set) var isLoading: Bool = false
+    @Published private(set) var loadedCount: Int = 0
+    @Published private(set) var totalCount: Int = 0
     
     private var fetchResult: PHFetchResult<PHAsset>?
+    private var loadingTask: Task<Void, Never>?
+    
+    /// Number of assets to load in the initial batch for immediate display
+    private let initialBatchSize = 100
+    
+    /// Number of assets to load in each subsequent batch
+    private let batchSize = 500
     
     init() {
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -38,28 +48,107 @@ class PhotoLibraryManager: ObservableObject {
     }
     
     func fetchAssets() {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        loadingTask?.cancel()
+        
+        loadingTask = Task { [weak self] in
+            guard let self = self else { return }
+            
+            await MainActor.run {
+                self.isLoading = true
+                self.loadedCount = 0
+            }
+            
             let fetchOptions = PHFetchOptions()
             fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             fetchOptions.includeHiddenAssets = false
             
             let result = PHAsset.fetchAssets(with: fetchOptions)
+            let total = result.count
             
-            var fetchedAssets: [PHAsset] = []
-            result.enumerateObjects { asset, _, _ in
-                fetchedAssets.append(asset)
+            await MainActor.run {
+                self.fetchResult = result
+                self.totalCount = total
             }
             
-            DispatchQueue.main.async {
-                self?.fetchResult = result
-                self?.assets = fetchedAssets
-                
-                // Trigger favorite sync after library refresh
-                Task {
-                    await FavoriteSyncService.shared.syncFavoriteChanges()
+            guard total > 0 else {
+                await MainActor.run {
+                    self.assets = []
+                    self.isLoading = false
                 }
+                return
             }
+            
+            // Load initial batch immediately for fast UI response
+            let initialCount = min(self.initialBatchSize, total)
+            var initialAssets: [PHAsset] = []
+            initialAssets.reserveCapacity(initialCount)
+            
+            result.enumerateObjects(options: []) { asset, index, stop in
+                if index >= initialCount {
+                    stop.pointee = true
+                    return
+                }
+                initialAssets.append(asset)
+            }
+            
+            // Check for cancellation
+            if Task.isCancelled { return }
+            
+            await MainActor.run {
+                self.assets = initialAssets
+                self.loadedCount = initialAssets.count
+            }
+            
+            if initialCount >= total {
+                await MainActor.run {
+                    self.isLoading = false
+                }
+                await self.triggerFavoriteSync()
+                return
+            }
+            
+            // Continue loading remaining assets in batches
+            var currentIndex = initialCount
+            var allAssets = initialAssets
+            allAssets.reserveCapacity(total)
+            
+            while currentIndex < total {
+                if Task.isCancelled { return }
+                
+                let batchEnd = min(currentIndex + self.batchSize, total)
+                var batchAssets: [PHAsset] = []
+                batchAssets.reserveCapacity(batchEnd - currentIndex)
+                
+                let range = NSRange(location: currentIndex, length: batchEnd - currentIndex)
+                let indexSet = IndexSet(integersIn: Range(range)!)
+                
+                result.enumerateObjects(at: indexSet, options: []) { asset, _, _ in
+                    batchAssets.append(asset)
+                }
+                
+                allAssets.append(contentsOf: batchAssets)
+                currentIndex = batchEnd
+                
+                if Task.isCancelled { return }
+                
+                await MainActor.run {
+                    self.assets = allAssets
+                    self.loadedCount = allAssets.count
+                }
+                
+                try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+            }
+            
+            await MainActor.run {
+                self.isLoading = false
+            }
+            
+            await self.triggerFavoriteSync()
         }
+    }
+    
+    private func triggerFavoriteSync() async {
+        await FavoriteSyncService.shared.syncFavoriteChanges()
     }
     
     func getAssetResources(for asset: PHAsset) -> [PHAssetResource] {

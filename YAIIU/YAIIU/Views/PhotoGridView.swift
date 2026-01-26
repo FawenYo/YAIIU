@@ -158,10 +158,21 @@ struct PhotoGridView: View {
                 // Prefetch initial thumbnails
                 prefetchThumbnails(around: 0)
             }
-            // Update filter cache when assets change
-            updateNotUploadedCount()
-            if currentFilter == .notUploaded {
-                refreshFilterCache()
+            
+            // Update filter cache when loading completes
+            if !photoLibraryManager.isLoading {
+                updateNotUploadedCount()
+                if currentFilter == .notUploaded {
+                    refreshFilterCache()
+                }
+            }
+        }
+        .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
+            // When loading completes, refresh hash processing with full asset list
+            if oldValue == true && newValue == false {
+                let identifiers = photoLibraryManager.assets.map { $0.localIdentifier }
+                hashManager.startBackgroundProcessing(identifiers: identifiers)
+                updateNotUploadedCount()
             }
         }
         .onChange(of: uploadManager.isUploading) { oldValue, newValue in
@@ -237,6 +248,10 @@ struct PhotoGridView: View {
     private var photoGridContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
+                if photoLibraryManager.isLoading && photoLibraryManager.loadedCount > 0 {
+                    loadingProgressView
+                }
+                
                 // Filter indicator when not showing all photos
                 if currentFilter != .all {
                     filterIndicatorView
@@ -298,6 +313,22 @@ struct PhotoGridView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
+    }
+    
+    private var loadingProgressView: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .scaleEffect(0.7)
+            
+            Text("\(photoLibraryManager.loadedCount) / \(photoLibraryManager.totalCount)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(.systemGray6))
     }
     
     /// Filter indicator bar showing current filter status
