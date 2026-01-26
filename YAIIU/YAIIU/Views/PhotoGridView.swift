@@ -154,7 +154,6 @@ struct PhotoGridView: View {
         }
         .onChange(of: photoLibraryManager.assets) { oldValue, newValue in
             if !newValue.isEmpty && oldValue.isEmpty {
-                startBackgroundProcessing()
                 // Prefetch initial thumbnails
                 prefetchThumbnails(around: 0)
             }

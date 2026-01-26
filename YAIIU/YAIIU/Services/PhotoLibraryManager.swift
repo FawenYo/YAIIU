@@ -133,7 +133,7 @@ class PhotoLibraryManager: ObservableObject {
                     self.loadedCount = self.assets.count
                 }
                 
-                try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+               await Task.yield()
             }
             
             await MainActor.run {
