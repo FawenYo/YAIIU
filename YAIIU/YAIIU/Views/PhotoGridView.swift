@@ -248,10 +248,6 @@ struct PhotoGridView: View {
     private var photoGridContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                if photoLibraryManager.isLoading && photoLibraryManager.loadedCount > 0 {
-                    loadingProgressView
-                }
-                
                 // Filter indicator when not showing all photos
                 if currentFilter != .all {
                     filterIndicatorView
@@ -313,22 +309,6 @@ struct PhotoGridView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
-    }
-    
-    private var loadingProgressView: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .scaleEffect(0.7)
-            
-            Text("\(photoLibraryManager.loadedCount) / \(photoLibraryManager.totalCount)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color(.systemGray6))
     }
     
     /// Filter indicator bar showing current filter status
