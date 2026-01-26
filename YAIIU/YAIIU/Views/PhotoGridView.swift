@@ -158,14 +158,6 @@ struct PhotoGridView: View {
                 // Prefetch initial thumbnails
                 prefetchThumbnails(around: 0)
             }
-            
-            // Update filter cache when loading completes
-            if !photoLibraryManager.isLoading {
-                updateNotUploadedCount()
-                if currentFilter == .notUploaded {
-                    refreshFilterCache()
-                }
-            }
         }
         .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
             // When loading completes, refresh hash processing with full asset list
@@ -173,6 +165,9 @@ struct PhotoGridView: View {
                 let identifiers = photoLibraryManager.assets.map { $0.localIdentifier }
                 hashManager.startBackgroundProcessing(identifiers: identifiers)
                 updateNotUploadedCount()
+                if currentFilter == .notUploaded {
+                    refreshFilterCache()
+                }
             }
         }
         .onChange(of: uploadManager.isUploading) { oldValue, newValue in
