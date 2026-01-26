@@ -763,17 +763,39 @@ struct PhotoDetailView: View {
     private let horizontalSwipeThreshold: CGFloat = 80
     
     private func infoPanelHeight(for geometry: GeometryProxy) -> CGFloat {
-        // Panel height scales with screen size but stays within practical bounds.
-        // When location is available, allocate extra space for the embedded map.
-        let screenHeight = geometry.size.height
+        let isPhone = UIDevice.current.userInterfaceIdiom == .phone
+        let isLandscape = geometry.size.width > geometry.size.height
+        let hasCamera = cameraInfo != nil || exposureInfo != nil || lensInfo != nil
         let hasMap = location != nil
-        let baseHeight: CGFloat
-        if screenHeight < 700 {
-            baseHeight = hasMap ? 520 : 380
+        let hasLocation = locationName != nil || location != nil
+        
+        var ratio: CGFloat
+        var maxRatio: CGFloat
+        
+        if isPhone {
+            ratio = 0.42
+            if hasCamera { ratio += 0.10 }
+            if hasMap { ratio += 0.20 }
+            else if hasLocation { ratio += 0.10 }
+            maxRatio = 0.72
+        } else if isLandscape {
+            // iPad landscape
+            ratio = 0.38
+            if hasCamera { ratio += 0.08 }
+            if hasMap { ratio += 0.18 }
+            else if hasLocation { ratio += 0.08 }
+            maxRatio = 0.68
         } else {
-            baseHeight = hasMap ? 560 : 420
+            // iPad portrait
+            ratio = 0.32
+            if hasCamera { ratio += 0.06 }
+            if hasMap { ratio += 0.15 }
+            else if hasLocation { ratio += 0.06 }
+            maxRatio = 0.58
         }
-        return min(baseHeight, screenHeight * 0.65)
+        
+        let screenHeight = geometry.size.height
+        return screenHeight * min(ratio, maxRatio)
     }
     
     private var currentAsset: PHAsset {
