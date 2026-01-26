@@ -330,7 +330,7 @@ class UploadManager: ObservableObject {
                     try? FileManager.default.removeItem(at: fileURL)
                 }
                 
-                struct FileAttributeError: Error { case missingSize }
+                enum FileAttributeError: Error { case missingSize }
                 let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
                 guard let fileSize = fileAttrs[.size] as? Int64 else {
                     logError("Could not determine file size for \(fileURL.path)", category: .upload)

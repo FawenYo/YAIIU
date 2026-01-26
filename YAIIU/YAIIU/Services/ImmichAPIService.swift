@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 class ImmichAPIService: NSObject {
     static let shared = ImmichAPIService()

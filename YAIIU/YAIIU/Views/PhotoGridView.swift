@@ -51,6 +51,9 @@ struct PhotoGridView: View {
     @State private var isFilteringInProgress = false
     @State private var filterCacheVersion: Int = 0
     
+    // Task management for background processing
+    @State private var processingTask: Task<Void, Never>?
+    
     // Photo detail view states
     @State private var selectedPhotoIndex: Int = 0
     @State private var showingPhotoDetail = false
@@ -154,14 +157,27 @@ struct PhotoGridView: View {
         }
         .onChange(of: photoLibraryManager.assets) { oldValue, newValue in
             if !newValue.isEmpty && oldValue.isEmpty {
-                startBackgroundProcessing()
                 // Prefetch initial thumbnails
                 prefetchThumbnails(around: 0)
             }
-            // Update filter cache when assets change
-            updateNotUploadedCount()
-            if currentFilter == .notUploaded {
-                refreshFilterCache()
+        }
+        .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
+            // When loading completes, refresh hash processing with full asset list
+            if oldValue == true && newValue == false {
+                // Cancel any previous processing task to avoid race conditions
+                processingTask?.cancel()
+                let assets = photoLibraryManager.assets
+                processingTask = Task(priority: .background) {
+                    if Task.isCancelled { return }
+                    
+                    await MainActor.run {
+                        guard !Task.isCancelled, !photoLibraryManager.isLoading else { return }
+                        updateNotUploadedCount()
+                        if currentFilter == .notUploaded {
+                            refreshFilterCache()
+                        }
+                    }
+                }
             }
         }
         .onChange(of: uploadManager.isUploading) { oldValue, newValue in
