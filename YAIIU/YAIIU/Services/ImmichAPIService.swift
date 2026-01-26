@@ -173,7 +173,14 @@ class ImmichAPIService: NSObject {
         let multipartURL = tempDir.appendingPathComponent(UUID().uuidString + "_multipart.tmp")
         
         FileManager.default.createFile(atPath: multipartURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: multipartURL)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: multipartURL)
+        } catch {
+            logError("Failed to create multipart file handle: \(error.localizedDescription)", category: .api)
+            try? FileManager.default.removeItem(at: multipartURL)
+            throw error
+        }
         
         defer {
             try? handle.close()
