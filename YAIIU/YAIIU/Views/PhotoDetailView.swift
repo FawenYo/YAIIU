@@ -3,6 +3,7 @@ import Photos
 import CoreLocation
 import AVKit
 import UIKit
+import MapKit
 
 // MARK: - ZoomableScrollView
 
@@ -299,11 +300,17 @@ struct PhotoDetailView: View {
     private let horizontalSwipeThreshold: CGFloat = 80
     
     private func infoPanelHeight(for geometry: GeometryProxy) -> CGFloat {
+        // Panel height scales with screen size but stays within practical bounds.
+        // When location is available, allocate extra space for the embedded map.
         let screenHeight = geometry.size.height
+        let hasMap = location != nil
+        let baseHeight: CGFloat
         if screenHeight < 700 {
-            return min(screenHeight * 0.7, 450)
+            baseHeight = hasMap ? 520 : 380
+        } else {
+            baseHeight = hasMap ? 560 : 420
         }
-        return min(max(screenHeight * 0.6, 450), 700)
+        return min(baseHeight, screenHeight * 0.65)
     }
     
     private var currentAsset: PHAsset {
@@ -644,15 +651,11 @@ struct PhotoDetailView: View {
                 .padding(.bottom, 16)
             
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 12) {
+                VStack(spacing: 10) {
                     dateTimeSection
                     
-                    if cameraInfo != nil || exposureInfo != nil {
+                    if cameraInfo != nil || exposureInfo != nil || lensInfo != nil {
                         cameraSection
-                    }
-                    
-                    if lensInfo != nil {
-                        lensSection
                     }
                     
                     if locationName != nil || location != nil {
@@ -662,7 +665,7 @@ struct PhotoDetailView: View {
                     fileInfoSection
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 40)
+                .padding(.bottom, 32)
             }
         }
         .frame(maxWidth: .infinity)
@@ -676,20 +679,17 @@ struct PhotoDetailView: View {
     }
     
     private var dateTimeSection: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 0) {
             if let date = currentAsset.creationDate {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(formatDateLine(date))
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(.primary)
-                    Text(formatTimeLine(date))
-                        .font(.system(size: 15))
-                        .foregroundColor(.secondary)
-                }
+                Text(formatDateTime(date))
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
         .padding(.horizontal, 16)
         .background(Color(UIColor.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -698,79 +698,86 @@ struct PhotoDetailView: View {
     private var cameraSection: some View {
         HStack(spacing: 12) {
             Image(systemName: "camera.fill")
-                .font(.system(size: 22))
+                .font(.system(size: 20))
                 .foregroundColor(.secondary)
-                .frame(width: 32)
+                .frame(width: 28)
             
             VStack(alignment: .leading, spacing: 2) {
+                // Camera model with optional lens info on same line
                 if let camera = cameraInfo {
-                    Text(camera)
-                        .font(.system(size: 15, weight: .medium))
+                    if let lens = lensInfo {
+                        Text("\(camera) · \(lens)")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    } else {
+                        Text(camera)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.primary)
+                    }
+                } else if let lens = lensInfo {
+                    Text(lens)
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.primary)
                 }
                 
                 if let exposure = exposureInfo {
                     Text(exposure)
-                        .font(.system(size: 13))
+                        .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
             }
             
             Spacer()
         }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 16)
-        .background(Color(UIColor.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-    
-    private var lensSection: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "circle.circle")
-                .font(.system(size: 22))
-                .foregroundColor(.secondary)
-                .frame(width: 32)
-            
-            if let lens = lensInfo {
-                Text(lens)
-                    .font(.system(size: 15))
-                    .foregroundColor(.primary)
-            }
-            
-            Spacer()
-        }
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
         .padding(.horizontal, 16)
         .background(Color(UIColor.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
     private var locationSection: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "map.fill")
-                .font(.system(size: 22))
-                .foregroundColor(.secondary)
-                .frame(width: 32)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                if let name = locationName {
-                    Text(name)
-                        .font(.system(size: 15))
-                        .foregroundColor(.primary)
-                        .lineLimit(2)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "location.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.secondary)
+                    .frame(width: 28)
+                
+                VStack(alignment: .leading, spacing: 1) {
+                    if let name = locationName {
+                        Text(name)
+                            .font(.system(size: 14))
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                    }
+                    
+                    if let loc = location {
+                        Text(formatCoordinates(loc))
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
-                if let loc = location {
-                    Text(formatCoordinates(loc))
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                }
+                Spacer()
             }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
             
-            Spacer()
+            if let loc = location {
+                LocationMapView(coordinate: loc.coordinate, locationName: locationName)
+                    .frame(height: 140)
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 0,
+                            bottomLeadingRadius: 12,
+                            bottomTrailingRadius: 12,
+                            topTrailingRadius: 0
+                        )
+                    )
+            }
         }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 16)
         .background(Color(UIColor.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
@@ -778,55 +785,48 @@ struct PhotoDetailView: View {
     private var fileInfoSection: some View {
         HStack(spacing: 12) {
             Image(systemName: "doc.fill")
-                .font(.system(size: 22))
+                .font(.system(size: 20))
                 .foregroundColor(.secondary)
-                .frame(width: 32)
+                .frame(width: 28)
             
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(fileName ?? "Unknown")
-                    .font(.system(size: 15))
+                    .font(.system(size: 14))
                     .foregroundColor(.primary)
+                    .lineLimit(1)
                 
-                HStack(spacing: 4) {
-                    Text("\(currentAsset.pixelWidth) × \(currentAsset.pixelHeight)")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                    
-                    if let size = fileSize {
-                        Text("·")
-                            .foregroundColor(.secondary)
-                        Text(formatFileSize(size))
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    if currentAsset.mediaType == .video {
-                        Text("·")
-                            .foregroundColor(.secondary)
-                        Text(formatDuration(currentAsset.duration))
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                    }
-                }
+                // Combine all metadata in a single line
+                Text(fileMetadataString)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
             
             Spacer()
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
         .padding(.horizontal, 16)
         .background(Color(UIColor.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     
-    private func formatDateLine(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy/M/d EEEE"
-        return formatter.string(from: date)
+    private var fileMetadataString: String {
+        var parts: [String] = []
+        parts.append("\(currentAsset.pixelWidth)×\(currentAsset.pixelHeight)")
+        if let size = fileSize {
+            parts.append(formatFileSize(size))
+        }
+        if currentAsset.mediaType == .video {
+            parts.append(formatDuration(currentAsset.duration))
+        }
+        return parts.joined(separator: " · ")
     }
     
-    private func formatTimeLine(_ date: Date) -> String {
+    private func formatDateTime(_ date: Date) -> String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
+        formatter.dateStyle = .long
+        formatter.timeStyle = .medium
+        formatter.doesRelativeDateFormatting = false
         return formatter.string(from: date)
     }
     
@@ -1110,6 +1110,69 @@ struct PhotoDetailView: View {
         return String(format: "%d:%02d", minutes, seconds)
     }
     
+}
+
+// MARK: - LocationMapView
+
+struct LocationMapView: View {
+    let coordinate: CLLocationCoordinate2D
+    var locationName: String?
+    
+    @State private var region: MKCoordinateRegion
+    
+    init(coordinate: CLLocationCoordinate2D, locationName: String? = nil) {
+        self.coordinate = coordinate
+        self.locationName = locationName
+        _region = State(initialValue: MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        ))
+    }
+    
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Map(coordinateRegion: $region, annotationItems: [LocationPin(coordinate: coordinate)]) { pin in
+                MapMarker(coordinate: pin.coordinate, tint: .red)
+            }
+            .disabled(true)
+            
+            Button {
+                openInMaps()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Open")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.ultraThinMaterial)
+                .clipShape(Capsule())
+            }
+            .padding(8)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            openInMaps()
+        }
+    }
+    
+    private func openInMaps() {
+        let placemark = MKPlacemark(coordinate: coordinate)
+        let mapItem = MKMapItem(placemark: placemark)
+        mapItem.name = locationName
+        mapItem.openInMaps(launchOptions: [
+            MKLaunchOptionsMapCenterKey: NSValue(mkCoordinate: coordinate),
+            MKLaunchOptionsMapSpanKey: NSValue(mkCoordinateSpan: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
+        ])
+    }
+}
+
+private struct LocationPin: Identifiable {
+    let id = UUID()
+    let coordinate: CLLocationCoordinate2D
 }
 
 // MARK: - Preview
