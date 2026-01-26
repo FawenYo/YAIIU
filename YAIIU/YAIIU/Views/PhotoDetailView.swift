@@ -2,6 +2,7 @@ import SwiftUI
 import Photos
 import CoreLocation
 import AVKit
+import AVFoundation
 import UIKit
 import MapKit
 
@@ -227,6 +228,472 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
     }
 }
 
+// MARK: - NativeVideoPlayerView
+
+/// Custom video player using AVPlayerLayer for native rendering performance.
+/// Provides minimal controls that match the photo viewer aesthetic.
+final class VideoPlayerUIView: UIView {
+    
+    private var playerLayer: AVPlayerLayer?
+    private var player: AVPlayer? { playerLayer?.player }
+    private var timeObserver: Any?
+    
+    var onTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
+    
+    private var interactivePanGesture: UIPanGestureRecognizer!
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        setupGestures()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override class var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+    
+    private var videoPlayerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+    
+    private func setupGestures() {
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        addGestureRecognizer(tapGesture)
+        
+        interactivePanGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        addGestureRecognizer(interactivePanGesture)
+    }
+    
+    @objc private func handleTap() {
+        onTap?()
+    }
+    
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: self)
+        
+        switch gesture.state {
+        case .changed:
+            onDragChanged?(translation)
+        case .ended, .cancelled:
+            let velocity = gesture.velocity(in: self)
+            onDragEnded?(translation, velocity)
+        default:
+            break
+        }
+    }
+    
+    func setPlayer(_ player: AVPlayer?) {
+        videoPlayerLayer.player = player
+        videoPlayerLayer.videoGravity = .resizeAspect
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        videoPlayerLayer.frame = bounds
+    }
+    
+    deinit {
+        if let observer = timeObserver, let player = player {
+            player.removeTimeObserver(observer)
+        }
+    }
+}
+
+/// SwiftUI wrapper for the native video player view.
+struct NativeVideoPlayerView: UIViewRepresentable {
+    let player: AVPlayer?
+    let aspectRatio: CGFloat
+    var onTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
+    
+    func makeUIView(context: Context) -> VideoPlayerUIView {
+        let view = VideoPlayerUIView()
+        view.onTap = onTap
+        view.onDragChanged = onDragChanged
+        view.onDragEnded = onDragEnded
+        return view
+    }
+    
+    func updateUIView(_ uiView: VideoPlayerUIView, context: Context) {
+        uiView.setPlayer(player)
+        uiView.onTap = onTap
+        uiView.onDragChanged = onDragChanged
+        uiView.onDragEnded = onDragEnded
+    }
+}
+
+// MARK: - AirPlayButton
+
+/// UIKit wrapper for AVRoutePickerView to enable AirPlay functionality.
+struct AirPlayButton: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let routePickerView = AVRoutePickerView()
+        routePickerView.tintColor = .white
+        routePickerView.activeTintColor = .systemBlue
+        routePickerView.prioritizesVideoDevices = true
+        return routePickerView
+    }
+    
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+// MARK: - VideoControlsOverlay
+
+/// Playback controls overlay with skip, speed, and AirPlay support.
+struct VideoControlsOverlay: View {
+    let player: AVPlayer
+    let duration: TimeInterval
+    @Binding var isPlaying: Bool
+    @Binding var isVisible: Bool
+    
+    @State private var currentTime: TimeInterval = 0
+    @State private var isSeeking: Bool = false
+    @State private var hideTimer: Timer?
+    @State private var playbackRate: Float = 1.0
+    @State private var showSpeedPicker: Bool = false
+    
+    private let skipInterval: TimeInterval = 5
+    private let availableSpeeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    
+    private var progress: Double {
+        guard duration > 0 else { return 0 }
+        return currentTime / duration
+    }
+    
+    var body: some View {
+        ZStack {
+            // Gradient overlays for control visibility
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [.black.opacity(0.3), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 80)
+                
+                Spacer()
+                
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.5)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 120)
+            }
+            .allowsHitTesting(false)
+            
+            VStack {
+                // Top bar with AirPlay and speed
+                topControlsBar
+                
+                Spacer()
+                
+                // Center playback controls
+                centerControls
+                
+                Spacer()
+                
+                // Bottom bar with progress and time
+                bottomControlsBar
+            }
+            
+            // Speed picker overlay
+            if showSpeedPicker {
+                speedPickerOverlay
+            }
+        }
+        .opacity(isVisible ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: isVisible)
+        .onAppear {
+            setupTimeObserver()
+            scheduleHide()
+        }
+        .onDisappear {
+            hideTimer?.invalidate()
+        }
+        .onChange(of: isVisible) { _, visible in
+            if visible {
+                scheduleHide()
+            } else {
+                showSpeedPicker = false
+            }
+        }
+    }
+    
+    // MARK: - Top Controls
+    
+    private var topControlsBar: some View {
+        HStack {
+            Spacer()
+            
+            // Speed button
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showSpeedPicker.toggle()
+                }
+                cancelHideTimer()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 14, weight: .medium))
+                    Text(formatSpeed(playbackRate))
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial.opacity(0.8))
+                .clipShape(Capsule())
+            }
+            
+            // AirPlay button
+            AirPlayButton()
+                .frame(width: 36, height: 36)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+    
+    // MARK: - Center Controls
+    
+    private var centerControls: some View {
+        HStack(spacing: 48) {
+            // Skip backward
+            Button {
+                skipBackward()
+                scheduleHide()
+            } label: {
+                Image(systemName: "gobackward.5")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 60, height: 60)
+                    .contentShape(Circle())
+            }
+            
+            // Play/Pause
+            Button {
+                togglePlayback()
+                scheduleHide()
+            } label: {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 72, height: 72)
+                    .contentShape(Circle())
+            }
+            
+            // Skip forward
+            Button {
+                skipForward()
+                scheduleHide()
+            } label: {
+                Image(systemName: "goforward.5")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(width: 60, height: 60)
+                    .contentShape(Circle())
+            }
+        }
+    }
+    
+    // MARK: - Bottom Controls
+    
+    private var bottomControlsBar: some View {
+        VStack(spacing: 8) {
+            progressSlider
+                .padding(.horizontal, 16)
+            
+            HStack {
+                Text(formatTime(currentTime))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.9))
+                
+                Spacer()
+                
+                Text("-" + formatTime(duration - currentTime))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+            .padding(.horizontal, 20)
+        }
+        .padding(.bottom, 16)
+    }
+    
+    // MARK: - Progress Slider
+    
+    private var progressSlider: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                // Track background
+                Capsule()
+                    .fill(Color.white.opacity(0.3))
+                    .frame(height: 4)
+                
+                // Progress fill
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: max(0, geometry.size.width * progress), height: 4)
+                
+                // Thumb indicator (enlarged when seeking)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: isSeeking ? 16 : 8, height: isSeeking ? 16 : 8)
+                    .offset(x: max(0, geometry.size.width * progress - (isSeeking ? 8 : 4)))
+                    .animation(.easeOut(duration: 0.15), value: isSeeking)
+            }
+            .frame(height: 24)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isSeeking = true
+                        cancelHideTimer()
+                        let fraction = max(0, min(1, value.location.x / geometry.size.width))
+                        currentTime = duration * fraction
+                        // Seek while scrubbing for real-time preview
+                        let seekTime = CMTime(seconds: currentTime, preferredTimescale: 600)
+                        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
+                    }
+                    .onEnded { _ in
+                        isSeeking = false
+                        scheduleHide()
+                    }
+            )
+        }
+        .frame(height: 24)
+    }
+    
+    // MARK: - Speed Picker
+    
+    private var speedPickerOverlay: some View {
+        VStack(spacing: 0) {
+            ForEach(availableSpeeds, id: \.self) { speed in
+                Button {
+                    setPlaybackRate(speed)
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showSpeedPicker = false
+                    }
+                    scheduleHide()
+                } label: {
+                    HStack {
+                        Text(formatSpeed(speed))
+                            .font(.system(size: 15, weight: speed == playbackRate ? .semibold : .regular))
+                        
+                        Spacer()
+                        
+                        if speed == playbackRate {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+                
+                if speed != availableSpeeds.last {
+                    Divider()
+                        .background(Color.white.opacity(0.2))
+                }
+            }
+        }
+        .frame(width: 140)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+        .position(x: UIScreen.main.bounds.width - 90, y: 140)
+    }
+    
+    // MARK: - Actions
+    
+    private func togglePlayback() {
+        if isPlaying {
+            player.pause()
+        } else {
+            player.play()
+            player.rate = playbackRate
+        }
+        isPlaying.toggle()
+    }
+    
+    private func skipForward() {
+        let newTime = min(currentTime + skipInterval, duration)
+        let seekTime = CMTime(seconds: newTime, preferredTimescale: 600)
+        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        currentTime = newTime
+    }
+    
+    private func skipBackward() {
+        let newTime = max(currentTime - skipInterval, 0)
+        let seekTime = CMTime(seconds: newTime, preferredTimescale: 600)
+        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        currentTime = newTime
+    }
+    
+    private func setPlaybackRate(_ rate: Float) {
+        playbackRate = rate
+        if isPlaying {
+            player.rate = rate
+        }
+    }
+    
+    // MARK: - Time Observer
+    
+    private func setupTimeObserver() {
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
+            guard !isSeeking else { return }
+            currentTime = time.seconds
+        }
+    }
+    
+    private func scheduleHide() {
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+            if isPlaying && !showSpeedPicker {
+                withAnimation {
+                    isVisible = false
+                }
+            }
+        }
+    }
+    
+    private func cancelHideTimer() {
+        hideTimer?.invalidate()
+    }
+    
+    // MARK: - Formatting
+    
+    private func formatTime(_ seconds: TimeInterval) -> String {
+        let totalSeconds = Int(max(0, seconds))
+        let mins = totalSeconds / 60
+        let secs = totalSeconds % 60
+        if mins >= 60 {
+            let hours = mins / 60
+            let remainingMins = mins % 60
+            return String(format: "%d:%02d:%02d", hours, remainingMins, secs)
+        }
+        return String(format: "%d:%02d", mins, secs)
+    }
+    
+    private func formatSpeed(_ rate: Float) -> String {
+        if rate == 1.0 {
+            return "1×"
+        } else if rate == floor(rate) {
+            return String(format: "%.0f×", rate)
+        } else {
+            return String(format: "%.2g×", rate)
+        }
+    }
+}
+
 // MARK: - ZoomableImageView
 struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage?
@@ -275,6 +742,7 @@ struct PhotoDetailView: View {
     @State private var isVideoLoading: Bool = false
     @State private var isVideoPlaying: Bool = false
     @State private var playerEndObserver: NSObjectProtocol?
+    @State private var showVideoControls: Bool = true
     
     @State private var infoPanelProgress: CGFloat = 0
     @State private var location: CLLocation?
@@ -552,7 +1020,10 @@ struct PhotoDetailView: View {
     
     @ViewBuilder
     private func videoContent(geometry: GeometryProxy) -> some View {
+        let aspectRatio = CGFloat(currentAsset.pixelWidth) / CGFloat(currentAsset.pixelHeight)
+        
         ZStack {
+            // Thumbnail placeholder while video loads
             if let image = fullImage, player == nil {
                 let thumbnailImage = Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
                 if shouldUseGeometryEffect {
@@ -562,55 +1033,64 @@ struct PhotoDetailView: View {
                 }
             }
             
+            // Native video player with custom controls
             if let player = player {
-                let videoView = VideoPlayer(player: player)
-                    .aspectRatio(CGFloat(currentAsset.pixelWidth) / CGFloat(currentAsset.pixelHeight), contentMode: .fit)
-                    .onAppear { player.play(); isVideoPlaying = true }
+                let videoContainer = ZStack {
+                    NativeVideoPlayerView(
+                        player: player,
+                        aspectRatio: aspectRatio,
+                        onTap: {
+                            handleVideoTap()
+                        },
+                        onDragChanged: { translation in
+                            handleUIKitDragChanged(translation: translation)
+                        },
+                        onDragEnded: { translation, velocity in
+                            handleUIKitDragEnded(translation: translation, velocity: velocity)
+                        }
+                    )
+                    .aspectRatio(aspectRatio, contentMode: .fit)
+                    
+                    // Controls overlay
+                    VideoControlsOverlay(
+                        player: player,
+                        duration: currentAsset.duration,
+                        isPlaying: $isVideoPlaying,
+                        isVisible: $showVideoControls
+                    )
+                    .aspectRatio(aspectRatio, contentMode: .fit)
+                }
+                .onAppear {
+                    player.play()
+                    isVideoPlaying = true
+                }
+                
                 if shouldUseGeometryEffect {
-                    videoView.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    videoContainer.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
                 } else {
-                    videoView
+                    videoContainer
                 }
             } else if isVideoLoading {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .scaleEffect(1.5)
-                        .tint(.white)
-                    Text("Loading video...")
-                        .font(.system(size: 14))
-                        .foregroundColor(.white.opacity(0.8))
-                }
+                // Loading indicator
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .tint(.white)
             } else if fullImage == nil {
                 ProgressView()
                     .scaleEffect(1.5)
                     .tint(.white)
             }
-            
-            if player != nil && !isVideoPlaying && !isVideoLoading {
-                Button {
-                    player?.play()
-                    isVideoPlaying = true
-                } label: {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 72))
-                        .foregroundStyle(.white.opacity(0.9), .black.opacity(0.3))
-                        .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
-                }
-            }
         }
-        .onTapGesture {
-            if isInfoPanelVisible {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    infoPanelProgress = 0
-                }
-            } else if let player = player {
-                if isVideoPlaying {
-                    player.pause()
-                    isVideoPlaying = false
-                } else {
-                    player.play()
-                    isVideoPlaying = true
-                }
+    }
+    
+    private func handleVideoTap() {
+        if isInfoPanelVisible {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                infoPanelProgress = 0
+            }
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showVideoControls.toggle()
             }
         }
     }
@@ -866,6 +1346,7 @@ struct PhotoDetailView: View {
         currentDragMode = .none
         isVideoLoading = false
         isVideoPlaying = false
+        showVideoControls = true
         infoPanelProgress = 0
         location = nil
         locationName = nil
