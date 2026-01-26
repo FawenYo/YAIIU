@@ -19,7 +19,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
     var onDragEnded: ((CGPoint, CGPoint) -> Void)?
     
     private var currentImageSize: CGSize = .zero
-    private var isInitialSetupDone = false
+    private var lastLayoutBounds: CGSize = .zero
     
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -159,20 +159,20 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         guard let image = image else {
             imageView.image = nil
             currentImageSize = .zero
-            isInitialSetupDone = false
+            lastLayoutBounds = .zero
             return
         }
         
-        if currentImageSize == image.size && isInitialSetupDone { return }
+        // Skip redundant updates for same image when bounds unchanged
+        if currentImageSize == image.size && lastLayoutBounds == bounds.size { return }
         
         currentImageSize = image.size
         imageView.image = image
         zoomScale = 1.0
-        isInitialSetupDone = false
         
         if bounds.width > 0 && bounds.height > 0 {
             configureImageSize(for: image)
-            isInitialSetupDone = true
+            lastLayoutBounds = bounds.size
         }
     }
     
@@ -219,11 +219,14 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
     
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard !isInitialSetupDone, currentImageSize != .zero else { return }
+        guard currentImageSize != .zero,
+              bounds.width > 0 && bounds.height > 0,
+              let image = imageView.image else { return }
         
-        if bounds.width > 0 && bounds.height > 0, let image = imageView.image {
+        // Reconfigure image frame when bounds change (e.g., device rotation)
+        if lastLayoutBounds != bounds.size {
             configureImageSize(for: image)
-            isInitialSetupDone = true
+            lastLayoutBounds = bounds.size
         }
     }
 }
