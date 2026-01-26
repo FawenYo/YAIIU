@@ -165,6 +165,7 @@ struct PhotoGridView: View {
                 Task(priority: .background) {
                    let identifiers = assets.map { $0.localIdentifier }
                     await MainActor.run {
+                        guard !photoLibraryManager.isLoading else { return }
                         hashManager.startBackgroundProcessing(identifiers: identifiers)
                         updateNotUploadedCount()
                         if currentFilter == .notUploaded {
