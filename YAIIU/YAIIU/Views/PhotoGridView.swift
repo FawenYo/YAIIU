@@ -167,16 +167,14 @@ struct PhotoGridView: View {
                 // Cancel any previous processing task to avoid race conditions
                 processingTask?.cancel()
                 let assets = photoLibraryManager.assets
-                processingTask = Task(priority: .background) { [weak self] in
-                    let identifiers = assets.map { $0.localIdentifier }
-                    
+                processingTask = Task(priority: .background) {
                     if Task.isCancelled { return }
                     
                     await MainActor.run {
-                        guard let self = self, !Task.isCancelled, !self.photoLibraryManager.isLoading else { return }
-                        self.updateNotUploadedCount()
-                        if self.currentFilter == .notUploaded {
-                            self.refreshFilterCache()
+                        guard !Task.isCancelled, !photoLibraryManager.isLoading else { return }
+                        updateNotUploadedCount()
+                        if currentFilter == .notUploaded {
+                            refreshFilterCache()
                         }
                     }
                 }
