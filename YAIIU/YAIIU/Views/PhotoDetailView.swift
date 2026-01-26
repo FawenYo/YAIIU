@@ -650,11 +650,10 @@ struct VideoControlsOverlay: View {
     
     private func scheduleHide() {
         hideTimer?.invalidate()
-        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-            guard let self = self else { return }
-            if self.isPlaying && !self.showSpeedPicker {
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+            if isPlaying && !showSpeedPicker {
                 withAnimation {
-                    self.isVisible = false
+                    isVisible = false
                 }
             }
         }
