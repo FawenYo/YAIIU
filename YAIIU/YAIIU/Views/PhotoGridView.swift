@@ -174,7 +174,6 @@ struct PhotoGridView: View {
                     
                     await MainActor.run {
                         guard let self = self, !Task.isCancelled, !self.photoLibraryManager.isLoading else { return }
-                        self.hashManager.startBackgroundProcessing(identifiers: identifiers)
                         self.updateNotUploadedCount()
                         if self.currentFilter == .notUploaded {
                             self.refreshFilterCache()
