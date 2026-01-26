@@ -5,14 +5,17 @@ import AVKit
 import UIKit
 
 // MARK: - ZoomableScrollView
-final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
+
+final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     private let imageView = UIImageView()
+    private var interactivePanGesture: UIPanGestureRecognizer!
     
     var onScaleChanged: ((CGFloat) -> Void)?
     var onDoubleTap: (() -> Void)?
     var onSingleTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
     
-    // Track image size to detect actual image changes and preserve zoom state
     private var currentImageSize: CGSize = .zero
     private var isInitialSetupDone = false
     
@@ -36,7 +39,6 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
         bounces = true
         bouncesZoom = true
         contentInsetAdjustmentBehavior = .never
-        // Match Apple Photos app behavior
         decelerationRate = .normal
         isScrollEnabled = true
         isMultipleTouchEnabled = true
@@ -57,9 +59,39 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
         
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
         singleTap.numberOfTapsRequired = 1
-        // Wait for double tap to fail before triggering single tap
         singleTap.require(toFail: doubleTap)
         imageView.addGestureRecognizer(singleTap)
+        
+        interactivePanGesture = UIPanGestureRecognizer(target: self, action: #selector(handleInteractivePan(_:)))
+        interactivePanGesture.delegate = self
+        addGestureRecognizer(interactivePanGesture)
+    }
+    
+    // MARK: - UIGestureRecognizerDelegate
+    
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === interactivePanGesture {
+            return zoomScale <= 1.0
+        }
+        return true
+    }
+    
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        false
+    }
+    
+    @objc private func handleInteractivePan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: self)
+        
+        switch gesture.state {
+        case .changed:
+            onDragChanged?(translation)
+        case .ended, .cancelled:
+            let velocity = gesture.velocity(in: self)
+            onDragEnded?(translation, velocity)
+        default:
+            break
+        }
     }
     
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -119,7 +151,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
         imageView.frame = frameToCenter
     }
     
-    // MARK: - Public Methods
+    // MARK: - Public
     
     func setImage(_ image: UIImage?) {
         guard let image = image else {
@@ -129,10 +161,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
             return
         }
         
-        // Skip reconfiguration if same image to preserve zoom state during SwiftUI updates
-        if currentImageSize == image.size && isInitialSetupDone {
-            return
-        }
+        if currentImageSize == image.size && isInitialSetupDone { return }
         
         currentImageSize = image.size
         imageView.image = image
@@ -188,8 +217,6 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate {
     
     override func layoutSubviews() {
         super.layoutSubviews()
-        
-        // Only configure on first valid layout to preserve zoom state
         guard !isInitialSetupDone, currentImageSize != .zero else { return }
         
         if bounds.width > 0 && bounds.height > 0, let image = imageView.image {
@@ -205,6 +232,8 @@ struct ZoomableImageView: UIViewRepresentable {
     @Binding var scale: CGFloat
     var onDoubleTap: (() -> Void)?
     var onSingleTap: (() -> Void)?
+    var onDragChanged: ((CGPoint) -> Void)?
+    var onDragEnded: ((CGPoint, CGPoint) -> Void)?
     
     func makeUIView(context: Context) -> ZoomableScrollView {
         let scrollView = ZoomableScrollView()
@@ -215,11 +244,15 @@ struct ZoomableImageView: UIViewRepresentable {
         }
         scrollView.onDoubleTap = onDoubleTap
         scrollView.onSingleTap = onSingleTap
+        scrollView.onDragChanged = onDragChanged
+        scrollView.onDragEnded = onDragEnded
         return scrollView
     }
     
     func updateUIView(_ uiView: ZoomableScrollView, context: Context) {
         uiView.setImage(image)
+        uiView.onDragChanged = onDragChanged
+        uiView.onDragEnded = onDragEnded
     }
 }
 
@@ -234,7 +267,6 @@ struct PhotoDetailView: View {
     @State private var fullImage: UIImage?
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
-    @State private var isDragging: Bool = false
     @State private var dragProgress: CGFloat = 0
     @State private var imageLoadTask: Task<Void, Never>?
     
@@ -243,10 +275,7 @@ struct PhotoDetailView: View {
     @State private var isVideoPlaying: Bool = false
     @State private var playerEndObserver: NSObjectProtocol?
     
-    @State private var showInfoPanel: Bool = false
-    @State private var infoPanelDragOffset: CGFloat = 0
-    @State private var photoVerticalOffset: CGFloat = 0
-    
+    @State private var infoPanelProgress: CGFloat = 0
     @State private var location: CLLocation?
     @State private var locationName: String?
     @State private var cameraInfo: String?
@@ -254,31 +283,27 @@ struct PhotoDetailView: View {
     @State private var exposureInfo: String?
     @State private var fileName: String?
     @State private var fileSize: Int64?
-    
-    // Horizontal swipe navigation states
     @State private var horizontalOffset: CGFloat = 0
-    @State private var isHorizontalDragging: Bool = false
-    
-    // Track whether user has navigated away from initial photo
     @State private var hasNavigated: Bool = false
+    @State private var currentDragMode: DragMode = .none
+    
+    private enum DragMode {
+        case none
+        case horizontal
+        case openPanel
+        case closePanel
+        case dismiss
+    }
     
     private let dismissThreshold: CGFloat = 150
-    private let swipeUpThreshold: CGFloat = 60
     private let horizontalSwipeThreshold: CGFloat = 80
     
-    /// Calculates info panel height based on screen size for better iPad support.
-    /// Uses 60% of screen height on iPad, capped between 450-700 points.
     private func infoPanelHeight(for geometry: GeometryProxy) -> CGFloat {
         let screenHeight = geometry.size.height
-        let isCompactHeight = screenHeight < 700
-        
-        if isCompactHeight {
+        if screenHeight < 700 {
             return min(screenHeight * 0.7, 450)
         }
-        
-        // For taller screens (iPad), use proportional height
-        let proportionalHeight = screenHeight * 0.6
-        return min(max(proportionalHeight, 450), 700)
+        return min(max(screenHeight * 0.6, 450), 700)
     }
     
     private var currentAsset: PHAsset {
@@ -289,6 +314,10 @@ struct PhotoDetailView: View {
         !hasNavigated && currentIndex == initialIndex
     }
     
+    private var isInfoPanelVisible: Bool {
+        infoPanelProgress > 0
+    }
+    
     init(assets: [PHAsset], initialIndex: Int, namespace: Namespace.ID, isPresented: Binding<Bool>) {
         self.assets = assets
         self.initialIndex = initialIndex
@@ -297,22 +326,12 @@ struct PhotoDetailView: View {
         self._currentIndex = State(initialValue: initialIndex)
     }
     
-    /// Calculates photo vertical offset when info panel is shown.
-    /// Moves photo up by half the panel height to make room for EXIF info.
     private func computedPhotoOffset(for geometry: GeometryProxy) -> CGFloat {
-        if showInfoPanel {
-            let panelHeight = infoPanelHeight(for: geometry)
-            return -(panelHeight / 2) + photoVerticalOffset
-        }
-        return photoVerticalOffset
+        -(infoPanelHeight(for: geometry) / 2) * infoPanelProgress
     }
     
-    /// Calculates info panel Y offset based on visibility state and drag gesture.
     private func infoPanelCurrentOffset(for geometry: GeometryProxy) -> CGFloat {
-        let panelHeight = infoPanelHeight(for: geometry)
-        return showInfoPanel
-            ? infoPanelDragOffset
-            : panelHeight + infoPanelDragOffset
+        infoPanelHeight(for: geometry) * (1 - infoPanelProgress)
     }
     
     var body: some View {
@@ -331,17 +350,6 @@ struct PhotoDetailView: View {
                 infoPanelView(geometry: geometry)
             }
         }
-        .gesture(
-            // Disable drag gesture when zoomed to let UIScrollView handle panning
-            DragGesture(minimumDistance: 10)
-                .onChanged { value in
-                    handleDragChange(value: value)
-                }
-                .onEnded { value in
-                    handleDragEnd(value: value)
-                },
-            isEnabled: scale <= 1.0
-        )
         .statusBar(hidden: true)
         .onAppear {
             loadCurrentAsset()
@@ -349,8 +357,7 @@ struct PhotoDetailView: View {
         .onDisappear {
             cleanupCurrentAsset()
         }
-        .onChange(of: currentIndex) { oldValue, newValue in
-            // Reset states and reload when switching to a different photo
+        .onChange(of: currentIndex) { _, _ in
             cleanupCurrentAsset()
             resetAssetStates()
             loadCurrentAsset()
@@ -359,87 +366,78 @@ struct PhotoDetailView: View {
     
     // MARK: - Drag Handling
     
-    private func handleDragChange(value: DragGesture.Value) {
-        guard scale <= 1.0 else { return }
+    private func handleUIKitDragChanged(translation: CGPoint) {
+        let dx = translation.x
+        let dy = translation.y
         
-        let horizontalTranslation = value.translation.width
-        let verticalTranslation = value.translation.height
-        
-        // Determine drag direction based on initial movement
-        let isHorizontalGesture = abs(horizontalTranslation) > abs(verticalTranslation)
-        
-        if showInfoPanel {
-            // When info panel is open, only handle vertical drag to dismiss it
-            if verticalTranslation > 0 {
-                infoPanelDragOffset = verticalTranslation
-                photoVerticalOffset = verticalTranslation * 0.5
+        if currentDragMode == .none {
+            let isHorizontal = abs(dx) > abs(dy)
+            if infoPanelProgress > 0.5 && dy > 5 {
+                currentDragMode = .closePanel
+            } else if isHorizontal && abs(dx) > 5 {
+                currentDragMode = .horizontal
+            } else if dy < -5 && infoPanelProgress < 0.9 {
+                currentDragMode = .openPanel
+            } else if dy > 5 && infoPanelProgress < 0.1 {
+                currentDragMode = .dismiss
             }
-        } else if isHorizontalGesture && !isDragging {
-            // Horizontal swipe for photo navigation (only when not in vertical dismiss drag)
-            isHorizontalDragging = true
-            horizontalOffset = horizontalTranslation
-        } else if !isHorizontalDragging {
-            // Vertical handling for info panel and dismiss
-            if verticalTranslation < 0 {
-                infoPanelDragOffset = verticalTranslation
-                photoVerticalOffset = verticalTranslation * 0.3
-            } else if verticalTranslation > 0 {
-                isDragging = true
-                offset = value.translation
-                let verticalProgress = verticalTranslation / dismissThreshold
-                dragProgress = min(verticalProgress, 1.0)
-            }
+        }
+        
+        let panelDragRange: CGFloat = 200
+        switch currentDragMode {
+        case .horizontal:
+            horizontalOffset = dx
+        case .openPanel:
+            infoPanelProgress = max(0, min(1, -dy / panelDragRange))
+        case .closePanel:
+            infoPanelProgress = max(0, min(1, 1.0 - dy / panelDragRange))
+        case .dismiss:
+            offset = CGSize(width: dx, height: dy)
+            dragProgress = min(1, max(0, dy / dismissThreshold))
+        case .none:
+            break
         }
     }
     
-    private func handleDragEnd(value: DragGesture.Value) {
-        guard scale <= 1.0 else { return }
+    private func handleUIKitDragEnded(translation: CGPoint, velocity: CGPoint) {
+        let horizontalTranslation = translation.x
+        let verticalTranslation = translation.y
+        let horizontalVelocity = velocity.x
+        let verticalVelocity = velocity.y
         
-        let horizontalTranslation = value.translation.width
-        let verticalTranslation = value.translation.height
-        let horizontalVelocity = value.predictedEndTranslation.width - horizontalTranslation
-        let verticalVelocity = value.predictedEndTranslation.height - verticalTranslation
+        let mode = currentDragMode
+        currentDragMode = .none
         
-        if isHorizontalDragging {
-            // Handle horizontal swipe for navigation
+        switch mode {
+        case .horizontal:
             let shouldNavigate = abs(horizontalTranslation) > horizontalSwipeThreshold || abs(horizontalVelocity) > 300
-            
             if shouldNavigate {
                 if horizontalTranslation > 0 || horizontalVelocity > 300 {
-                    // Swipe right - go to previous photo
                     navigateToPrevious()
                 } else {
-                    // Swipe left - go to next photo
                     navigateToNext()
                 }
             } else {
-                // Snap back to center
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                     horizontalOffset = 0
                 }
             }
-            isHorizontalDragging = false
-        } else if showInfoPanel {
-            if verticalTranslation > 80 || verticalVelocity > 300 {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    showInfoPanel = false
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
-                }
-            } else {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
-                }
+            
+        case .openPanel:
+            let shouldOpen = infoPanelProgress > 0.3 || verticalVelocity < -300
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                infoPanelProgress = shouldOpen ? 1 : 0
             }
-        } else {
-            if verticalTranslation < -swipeUpThreshold || verticalVelocity < -300 {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    showInfoPanel = true
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
-                }
-            } else if verticalTranslation > dismissThreshold || verticalVelocity > 500 {
+            
+        case .closePanel:
+            let shouldClose = infoPanelProgress < 0.7 || verticalVelocity > 300
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                infoPanelProgress = shouldClose ? 0 : 1
+            }
+            
+        case .dismiss:
+            let shouldDismiss = dragProgress > 0.5 || verticalVelocity > 500
+            if shouldDismiss {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
                     isPresented = false
                 }
@@ -447,10 +445,21 @@ struct PhotoDetailView: View {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                     offset = .zero
                     dragProgress = 0
-                    infoPanelDragOffset = 0
-                    photoVerticalOffset = 0
                 }
-                isDragging = false
+            }
+            
+        case .none:
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                if infoPanelProgress > 0 && infoPanelProgress < 1 {
+                    infoPanelProgress = infoPanelProgress > 0.5 ? 1 : 0
+                }
+                if offset != .zero {
+                    offset = .zero
+                    dragProgress = 0
+                }
+                if horizontalOffset != 0 {
+                    horizontalOffset = 0
+                }
             }
         }
     }
@@ -467,46 +476,22 @@ struct PhotoDetailView: View {
     
     private func navigateToPrevious() {
         guard canNavigateToPrevious else {
-            // Bounce back animation when at the first photo
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                horizontalOffset = 0
-            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { horizontalOffset = 0 }
             return
         }
-        
         hasNavigated = true
-        
-        // Animate slide out to right, then update index
-        withAnimation(.easeOut(duration: 0.2)) {
-            horizontalOffset = UIScreen.main.bounds.width
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            currentIndex -= 1
-            horizontalOffset = 0
-        }
+        withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = UIScreen.main.bounds.width }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex -= 1; horizontalOffset = 0 }
     }
     
     private func navigateToNext() {
         guard canNavigateToNext else {
-            // Bounce back animation when at the last photo
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                horizontalOffset = 0
-            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { horizontalOffset = 0 }
             return
         }
-        
         hasNavigated = true
-        
-        // Animate slide out to left, then update index
-        withAnimation(.easeOut(duration: 0.2)) {
-            horizontalOffset = -UIScreen.main.bounds.width
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            currentIndex += 1
-            horizontalOffset = 0
-        }
+        withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = -UIScreen.main.bounds.width }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex += 1; horizontalOffset = 0 }
     }
     
     // MARK: - Content Views
@@ -531,16 +516,20 @@ struct PhotoDetailView: View {
                 scale: $scale,
                 onDoubleTap: {},
                 onSingleTap: {
-                    if showInfoPanel {
+                    if isInfoPanelVisible {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                            showInfoPanel = false
-                            photoVerticalOffset = 0
+                            infoPanelProgress = 0
                         }
                     }
+                },
+                onDragChanged: { translation in
+                    handleUIKitDragChanged(translation: translation)
+                },
+                onDragEnded: { translation, velocity in
+                    handleUIKitDragEnded(translation: translation, velocity: velocity)
                 }
             )
             
-            // Only apply matchedGeometryEffect for the initial photo
             if shouldUseGeometryEffect {
                 zoomableView
                     .matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
@@ -558,14 +547,9 @@ struct PhotoDetailView: View {
     private func videoContent(geometry: GeometryProxy) -> some View {
         ZStack {
             if let image = fullImage, player == nil {
-                let thumbnailImage = Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                
-                // Only apply matchedGeometryEffect for the initial photo
+                let thumbnailImage = Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
                 if shouldUseGeometryEffect {
-                    thumbnailImage
-                        .matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    thumbnailImage.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
                 } else {
                     thumbnailImage
                 }
@@ -574,15 +558,9 @@ struct PhotoDetailView: View {
             if let player = player {
                 let videoView = VideoPlayer(player: player)
                     .aspectRatio(CGFloat(currentAsset.pixelWidth) / CGFloat(currentAsset.pixelHeight), contentMode: .fit)
-                    .onAppear {
-                        player.play()
-                        isVideoPlaying = true
-                    }
-                
-                // Only apply matchedGeometryEffect for the initial photo
+                    .onAppear { player.play(); isVideoPlaying = true }
                 if shouldUseGeometryEffect {
-                    videoView
-                        .matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    videoView.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
                 } else {
                     videoView
                 }
@@ -614,10 +592,9 @@ struct PhotoDetailView: View {
             }
         }
         .onTapGesture {
-            if showInfoPanel {
+            if isInfoPanelVisible {
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                    showInfoPanel = false
-                    photoVerticalOffset = 0
+                    infoPanelProgress = 0
                 }
             } else if let player = player {
                 if isVideoPlaying {
@@ -650,7 +627,7 @@ struct PhotoDetailView: View {
             }
             Spacer()
         }
-        .opacity(showInfoPanel ? 0.5 : 1.0)
+        .opacity(isInfoPanelVisible ? 0.5 : 1.0)
     }
     
     // MARK: - Info Panel
@@ -861,7 +838,6 @@ struct PhotoDetailView: View {
     
     // MARK: - Asset Lifecycle
     
-    /// Loads the current asset's content based on its media type
     private func loadCurrentAsset() {
         if currentAsset.mediaType == .video {
             loadVideoThumbnail()
@@ -872,7 +848,6 @@ struct PhotoDetailView: View {
         loadMetadata()
     }
     
-    /// Cleans up resources for the current asset before switching or dismissing
     private func cleanupCurrentAsset() {
         imageLoadTask?.cancel()
         player?.pause()
@@ -883,18 +858,15 @@ struct PhotoDetailView: View {
         }
     }
     
-    /// Resets all asset-specific state variables for fresh loading
     private func resetAssetStates() {
         fullImage = nil
         scale = 1.0
         offset = .zero
         dragProgress = 0
-        isDragging = false
+        currentDragMode = .none
         isVideoLoading = false
         isVideoPlaying = false
-        showInfoPanel = false
-        infoPanelDragOffset = 0
-        photoVerticalOffset = 0
+        infoPanelProgress = 0
         location = nil
         locationName = nil
         cameraInfo = nil
@@ -996,7 +968,6 @@ struct PhotoDetailView: View {
         let assetToLoad = currentAsset
         location = assetToLoad.location
         
-        // Load resource info and file size on background thread
         Task.detached(priority: .userInitiated) {
             let resources = PHAssetResource.assetResources(for: assetToLoad)
             guard let primaryResource = resources.first else { return }
@@ -1007,7 +978,6 @@ struct PhotoDetailView: View {
                 self.fileName = resourceFilename
             }
             
-            // Load file size asynchronously via streaming
             var size: Int64 = 0
             PHAssetResourceManager.default().requestData(
                 for: primaryResource,
@@ -1046,9 +1016,7 @@ struct PhotoDetailView: View {
                             self.locationName = locationString
                         }
                     }
-                } catch {
-                    // Geocoding failed, location name remains nil
-                }
+                } catch { }
             }
         }
         
@@ -1056,7 +1024,6 @@ struct PhotoDetailView: View {
             let options = PHContentEditingInputRequestOptions()
             options.isNetworkAccessAllowed = true
             
-            // Use continuation to bridge callback-based API to async/await
             let metadataResult: (exif: [String: Any]?, tiff: [String: Any]?)? = await withCheckedContinuation { continuation in
                 assetToLoad.requestContentEditingInput(with: options) { input, info in
                     guard let url = input?.fullSizeImageURL,
@@ -1112,7 +1079,6 @@ struct PhotoDetailView: View {
                 
                 if let model = model {
                     var cameraName = model
-                    // Avoid duplicate manufacturer name in camera string
                     if let make = make, !model.lowercased().contains(make.lowercased()) {
                         cameraName = "\(make) \(model)"
                     }
