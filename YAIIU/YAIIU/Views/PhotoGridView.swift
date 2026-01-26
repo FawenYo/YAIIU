@@ -161,11 +161,15 @@ struct PhotoGridView: View {
         .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
             // When loading completes, refresh hash processing with full asset list
             if oldValue == true && newValue == false {
-                let identifiers = photoLibraryManager.assets.map { $0.localIdentifier }
-                hashManager.startBackgroundProcessing(identifiers: identifiers)
-                updateNotUploadedCount()
-                if currentFilter == .notUploaded {
-                    refreshFilterCache()
+                Task(priority: .background) {
+                    let identifiers = photoLibraryManager.assets.map { $0.localIdentifier }
+                    await MainActor.run {
+                        hashManager.startBackgroundProcessing(identifiers: identifiers)
+                        updateNotUploadedCount()
+                        if currentFilter == .notUploaded {
+                            refreshFilterCache()
+                        }
+                    }
                 }
             }
         }
