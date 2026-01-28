@@ -465,6 +465,7 @@ class UploadManager: ObservableObject {
                 return result
             }
         } catch {
+            logDebug("Failed to get timezone from location, falling back to current. Error: \(error.localizedDescription)", category: .upload)
             return TimeZone.current
         }
     }
