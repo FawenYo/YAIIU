@@ -51,31 +51,33 @@ final class PhotoLibraryManager: ObservableObject {
     /// Fetches assets lazily - only creates PHFetchResult without materializing PHAsset objects.
     /// PHFetchResult is a lazy collection that loads assets on-demand.
     func fetchAssets() {
-        Task { @MainActor in
-            isLoading = true
+        Task {
+            await fetchAssetsAsync()
         }
+    }
+    
+    /// Async version of fetchAssets for proper await support in pull-to-refresh.
+    @MainActor
+    func fetchAssetsAsync() async {
+        isLoading = true
         
-        Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self = self else { return }
-            
+        let (result, count) = await Task.detached(priority: .userInitiated) {
             let fetchOptions = PHFetchOptions()
             fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             fetchOptions.includeHiddenAssets = false
             
             let result = PHAsset.fetchAssets(with: fetchOptions)
-            let count = result.count
-            
-            self.fetchResultLock.lock()
-            self._fetchResult = result
-            self.fetchResultLock.unlock()
-            
-            await MainActor.run {
-                self.assetCount = count
-                self.isLoading = false
-            }
-            
-            await self.triggerFavoriteSync()
-        }
+            return (result, result.count)
+        }.value
+        
+        fetchResultLock.lock()
+        _fetchResult = result
+        fetchResultLock.unlock()
+        
+        assetCount = count
+        isLoading = false
+        
+        await triggerFavoriteSync()
     }
     
     /// Returns the formatted date for a given asset index.

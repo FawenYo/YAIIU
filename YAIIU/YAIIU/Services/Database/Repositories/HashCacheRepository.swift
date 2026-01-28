@@ -276,10 +276,15 @@ final class HashCacheRepository {
                         
                         if isFullyUploaded {
                             statusMap[identifier] = .uploaded
-                        } else if hasServerCache && hasBeenChecked {
+                        } else if hasBeenChecked {
+                            // Already checked - show as not uploaded
                             statusMap[identifier] = .notUploaded
-                        } else {
+                        } else if hasServerCache {
+                            // Has server cache but not checked yet - show as pending
                             statusMap[identifier] = .pending
+                        } else {
+                            // No server cache - assume not uploaded
+                            statusMap[identifier] = .notUploaded
                         }
                     }
                 }
@@ -475,6 +480,43 @@ final class HashCacheRepository {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
             self.connection.executeStatement("DELETE FROM hash_cache;")
+        }
+    }
+    
+    // MARK: - Orphan Record Cleanup
+    
+    func deleteHashCacheRecord(localIdentifier: String) {
+        connection.dbQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            let sql = "DELETE FROM hash_cache WHERE asset_id = ?;"
+            var statement: OpaquePointer?
+            
+            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+                sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+                sqlite3_step(statement)
+            }
+            sqlite3_finalize(statement)
+        }
+    }
+    
+    func batchDeleteHashCacheRecords(localIdentifiers: [String]) {
+        guard !localIdentifiers.isEmpty else { return }
+        
+        connection.dbQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            let placeholders = localIdentifiers.map { _ in "?" }.joined(separator: ",")
+            let sql = "DELETE FROM hash_cache WHERE asset_id IN (\(placeholders));"
+            var statement: OpaquePointer?
+            
+            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+                for (index, identifier) in localIdentifiers.enumerated() {
+                    sqlite3_bind_text(statement, Int32(index + 1), (identifier as NSString).utf8String, -1, nil)
+                }
+                sqlite3_step(statement)
+            }
+            sqlite3_finalize(statement)
         }
     }
 }

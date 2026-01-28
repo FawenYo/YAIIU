@@ -37,7 +37,9 @@ class HashManager: ObservableObject {
     
     private func loadCachedStatus() {
         DatabaseManager.shared.getAllSyncStatusAsync { [weak self] statusMap in
-            self?.syncStatusCache = statusMap
+            DispatchQueue.main.async {
+                self?.syncStatusCache = statusMap
+            }
         }
     }
     
@@ -218,8 +220,6 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Check multi-resource hashes against server cache.
-    /// For JPEG+RAW assets, both primary and RAW must be on server to mark as uploaded.
     private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord]) {
         guard !shouldStop else {
             finishProcessing()
@@ -237,10 +237,59 @@ class HashManager: ObservableObject {
         checkTask = Task { [weak self] in
             guard let self = self else { return }
             
+            // First, filter out deleted photos and collect orphan identifiers
+            let allIdentifiers = records.map { $0.assetId }
+            let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: allIdentifiers, options: nil)
+            
+            var existingIdentifiers = Set<String>()
+            fetchResult.enumerateObjects { (asset, _, _) in
+                existingIdentifiers.insert(asset.localIdentifier)
+            }
+            
+            // Find orphan records (in database but no longer in Photo Library)
+            var orphanIdentifiers: [String] = []
+            var validRecords: [MultiResourceHashRecord] = []
+            
+            for record in records {
+                if existingIdentifiers.contains(record.assetId) {
+                    validRecords.append(record)
+                } else {
+                    orphanIdentifiers.append(record.assetId)
+                }
+            }
+            
+            // Clean up orphan records from database
+            if !orphanIdentifiers.isEmpty {
+                logInfo("Cleaning up \(orphanIdentifiers.count) orphan hash cache records for deleted photos", category: .hash)
+                DatabaseManager.shared.batchDeleteHashCacheRecords(localIdentifiers: orphanIdentifiers)
+                
+                // Also remove from memory cache
+                await MainActor.run {
+                    for identifier in orphanIdentifiers {
+                        self.syncStatusCache.removeValue(forKey: identifier)
+                    }
+                    self.objectWillChange.send()
+                }
+            }
+            
+            // Update count to only include valid records
+            if validRecords.isEmpty {
+                await MainActor.run {
+                    self.finishProcessing()
+                }
+                return
+            }
+            
+            await MainActor.run {
+                self.totalAssetsToProcess = validRecords.count
+                self.processedAssetsCount = 0
+                self.statusMessage = "Checking cloud status (0/\(validRecords.count))..."
+            }
+            
             // Check if server assets cache has been synced
             let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
             
-            for record in records {
+            for record in validRecords {
                 guard !self.shouldStop else { break }
                 
                 let localIdentifier = record.assetId
@@ -296,11 +345,9 @@ class HashManager: ObservableObject {
                     
                     if isFullyUploaded {
                         self.syncStatusCache[localIdentifier] = .uploaded
-                    } else if hasServerCache {
-                        self.syncStatusCache[localIdentifier] = .notUploaded
                     } else {
-                        // No server cache yet, show as pending
-                        self.syncStatusCache[localIdentifier] = .pending
+                        // Not uploaded - show as not uploaded regardless of server cache
+                        self.syncStatusCache[localIdentifier] = .notUploaded
                     }
                     self.objectWillChange.send()
                 }
@@ -335,6 +382,18 @@ class HashManager: ObservableObject {
     
     func refreshStatusCache() {
         loadCachedStatus()
+    }
+    
+    @MainActor
+    func refreshStatusCacheAsync() async {
+        await withCheckedContinuation { continuation in
+            DatabaseManager.shared.getAllSyncStatusAsync { [weak self] statusMap in
+                DispatchQueue.main.async {
+                    self?.syncStatusCache = statusMap
+                    continuation.resume()
+                }
+            }
+        }
     }
     
     func forceReprocess(assets: [PHAsset]) {

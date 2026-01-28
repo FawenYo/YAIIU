@@ -196,6 +196,14 @@ final class DatabaseManager {
         hashRepo.clearHashCache()
     }
     
+    func deleteHashCacheRecord(localIdentifier: String) {
+        hashRepo.deleteHashCacheRecord(localIdentifier: localIdentifier)
+    }
+    
+    func batchDeleteHashCacheRecords(localIdentifiers: [String]) {
+        hashRepo.batchDeleteHashCacheRecords(localIdentifiers: localIdentifiers)
+    }
+    
     // MARK: - Server Assets Cache Management
     
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String = "full") {

@@ -82,6 +82,9 @@ struct PhotoGridView: View {
     @State private var isFilteringInProgress = false
     @State private var filterCacheVersion: Int = 0
     
+    // Refresh trigger to force grid re-render when photo library changes
+    @State private var refreshToken: UUID = UUID()
+    
     // Task management for background processing
     @State private var processingTask: Task<Void, Never>?
     
@@ -226,6 +229,9 @@ struct PhotoGridView: View {
                 }
             }
         }
+        .onChange(of: hashManager.syncStatusCache) { _, _ in
+            updateNotUploadedCount()
+        }
     }
     
     @ViewBuilder
@@ -335,6 +341,7 @@ struct PhotoGridView: View {
                 }
             }
             .padding(.horizontal, 1)
+            .id(refreshToken)
         }
         .refreshable {
             await refreshPhotosAsync()
@@ -521,9 +528,21 @@ struct PhotoGridView: View {
         let totalCount = photoLibraryManager.assetCount
         let statusCache = hashManager.syncStatusCache
         
-        let uploadedCount = statusCache.values.filter { $0 == .uploaded }.count
-        let notUploadedCount = max(0, totalCount - uploadedCount)
+        guard let fetchResult = photoLibraryManager.fetchResult else {
+            cachedNotUploadedCount = totalCount
+            return
+        }
         
+        // Count uploaded assets only from current Photo Library
+        // Cache may contain stale records for deleted photos
+        var uploadedCount = 0
+        fetchResult.enumerateObjects { (asset, _, _) in
+            if statusCache[asset.localIdentifier] == .uploaded {
+                uploadedCount += 1
+            }
+        }
+        
+        let notUploadedCount = totalCount - uploadedCount
         cachedNotUploadedCount = notUploadedCount
     }
     
@@ -570,11 +589,19 @@ struct PhotoGridView: View {
     
     private func refreshPhotosAsync() async {
         performAutoSync()
-
-        Task(priority: .userInitiated) {
-            photoLibraryManager.fetchAssets()
-            hashManager.refreshStatusCache()
+        
+        await photoLibraryManager.fetchAssetsAsync()
+        await hashManager.refreshStatusCacheAsync()
+        
+        // Force grid re-render when photo library changes
+        refreshToken = UUID()
+        
+        updateNotUploadedCount()
+        if currentFilter == .notUploaded {
+            refreshFilterCache()
         }
+        
+        startBackgroundProcessing()
     }
     
     
@@ -688,8 +715,9 @@ struct PhotoGridView: View {
         case .success(let syncResult):
             logInfo("Auto sync completed: \(syncResult.syncType), total: \(syncResult.totalAssets), upserted: \(syncResult.upsertedCount), deleted: \(syncResult.deletedCount)", category: .sync)
             
+            // Only refresh status cache here; background processing will be triggered
+            // by refreshPhotosAsync() to avoid duplicate processing
             hashManager.refreshStatusCache()
-            startBackgroundProcessing()
             
         case .failure(let error):
             logError("Auto sync failed: \(error.localizedDescription)", category: .sync)
