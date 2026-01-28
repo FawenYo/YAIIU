@@ -396,11 +396,12 @@ struct PhotoGridView: View {
             var indices: [Int] = []
             indices.reserveCapacity(totalCount / 4)
             
-            for i in 0..<totalCount {
-                guard let identifier = manager.localIdentifier(at: i) else { continue }
-                let status = statusCache[identifier] ?? .pending
-                if status != .uploaded {
-                    indices.append(i)
+            if let fetchResult = manager.fetchResult {
+                fetchResult.enumerateObjects { (asset, index, _) in
+                    let status = statusCache[asset.localIdentifier] ?? .pending
+                    if status != .uploaded {
+                        indices.append(index)
+                    }
                 }
             }
             
@@ -421,11 +422,12 @@ struct PhotoGridView: View {
         
         Task.detached(priority: .utility) {
             var count = 0
-            for i in 0..<totalCount {
-                guard let identifier = manager.localIdentifier(at: i) else { continue }
-                let status = statusCache[identifier] ?? .pending
-                if status != .uploaded {
-                    count += 1
+            if let fetchResult = manager.fetchResult {
+                fetchResult.enumerateObjects { (asset, _, _) in
+                    let status = statusCache[asset.localIdentifier] ?? .pending
+                    if status != .uploaded {
+                        count += 1
+                    }
                 }
             }
             
