@@ -2,21 +2,22 @@ import Foundation
 import Photos
 import UIKit
 
-class PhotoLibraryManager: ObservableObject {
-    @Published var assets: [PHAsset] = []
+/// Manages photo library access with lazy loading for optimal memory performance.
+/// Uses PHFetchResult directly instead of materializing all PHAsset objects into arrays.
+final class PhotoLibraryManager: ObservableObject {
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published private(set) var isLoading: Bool = false
-    @Published private(set) var loadedCount: Int = 0
-    @Published private(set) var totalCount: Int = 0
+    @Published private(set) var assetCount: Int = 0
     
-    private var fetchResult: PHFetchResult<PHAsset>?
-    private var loadingTask: Task<Void, Never>?
+    private var _fetchResult: PHFetchResult<PHAsset>?
+    private let fetchResultLock = NSLock()
     
-    /// Number of assets to load in the initial batch for immediate display
-    private let initialBatchSize = 100
-    
-    /// Number of assets to load in each subsequent batch
-    private let batchSize = 500
+    /// Thread-safe access to fetch result
+    var fetchResult: PHFetchResult<PHAsset>? {
+        fetchResultLock.lock()
+        defer { fetchResultLock.unlock() }
+        return _fetchResult
+    }
     
     init() {
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -31,7 +32,7 @@ class PhotoLibraryManager: ObservableObject {
             DispatchQueue.main.async {
                 self.authorizationStatus = currentStatus
             }
-            if assets.isEmpty {
+            if _fetchResult == nil {
                 fetchAssets()
             }
             return
@@ -47,104 +48,77 @@ class PhotoLibraryManager: ObservableObject {
         }
     }
     
+    /// Fetches assets lazily - only creates PHFetchResult without materializing PHAsset objects.
+    /// PHFetchResult is a lazy collection that loads assets on-demand.
     func fetchAssets() {
-        loadingTask?.cancel()
+        Task { @MainActor in
+            isLoading = true
+        }
         
-        loadingTask = Task { [weak self] in
+        Task.detached(priority: .userInitiated) { [weak self] in
             guard let self = self else { return }
-            
-            await MainActor.run {
-                self.isLoading = true
-                self.loadedCount = 0
-                self.assets.removeAll()
-            }
             
             let fetchOptions = PHFetchOptions()
             fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             fetchOptions.includeHiddenAssets = false
             
             let result = PHAsset.fetchAssets(with: fetchOptions)
-            let total = result.count
+            let count = result.count
+            
+            self.fetchResultLock.lock()
+            self._fetchResult = result
+            self.fetchResultLock.unlock()
             
             await MainActor.run {
-                self.fetchResult = result
-                self.totalCount = total
-            }
-            
-            guard total > 0 else {
-                await MainActor.run {
-                    self.assets = []
-                    self.isLoading = false
-                }
-                await self.triggerFavoriteSync()
-                return
-            }
-            
-            // Load initial batch immediately for fast UI response
-            let initialCount = min(self.initialBatchSize, total)
-            var initialAssets: [PHAsset] = []
-            initialAssets.reserveCapacity(initialCount)
-            
-            result.enumerateObjects(options: []) { asset, index, stop in
-                if index >= initialCount {
-                    stop.pointee = true
-                    return
-                }
-                initialAssets.append(asset)
-            }
-            
-            // Check for cancellation
-            if Task.isCancelled { return }
-            
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                self.assets = initialAssets
-                self.loadedCount = initialAssets.count
-            }
-            
-            if initialCount >= total {
-                await MainActor.run {
-                    self.isLoading = false
-                }
-                await self.triggerFavoriteSync()
-                return
-            }
-            
-            // Continue loading remaining assets in batches
-            var currentIndex = initialCount
-            
-            while currentIndex < total {
-                if Task.isCancelled { return }
-                
-                let batchEnd = min(currentIndex + self.batchSize, total)
-                var batchAssets: [PHAsset] = []
-                batchAssets.reserveCapacity(batchEnd - currentIndex)
-                
-                let indexSet = IndexSet(integersIn: currentIndex..<batchEnd)
-                
-                result.enumerateObjects(at: indexSet, options: []) { asset, _, _ in
-                    batchAssets.append(asset)
-                }
-                
-                currentIndex = batchEnd
-                
-                if Task.isCancelled { return }
-                
-                await MainActor.run {
-                    guard !Task.isCancelled else { return }
-                    self.assets.append(contentsOf: batchAssets)
-                    self.loadedCount = self.assets.count
-                }
-                
-               await Task.yield()
-            }
-            
-            await MainActor.run {
+                self.assetCount = count
                 self.isLoading = false
             }
             
             await self.triggerFavoriteSync()
         }
+    }
+    
+    /// Returns asset at specific index. This is the preferred way to access assets
+    /// as it only materializes one PHAsset object at a time.
+    func asset(at index: Int) -> PHAsset? {
+        guard let result = fetchResult, index >= 0, index < result.count else {
+            return nil
+        }
+        return result.object(at: index)
+    }
+    
+    /// Returns local identifier at specific index without materializing PHAsset.
+    /// Useful for ID-based operations where full asset object isn't needed.
+    func localIdentifier(at index: Int) -> String? {
+        return asset(at: index)?.localIdentifier
+    }
+    
+    /// Returns assets within index range for batch operations.
+    /// Use sparingly - prefer index-based access for UI rendering.
+    func assets(in range: Range<Int>) -> [PHAsset] {
+        guard let result = fetchResult else { return [] }
+        let clampedRange = max(0, range.lowerBound)..<min(result.count, range.upperBound)
+        guard clampedRange.lowerBound < clampedRange.upperBound else { return [] }
+        
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(clampedRange.count)
+        
+        for i in clampedRange {
+            assets.append(result.object(at: i))
+        }
+        return assets
+    }
+    
+    /// Returns all local identifiers. This is efficient as it only accesses identifiers.
+    func allLocalIdentifiers() -> [String] {
+        guard let result = fetchResult else { return [] }
+        var identifiers: [String] = []
+        identifiers.reserveCapacity(result.count)
+        
+        result.enumerateObjects { asset, _, _ in
+            identifiers.append(asset.localIdentifier)
+        }
+        return identifiers
     }
     
     private func triggerFavoriteSync() async {
@@ -284,7 +258,6 @@ class PhotoLibraryManager: ObservableObject {
         let sanitizedFilename = resource.originalFilename.replacingOccurrences(of: "/", with: "_")
         let fileURL = tempDir.appendingPathComponent(UUID().uuidString + "_" + sanitizedFilename)
         
-        // Remove any existing file at the path
         try? FileManager.default.removeItem(at: fileURL)
         
         let options = PHAssetResourceRequestOptions()

@@ -14,8 +14,8 @@ final class ThumbnailCache {
     private var pendingLock = os_unfair_lock()
     
     private init() {
-        cache.countLimit = 500
-        cache.totalCostLimit = 100 * 1024 * 1024
+        cache.countLimit = 200
+        cache.totalCostLimit = 50 * 1024 * 1024
         
         cachingImageManager.allowsCachingHighQualityImages = false
         
@@ -25,6 +25,13 @@ final class ThumbnailCache {
             name: UIApplication.didReceiveMemoryWarningNotification,
             object: nil
         )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleBackgroundTransition),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
     }
     
     deinit {
@@ -32,8 +39,15 @@ final class ThumbnailCache {
     }
     
     @objc private func handleMemoryWarning() {
-        cache.removeAllObjects()
+        clearCache()
         logInfo("ThumbnailCache cleared due to memory warning", category: .app)
+    }
+    
+    @objc private func handleBackgroundTransition() {
+        cache.countLimit = 100
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.cache.countLimit = 200
+        }
     }
     
     func getThumbnail(

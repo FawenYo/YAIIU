@@ -45,8 +45,8 @@ struct PhotoGridView: View {
     @State private var isSyncing = false
     @State private var currentFilter: PhotoFilterOption = .all
     
-    // Cached filter results for performance
-    @State private var cachedFilteredAssets: [PHAsset] = []
+    // Cached filter results: stores indices of assets that pass the filter
+    @State private var filteredIndices: [Int] = []
     @State private var cachedNotUploadedCount: Int = 0
     @State private var isFilteringInProgress = false
     @State private var filterCacheVersion: Int = 0
@@ -65,16 +65,14 @@ struct PhotoGridView: View {
         GridItem(.flexible(), spacing: 2)
     ]
     
-    /// Number of items to prefetch ahead/behind visible area
     private let prefetchBuffer = 30
     
-    /// Display assets - returns cached results for filtered view
-    private var displayAssets: [PHAsset] {
+    private var displayCount: Int {
         switch currentFilter {
         case .all:
-            return photoLibraryManager.assets
+            return photoLibraryManager.assetCount
         case .notUploaded:
-            return cachedFilteredAssets
+            return filteredIndices.count
         }
     }
     
@@ -113,7 +111,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.select) {
                                 isSelectionMode = true
                             }
-                            .disabled(displayAssets.isEmpty)
+                            .disabled(displayCount == 0)
                         } else {
                             Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
                                 showingUploadConfirmation = true
@@ -135,10 +133,10 @@ struct PhotoGridView: View {
             .toolbar(showingPhotoDetail ? .hidden : .visible, for: .tabBar)
             .animation(.easeInOut(duration: 0.2), value: showingPhotoDetail)
             
-            // Full screen photo detail overlay with swipe navigation support
-            if showingPhotoDetail && !displayAssets.isEmpty {
+            if showingPhotoDetail && displayCount > 0 {
                 PhotoDetailView(
-                    assets: displayAssets,
+                    photoLibraryManager: photoLibraryManager,
+                    displayIndices: currentFilter == .all ? nil : filteredIndices,
                     initialIndex: selectedPhotoIndex,
                     namespace: photoTransitionNamespace,
                     isPresented: $showingPhotoDetail
@@ -151,22 +149,17 @@ struct PhotoGridView: View {
             if !hasAppeared {
                 hasAppeared = true
                 photoLibraryManager.requestAuthorization()
-                // Trigger automatic server sync on first appearance
                 performAutoSync()
             }
         }
-        .onChange(of: photoLibraryManager.assets) { oldValue, newValue in
-            if !newValue.isEmpty && oldValue.isEmpty {
-                // Prefetch initial thumbnails
+        .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
+            if newValue > 0 && oldValue == 0 {
                 prefetchThumbnails(around: 0)
             }
         }
         .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
-            // When loading completes, refresh hash processing with full asset list
             if oldValue == true && newValue == false {
-                // Cancel any previous processing task to avoid race conditions
                 processingTask?.cancel()
-                let assets = photoLibraryManager.assets
                 processingTask = Task(priority: .background) {
                     if Task.isCancelled { return }
                     
@@ -186,7 +179,6 @@ struct PhotoGridView: View {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     await MainActor.run {
                         hashManager.refreshStatusCache()
-                        // Refresh filter cache after upload completes
                         updateNotUploadedCount()
                         if currentFilter == .notUploaded {
                             refreshFilterCache()
@@ -196,7 +188,6 @@ struct PhotoGridView: View {
             }
         }
         .onChange(of: hashManager.isProcessing) { oldValue, newValue in
-            // Update count when hash processing completes
             if oldValue == true && newValue == false {
                 updateNotUploadedCount()
                 if currentFilter == .notUploaded {
@@ -245,15 +236,14 @@ struct PhotoGridView: View {
     }
     
     private func startBackgroundProcessing() {
-        guard !photoLibraryManager.assets.isEmpty else { return }
-        let identifiers = photoLibraryManager.assets.map { $0.localIdentifier }
+        guard photoLibraryManager.assetCount > 0 else { return }
+        let identifiers = photoLibraryManager.allLocalIdentifiers()
         hashManager.startBackgroundProcessing(identifiers: identifiers)
     }
     
     private var photoGridContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                // Filter indicator when not showing all photos
                 if currentFilter != .all {
                     filterIndicatorView
                 }
@@ -261,39 +251,37 @@ struct PhotoGridView: View {
                 ZStack {
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 2) {
-                            ForEach(Array(displayAssets.enumerated()), id: \.element.localIdentifier) { index, asset in
-                                let syncStatus = hashManager.getSyncStatus(for: asset.localIdentifier)
-                                // When detail view is showing, the selected thumbnail should not be the geometry source
-                                let isThisAssetSelected = showingPhotoDetail && selectedPhotoIndex == index
-                                PhotoThumbnailView(
-                                    asset: asset,
-                                    isSelected: selectedAssets.contains(asset.localIdentifier),
+                            ForEach(0..<displayCount, id: \.self) { displayIndex in
+                                let actualIndex = resolveActualIndex(displayIndex)
+                                PhotoGridItemView(
+                                    photoLibraryManager: photoLibraryManager,
+                                    assetIndex: actualIndex,
                                     isSelectionMode: isSelectionMode,
-                                    syncStatus: syncStatus,
+                                    selectedAssets: $selectedAssets,
                                     namespace: photoTransitionNamespace,
-                                    isGeometrySource: !isThisAssetSelected
+                                    showingPhotoDetail: showingPhotoDetail,
+                                    selectedPhotoIndex: selectedPhotoIndex,
+                                    onTap: {
+                                        if isSelectionMode {
+                                            toggleSelection(at: actualIndex)
+                                        } else {
+                                            openPhotoDetail(at: displayIndex)
+                                        }
+                                    },
+                                    onLongPress: {
+                                        if !isSelectionMode {
+                                            isSelectionMode = true
+                                            if let id = photoLibraryManager.localIdentifier(at: actualIndex) {
+                                                selectedAssets.insert(id)
+                                            }
+                                        }
+                                    },
+                                    onAppear: {
+                                        onItemAppear(index: displayIndex)
+                                    }
                                 )
                                 .aspectRatio(1, contentMode: .fill)
                                 .clipped()
-                                .id(asset.localIdentifier)
-                                .onTapGesture {
-                                    if isSelectionMode {
-                                        toggleSelection(for: asset)
-                                    } else {
-                                        // Open photo detail view with animation
-                                        openPhotoDetail(at: index)
-                                    }
-                                }
-                                .onLongPressGesture {
-                                    if !isSelectionMode {
-                                        isSelectionMode = true
-                                        selectedAssets.insert(asset.localIdentifier)
-                                    }
-                                }
-                                .onAppear {
-                                    // Prefetch thumbnails when item appears
-                                    onItemAppear(index: index)
-                                }
                             }
                         }
                         .padding(.vertical, 1)
@@ -302,7 +290,6 @@ struct PhotoGridView: View {
                         await refreshPhotosAsync()
                     }
                     
-                    // Loading overlay when filtering
                     if isFilteringInProgress && currentFilter != .all {
                         Color.black.opacity(0.3)
                             .ignoresSafeArea()
@@ -316,7 +303,17 @@ struct PhotoGridView: View {
         }
     }
     
-    /// Filter indicator bar showing current filter status
+    /// Resolves display index to actual asset index based on current filter
+    private func resolveActualIndex(_ displayIndex: Int) -> Int {
+        switch currentFilter {
+        case .all:
+            return displayIndex
+        case .notUploaded:
+            guard displayIndex < filteredIndices.count else { return displayIndex }
+            return filteredIndices[displayIndex]
+        }
+    }
+    
     private var filterIndicatorView: some View {
         HStack {
             Image(systemName: currentFilter.iconName)
@@ -325,7 +322,7 @@ struct PhotoGridView: View {
                 ProgressView()
                     .scaleEffect(0.7)
             } else {
-                Text(L10n.PhotoGrid.filterActive(displayAssets.count))
+                Text(L10n.PhotoGrid.filterActive(displayCount))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }
@@ -342,7 +339,6 @@ struct PhotoGridView: View {
         .background(Color(.systemGray6))
     }
     
-    /// Filter menu button for toolbar
     @ViewBuilder
     private var filterMenuButton: some View {
         if !hashManager.isProcessing {
@@ -373,9 +369,7 @@ struct PhotoGridView: View {
     
     // MARK: - Filter Cache Management
     
-    /// Apply filter with background processing
     private func applyFilter(_ filter: PhotoFilterOption) {
-        // Clear selection when changing filter
         if isSelectionMode {
             selectedAssets.removeAll()
         }
@@ -387,7 +381,6 @@ struct PhotoGridView: View {
         }
     }
     
-    /// Refresh the filter cache in background
     private func refreshFilterCache() {
         guard !isFilteringInProgress else { return }
         
@@ -395,44 +388,42 @@ struct PhotoGridView: View {
         filterCacheVersion += 1
         let currentVersion = filterCacheVersion
         
-        // Capture required data for background processing
-        let allAssets = photoLibraryManager.assets
+        let totalCount = photoLibraryManager.assetCount
         let statusCache = hashManager.syncStatusCache
+        let manager = photoLibraryManager
         
         Task.detached(priority: .userInitiated) {
-            // Perform filtering on background thread
-            var filteredResults: [PHAsset] = []
-            var notUploadedTotal = 0
+            var indices: [Int] = []
+            indices.reserveCapacity(totalCount / 4)
             
-            for asset in allAssets {
-                let status = statusCache[asset.localIdentifier] ?? .pending
+            for i in 0..<totalCount {
+                guard let identifier = manager.localIdentifier(at: i) else { continue }
+                let status = statusCache[identifier] ?? .pending
                 if status != .uploaded {
-                    filteredResults.append(asset)
-                    notUploadedTotal += 1
+                    indices.append(i)
                 }
             }
             
-            // Update UI on main thread
             await MainActor.run {
-                // Only update if this is still the latest filter request
                 guard currentVersion == self.filterCacheVersion else { return }
                 
-                self.cachedFilteredAssets = filteredResults
-                self.cachedNotUploadedCount = notUploadedTotal
+                self.filteredIndices = indices
+                self.cachedNotUploadedCount = indices.count
                 self.isFilteringInProgress = false
             }
         }
     }
     
-    /// Update not uploaded count without full filter refresh
     private func updateNotUploadedCount() {
-        let allAssets = photoLibraryManager.assets
+        let totalCount = photoLibraryManager.assetCount
         let statusCache = hashManager.syncStatusCache
+        let manager = photoLibraryManager
         
         Task.detached(priority: .utility) {
             var count = 0
-            for asset in allAssets {
-                let status = statusCache[asset.localIdentifier] ?? .pending
+            for i in 0..<totalCount {
+                guard let identifier = manager.localIdentifier(at: i) else { continue }
+                let status = statusCache[identifier] ?? .pending
                 if status != .uploaded {
                     count += 1
                 }
@@ -444,7 +435,6 @@ struct PhotoGridView: View {
         }
     }
     
-    /// Opens the photo detail view with animation at specified index
     private func openPhotoDetail(at index: Int) {
         selectedPhotoIndex = index
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
@@ -452,26 +442,24 @@ struct PhotoGridView: View {
         }
     }
     
-    /// Called when a grid item appears - triggers prefetching
     private func onItemAppear(index: Int) {
         prefetchThumbnails(around: index)
     }
     
     private func prefetchThumbnails(around index: Int) {
-        let assets = photoLibraryManager.assets
-        guard !assets.isEmpty else { return }
+        let count = photoLibraryManager.assetCount
+        guard count > 0 else { return }
         
         let startIndex = max(0, index - prefetchBuffer)
-        let endIndex = min(assets.count, index + prefetchBuffer)
+        let endIndex = min(count, index + prefetchBuffer)
         
         guard startIndex < endIndex else { return }
         
         let newRange = startIndex..<endIndex
         
-        // Stop caching assets that are no longer in the prefetch window
         if let oldRange = lastPrefetchedRange {
-            let assetsToStop = oldRange.filter { !newRange.contains($0) }
-                .compactMap { $0 < assets.count ? assets[$0] : nil }
+            let indicesToStop = oldRange.filter { !newRange.contains($0) }
+            let assetsToStop = indicesToStop.compactMap { photoLibraryManager.asset(at: $0) }
             if !assetsToStop.isEmpty {
                 ThumbnailCache.shared.stopPrefetching(for: assetsToStop)
             }
@@ -479,7 +467,7 @@ struct PhotoGridView: View {
         
         lastPrefetchedRange = newRange
         
-        let assetsToPreload = Array(assets[newRange])
+        let assetsToPreload = photoLibraryManager.assets(in: newRange)
         ThumbnailCache.shared.prefetchThumbnails(for: assetsToPreload)
     }
     
@@ -541,17 +529,21 @@ struct PhotoGridView: View {
         }
     }
     
-    private func toggleSelection(for asset: PHAsset) {
-        if selectedAssets.contains(asset.localIdentifier) {
-            selectedAssets.remove(asset.localIdentifier)
+    private func toggleSelection(at index: Int) {
+        guard let identifier = photoLibraryManager.localIdentifier(at: index) else { return }
+        if selectedAssets.contains(identifier) {
+            selectedAssets.remove(identifier)
         } else {
-            selectedAssets.insert(asset.localIdentifier)
+            selectedAssets.insert(identifier)
         }
     }
     
     private func uploadSelectedPhotos() {
-        let assetsToUpload = photoLibraryManager.assets.filter {
-            selectedAssets.contains($0.localIdentifier)
+        let identifiersToUpload = Array(selectedAssets)
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiersToUpload, options: nil)
+        var assetsToUpload: [PHAsset] = []
+        result.enumerateObjects { asset, _, _ in
+            assetsToUpload.append(asset)
         }
         
         uploadManager.uploadAssets(assetsToUpload)
@@ -562,8 +554,6 @@ struct PhotoGridView: View {
     
     // MARK: - Auto Sync
     
-    /// Performs automatic server sync in background without showing alerts.
-    /// Automatically determines whether to use delta sync or full sync based on last sync time.
     private func performAutoSync() {
         let serverURL = settingsManager.serverURL
         let apiKey = settingsManager.apiKey
@@ -592,7 +582,6 @@ struct PhotoGridView: View {
         }
     }
     
-    /// Async version of performAutoSync for use with pull-to-refresh.
     private func performAutoSyncAsync() async {
         let serverURL = settingsManager.serverURL
         let apiKey = settingsManager.apiKey
@@ -634,6 +623,59 @@ struct PhotoGridView: View {
             
         case .failure(let error):
             logError("Auto sync failed: \(error.localizedDescription)", category: .sync)
+        }
+    }
+}
+
+// MARK: - PhotoGridItemView
+
+private struct PhotoGridItemView: View {
+    let photoLibraryManager: PhotoLibraryManager
+    let assetIndex: Int
+    let isSelectionMode: Bool
+    @Binding var selectedAssets: Set<String>
+    let namespace: Namespace.ID
+    let showingPhotoDetail: Bool
+    let selectedPhotoIndex: Int
+    let onTap: () -> Void
+    let onLongPress: () -> Void
+    let onAppear: () -> Void
+    
+    @ObservedObject private var hashManager = HashManager.shared
+    @State private var asset: PHAsset?
+    
+    var body: some View {
+        Group {
+            if let asset = asset {
+                let syncStatus = hashManager.getSyncStatus(for: asset.localIdentifier)
+                let isThisAssetSelected = showingPhotoDetail && selectedPhotoIndex == assetIndex
+                
+                PhotoThumbnailView(
+                    asset: asset,
+                    isSelected: selectedAssets.contains(asset.localIdentifier),
+                    isSelectionMode: isSelectionMode,
+                    syncStatus: syncStatus,
+                    namespace: namespace,
+                    isGeometrySource: !isThisAssetSelected
+                )
+            } else {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTap()
+        }
+        .onLongPressGesture {
+            onLongPress()
+        }
+        .onAppear {
+            asset = photoLibraryManager.asset(at: assetIndex)
+            onAppear()
+        }
+        .onDisappear {
+            asset = nil
         }
     }
 }

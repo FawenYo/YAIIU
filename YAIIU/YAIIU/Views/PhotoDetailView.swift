@@ -723,13 +723,15 @@ struct ZoomableImageView: UIViewRepresentable {
 
 // MARK: - PhotoDetailView
 struct PhotoDetailView: View {
-    let assets: [PHAsset]
+    let photoLibraryManager: PhotoLibraryManager
+    let displayIndices: [Int]?
     let initialIndex: Int
     let namespace: Namespace.ID
     @Binding var isPresented: Bool
     @Environment(\.colorScheme) private var colorScheme
     
     @State private var currentIndex: Int
+    @State private var currentAsset: PHAsset?
     @State private var fullImage: UIImage?
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
@@ -801,8 +803,18 @@ struct PhotoDetailView: View {
         return screenHeight * min(ratio, maxRatio)
     }
     
-    private var currentAsset: PHAsset {
-        assets[currentIndex]
+    private var totalCount: Int {
+        if let indices = displayIndices {
+            return indices.count
+        }
+        return photoLibraryManager.assetCount
+    }
+    
+    private func resolveActualIndex(_ displayIndex: Int) -> Int {
+        if let indices = displayIndices, displayIndex < indices.count {
+            return indices[displayIndex]
+        }
+        return displayIndex
     }
     
     private var shouldUseGeometryEffect: Bool {
@@ -813,8 +825,9 @@ struct PhotoDetailView: View {
         infoPanelProgress > 0
     }
     
-    init(assets: [PHAsset], initialIndex: Int, namespace: Namespace.ID, isPresented: Binding<Bool>) {
-        self.assets = assets
+    init(photoLibraryManager: PhotoLibraryManager, displayIndices: [Int]?, initialIndex: Int, namespace: Namespace.ID, isPresented: Binding<Bool>) {
+        self.photoLibraryManager = photoLibraryManager
+        self.displayIndices = displayIndices
         self.initialIndex = initialIndex
         self.namespace = namespace
         self._isPresented = isPresented
@@ -836,9 +849,15 @@ struct PhotoDetailView: View {
                     .opacity(1.0 - (dragProgress * 0.5))
                     .ignoresSafeArea()
                 
-                photoContent(geometry: geometry)
-                    .offset(y: computedPhotoOffset(for: geometry))
-                    .offset(offset)
+                if currentAsset != nil {
+                    photoContent(geometry: geometry)
+                        .offset(y: computedPhotoOffset(for: geometry))
+                        .offset(offset)
+                } else {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(.white)
+                }
                 
                 closeButton
                 
@@ -847,7 +866,7 @@ struct PhotoDetailView: View {
         }
         .statusBar(hidden: true)
         .onAppear {
-            loadCurrentAsset()
+            loadAssetAtCurrentIndex()
         }
         .onDisappear {
             cleanupCurrentAsset()
@@ -855,6 +874,14 @@ struct PhotoDetailView: View {
         .onChange(of: currentIndex) { _, _ in
             cleanupCurrentAsset()
             resetAssetStates()
+            loadAssetAtCurrentIndex()
+        }
+    }
+    
+    private func loadAssetAtCurrentIndex() {
+        let actualIndex = resolveActualIndex(currentIndex)
+        currentAsset = photoLibraryManager.asset(at: actualIndex)
+        if currentAsset != nil {
             loadCurrentAsset()
         }
     }
@@ -966,7 +993,7 @@ struct PhotoDetailView: View {
     }
     
     private var canNavigateToNext: Bool {
-        currentIndex < assets.count - 1
+        currentIndex < totalCount - 1
     }
     
     private func navigateToPrevious() {
@@ -993,18 +1020,20 @@ struct PhotoDetailView: View {
     
     @ViewBuilder
     private func photoContent(geometry: GeometryProxy) -> some View {
-        Group {
-            if currentAsset.mediaType == .video {
-                videoContent(geometry: geometry)
-            } else {
-                imageContent(geometry: geometry)
+        if let asset = currentAsset {
+            Group {
+                if asset.mediaType == .video {
+                    videoContent(asset: asset, geometry: geometry)
+                } else {
+                    imageContent(asset: asset, geometry: geometry)
+                }
             }
+            .offset(x: horizontalOffset)
         }
-        .offset(x: horizontalOffset)
     }
     
     @ViewBuilder
-    private func imageContent(geometry: GeometryProxy) -> some View {
+    private func imageContent(asset: PHAsset, geometry: GeometryProxy) -> some View {
         if let image = fullImage {
             let zoomableView = ZoomableImageView(
                 image: image,
@@ -1027,7 +1056,7 @@ struct PhotoDetailView: View {
             
             if shouldUseGeometryEffect {
                 zoomableView
-                    .matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    .matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
             } else {
                 zoomableView
             }
@@ -1039,15 +1068,15 @@ struct PhotoDetailView: View {
     }
     
     @ViewBuilder
-    private func videoContent(geometry: GeometryProxy) -> some View {
-        let aspectRatio = CGFloat(currentAsset.pixelWidth) / CGFloat(currentAsset.pixelHeight)
+    private func videoContent(asset: PHAsset, geometry: GeometryProxy) -> some View {
+        let aspectRatio = CGFloat(asset.pixelWidth) / CGFloat(asset.pixelHeight)
         
         ZStack {
             // Thumbnail placeholder while video loads
             if let image = fullImage, player == nil {
                 let thumbnailImage = Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
                 if shouldUseGeometryEffect {
-                    thumbnailImage.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    thumbnailImage.matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
                 } else {
                     thumbnailImage
                 }
@@ -1074,7 +1103,7 @@ struct PhotoDetailView: View {
                     // Controls overlay
                     VideoControlsOverlay(
                         player: player,
-                        duration: currentAsset.duration,
+                        duration: asset.duration,
                         isPlaying: $isVideoPlaying,
                         isVisible: $showVideoControls
                     )
@@ -1086,7 +1115,7 @@ struct PhotoDetailView: View {
                 }
                 
                 if shouldUseGeometryEffect {
-                    videoContainer.matchedGeometryEffect(id: currentAsset.localIdentifier, in: namespace)
+                    videoContainer.matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
                 } else {
                     videoContainer
                 }
@@ -1198,7 +1227,7 @@ struct PhotoDetailView: View {
     
     private var dateTimeSection: some View {
         HStack(spacing: 0) {
-            if let date = currentAsset.creationDate {
+            if let asset = currentAsset, let date = asset.creationDate {
                 Text(formatDateTime(date))
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.primary)
@@ -1325,13 +1354,14 @@ struct PhotoDetailView: View {
     }
     
     private var fileMetadataString: String {
+        guard let asset = currentAsset else { return "" }
         var parts: [String] = []
-        parts.append("\(currentAsset.pixelWidth)×\(currentAsset.pixelHeight)")
+        parts.append("\(asset.pixelWidth)×\(asset.pixelHeight)")
         if let size = fileSize {
             parts.append(formatFileSize(size))
         }
-        if currentAsset.mediaType == .video {
-            parts.append(formatDuration(currentAsset.duration))
+        if asset.mediaType == .video {
+            parts.append(formatDuration(asset.duration))
         }
         return parts.joined(separator: " · ")
     }
@@ -1353,13 +1383,14 @@ struct PhotoDetailView: View {
     // MARK: - Asset Lifecycle
     
     private func loadCurrentAsset() {
-        if currentAsset.mediaType == .video {
-            loadVideoThumbnail()
-            loadVideo()
+        guard let asset = currentAsset else { return }
+        if asset.mediaType == .video {
+            loadVideoThumbnail(for: asset)
+            loadVideo(for: asset)
         } else {
-            loadFullImage()
+            loadFullImage(for: asset)
         }
-        loadMetadata()
+        loadMetadata(for: asset)
     }
     
     private func cleanupCurrentAsset() {
@@ -1373,6 +1404,7 @@ struct PhotoDetailView: View {
     }
     
     private func resetAssetStates() {
+        currentAsset = nil
         fullImage = nil
         scale = 1.0
         offset = .zero
@@ -1393,8 +1425,7 @@ struct PhotoDetailView: View {
     
     // MARK: - Data Loading
     
-    private func loadFullImage() {
-        let assetToLoad = currentAsset
+    private func loadFullImage(for asset: PHAsset) {
         imageLoadTask = Task {
             let options = PHImageRequestOptions()
             options.deliveryMode = .highQualityFormat
@@ -1404,7 +1435,7 @@ struct PhotoDetailView: View {
             
             await withCheckedContinuation { continuation in
                 PHImageManager.default().requestImage(
-                    for: assetToLoad,
+                    for: asset,
                     targetSize: PHImageManagerMaximumSize,
                     contentMode: .aspectFit,
                     options: options
@@ -1425,8 +1456,7 @@ struct PhotoDetailView: View {
         }
     }
     
-    private func loadVideoThumbnail() {
-        let assetToLoad = currentAsset
+    private func loadVideoThumbnail(for asset: PHAsset) {
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
@@ -1437,7 +1467,7 @@ struct PhotoDetailView: View {
         )
         
         PHImageManager.default().requestImage(
-            for: assetToLoad,
+            for: asset,
             targetSize: targetSize,
             contentMode: .aspectFit,
             options: options
@@ -1450,15 +1480,14 @@ struct PhotoDetailView: View {
         }
     }
     
-    private func loadVideo() {
-        let assetToLoad = currentAsset
+    private func loadVideo(for asset: PHAsset) {
         isVideoLoading = true
         
         let options = PHVideoRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .automatic
         
-        PHImageManager.default().requestPlayerItem(forVideo: assetToLoad, options: options) { playerItem, info in
+        PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
             Task { @MainActor in
                 self.isVideoLoading = false
                 
@@ -1479,12 +1508,11 @@ struct PhotoDetailView: View {
         }
     }
     
-    private func loadMetadata() {
-        let assetToLoad = currentAsset
-        location = assetToLoad.location
+    private func loadMetadata(for asset: PHAsset) {
+        location = asset.location
         
         Task.detached(priority: .userInitiated) {
-            let resources = PHAssetResource.assetResources(for: assetToLoad)
+            let resources = PHAssetResource.assetResources(for: asset)
             guard let primaryResource = resources.first else { return }
             
             let resourceFilename = primaryResource.originalFilename
@@ -1540,7 +1568,7 @@ struct PhotoDetailView: View {
             options.isNetworkAccessAllowed = true
             
             let metadataResult: (exif: [String: Any]?, tiff: [String: Any]?)? = await withCheckedContinuation { continuation in
-                assetToLoad.requestContentEditingInput(with: options) { input, info in
+                asset.requestContentEditingInput(with: options) { input, info in
                     guard let url = input?.fullSizeImageURL,
                           let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                           let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else {
