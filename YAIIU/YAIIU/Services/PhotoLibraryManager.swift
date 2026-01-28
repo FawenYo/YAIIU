@@ -78,6 +78,12 @@ final class PhotoLibraryManager: ObservableObject {
         }
     }
     
+    /// Returns the formatted date for a given asset index.
+    func creationDate(at index: Int) -> Date? {
+        guard let asset = asset(at: index) else { return nil }
+        return asset.creationDate
+    }
+    
     /// Returns asset at specific index. This is the preferred way to access assets
     /// as it only materializes one PHAsset object at a time.
     func asset(at index: Int) -> PHAsset? {

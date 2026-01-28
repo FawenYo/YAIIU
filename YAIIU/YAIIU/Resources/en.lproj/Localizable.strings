@@ -110,6 +110,8 @@
 "photoGrid.filter.all" = "All Photos";
 "photoGrid.filter.notUploaded" = "Not Uploaded";
 "photoGrid.filter.active" = "Showing %d items";
+"photoGrid.section.today" = "Today";
+"photoGrid.section.yesterday" = "Yesterday";
 
 // MARK: - Upload Progress View
 "uploadProgress.title" = "Upload Progress";

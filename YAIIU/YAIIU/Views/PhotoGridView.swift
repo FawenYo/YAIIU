@@ -28,6 +28,37 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Date Formatting
+
+private enum DateFormatting {
+    static let monthDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMMd")
+        return formatter
+    }()
+    
+    static let fullDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("yyyyMMMMd")
+        return formatter
+    }()
+    
+    static func formatSectionDate(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+        
+        if calendar.isDateInToday(date) {
+            return L10n.PhotoGrid.sectionToday
+        } else if calendar.isDateInYesterday(date) {
+            return L10n.PhotoGrid.sectionYesterday
+        } else if calendar.isDate(date, equalTo: now, toGranularity: .year) {
+            return monthDayFormatter.string(from: date)
+        } else {
+            return fullDateFormatter.string(from: date)
+        }
+    }
+}
+
 // MARK: - PhotoGridView
 
 struct PhotoGridView: View {
@@ -45,7 +76,7 @@ struct PhotoGridView: View {
     @State private var isSyncing = false
     @State private var currentFilter: PhotoFilterOption = .all
     
-    // Cached filter results: stores indices of assets that pass the filter
+    // Cached filter results
     @State private var filteredIndices: [Int] = []
     @State private var cachedNotUploadedCount: Int = 0
     @State private var isFilteringInProgress = false
@@ -89,7 +120,7 @@ struct PhotoGridView: View {
                         deniedPermissionView
                     }
                 }
-                .navigationTitle(L10n.PhotoGrid.title)
+                .navigationTitle(navigationTitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
@@ -247,6 +278,8 @@ struct PhotoGridView: View {
         }
     }
     
+    // MARK: - Photo Grid Content
+    
     private var photoGridContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
@@ -255,54 +288,7 @@ struct PhotoGridView: View {
                 }
                 
                 ZStack {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 2) {
-                            ForEach(0..<displayCount, id: \.self) { displayIndex in
-                                let actualIndex = resolveActualIndex(displayIndex)
-                                let syncStatus: PhotoSyncStatus = {
-                                    if let id = photoLibraryManager.localIdentifier(at: actualIndex) {
-                                        return hashManager.getSyncStatus(for: id)
-                                    }
-                                    return .pending
-                                }()
-                                PhotoGridItemView(
-                                    photoLibraryManager: photoLibraryManager,
-                                    displayIndex: displayIndex,
-                                    assetIndex: actualIndex,
-                                    isSelectionMode: isSelectionMode,
-                                    selectedAssets: $selectedAssets,
-                                    syncStatus: syncStatus,
-                                    namespace: photoTransitionNamespace,
-                                    showingPhotoDetail: showingPhotoDetail,
-                                    selectedPhotoIndex: selectedPhotoIndex,
-                                    onTap: {
-                                        if isSelectionMode {
-                                            toggleSelection(at: actualIndex)
-                                        } else {
-                                            openPhotoDetail(at: displayIndex)
-                                        }
-                                    },
-                                    onLongPress: {
-                                        if !isSelectionMode {
-                                            isSelectionMode = true
-                                            if let id = photoLibraryManager.localIdentifier(at: actualIndex) {
-                                                selectedAssets.insert(id)
-                                            }
-                                        }
-                                    },
-                                    onAppear: {
-                                        onItemAppear(index: displayIndex)
-                                    }
-                                )
-                                .aspectRatio(1, contentMode: .fill)
-                                .clipped()
-                            }
-                        }
-                        .padding(.vertical, 1)
-                    }
-                    .refreshable {
-                        await refreshPhotosAsync()
-                    }
+                    simpleGridView
                     
                     if isFilteringInProgress && currentFilter != .all {
                         Color.black.opacity(0.3)
@@ -314,10 +300,72 @@ struct PhotoGridView: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .onDisappear {
+                visibleIndices.removeAll()
+                isFirstItemVisible = true
+            }
         }
     }
     
-    /// Resolves display index to actual asset index based on current filter
+    // MARK: - Grid View with Dynamic Title
+    
+    @State private var currentVisibleDate: String = ""
+    @State private var visibleIndices: Set<Int> = []
+    @State private var isFirstItemVisible: Bool = true
+    
+    /// Navigation title: shows "Photo Library" when first item visible, date otherwise
+    private var navigationTitle: String {
+        // Show "Photo Library" when the first item (index 0) is visible
+        if isFirstItemVisible {
+            return L10n.PhotoGrid.title
+        }
+        // Show date when scrolled away from top
+        if !currentVisibleDate.isEmpty {
+            return currentVisibleDate
+        }
+        return L10n.PhotoGrid.title
+    }
+    
+    private var simpleGridView: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 2) {
+                ForEach(0..<displayCount, id: \.self) { displayIndex in
+                    let actualIndex = resolveActualIndex(displayIndex)
+                    gridItemView(assetIndex: actualIndex, displayIndex: displayIndex)
+                }
+            }
+            .padding(.horizontal, 1)
+        }
+        .refreshable {
+            await refreshPhotosAsync()
+        }
+    }
+    
+    private func updateVisibleDate(for displayIndex: Int, assetIndex: Int, isAppearing: Bool) {
+        // Track visible indices
+        if isAppearing {
+            visibleIndices.insert(displayIndex)
+        } else {
+            visibleIndices.remove(displayIndex)
+        }
+        
+        // Update isFirstItemVisible based on whether index 0 is in the visible set
+        let firstVisible = visibleIndices.contains(0)
+        if firstVisible != isFirstItemVisible {
+            isFirstItemVisible = firstVisible
+        }
+        
+        // Update date text for the topmost visible item
+        guard let minVisible = visibleIndices.min() else { return }
+        let minAssetIndex = resolveActualIndex(minVisible)
+        guard let date = photoLibraryManager.creationDate(at: minAssetIndex) else { return }
+        
+        let newText = DateFormatting.formatSectionDate(date)
+        if newText != currentVisibleDate {
+            currentVisibleDate = newText
+        }
+    }
+    
     private func resolveActualIndex(_ displayIndex: Int) -> Int {
         switch currentFilter {
         case .all:
@@ -326,6 +374,46 @@ struct PhotoGridView: View {
             guard displayIndex < filteredIndices.count else { return displayIndex }
             return filteredIndices[displayIndex]
         }
+    }
+    
+    // MARK: - Grid Item View
+    
+    @ViewBuilder
+    private func gridItemView(assetIndex: Int, displayIndex: Int) -> some View {
+        PhotoGridItemView(
+            photoLibraryManager: photoLibraryManager,
+            hashManager: hashManager,
+            displayIndex: displayIndex,
+            assetIndex: assetIndex,
+            isSelectionMode: isSelectionMode,
+            selectedAssets: $selectedAssets,
+            namespace: photoTransitionNamespace,
+            showingPhotoDetail: showingPhotoDetail,
+            selectedPhotoIndex: selectedPhotoIndex,
+            onTap: {
+                if isSelectionMode {
+                    toggleSelection(at: assetIndex)
+                } else {
+                    openPhotoDetail(at: displayIndex)
+                }
+            },
+            onLongPress: {
+                if !isSelectionMode {
+                    isSelectionMode = true
+                    if let id = photoLibraryManager.localIdentifier(at: assetIndex) {
+                        selectedAssets.insert(id)
+                    }
+                }
+            },
+            onAppear: {
+                onItemAppear(displayIndex: displayIndex, assetIndex: assetIndex)
+            },
+            onDisappear: {
+                onItemDisappear(displayIndex: displayIndex, assetIndex: assetIndex)
+            }
+        )
+        .aspectRatio(1, contentMode: .fill)
+        .clipped()
     }
     
     private var filterIndicatorView: some View {
@@ -432,23 +520,11 @@ struct PhotoGridView: View {
     private func updateNotUploadedCount() {
         let totalCount = photoLibraryManager.assetCount
         let statusCache = hashManager.syncStatusCache
-        let manager = photoLibraryManager
         
-        Task.detached(priority: .utility) {
-            var count = 0
-            if let fetchResult = manager.fetchResult {
-                fetchResult.enumerateObjects { (asset, _, _) in
-                    let status = statusCache[asset.localIdentifier] ?? .pending
-                    if status != .uploaded {
-                        count += 1
-                    }
-                }
-            }
-            
-            await MainActor.run {
-                self.cachedNotUploadedCount = count
-            }
-        }
+        let uploadedCount = statusCache.values.filter { $0 == .uploaded }.count
+        let notUploadedCount = max(0, totalCount - uploadedCount)
+        
+        cachedNotUploadedCount = notUploadedCount
     }
     
     private func openPhotoDetail(at index: Int) {
@@ -458,8 +534,13 @@ struct PhotoGridView: View {
         }
     }
     
-    private func onItemAppear(index: Int) {
-        prefetchThumbnails(around: index)
+    private func onItemAppear(displayIndex: Int, assetIndex: Int) {
+        prefetchThumbnails(around: assetIndex)
+        updateVisibleDate(for: displayIndex, assetIndex: assetIndex, isAppearing: true)
+    }
+    
+    private func onItemDisappear(displayIndex: Int, assetIndex: Int) {
+        updateVisibleDate(for: displayIndex, assetIndex: assetIndex, isAppearing: false)
     }
     
     private func prefetchThumbnails(around index: Int) {
@@ -620,19 +701,21 @@ struct PhotoGridView: View {
 
 private struct PhotoGridItemView: View {
     let photoLibraryManager: PhotoLibraryManager
+    @ObservedObject var hashManager: HashManager
     let displayIndex: Int
     let assetIndex: Int
     let isSelectionMode: Bool
     @Binding var selectedAssets: Set<String>
-    let syncStatus: PhotoSyncStatus
     let namespace: Namespace.ID
     let showingPhotoDetail: Bool
     let selectedPhotoIndex: Int
     let onTap: () -> Void
     let onLongPress: () -> Void
     let onAppear: () -> Void
+    let onDisappear: () -> Void
     
     @State private var asset: PHAsset?
+    @State private var syncStatus: PhotoSyncStatus = .pending
     
     var body: some View {
         Group {
@@ -660,8 +743,20 @@ private struct PhotoGridItemView: View {
             onLongPress()
         }
         .onAppear {
-            asset = photoLibraryManager.asset(at: assetIndex)
+            let newAsset = photoLibraryManager.asset(at: assetIndex)
+            asset = newAsset
+            if let id = newAsset?.localIdentifier {
+                syncStatus = hashManager.getSyncStatus(for: id)
+            }
             onAppear()
+        }
+        .onDisappear {
+            onDisappear()
+        }
+        .onChange(of: hashManager.syncStatusCache) { _, newCache in
+            if let id = asset?.localIdentifier {
+                syncStatus = newCache[id] ?? .pending
+            }
         }
     }
 }
