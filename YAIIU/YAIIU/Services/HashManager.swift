@@ -391,7 +391,11 @@ class HashManager: ObservableObject {
                 continuation.resume(returning: statusMap)
             }
         }
-        self.syncStatusCache = statusMap
+        
+        // Batch update to reduce view invalidation overhead
+        if statusMap != self.syncStatusCache {
+            self.syncStatusCache = statusMap
+        }
     }
     
     func forceReprocess(assets: [PHAsset]) {

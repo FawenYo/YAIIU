@@ -727,6 +727,7 @@ struct PhotoDetailView: View {
     let displayIndices: [Int]?
     let initialIndex: Int
     let namespace: Namespace.ID
+    let refreshToken: UUID?
     @Binding var isPresented: Bool
     @Environment(\.colorScheme) private var colorScheme
     
@@ -825,13 +826,21 @@ struct PhotoDetailView: View {
         infoPanelProgress > 0
     }
     
-    init(photoLibraryManager: PhotoLibraryManager, displayIndices: [Int]?, initialIndex: Int, namespace: Namespace.ID, isPresented: Binding<Bool>) {
+    init(photoLibraryManager: PhotoLibraryManager, displayIndices: [Int]?, initialIndex: Int, namespace: Namespace.ID, refreshToken: UUID? = nil, isPresented: Binding<Bool>) {
         self.photoLibraryManager = photoLibraryManager
         self.displayIndices = displayIndices
         self.initialIndex = initialIndex
         self.namespace = namespace
+        self.refreshToken = refreshToken
         self._isPresented = isPresented
         self._currentIndex = State(initialValue: initialIndex)
+    }
+    
+    private func geometryId(for asset: PHAsset) -> String {
+        if let token = refreshToken {
+            return "\(asset.localIdentifier)_\(token.uuidString)"
+        }
+        return asset.localIdentifier
     }
     
     private func computedPhotoOffset(for geometry: GeometryProxy) -> CGFloat {
@@ -1056,7 +1065,7 @@ struct PhotoDetailView: View {
             
             if shouldUseGeometryEffect {
                 zoomableView
-                    .matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
+                    .matchedGeometryEffect(id: geometryId(for: asset), in: namespace)
             } else {
                 zoomableView
             }
@@ -1076,7 +1085,7 @@ struct PhotoDetailView: View {
             if let image = fullImage, player == nil {
                 let thumbnailImage = Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
                 if shouldUseGeometryEffect {
-                    thumbnailImage.matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
+                    thumbnailImage.matchedGeometryEffect(id: geometryId(for: asset), in: namespace)
                 } else {
                     thumbnailImage
                 }
@@ -1115,7 +1124,7 @@ struct PhotoDetailView: View {
                 }
                 
                 if shouldUseGeometryEffect {
-                    videoContainer.matchedGeometryEffect(id: asset.localIdentifier, in: namespace)
+                    videoContainer.matchedGeometryEffect(id: geometryId(for: asset), in: namespace)
                 } else {
                     videoContainer
                 }

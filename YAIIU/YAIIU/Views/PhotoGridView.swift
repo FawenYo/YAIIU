@@ -1,5 +1,6 @@
 import SwiftUI
 import Photos
+import Combine
 
 // MARK: - Photo Filter Options
 
@@ -173,6 +174,7 @@ struct PhotoGridView: View {
                     displayIndices: currentFilter == .all ? nil : filteredIndices,
                     initialIndex: selectedPhotoIndex,
                     namespace: photoTransitionNamespace,
+                    refreshToken: refreshToken,
                     isPresented: $showingPhotoDetail
                 )
                 .zIndex(1)
@@ -392,6 +394,7 @@ struct PhotoGridView: View {
             isSelectionMode: isSelectionMode,
             selectedAssets: $selectedAssets,
             namespace: photoTransitionNamespace,
+            refreshToken: refreshToken,
             showingPhotoDetail: showingPhotoDetail,
             selectedPhotoIndex: selectedPhotoIndex,
             onTap: {
@@ -530,17 +533,19 @@ struct PhotoGridView: View {
             return
         }
         
-        // Count uploaded assets only from current Photo Library
-        // Cache may contain stale records for deleted photos
-        var uploadedCount = 0
-        fetchResult.enumerateObjects { (asset, _, _) in
-            if statusCache[asset.localIdentifier] == .uploaded {
-                uploadedCount += 1
+        Task.detached(priority: .utility) {
+            var uploadedCount = 0
+            fetchResult.enumerateObjects { (asset, _, _) in
+                if statusCache[asset.localIdentifier] == .uploaded {
+                    uploadedCount += 1
+                }
+            }
+            
+            let notUploadedCount = totalCount - uploadedCount
+            await MainActor.run {
+                self.cachedNotUploadedCount = notUploadedCount
             }
         }
-        
-        let notUploadedCount = totalCount - uploadedCount
-        cachedNotUploadedCount = notUploadedCount
     }
     
     private func openPhotoDetail(at index: Int) {
@@ -590,15 +595,20 @@ struct PhotoGridView: View {
         await photoLibraryManager.fetchAssetsAsync()
         await hashManager.refreshStatusCacheAsync()
         
-        // Force grid re-render when photo library changes
-        refreshToken = UUID()
-        
-        updateNotUploadedCount()
-        if currentFilter == .notUploaded {
-            refreshFilterCache()
+        // Defer heavy UI updates to next runloop to let refresh indicator dismiss smoothly
+        Task { @MainActor in
+            // Small delay allows refresh indicator animation to complete first
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            
+            refreshToken = UUID()
+            
+            updateNotUploadedCount()
+            if currentFilter == .notUploaded {
+                refreshFilterCache()
+            }
+            
+            startBackgroundProcessing()
         }
-        
-        startBackgroundProcessing()
     }
     
     
@@ -726,12 +736,13 @@ struct PhotoGridView: View {
 
 private struct PhotoGridItemView: View {
     let photoLibraryManager: PhotoLibraryManager
-    @ObservedObject var hashManager: HashManager
+    let hashManager: HashManager
     let displayIndex: Int
     let assetIndex: Int
     let isSelectionMode: Bool
     @Binding var selectedAssets: Set<String>
     let namespace: Namespace.ID
+    let refreshToken: UUID
     let showingPhotoDetail: Bool
     let selectedPhotoIndex: Int
     let onTap: () -> Void
@@ -753,6 +764,7 @@ private struct PhotoGridItemView: View {
                     isSelectionMode: isSelectionMode,
                     syncStatus: syncStatus,
                     namespace: namespace,
+                    refreshToken: refreshToken,
                     isGeometrySource: !isThisAssetSelected
                 )
             } else {
@@ -778,9 +790,11 @@ private struct PhotoGridItemView: View {
         .onDisappear {
             onDisappear()
         }
-        .onChange(of: hashManager.syncStatusCache) { _, newCache in
-            if let id = asset?.localIdentifier {
-                syncStatus = newCache[id] ?? .pending
+        .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { newCache in
+            guard let id = asset?.localIdentifier else { return }
+            let newStatus = newCache[id] ?? .pending
+            if syncStatus != newStatus {
+                syncStatus = newStatus
             }
         }
     }
