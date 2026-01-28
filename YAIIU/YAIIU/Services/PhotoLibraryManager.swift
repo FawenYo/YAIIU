@@ -100,13 +100,8 @@ final class PhotoLibraryManager: ObservableObject {
         let clampedRange = max(0, range.lowerBound)..<min(result.count, range.upperBound)
         guard clampedRange.lowerBound < clampedRange.upperBound else { return [] }
         
-        var assets: [PHAsset] = []
-        assets.reserveCapacity(clampedRange.count)
-        
-        for i in clampedRange {
-            assets.append(result.object(at: i))
-        }
-        return assets
+        let indexSet = IndexSet(clampedRange)
+        return result.objects(at: indexSet)
     }
     
     /// Returns all local identifiers. This is efficient as it only accesses identifiers.
