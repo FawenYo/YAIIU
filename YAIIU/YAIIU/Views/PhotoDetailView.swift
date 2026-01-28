@@ -1475,8 +1475,10 @@ struct PhotoDetailView: View {
             options: options
         ) { image, info in
             Task { @MainActor in
-                if let image = image {
-                    self.fullImage = image
+                if asset.localIdentifier == self.currentAsset?.localIdentifier {
+                    if let image = image {
+                        self.fullImage = image
+                    }
                 }
             }
         }
@@ -1491,6 +1493,7 @@ struct PhotoDetailView: View {
         
         PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
             Task { @MainActor in
+                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
                 self.isVideoLoading = false
                 
                 if let playerItem = playerItem {
