@@ -1443,8 +1443,10 @@ struct PhotoDetailView: View {
                     let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
                     
                     Task { @MainActor in
-                        if let image = image {
-                            self.fullImage = image
+                        if asset.localIdentifier == self.currentAsset?.localIdentifier {
+                            if let image = image {
+                                self.fullImage = image
+                            }
                         }
                         
                         if !isDegraded {
