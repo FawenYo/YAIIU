@@ -229,9 +229,6 @@ struct PhotoGridView: View {
                 }
             }
         }
-        .onChange(of: hashManager.syncStatusCache) { _, _ in
-            updateNotUploadedCount()
-        }
     }
     
     @ViewBuilder
