@@ -562,11 +562,10 @@ struct PhotoGridView: View {
             
             await MainActor.run {
                 manager.uploadAssets(assetsToUpload)
+                isSelectionMode = false
+                selectedAssets.removeAll()
             }
         }
-        
-        isSelectionMode = false
-        selectedAssets.removeAll()
     }
     
     // MARK: - Auto Sync
