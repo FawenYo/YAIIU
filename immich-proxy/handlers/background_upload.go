@@ -56,6 +56,24 @@ type BackgroundUploadRequest struct {
 	IsFavorite     string `json:"isFavorite"`
 	Filename       string `json:"filename"`
 	ContentType    string `json:"contentType"`
+	ICloudId       string `json:"iCloudId,omitempty"`
+	Latitude       string `json:"latitude,omitempty"`
+	Longitude      string `json:"longitude,omitempty"`
+}
+
+// MobileAppMetadata represents the metadata value for mobile-app key
+type MobileAppMetadata struct {
+	ICloudId       string `json:"iCloudId,omitempty"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+	AdjustmentTime string `json:"adjustmentTime,omitempty"`
+	Latitude       string `json:"latitude,omitempty"`
+	Longitude      string `json:"longitude,omitempty"`
+}
+
+// RemoteAssetMetadataItem represents a metadata item to send to Immich
+type RemoteAssetMetadataItem struct {
+	Key   string            `json:"key"`
+	Value MobileAppMetadata `json:"value"`
 }
 
 // BackgroundUploadResponse represents the response from Immich server
@@ -164,6 +182,9 @@ func extractMetadata(r *http.Request) BackgroundUploadRequest {
 		IsFavorite:     r.Header.Get("X-Is-Favorite"),
 		Filename:       r.Header.Get("X-Filename"),
 		ContentType:    r.Header.Get("X-Content-Type"),
+		ICloudId:       r.Header.Get("X-iCloud-Id"),
+		Latitude:       r.Header.Get("X-Latitude"),
+		Longitude:      r.Header.Get("X-Longitude"),
 	}
 
 	// Fall back to query parameters if headers are not set
@@ -188,6 +209,15 @@ func extractMetadata(r *http.Request) BackgroundUploadRequest {
 	}
 	if metadata.ContentType == "" {
 		metadata.ContentType = query.Get("contentType")
+	}
+	if metadata.ICloudId == "" {
+		metadata.ICloudId = query.Get("iCloudId")
+	}
+	if metadata.Latitude == "" {
+		metadata.Latitude = query.Get("latitude")
+	}
+	if metadata.Longitude == "" {
+		metadata.Longitude = query.Get("longitude")
 	}
 
 	// Set defaults
@@ -238,6 +268,25 @@ func createMultipartRequest(metadata BackgroundUploadRequest, photoData []byte) 
 	for key, value := range fields {
 		if err := writer.WriteField(key, value); err != nil {
 			return nil, "", fmt.Errorf("failed to write field %s: %w", key, err)
+		}
+	}
+
+	// Include mobile-app metadata with iCloudId if available
+	if metadata.ICloudId != "" {
+		metadataItem := RemoteAssetMetadataItem{
+			Key: "yaiiu-app",
+			Value: MobileAppMetadata{
+				ICloudId:  metadata.ICloudId,
+				CreatedAt: metadata.FileCreatedAt,
+				Latitude:  metadata.Latitude,
+				Longitude: metadata.Longitude,
+			},
+		}
+		metadataJSON, err := json.Marshal([]RemoteAssetMetadataItem{metadataItem})
+		if err == nil {
+			if err := writer.WriteField("metadata", string(metadataJSON)); err != nil {
+				return nil, "", fmt.Errorf("failed to write metadata field: %w", err)
+			}
 		}
 	}
 
