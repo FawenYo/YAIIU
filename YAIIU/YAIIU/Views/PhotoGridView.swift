@@ -237,8 +237,14 @@ struct PhotoGridView: View {
     
     private func startBackgroundProcessing() {
         guard photoLibraryManager.assetCount > 0 else { return }
-        let identifiers = photoLibraryManager.allLocalIdentifiers()
-        hashManager.startBackgroundProcessing(identifiers: identifiers)
+        
+        let manager = photoLibraryManager
+        Task.detached(priority: .utility) {
+            let identifiers = manager.allLocalIdentifiers()
+            await MainActor.run {
+                HashManager.shared.startBackgroundProcessing(identifiers: identifiers)
+            }
+        }
     }
     
     private var photoGridContent: some View {
@@ -482,16 +488,11 @@ struct PhotoGridView: View {
     }
     
     private func refreshPhotosAsync() async {
-        await performAutoSyncAsync()
-        
-        await withCheckedContinuation { continuation in
-            photoLibraryManager.fetchAssets()
-            hashManager.refreshStatusCache()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                continuation.resume()
-            }
-        }
+        performAutoSync()
+        photoLibraryManager.fetchAssets()
+        hashManager.refreshStatusCache()
     }
+    
     
     private var requestPermissionView: some View {
         VStack(spacing: 20) {
@@ -594,37 +595,6 @@ struct PhotoGridView: View {
             DispatchQueue.main.async {
                 self.isSyncing = false
                 self.handleSyncResult(result)
-            }
-        }
-    }
-    
-    private func performAutoSyncAsync() async {
-        let serverURL = settingsManager.serverURL
-        let apiKey = settingsManager.apiKey
-        
-        guard !serverURL.isEmpty && !apiKey.isEmpty else {
-            logDebug("Server sync skipped: server not configured", category: .sync)
-            return
-        }
-        
-        guard !isSyncing else {
-            logDebug("Server sync skipped: sync already in progress", category: .sync)
-            return
-        }
-        
-        await MainActor.run { isSyncing = true }
-        
-        await withCheckedContinuation { continuation in
-            ServerAssetSyncService.shared.syncServerAssets(
-                serverURL: serverURL,
-                apiKey: apiKey,
-                forceFullSync: false
-            ) { [self] result in
-                DispatchQueue.main.async {
-                    self.isSyncing = false
-                    self.handleSyncResult(result)
-                    continuation.resume()
-                }
             }
         }
     }
