@@ -676,9 +676,6 @@ private struct PhotoGridItemView: View {
             asset = photoLibraryManager.asset(at: assetIndex)
             onAppear()
         }
-        .onDisappear {
-            asset = nil
-        }
     }
 }
 
