@@ -81,6 +81,10 @@ class ServerAssetSyncService {
                 return
             }
             
+            defer {
+                self.syncQueue.sync { self.isSyncing = false }
+            }
+            
             do {
                 let result = try await self.performSync(
                     serverURL: serverURL,
@@ -89,13 +93,10 @@ class ServerAssetSyncService {
                     progressHandler: progressHandler
                 )
                 
-                self.syncQueue.sync { self.isSyncing = false }
-                
                 await MainActor.run {
                     completion(.success(result))
                 }
             } catch {
-                self.syncQueue.sync { self.isSyncing = false }
                 logError("Sync failed: \(error.localizedDescription)", category: .sync)
                 
                 await MainActor.run {
