@@ -32,6 +32,13 @@ final class ThumbnailCache {
             name: UIApplication.didEnterBackgroundNotification,
             object: nil
         )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
     }
     
     deinit {
@@ -45,9 +52,10 @@ final class ThumbnailCache {
     
     @objc private func handleBackgroundTransition() {
         cache.countLimit = 100
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.cache.countLimit = 200
-        }
+    }
+    
+    @objc private func handleWillEnterForeground() {
+        cache.countLimit = 200
     }
     
     func getThumbnail(
