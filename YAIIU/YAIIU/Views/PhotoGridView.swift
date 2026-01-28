@@ -376,20 +376,13 @@ struct PhotoGridView: View {
     
     @ViewBuilder
     private func gridItemView(assetIndex: Int, displayIndex: Int) -> some View {
-        let syncStatus: PhotoSyncStatus = {
-            if let id = photoLibraryManager.localIdentifier(at: assetIndex) {
-                return hashManager.getSyncStatus(for: id)
-            }
-            return .pending
-        }()
-        
         PhotoGridItemView(
             photoLibraryManager: photoLibraryManager,
+            hashManager: hashManager,
             displayIndex: displayIndex,
             assetIndex: assetIndex,
             isSelectionMode: isSelectionMode,
             selectedAssets: $selectedAssets,
-            syncStatus: syncStatus,
             namespace: photoTransitionNamespace,
             showingPhotoDetail: showingPhotoDetail,
             selectedPhotoIndex: selectedPhotoIndex,
@@ -704,11 +697,11 @@ struct PhotoGridView: View {
 
 private struct PhotoGridItemView: View {
     let photoLibraryManager: PhotoLibraryManager
+    @ObservedObject var hashManager: HashManager
     let displayIndex: Int
     let assetIndex: Int
     let isSelectionMode: Bool
     @Binding var selectedAssets: Set<String>
-    let syncStatus: PhotoSyncStatus
     let namespace: Namespace.ID
     let showingPhotoDetail: Bool
     let selectedPhotoIndex: Int
@@ -718,6 +711,7 @@ private struct PhotoGridItemView: View {
     let onDisappear: () -> Void
     
     @State private var asset: PHAsset?
+    @State private var syncStatus: PhotoSyncStatus = .pending
     
     var body: some View {
         Group {
@@ -745,11 +739,20 @@ private struct PhotoGridItemView: View {
             onLongPress()
         }
         .onAppear {
-            asset = photoLibraryManager.asset(at: assetIndex)
+            let newAsset = photoLibraryManager.asset(at: assetIndex)
+            asset = newAsset
+            if let id = newAsset?.localIdentifier {
+                syncStatus = hashManager.getSyncStatus(for: id)
+            }
             onAppear()
         }
         .onDisappear {
             onDisappear()
+        }
+        .onChange(of: hashManager.syncStatusCache) { _, newCache in
+            if let id = asset?.localIdentifier {
+                syncStatus = newCache[id] ?? .pending
+            }
         }
     }
 }
