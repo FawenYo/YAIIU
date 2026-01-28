@@ -66,22 +66,9 @@ class UploadItem: Identifiable, ObservableObject {
     }
 }
 
-/// Errors that can occur during timezone geocoding
-enum TimezoneGeocodingError: Error, LocalizedError {
-    case geocodingFailed(underlying: Error)
-    case rateLimited
-    case noPlacemarkFound
-    
-    var errorDescription: String? {
-        switch self {
-        case .geocodingFailed(let underlying):
-            return "Geocoding failed: \(underlying.localizedDescription)"
-        case .rateLimited:
-            return "Geocoding rate limited"
-        case .noPlacemarkFound:
-            return "No placemark found for location"
-        }
-    }
+enum TimezoneGeocodingError: Error {
+    case timeout
+    case failed
 }
 
 class UploadManager: ObservableObject {
@@ -93,11 +80,7 @@ class UploadManager: ObservableObject {
     private var uploadTask: Task<Void, Never>?
     private var isPaused: Bool = false
     
-    /// Number of concurrent uploads
     private let uploadConcurrency = 2
-    
-    /// Shared CLGeocoder instance for timezone lookups (reused across all uploads)
-    private let geocoder = CLGeocoder()
     
     var completedCount: Int {
         uploadQueue.filter { $0.status == .completed }.count
@@ -149,7 +132,6 @@ class UploadManager: ObservableObject {
             let item = UploadItem(asset: asset, filename: filename, hasRAW: hasRAW)
             item.totalResources = resources.count
             
-            // Use ThumbnailCache for thumbnail loading
             ThumbnailCache.shared.getThumbnail(for: asset) { [weak item] image in
                 DispatchQueue.main.async {
                     item?.thumbnail = image
@@ -195,7 +177,6 @@ class UploadManager: ObservableObject {
         }
     }
     
-    /// Process upload queue with parallel uploads for better performance
     private func processUploadQueueParallel() async {
         let settingsManager = SettingsManager()
         let serverURL = settingsManager.serverURL
@@ -215,31 +196,25 @@ class UploadManager: ObservableObject {
         var successCount = 0
         var failCount = 0
         
-        // Process uploads in parallel with controlled concurrency
         await withTaskGroup(of: (UploadItem, Bool).self) { group in
             var activeCount = 0
             var index = 0
             let itemsToUpload = uploadQueue.filter { $0.status != .completed }
             
             while index < itemsToUpload.count || activeCount > 0 {
-                // Check if paused
                 if isPaused {
                     logInfo("Upload paused by user", category: .upload)
                     group.cancelAll()
                     break
                 }
                 
-                // Add tasks up to concurrency limit
                 while activeCount < uploadConcurrency && index < itemsToUpload.count {
                     if isPaused { break }
                     
                     let item = itemsToUpload[index]
                     index += 1
                     
-                    // Skip already completed items
-                    if item.status == .completed {
-                        continue
-                    }
+                    if item.status == .completed { continue }
                     
                     activeCount += 1
                     
@@ -265,7 +240,6 @@ class UploadManager: ObservableObject {
                     }
                 }
                 
-                // Wait for one task to complete
                 if let (item, success) = await group.next() {
                     activeCount -= 1
                     
@@ -324,7 +298,6 @@ class UploadManager: ObservableObject {
             let response: UploadResponse
             
             if useFileExport {
-                // Stream large files (videos) from disk to prevent OOM crashes
                 let fileURL = try await photoLibraryManager.exportResourceToFile(for: resource)
                 defer {
                     try? FileManager.default.removeItem(at: fileURL)
@@ -355,7 +328,6 @@ class UploadManager: ObservableObject {
                     item.progress = baseProgress + resourceProgress
                 }
             } else {
-                // Load smaller files (photos) into memory
                 let fileData = try await photoLibraryManager.getResourceData(for: resource)
                 uploadedFileSize = Int64(fileData.count)
                 
@@ -463,47 +435,36 @@ class UploadManager: ObservableObject {
         uploadQueue.removeAll()
     }
     
-    // MARK: - Timezone Helper
+    // MARK: - Timezone
     
-    /// Attempts to determine the timezone for an asset based on its GPS location.
-    /// Uses shared CLGeocoder instance for accurate timezone including daylight saving time.
-    /// Throws errors for rate limiting or other failures to allow caller to implement retry strategy.
-    /// - Parameter asset: The PHAsset to get timezone for
-    /// - Returns: TimeZone from GPS location
-    /// - Throws: TimezoneGeocodingError if geocoding fails
-    private func getTimezoneFromLocation(for asset: PHAsset) async throws -> TimeZone {
+    private func getTimezone(for asset: PHAsset) async -> TimeZone {
         guard let location = asset.location else {
             return TimeZone.current
         }
         
         do {
-            let placemarks = try await geocoder.reverseGeocodeLocation(location)
-            guard let timezone = placemarks.first?.timeZone else {
-                throw TimezoneGeocodingError.noPlacemarkFound
+            return try await withThrowingTaskGroup(of: TimeZone.self) { group in
+                group.addTask {
+                    let geocoder = CLGeocoder()
+                    let placemarks = try await geocoder.reverseGeocodeLocation(location)
+                    guard let tz = placemarks.first?.timeZone else {
+                        throw TimezoneGeocodingError.failed
+                    }
+                    return tz
+                }
+                
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 3_000_000_000)
+                    throw TimezoneGeocodingError.timeout
+                }
+                
+                guard let result = try await group.next() else {
+                    return TimeZone.current
+                }
+                group.cancelAll()
+                return result
             }
-            return timezone
-        } catch let error as CLError where error.code == .network {
-            // Network errors might indicate rate limiting
-            throw TimezoneGeocodingError.rateLimited
-        } catch let error as TimezoneGeocodingError {
-            throw error
         } catch {
-            throw TimezoneGeocodingError.geocodingFailed(underlying: error)
-        }
-    }
-    
-    /// Attempts to determine the timezone for an asset based on its GPS location.
-    /// Falls back to device's current timezone if geocoding fails.
-    /// - Parameter asset: The PHAsset to get timezone for
-    /// - Returns: TimeZone from GPS location or device's current timezone as fallback
-    private func getTimezone(for asset: PHAsset) async -> TimeZone {
-        do {
-            return try await getTimezoneFromLocation(for: asset)
-        } catch TimezoneGeocodingError.rateLimited {
-            logWarning("Geocoding rate limited, using device timezone", category: .upload)
-            return TimeZone.current
-        } catch {
-            logDebug("Failed to get timezone from location: \(error.localizedDescription)", category: .upload)
             return TimeZone.current
         }
     }
