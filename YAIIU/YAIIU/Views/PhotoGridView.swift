@@ -550,13 +550,20 @@ struct PhotoGridView: View {
     
     private func uploadSelectedPhotos() {
         let identifiersToUpload = Array(selectedAssets)
-        let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiersToUpload, options: nil)
-        var assetsToUpload: [PHAsset] = []
-        result.enumerateObjects { asset, _, _ in
-            assetsToUpload.append(asset)
-        }
+        let manager = uploadManager
         
-        uploadManager.uploadAssets(assetsToUpload)
+        Task.detached(priority: .userInitiated) {
+            let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiersToUpload, options: nil)
+            var assetsToUpload: [PHAsset] = []
+            assetsToUpload.reserveCapacity(result.count)
+            result.enumerateObjects { asset, _, _ in
+                assetsToUpload.append(asset)
+            }
+            
+            await MainActor.run {
+                manager.uploadAssets(assetsToUpload)
+            }
+        }
         
         isSelectionMode = false
         selectedAssets.removeAll()
