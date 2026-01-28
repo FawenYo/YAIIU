@@ -300,6 +300,10 @@ struct PhotoGridView: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .onDisappear {
+                visibleIndices.removeAll()
+                isFirstItemVisible = true
+            }
         }
     }
     
