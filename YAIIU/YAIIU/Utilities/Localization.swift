@@ -146,9 +146,6 @@ enum L10n {
         // Timeline section headers
         static let sectionToday = "photoGrid.section.today".localized
         static let sectionYesterday = "photoGrid.section.yesterday".localized
-        static func sectionCount(_ count: Int) -> String {
-            return "photoGrid.section.count".localized(with: count)
-        }
     }
     
     // MARK: - Upload Progress

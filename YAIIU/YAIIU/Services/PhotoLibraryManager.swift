@@ -12,12 +12,6 @@ final class PhotoLibraryManager: ObservableObject {
     private var _fetchResult: PHFetchResult<PHAsset>?
     private let fetchResultLock = NSLock()
     
-    private static let sectionDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-    
     /// Thread-safe access to fetch result
     var fetchResult: PHFetchResult<PHAsset>? {
         fetchResultLock.lock()
@@ -84,40 +78,10 @@ final class PhotoLibraryManager: ObservableObject {
         }
     }
     
-    /// Returns the date key for a given asset index. Used for on-demand section detection.
-    func dateKey(at index: Int) -> String? {
-        guard let asset = asset(at: index) else { return nil }
-        let assetDate = asset.creationDate ?? Date.distantPast
-        return Self.sectionDateFormatter.string(from: assetDate)
-    }
-    
     /// Returns the formatted date for a given asset index.
     func creationDate(at index: Int) -> Date? {
         guard let asset = asset(at: index) else { return nil }
         return asset.creationDate
-    }
-    
-    /// Checks if this index should show a section header (first item of a new date).
-    /// Returns the section date if a header should be shown, nil otherwise.
-    func sectionHeaderDate(at index: Int) -> Date? {
-        guard index >= 0, index < assetCount else { return nil }
-        
-        // First item always shows header
-        if index == 0 {
-            return creationDate(at: 0)
-        }
-        
-        // Check if date changed from previous
-        guard let currentKey = dateKey(at: index),
-              let previousKey = dateKey(at: index - 1) else {
-            return nil
-        }
-        
-        if currentKey != previousKey {
-            return creationDate(at: index)
-        }
-        
-        return nil
     }
     
     /// Returns asset at specific index. This is the preferred way to access assets

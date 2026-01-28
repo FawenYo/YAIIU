@@ -112,7 +112,6 @@
 "photoGrid.filter.active" = "顯示 %d 個項目";
 "photoGrid.section.today" = "今天";
 "photoGrid.section.yesterday" = "昨天";
-"photoGrid.section.count" = "%d 張";
 
 // MARK: - Upload Progress View
 "uploadProgress.title" = "上傳進度";
