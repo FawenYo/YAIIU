@@ -53,6 +53,8 @@
 		DB0000090000000000000001 /* ServerAssetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000A0000000000000001 /* ServerAssetRepository.swift */; };
 		DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000C0000000000000001 /* FavoriteRepository.swift */; };
 		NR0000010000000000000001 /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = NR0000020000000000000001 /* NetworkReachability.swift */; };
+		TL0000010000000000000001 /* TimelineScrubberView.swift in Sources */ = {isa = PBXBuildFile; fileRef = TL0000020000000000000001 /* TimelineScrubberView.swift */; };
+		PC0000010000000000000001 /* PhotoCollectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = PC0000020000000000000001 /* PhotoCollectionView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -128,6 +130,8 @@
 		DB00000C0000000000000001 /* FavoriteRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteRepository.swift; sourceTree = "<group>"; };
 		NR0000020000000000000001 /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
 		BI0000020000000000000001 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
+		TL0000020000000000000001 /* TimelineScrubberView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineScrubberView.swift; sourceTree = "<group>"; };
+		PC0000020000000000000001 /* PhotoCollectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoCollectionView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -204,8 +208,10 @@
 			children = (
 				2A0000080000000000000001 /* LoginView.swift */,
 				2A00000A0000000000000001 /* PhotoGridView.swift */,
+				PC0000020000000000000001 /* PhotoCollectionView.swift */,
 				2A00000C0000000000000001 /* PhotoThumbnailView.swift */,
 				2A0000490000000000000001 /* PhotoDetailView.swift */,
+				TL0000020000000000000001 /* TimelineScrubberView.swift */,
 				2A00001A0000000000000001 /* UploadProgressView.swift */,
 				2A0000350000000000000001 /* ImportDatabaseView.swift */,
 				2A0000470000000000000001 /* OnboardingImportView.swift */,
@@ -470,6 +476,8 @@
 				2A0000550000000000000001 /* InitialSetupView.swift in Sources */,
 				2A0000570000000000000001 /* RestartRequiredView.swift in Sources */,
 				2A0000480000000000000001 /* PhotoDetailView.swift in Sources */,
+				TL0000010000000000000001 /* TimelineScrubberView.swift in Sources */,
+				PC0000010000000000000001 /* PhotoCollectionView.swift in Sources */,
 				2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */,
 				2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */,
 				2A00004E0000000000000001 /* LogViewerView.swift in Sources */,
