@@ -386,14 +386,12 @@ class HashManager: ObservableObject {
     
     @MainActor
     func refreshStatusCacheAsync() async {
-        await withCheckedContinuation { continuation in
-            DatabaseManager.shared.getAllSyncStatusAsync { [weak self] statusMap in
-                DispatchQueue.main.async {
-                    self?.syncStatusCache = statusMap
-                    continuation.resume()
-                }
+        let statusMap = await withCheckedContinuation { continuation in
+            DatabaseManager.shared.getAllSyncStatusAsync { statusMap in
+                continuation.resume(returning: statusMap)
             }
         }
+        self.syncStatusCache = statusMap
     }
     
     func forceReprocess(assets: [PHAsset]) {
