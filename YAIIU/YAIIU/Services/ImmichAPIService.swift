@@ -1,5 +1,49 @@
 import Foundation
+import Photos
 import UIKit
+
+// MARK: - Mobile App Metadata
+
+/// Metadata structure for iOS mobile app uploads.
+struct MobileAppMetadata: Encodable {
+    let iCloudId: String?
+    let createdAt: String?
+    let adjustmentTime: String?
+    let latitude: String?
+    let longitude: String?
+    
+    init(iCloudId: String?, createdAt: Date?, adjustmentTime: Date? = nil, latitude: Double? = nil, longitude: Double? = nil) {
+        self.iCloudId = iCloudId
+        
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        
+        self.createdAt = createdAt.map { formatter.string(from: $0) }
+        self.adjustmentTime = adjustmentTime.map { formatter.string(from: $0) }
+        self.latitude = latitude.map { String($0) }
+        self.longitude = longitude.map { String($0) }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let iCloudId = iCloudId { try container.encode(iCloudId, forKey: .iCloudId) }
+        if let createdAt = createdAt { try container.encode(createdAt, forKey: .createdAt) }
+        if let adjustmentTime = adjustmentTime { try container.encode(adjustmentTime, forKey: .adjustmentTime) }
+        if let latitude = latitude { try container.encode(latitude, forKey: .latitude) }
+        if let longitude = longitude { try container.encode(longitude, forKey: .longitude) }
+    }
+    
+    private enum CodingKeys: String, CodingKey {
+        case iCloudId, createdAt, adjustmentTime, latitude, longitude
+    }
+}
+
+struct RemoteAssetMetadataItem: Encodable {
+    let key: String
+    let value: MobileAppMetadata
+    
+    static let mobileAppKey = "yaiiu-app"
+}
 
 class ImmichAPIService: NSObject {
     static let shared = ImmichAPIService()
@@ -31,10 +75,14 @@ class ImmichAPIService: NSObject {
         serverURL: String,
         apiKey: String,
         timezone: TimeZone? = nil,
+        iCloudId: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
         progressHandler: ((Double) -> Void)? = nil
     ) async throws -> UploadResponse {
         let fileSizeMB = Double(fileData.count) / 1024.0 / 1024.0
-        logInfo("Starting upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB), mimeType: \(mimeType), favorite: \(isFavorite)", category: .api)
+        let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
+        logInfo("Starting upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB), mimeType: \(mimeType), favorite: \(isFavorite)\(cloudIdInfo)", category: .api)
         
         guard let url = URL(string: "\(serverURL)/api/assets") else {
             logError("Invalid upload URL: \(serverURL)/api/assets", category: .api)
@@ -57,7 +105,10 @@ class ImmichAPIService: NSObject {
             createdAt: createdAt,
             modifiedAt: modifiedAt,
             isFavorite: isFavorite,
-            timezone: timezone
+            timezone: timezone,
+            iCloudId: iCloudId,
+            latitude: latitude,
+            longitude: longitude
         )
         
         return try await withCheckedThrowingContinuation { continuation in
@@ -97,11 +148,15 @@ class ImmichAPIService: NSObject {
         serverURL: String,
         apiKey: String,
         timezone: TimeZone? = nil,
+        iCloudId: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
         progressHandler: ((Double) -> Void)? = nil
     ) async throws -> UploadResponse {
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
         let fileSizeMB = Double(fileSize) / 1024.0 / 1024.0
-        logInfo("Starting file-based upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)", category: .api)
+        let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
+        logInfo("Starting file-based upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
         
         guard let url = URL(string: "\(serverURL)/api/assets") else {
             logError("Invalid upload URL: \(serverURL)/api/assets", category: .api)
@@ -120,7 +175,10 @@ class ImmichAPIService: NSObject {
             createdAt: createdAt,
             modifiedAt: modifiedAt,
             isFavorite: isFavorite,
-            timezone: timezone
+            timezone: timezone,
+            iCloudId: iCloudId,
+            latitude: latitude,
+            longitude: longitude
         )
         
         defer {
@@ -168,7 +226,10 @@ class ImmichAPIService: NSObject {
         createdAt: Date,
         modifiedAt: Date,
         isFavorite: Bool,
-        timezone: TimeZone?
+        timezone: TimeZone?,
+        iCloudId: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil
     ) throws -> URL {
         let tempDir = FileManager.default.temporaryDirectory
         let multipartURL = tempDir.appendingPathComponent(UUID().uuidString + "_multipart.tmp")
@@ -209,6 +270,21 @@ class ImmichAPIService: NSObject {
         try writeField(name: "fileModifiedAt", value: dateFormatter.string(from: modifiedAt))
         try writeField(name: "isFavorite", value: String(isFavorite))
         
+        // Include mobile-app metadata with iCloudId if available
+        if let iCloudId = iCloudId {
+            let metadata = MobileAppMetadata(
+                iCloudId: iCloudId,
+                createdAt: createdAt,
+                latitude: latitude,
+                longitude: longitude
+            )
+            let item = RemoteAssetMetadataItem(key: RemoteAssetMetadataItem.mobileAppKey, value: metadata)
+            if let metadataJSON = try? JSONEncoder().encode([item]),
+               let metadataString = String(data: metadataJSON, encoding: .utf8) {
+                try writeField(name: "metadata", value: metadataString)
+            }
+        }
+        
         // Write file header
         let sanitizedFilename = filename.replacingOccurrences(of: "\"", with: "_")
         let fileHeader = "--\(boundary)\r\nContent-Disposition: form-data; name=\"assetData\"; filename=\"\(sanitizedFilename)\"\r\nContent-Type: \(mimeType)\r\n\r\n"
@@ -247,7 +323,10 @@ class ImmichAPIService: NSObject {
         createdAt: Date,
         modifiedAt: Date,
         isFavorite: Bool,
-        timezone: TimeZone?
+        timezone: TimeZone?,
+        iCloudId: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil
     ) -> Data {
         var body = Data()
         let dateFormatter = ISO8601DateFormatter()
@@ -273,6 +352,23 @@ class ImmichAPIService: NSObject {
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"isFavorite\"\r\n\r\n".data(using: .utf8)!)
         body.append("\(isFavorite)\r\n".data(using: .utf8)!)
+        
+        // Include mobile-app metadata with iCloudId if available
+        if let iCloudId = iCloudId {
+            let metadata = MobileAppMetadata(
+                iCloudId: iCloudId,
+                createdAt: createdAt,
+                latitude: latitude,
+                longitude: longitude
+            )
+            let item = RemoteAssetMetadataItem(key: RemoteAssetMetadataItem.mobileAppKey, value: metadata)
+            if let metadataJSON = try? JSONEncoder().encode([item]),
+               let metadataString = String(data: metadataJSON, encoding: .utf8) {
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"metadata\"\r\n\r\n".data(using: .utf8)!)
+                body.append("\(metadataString)\r\n".data(using: .utf8)!)
+            }
+        }
         
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"assetData\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)

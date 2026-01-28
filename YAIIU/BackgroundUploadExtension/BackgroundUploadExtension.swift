@@ -340,6 +340,15 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             mimeType(for: resource),
             forHTTPHeaderField: "X-Content-Type"
         )
+        
+        if let iCloudId = getCloudIdentifier(for: asset) {
+            req.setValue(iCloudId, forHTTPHeaderField: "X-iCloud-Id")
+        }
+        
+        if let location = asset.location {
+            req.setValue(String(location.coordinate.latitude), forHTTPHeaderField: "X-Latitude")
+            req.setValue(String(location.coordinate.longitude), forHTTPHeaderField: "X-Longitude")
+        }
 
         return req
     }
@@ -455,6 +464,34 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             withLocalIdentifiers: [resource.assetLocalIdentifier],
             options: nil
         ).firstObject
+    }
+    
+    // MARK: - iCloud Identifier
+    
+    private func getCloudIdentifier(for asset: PHAsset) -> String? {
+        guard #available(iOS 16, *) else {
+            return nil
+        }
+        
+        let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [asset.localIdentifier])
+        
+        guard let result = mappings[asset.localIdentifier] else {
+            return nil
+        }
+        
+        switch result {
+        case .success(let cloudIdentifier):
+            let cloudId = cloudIdentifier.stringValue
+            // Skip invalid cloud IDs (format: "GUID:ID:" without hash suffix)
+            if cloudId.hasSuffix(":") {
+                logDebug("Invalid cloud ID format for asset \(asset.localIdentifier)")
+                return nil
+            }
+            return cloudId
+        case .failure(let error):
+            logDebug("Failed to get cloud ID for asset \(asset.localIdentifier): \(error.localizedDescription)")
+            return nil
+        }
     }
     
     // MARK: - Logging

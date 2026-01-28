@@ -285,6 +285,9 @@ class UploadManager: ObservableObject {
         let createdAt = item.asset.creationDate ?? Date()
         let modifiedAt = item.asset.modificationDate ?? Date()
         let timezone = await getTimezone(for: item.asset)
+        let iCloudId = getCloudIdentifier(for: item.asset)
+        let latitude = item.asset.location?.coordinate.latitude
+        let longitude = item.asset.location?.coordinate.longitude
         
         for (index, resource) in resources.enumerated() {
             let resourceType = getResourceType(for: resource)
@@ -321,7 +324,10 @@ class UploadManager: ObservableObject {
                     isFavorite: isFavorite,
                     serverURL: serverURL,
                     apiKey: apiKey,
-                    timezone: timezone
+                    timezone: timezone,
+                    iCloudId: iCloudId,
+                    latitude: latitude,
+                    longitude: longitude
                 ) { progress in
                     let baseProgress = Double(index) / Double(totalResources)
                     let resourceProgress = progress / Double(totalResources)
@@ -341,7 +347,10 @@ class UploadManager: ObservableObject {
                     isFavorite: isFavorite,
                     serverURL: serverURL,
                     apiKey: apiKey,
-                    timezone: timezone
+                    timezone: timezone,
+                    iCloudId: iCloudId,
+                    latitude: latitude,
+                    longitude: longitude
                 ) { progress in
                     let baseProgress = Double(index) / Double(totalResources)
                     let resourceProgress = progress / Double(totalResources)
@@ -433,6 +442,34 @@ class UploadManager: ObservableObject {
         uploadTask?.cancel()
         isUploading = false
         uploadQueue.removeAll()
+    }
+    
+    // MARK: - iCloud Identifier
+    
+    private func getCloudIdentifier(for asset: PHAsset) -> String? {
+        guard #available(iOS 16, *) else {
+            return nil
+        }
+        
+        let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [asset.localIdentifier])
+        
+        guard let result = mappings[asset.localIdentifier] else {
+            return nil
+        }
+        
+        switch result {
+        case .success(let cloudIdentifier):
+            let cloudId = cloudIdentifier.stringValue
+            // Skip invalid cloud IDs (format: "GUID:ID:" without hash suffix)
+            if cloudId.hasSuffix(":") {
+                logDebug("Invalid cloud ID format for asset \(asset.localIdentifier): \(cloudId)", category: .upload)
+                return nil
+            }
+            return cloudId
+        case .failure(let error):
+            logDebug("Failed to get cloud ID for asset \(asset.localIdentifier): \(error.localizedDescription)", category: .upload)
+            return nil
+        }
     }
     
     // MARK: - Timezone
