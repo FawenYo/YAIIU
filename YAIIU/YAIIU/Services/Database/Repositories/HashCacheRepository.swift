@@ -494,7 +494,11 @@ final class HashCacheRepository {
             
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
                 sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
-                sqlite3_step(statement)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    logError("[HashCacheRepository] Error deleting hash cache record: \(String(cString: sqlite3_errmsg(self.connection.db)))")
+                }
+            } else {
+                logError("[HashCacheRepository] Error preparing delete statement: \(String(cString: sqlite3_errmsg(self.connection.db)))")
             }
             sqlite3_finalize(statement)
         }
