@@ -253,11 +253,19 @@ struct PhotoGridView: View {
                         LazyVGrid(columns: columns, spacing: 2) {
                             ForEach(0..<displayCount, id: \.self) { displayIndex in
                                 let actualIndex = resolveActualIndex(displayIndex)
+                                let syncStatus: PhotoSyncStatus = {
+                                    if let id = photoLibraryManager.localIdentifier(at: actualIndex) {
+                                        return hashManager.getSyncStatus(for: id)
+                                    }
+                                    return .pending
+                                }()
                                 PhotoGridItemView(
                                     photoLibraryManager: photoLibraryManager,
+                                    displayIndex: displayIndex,
                                     assetIndex: actualIndex,
                                     isSelectionMode: isSelectionMode,
                                     selectedAssets: $selectedAssets,
+                                    syncStatus: syncStatus,
                                     namespace: photoTransitionNamespace,
                                     showingPhotoDetail: showingPhotoDetail,
                                     selectedPhotoIndex: selectedPhotoIndex,
@@ -633,9 +641,11 @@ struct PhotoGridView: View {
 
 private struct PhotoGridItemView: View {
     let photoLibraryManager: PhotoLibraryManager
+    let displayIndex: Int
     let assetIndex: Int
     let isSelectionMode: Bool
     @Binding var selectedAssets: Set<String>
+    let syncStatus: PhotoSyncStatus
     let namespace: Namespace.ID
     let showingPhotoDetail: Bool
     let selectedPhotoIndex: Int
@@ -643,14 +653,12 @@ private struct PhotoGridItemView: View {
     let onLongPress: () -> Void
     let onAppear: () -> Void
     
-    @ObservedObject private var hashManager = HashManager.shared
     @State private var asset: PHAsset?
     
     var body: some View {
         Group {
             if let asset = asset {
-                let syncStatus = hashManager.getSyncStatus(for: asset.localIdentifier)
-                let isThisAssetSelected = showingPhotoDetail && selectedPhotoIndex == assetIndex
+                let isThisAssetSelected = showingPhotoDetail && selectedPhotoIndex == displayIndex
                 
                 PhotoThumbnailView(
                     asset: asset,
