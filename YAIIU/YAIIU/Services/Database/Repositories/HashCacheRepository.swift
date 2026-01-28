@@ -514,7 +514,11 @@ final class HashCacheRepository {
                 for (index, identifier) in localIdentifiers.enumerated() {
                     sqlite3_bind_text(statement, Int32(index + 1), (identifier as NSString).utf8String, -1, nil)
                 }
-                sqlite3_step(statement)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    logError("[HashCacheRepository] Error batch deleting hash cache records: \(String(cString: sqlite3_errmsg(self.connection.db)))")
+                }
+            } else {
+                logError("[HashCacheRepository] Error preparing batch delete statement: \(String(cString: sqlite3_errmsg(self.connection.db)))")
             }
             sqlite3_finalize(statement)
         }
