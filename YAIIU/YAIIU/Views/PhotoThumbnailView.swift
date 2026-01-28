@@ -65,6 +65,7 @@ struct PhotoThumbnailView: View {
     
     @State private var thumbnail: UIImage?
     @State private var hasRAW: Bool = false
+    @State private var isFavorite: Bool = false
     @State private var videoDuration: TimeInterval = 0
     @State private var isVideo: Bool = false
     @State private var loadTask: Task<Void, Never>?
@@ -103,24 +104,34 @@ struct PhotoThumbnailView: View {
                 // Thumbnail Image
                 thumbnailImage(geometry: geometry)
                 
-                // Video Duration Badge
-                if isVideo {
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Image(systemName: "play.fill")
-                                .font(.caption2)
-                            Text(formatDuration(videoDuration))
-                                .font(.caption2)
+                // Bottom-left badges: video duration and favorite indicator
+                VStack {
+                    Spacer()
+                    HStack(spacing: 4) {
+                        if isVideo {
+                            HStack(spacing: 2) {
+                                Image(systemName: "play.fill")
+                                    .font(.caption2)
+                                Text(formatDuration(videoDuration))
+                                    .font(.caption2)
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.black.opacity(0.6))
+                            .cornerRadius(4)
                         }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.black.opacity(0.6))
-                        .cornerRadius(4)
-                        .padding(4)
+                        
+                        if isFavorite {
+                            Image(systemName: "heart.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
+                        }
+                        
+                        Spacer()
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
                 }
                 
                 // RAW Badge
@@ -266,6 +277,7 @@ struct PhotoThumbnailView: View {
     private func loadAssetInfo() {
         isVideo = asset.mediaType == .video
         videoDuration = asset.duration
+        isFavorite = asset.isFavorite
         
         loadTask?.cancel()
         
