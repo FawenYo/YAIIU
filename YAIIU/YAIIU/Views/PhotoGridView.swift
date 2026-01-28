@@ -489,8 +489,11 @@ struct PhotoGridView: View {
     
     private func refreshPhotosAsync() async {
         performAutoSync()
-        photoLibraryManager.fetchAssets()
-        hashManager.refreshStatusCache()
+
+        Task(priority: .userInitiated) {
+            photoLibraryManager.fetchAssets()
+            hashManager.refreshStatusCache()
+        }
     }
     
     
