@@ -283,11 +283,12 @@ func createMultipartRequest(metadata BackgroundUploadRequest, photoData []byte) 
 			},
 		}
 		metadataJSON, err := json.Marshal([]RemoteAssetMetadataItem{metadataItem})
-		if err == nil {
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to marshal metadata: %w", err)
+			}
 			if err := writer.WriteField("metadata", string(metadataJSON)); err != nil {
 				return nil, "", fmt.Errorf("failed to write metadata field: %w", err)
 			}
-		}
 	}
 
 	// Add the file with proper Content-Type
