@@ -43,19 +43,19 @@ struct MainTabView: View {
         TabView(selection: $selectedTab) {
             PhotoGridView()
                 .tabItem {
-                    Label("tab.photos".localized, systemImage: "photo.on.rectangle")
+                    Label(L10n.Tab.photos, systemImage: "photo.on.rectangle")
                 }
                 .tag(0)
             
             UploadProgressView()
                 .tabItem {
-                    Label("tab.upload".localized, systemImage: "arrow.up.circle")
+                    Label(L10n.Tab.upload, systemImage: "arrow.up.circle")
                 }
                 .tag(1)
             
             SettingsView()
                 .tabItem {
-                    Label("tab.settings".localized, systemImage: "gear")
+                    Label(L10n.Tab.settings, systemImage: "gear")
                 }
                 .tag(2)
         }
