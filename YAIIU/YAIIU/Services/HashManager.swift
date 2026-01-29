@@ -104,13 +104,18 @@ class HashManager: ObservableObject {
         Task {
             var remainingIdentifiers: [String] = []
             var matchCount = 0
-            
-            let iCloudIdMap = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: identifiers)
-            
             var identifierToICloudId: [String: String] = [:]
-            for (identifier, result) in iCloudIdMap {
-                if let cloudId = try? result.get() {
-                    identifierToICloudId[identifier] = cloudId.stringValue
+            let totalBatches = (identifiers.count + iCloudIdBatchSize - 1) / iCloudIdBatchSize
+            for batchIndex in 0..<totalBatches {
+                let start = batchIndex * iCloudIdBatchSize
+                let end = min(start + iCloudIdBatchSize, identifiers.count)
+                let batch = Array(identifiers[start..<end])
+                
+                let iCloudIdMap = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: batch)
+                for (identifier, result) in iCloudIdMap {
+                    if let cloudId = try? result.get() {
+                        identifierToICloudId[identifier] = cloudId.stringValue
+                    }
                 }
             }
             
