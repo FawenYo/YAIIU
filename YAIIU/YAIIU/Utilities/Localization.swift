@@ -113,8 +113,12 @@ extension String {
         if localizedString == self && customBundle != .main {
             if let enPath = Bundle.main.path(forResource: "en", ofType: "lproj"),
                let enBundle = Bundle(path: enPath) {
-                return NSLocalizedString(self, bundle: enBundle, comment: "")
+                let enLocalizedString = NSLocalizedString(self, bundle: enBundle, comment: "")
+                if enLocalizedString != self {
+                    return enLocalizedString
+                }
             }
+            // Fallback to main bundle if English translation is also missing or bundle not found
             return NSLocalizedString(self, bundle: .main, comment: "")
         }
         
