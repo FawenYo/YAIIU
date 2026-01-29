@@ -76,7 +76,7 @@ final class LanguageManager: ObservableObject {
     
     var currentLanguageCode: String {
         if currentLanguage == .system {
-            return Locale.current.language.languageCode?.identifier ?? "en"
+            return Bundle.main.preferredLocalizations.first ?? "en"
         }
         return currentLanguage.rawValue
     }
