@@ -83,7 +83,6 @@ final class LanguageManager: ObservableObject {
     func setLanguage(_ language: AppLanguage) {
         guard language != currentLanguage else { return }
         currentLanguage = language
-        objectWillChange.send()
     }
     
     private func updateBundle() {
