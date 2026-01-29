@@ -617,24 +617,16 @@ struct PhotoGridView: View {
         await photoLibraryManager.fetchAssetsAsync()
         await hashManager.refreshStatusCacheAsync()
         
-        // Defer heavy UI updates to next runloop to let refresh indicator dismiss smoothly
-        Task { @MainActor in
-            // Small delay allows refresh indicator animation to complete first
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            
-            // Reset scroll tracking state before refreshing grid
-            visibleDisplayIndices.removeAll()
-            currentVisibleDate = ""
-            firstRowTopOffset = 0
-            
-            refreshToken = UUID()
-            
-            updateNotUploadedCount()
-            if currentFilter == .notUploaded {
-                refreshFilterCache()
-            }
-            
-            startBackgroundProcessing()
+        // Reset scroll tracking state
+        visibleDisplayIndices.removeAll()
+        currentVisibleDate = ""
+        firstRowTopOffset = 0
+        
+        refreshToken = UUID()
+        
+        updateNotUploadedCount()
+        if currentFilter == .notUploaded {
+            refreshFilterCache()
         }
     }
     
@@ -749,9 +741,9 @@ struct PhotoGridView: View {
         case .success(let syncResult):
             logInfo("Auto sync completed: \(syncResult.syncType), total: \(syncResult.totalAssets), upserted: \(syncResult.upsertedCount), deleted: \(syncResult.deletedCount)", category: .sync)
             
-            // Only refresh status cache here; background processing will be triggered
-            // by refreshPhotosAsync() to avoid duplicate processing
             hashManager.refreshStatusCache()
+            
+            startBackgroundProcessing()
             
         case .failure(let error):
             logError("Auto sync failed: \(error.localizedDescription)", category: .sync)
