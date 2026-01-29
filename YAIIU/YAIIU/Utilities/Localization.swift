@@ -96,9 +96,6 @@ final class LanguageManager: ObservableObject {
         if let path = Bundle.main.path(forResource: languageCode, ofType: "lproj"),
            let bundle = Bundle(path: path) {
             self.bundle = bundle
-        } else if let path = Bundle.main.path(forResource: "en", ofType: "lproj"),
-                  let bundle = Bundle(path: path) {
-            self.bundle = bundle
         } else {
             self.bundle = .main
         }
@@ -109,7 +106,15 @@ final class LanguageManager: ObservableObject {
 extension String {
     /// Returns a localized string using the current app language
     var localized: String {
-        return NSLocalizedString(self, bundle: LanguageManager.shared.bundle, comment: "")
+        let customBundle = LanguageManager.shared.bundle
+        let localizedString = NSLocalizedString(self, bundle: customBundle, comment: "")
+        
+        // Fallback to main bundle if a translation is missing in the custom bundle
+        if localizedString == self && customBundle != .main {
+            return NSLocalizedString(self, bundle: .main, comment: "")
+        }
+        
+        return localizedString
     }
     
     /// Returns a localized string with format arguments
