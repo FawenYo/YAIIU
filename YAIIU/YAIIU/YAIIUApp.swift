@@ -39,7 +39,6 @@ final class MigrationManager: ObservableObject {
         
         // Skip if user is not logged in
         guard settingsManager.isLoggedIn else {
-            SharedSettings.shared.lastAppVersion = currentVersion
             return
         }
         
