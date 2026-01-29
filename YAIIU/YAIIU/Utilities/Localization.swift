@@ -62,7 +62,7 @@ final class LanguageManager: ObservableObject {
         }
     }
     
-    private(set) var bundle: Bundle = .main
+    nonisolated(unsafe) private(set) var bundle: Bundle = .main
     
     private init() {
         if let stored = UserDefaults.standard.string(forKey: Self.languageKey),
