@@ -87,14 +87,12 @@ final class LanguageManager: ObservableObject {
     }
     
     private func updateBundle() {
-        let languageCode: String
-        
         if currentLanguage == .system {
-            languageCode = Locale.current.language.languageCode?.identifier ?? "en"
-        } else {
-            languageCode = currentLanguage.rawValue
+            self.bundle = .main
+            return
         }
-        
+
+        let languageCode = currentLanguage.rawValue
         if let path = Bundle.main.path(forResource: languageCode, ofType: "lproj"),
            let bundle = Bundle(path: path) {
             self.bundle = bundle
