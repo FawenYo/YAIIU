@@ -316,8 +316,6 @@ struct PhotoGridView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .onDisappear {
                 visibleDisplayIndices.removeAll()
-                currentVisibleDate = ""
-                firstRowTopOffset = 0
             }
         }
     }
@@ -347,7 +345,11 @@ struct PhotoGridView: View {
                     gridItemView(assetIndex: actualIndex, displayIndex: displayIndex)
                         .background(
                             // Track first row position using GeometryReader
-                            displayIndex == 0 ? AnyView(firstRowTracker) : AnyView(EmptyView())
+                            Group {
+                                if displayIndex == 0 {
+                                    firstRowTracker
+                                }
+                            }
                         )
                 }
             }
