@@ -17,6 +17,8 @@ class SharedSettings {
     private let backgroundUploadEnabledKey = "immich_background_upload_enabled"
     private let lastProcessedChangeTokenKey = "immich_last_processed_change_token"
     private let uploadedAssetIdentifiersKey = "immich_uploaded_asset_identifiers"
+    private let lastAppVersionKey = "yaiiu_last_app_version"
+    private let cloudIdSyncCompletedKey = "yaiiu_cloud_id_sync_completed"
     
     // MARK: - Keychain
     private let keychainService = "com.fawenyo.yaiiu.shared"
@@ -123,6 +125,28 @@ class SharedSettings {
     
     func isAssetUploaded(_ identifier: String) -> Bool {
         return uploadedAssetIdentifiers.contains(identifier)
+    }
+    
+    // MARK: - Version Tracking
+    
+    /// Last app version that was run (e.g., "0.0.3")
+    var lastAppVersion: String? {
+        get {
+            return userDefaults?.string(forKey: lastAppVersionKey)
+        }
+        set {
+            userDefaults?.set(newValue, forKey: lastAppVersionKey)
+        }
+    }
+    
+    /// Whether iCloud ID sync has been completed for existing assets
+    var cloudIdSyncCompleted: Bool {
+        get {
+            return userDefaults?.bool(forKey: cloudIdSyncCompletedKey) ?? false
+        }
+        set {
+            userDefaults?.set(newValue, forKey: cloudIdSyncCompletedKey)
+        }
     }
     
     // MARK: - Sync Settings from Main App

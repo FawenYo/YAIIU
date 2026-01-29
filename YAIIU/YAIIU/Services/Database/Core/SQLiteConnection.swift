@@ -11,11 +11,12 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 1
+    private static let schemaVersion = 2
     
     private init() {
         dbQueue.async { [weak self] in
             self?.openDatabase()
+            self?.migrateIfNeeded()
             self?.createTables()
             self?.initLock.lock()
             self?.isInitialized = true
@@ -191,8 +192,76 @@ final class SQLiteConnection {
         executeStatement("CREATE INDEX IF NOT EXISTS idx_uploaded_asset ON uploaded_assets(asset_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_checksum ON server_assets_cache(checksum)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_immich_id ON server_assets_cache(immich_id)")
+        executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_icloud_id ON server_assets_cache(icloud_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_asset ON hash_cache(asset_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_on_server ON hash_cache(is_on_server)")
+    }
+    
+    // MARK: - Schema Migration
+    
+    private func getCurrentSchemaVersion() -> Int {
+        var version = 0
+        let sql = "PRAGMA user_version;"
+        var statement: OpaquePointer?
+        
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_step(statement) == SQLITE_ROW {
+                version = Int(sqlite3_column_int(statement, 0))
+            }
+        }
+        sqlite3_finalize(statement)
+        return version
+    }
+    
+    private func setSchemaVersion(_ version: Int) {
+        let sql = "PRAGMA user_version = \(version);"
+        executeStatement(sql)
+    }
+    
+    /// Perform database migrations if needed.
+    private func migrateIfNeeded() {
+        let currentVersion = getCurrentSchemaVersion()
+        
+        if currentVersion < SQLiteConnection.schemaVersion {
+            logInfo("Database migration needed: \(currentVersion) -> \(SQLiteConnection.schemaVersion)", category: .database)
+            
+            if currentVersion < 2 {
+                migrateToV2()
+            }
+            
+            setSchemaVersion(SQLiteConnection.schemaVersion)
+            logInfo("Database migration completed to version \(SQLiteConnection.schemaVersion)", category: .database)
+        }
+    }
+    
+    /// Migration to version 2: Add icloud_id column to server_assets_cache table.
+    private func migrateToV2() {
+        logInfo("Migrating database to version 2: adding icloud_id column", category: .database)
+        
+        // Check if column already exists (in case of partial migration)
+        let checkSql = "PRAGMA table_info(server_assets_cache);"
+        var statement: OpaquePointer?
+        var hasICloudIdColumn = false
+        
+        if sqlite3_prepare_v2(db, checkSql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1) {
+                    let name = String(cString: columnName)
+                    if name == "icloud_id" {
+                        hasICloudIdColumn = true
+                        break
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+        
+        if !hasICloudIdColumn {
+            executeStatement("ALTER TABLE server_assets_cache ADD COLUMN icloud_id TEXT;")
+            logInfo("Added icloud_id column to server_assets_cache", category: .database)
+        } else {
+            logInfo("icloud_id column already exists, skipping", category: .database)
+        }
     }
     
     // MARK: - Statement Execution

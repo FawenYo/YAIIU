@@ -323,4 +323,62 @@ final class UploadRecordRepository {
             self.connection.executeStatement("DELETE FROM upload_jobs;")
         }
     }
+    
+    // MARK: - iCloud ID Sync Support
+    
+    /// Returns all uploaded asset mappings (local identifier -> immich ID).
+    /// Used for iCloud ID sync to find which assets need metadata updates.
+    func getAllUploadedAssetMappings() -> [(localIdentifier: String, immichId: String)] {
+        connection.ensureInitialized()
+        var mappings: [(String, String)] = []
+        
+        connection.dbQueue.sync { [weak self] in
+            guard let self = self else { return }
+            mappings = self.getAllUploadedAssetMappingsInternal()
+        }
+        
+        return mappings
+    }
+    
+    /// Async version for background processing.
+    func getAllUploadedAssetMappingsAsync(completion: @escaping ([(localIdentifier: String, immichId: String)]) -> Void) {
+        connection.dbQueue.async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion([]) }
+                return
+            }
+            self.connection.ensureInitialized()
+            let mappings = self.getAllUploadedAssetMappingsInternal()
+            DispatchQueue.main.async {
+                completion(mappings)
+            }
+        }
+    }
+    
+    private func getAllUploadedAssetMappingsInternal() -> [(localIdentifier: String, immichId: String)] {
+        let sql = """
+        SELECT DISTINCT asset_id, immich_id FROM uploaded_assets
+        WHERE asset_id != '' AND asset_id IS NOT NULL
+        AND immich_id != '' AND immich_id IS NOT NULL
+        AND resource_type = 'primary';
+        """
+        var statement: OpaquePointer?
+        var mappings: [(String, String)] = []
+        
+        if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let localIdPtr = sqlite3_column_text(statement, 0),
+                   let immichIdPtr = sqlite3_column_text(statement, 1) {
+                    let localId = String(cString: localIdPtr)
+                    let immichId = String(cString: immichIdPtr)
+                    if !localId.isEmpty && !immichId.isEmpty {
+                        mappings.append((localId, immichId))
+                    }
+                }
+            }
+        }
+        
+        sqlite3_finalize(statement)
+        return mappings
+    }
 }

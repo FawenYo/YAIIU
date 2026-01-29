@@ -192,6 +192,11 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                    
+                    // iCloud ID Sync button
+                    if #available(iOS 16, *) {
+                        CloudIdSyncButton()
+                    }
                 }
                 
                 Section(header: Text(L10n.Settings.logs)) {
@@ -584,6 +589,65 @@ struct NetworkSettingsView: View {
     private func openLocationSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
+        }
+    }
+}
+
+// MARK: - iCloud ID Sync Button
+
+@available(iOS 16, *)
+struct CloudIdSyncButton: View {
+    @EnvironmentObject var settingsManager: SettingsManager
+    @EnvironmentObject var migrationManager: MigrationManager
+    
+    var body: some View {
+        Button(action: {
+            Task {
+                await migrationManager.triggerCloudIdSync(settingsManager: settingsManager)
+            }
+        }) {
+            HStack {
+                Image(systemName: "icloud.and.arrow.up")
+                    .foregroundColor(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.CloudIdSync.title)
+                        .foregroundColor(.primary)
+                    statusText
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                if migrationManager.isSyncingCloudIds {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
+            }
+        }
+        .disabled(migrationManager.isSyncingCloudIds)
+    }
+    
+    @ViewBuilder
+    private var statusText: some View {
+        if migrationManager.isSyncingCloudIds {
+            Text(migrationManager.cloudIdSyncStatus.isEmpty ? L10n.CloudIdSync.syncing : migrationManager.cloudIdSyncStatus)
+        } else if let result = migrationManager.cloudIdSyncResult {
+            switch result {
+            case .success(let count):
+                if count > 0 {
+                    Text(L10n.CloudIdSync.success(count))
+                        .foregroundColor(.green)
+                } else {
+                    Text(L10n.CloudIdSync.noAssets)
+                }
+            case .error(let message):
+                Text(L10n.CloudIdSync.error(message))
+                    .foregroundColor(.red)
+            }
+        } else if SharedSettings.shared.cloudIdSyncCompleted {
+            Text(L10n.CloudIdSync.completed)
+                .foregroundColor(.green)
+        } else {
+            Text(L10n.CloudIdSync.description)
         }
     }
 }

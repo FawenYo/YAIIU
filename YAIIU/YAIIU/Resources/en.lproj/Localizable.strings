@@ -233,3 +233,14 @@
 "photoDetail.fileNameUnknown" = "Unknown";
 "photoDetail.openInMaps" = "Open";
 "photoDetail.previewRequiresAssets" = "Preview requires a real PHAsset array";
+
+// MARK: - iCloud ID Sync
+"cloudIdSync.title" = "Sync iCloud IDs";
+"cloudIdSync.description" = "Upload iCloud identifiers for photos already on the server. This helps with cross-device deduplication.";
+"cloudIdSync.button" = "Sync iCloud IDs";
+"cloudIdSync.syncing" = "Syncing...";
+"cloudIdSync.completed" = "Completed";
+"cloudIdSync.success" = "Updated %d assets";
+"cloudIdSync.noAssets" = "No assets to sync";
+"cloudIdSync.error" = "Sync failed: %@";
+"cloudIdSync.requiresIOS16" = "Requires iOS 16 or later";

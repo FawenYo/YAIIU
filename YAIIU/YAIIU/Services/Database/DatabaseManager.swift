@@ -238,6 +238,18 @@ final class DatabaseManager {
         serverRepo.getSyncMetadata()
     }
     
+    func getServerAssetByICloudId(_ iCloudId: String) -> ServerAssetRecord? {
+        serverRepo.getServerAssetByICloudId(iCloudId)
+    }
+    
+    func getChecksumByICloudId(_ iCloudId: String) -> String? {
+        serverRepo.getChecksumByICloudId(iCloudId)
+    }
+    
+    func getChecksumsByICloudIds(_ iCloudIds: [String]) -> [String: String] {
+        serverRepo.getChecksumsByICloudIds(iCloudIds)
+    }
+    
     // MARK: - Favorite Sync Management
     
     func getUploadedAssetsFavoriteStatus() -> [UploadedAssetFavoriteInfo] {
