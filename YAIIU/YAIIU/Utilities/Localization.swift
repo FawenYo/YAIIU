@@ -18,7 +18,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .system:
-            return NSLocalizedString("language.system", bundle: LanguageManager.shared.bundle, comment: "")
+            return "language.system".localized
         case .english:
             return "English"
         case .traditionalChinese:
@@ -113,13 +113,8 @@ extension String {
         if localizedString == self && customBundle != .main {
             if let enPath = Bundle.main.path(forResource: "en", ofType: "lproj"),
                let enBundle = Bundle(path: enPath) {
-                let enLocalizedString = NSLocalizedString(self, bundle: enBundle, comment: "")
-                if enLocalizedString != self {
-                    return enLocalizedString
-                }
+                return NSLocalizedString(self, bundle: enBundle, comment: "")
             }
-            // Fallback to main bundle if English translation is also missing or bundle not found
-            return NSLocalizedString(self, bundle: .main, comment: "")
         }
         
         return localizedString
