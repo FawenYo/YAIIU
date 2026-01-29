@@ -241,6 +241,5 @@
 "cloudIdSync.syncing" = "同步中...";
 "cloudIdSync.completed" = "已完成";
 "cloudIdSync.success" = "已更新 %d 筆資產";
-"cloudIdSync.noAssets" = "沒有需要同步的資產";
 "cloudIdSync.error" = "同步失敗: %@";
 "cloudIdSync.requiresIOS16" = "需要 iOS 16 或更新版本";

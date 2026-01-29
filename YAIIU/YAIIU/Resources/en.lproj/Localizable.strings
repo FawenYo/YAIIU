@@ -241,6 +241,5 @@
 "cloudIdSync.syncing" = "Syncing...";
 "cloudIdSync.completed" = "Completed";
 "cloudIdSync.success" = "Updated %d assets";
-"cloudIdSync.noAssets" = "No assets to sync";
 "cloudIdSync.error" = "Sync failed: %@";
 "cloudIdSync.requiresIOS16" = "Requires iOS 16 or later";

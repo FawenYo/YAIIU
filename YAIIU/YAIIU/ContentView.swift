@@ -637,7 +637,9 @@ struct CloudIdSyncButton: View {
                     Text(L10n.CloudIdSync.success(count))
                         .foregroundColor(.green)
                 } else {
-                    Text(L10n.CloudIdSync.noAssets)
+                    // Show "Completed" instead of "No assets" to avoid user confusion
+                    Text(L10n.CloudIdSync.completed)
+                        .foregroundColor(.green)
                 }
             case .error(let message):
                 Text(L10n.CloudIdSync.error(message))

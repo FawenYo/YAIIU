@@ -317,7 +317,6 @@ enum L10n {
         static func success(_ count: Int) -> String {
             return "cloudIdSync.success".localized(with: count)
         }
-        static let noAssets = "cloudIdSync.noAssets".localized
         static func error(_ message: String) -> String {
             return "cloudIdSync.error".localized(with: message)
         }
