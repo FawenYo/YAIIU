@@ -341,17 +341,16 @@ final class UploadRecordRepository {
     }
     
     /// Async version for background processing.
+    /// Note: completion is called on the database queue, not the main queue.
     func getAllUploadedAssetMappingsAsync(completion: @escaping ([(localIdentifier: String, immichId: String)]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
-                DispatchQueue.main.async { completion([]) }
+                completion([])
                 return
             }
             self.connection.ensureInitialized()
             let mappings = self.getAllUploadedAssetMappingsInternal()
-            DispatchQueue.main.async {
-                completion(mappings)
-            }
+            completion(mappings)
         }
     }
     
