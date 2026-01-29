@@ -46,7 +46,7 @@ final class CloudIdSyncService {
         
         // Collect local identifiers
         let localIdentifiers = mappings.map { $0.localIdentifier }
-        let localToImmich = Dictionary(uniqueKeysWithValues: mappings)
+        let localToImmich = Dictionary(mappings, uniquingKeysWith: { first, _ in first })
         
         // Get iCloud IDs in batches to avoid memory pressure
         var allCloudIds: [String: String] = [:]
