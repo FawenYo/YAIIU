@@ -49,6 +49,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 }
 
 // MARK: - Language Manager
+@MainActor
 final class LanguageManager: ObservableObject {
     static let shared = LanguageManager()
     
