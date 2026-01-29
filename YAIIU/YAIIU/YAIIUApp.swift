@@ -55,7 +55,9 @@ final class MigrationManager: ObservableObject {
             needsCloudIdSync = isVersionLessThan(last, "0.1.0")
         } else {
             // No previous version recorded - check if there are uploaded assets
-            let hasUploadedAssets = UploadRecordRepository().getUploadedCount() > 0
+            let hasUploadedAssets = await Task.detached {
+                UploadRecordRepository().getUploadedCount() > 0
+            }.value
             needsCloudIdSync = hasUploadedAssets
         }
         
