@@ -109,8 +109,12 @@ extension String {
         let customBundle = LanguageManager.shared.bundle
         let localizedString = NSLocalizedString(self, bundle: customBundle, comment: "")
         
-        // Fallback to main bundle if a translation is missing in the custom bundle
+        // Fallback to English (base) bundle if a translation is missing in the custom bundle
         if localizedString == self && customBundle != .main {
+            if let enPath = Bundle.main.path(forResource: "en", ofType: "lproj"),
+               let enBundle = Bundle(path: enPath) {
+                return NSLocalizedString(self, bundle: enBundle, comment: "")
+            }
             return NSLocalizedString(self, bundle: .main, comment: "")
         }
         
