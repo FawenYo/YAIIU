@@ -105,12 +105,6 @@ class HashManager: ObservableObject {
             var remainingIdentifiers: [String] = []
             var matchCount = 0
             
-            let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
-            var assetMap: [String: PHAsset] = [:]
-            fetchResult.enumerateObjects { asset, _, _ in
-                assetMap[asset.localIdentifier] = asset
-            }
-            
             let iCloudIdMap = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: identifiers)
             
             var identifierToICloudId: [String: String] = [:]
