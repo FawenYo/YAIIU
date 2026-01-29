@@ -628,9 +628,6 @@ struct PhotoGridView: View {
         if currentFilter == .notUploaded {
             refreshFilterCache()
         }
-        
-        // Start background processing unconditionally after refresh
-        startBackgroundProcessing()
     }
     
     
@@ -747,13 +744,11 @@ struct PhotoGridView: View {
             logInfo("Auto sync completed: \(syncResult.syncType), total: \(syncResult.totalAssets), upserted: \(syncResult.upsertedCount), deleted: \(syncResult.deletedCount)", category: .sync)
             
             hashManager.refreshStatusCache()
-            startBackgroundProcessing()
             
         case .failure(let error):
             logError("Auto sync failed: \(error.localizedDescription)", category: .sync)
-            // Start background processing even if sync fails (for local hashing)
-            startBackgroundProcessing()
         }
+        startBackgroundProcessing()
     }
 }
 
