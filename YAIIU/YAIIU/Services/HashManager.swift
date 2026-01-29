@@ -65,22 +65,25 @@ class HashManager: ObservableObject {
         DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
             guard let self = self else { return }
             
-            if needingHash.isEmpty {
-                self.statusMessage = "Checking cloud status..."
-                self.startServerCheck()
-            } else {
-                self.tryICloudIdMatching(identifiers: needingHash) { remainingNeedingHash in
-                    if remainingNeedingHash.isEmpty {
-                        self.statusMessage = "Checking cloud status..."
-                        self.startServerCheck()
-                    } else {
-                        self.processingQueue = remainingNeedingHash
-                        self.totalAssetsToProcess = remainingNeedingHash.count
-                        self.processedAssetsCount = 0
-                        self.processingProgress = 0
-                        self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
-                        
-                        self.processHashItemsParallel()
+            // Ensure UI updates happen on main thread
+            Task { @MainActor in
+                if needingHash.isEmpty {
+                    self.statusMessage = "Checking cloud status..."
+                    self.startServerCheck()
+                } else {
+                    self.tryICloudIdMatching(identifiers: needingHash) { remainingNeedingHash in
+                        if remainingNeedingHash.isEmpty {
+                            self.statusMessage = "Checking cloud status..."
+                            self.startServerCheck()
+                        } else {
+                            self.processingQueue = remainingNeedingHash
+                            self.totalAssetsToProcess = remainingNeedingHash.count
+                            self.processedAssetsCount = 0
+                            self.processingProgress = 0
+                            self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
+                            
+                            self.processHashItemsParallel()
+                        }
                     }
                 }
             }
@@ -295,16 +298,19 @@ class HashManager: ObservableObject {
         DatabaseManager.shared.getMultiResourceHashesNotFullyOnServerAsync { [weak self] records in
             guard let self = self else { return }
             
-            if records.isEmpty {
-                self.finishProcessing()
-                return
+            // Ensure UI updates happen on main thread
+            Task { @MainActor in
+                if records.isEmpty {
+                    self.finishProcessing()
+                    return
+                }
+                
+                self.totalAssetsToProcess = records.count
+                self.processedAssetsCount = 0
+                self.statusMessage = "Checking cloud status (0/\(records.count))..."
+                
+                self.checkMultiResourceHashesAgainstCache(records: records)
             }
-            
-            self.totalAssetsToProcess = records.count
-            self.processedAssetsCount = 0
-            self.statusMessage = "Checking cloud status (0/\(records.count))..."
-            
-            self.checkMultiResourceHashesAgainstCache(records: records)
         }
     }
     
