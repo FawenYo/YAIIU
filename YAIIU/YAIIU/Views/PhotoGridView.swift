@@ -29,6 +29,15 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Preference Keys
+
+private struct FirstRowOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 // MARK: - Date Formatting
 
 private enum DateFormatting {
@@ -306,8 +315,9 @@ struct PhotoGridView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .onDisappear {
-                visibleIndices.removeAll()
-                isFirstItemVisible = true
+                visibleDisplayIndices.removeAll()
+                currentVisibleDate = ""
+                firstRowTopOffset = 0
             }
         }
     }
@@ -315,18 +325,16 @@ struct PhotoGridView: View {
     // MARK: - Grid View with Dynamic Title
     
     @State private var currentVisibleDate: String = ""
-    @State private var visibleIndices: Set<Int> = []
-    @State private var isFirstItemVisible: Bool = true
+    @State private var visibleDisplayIndices: Set<Int> = []
+    @State private var firstRowTopOffset: CGFloat = 0
     
-    /// Navigation title: shows "Photo Library" when first item visible, date otherwise
+    /// Navigation title: shows "Photo Library" when first row top is visible, date otherwise
     private var navigationTitle: String {
-        // Show "Photo Library" when the first item (index 0) is visible
-        if isFirstItemVisible {
-            return L10n.PhotoGrid.title
-        }
-        // Show date when scrolled away from top
-        if !currentVisibleDate.isEmpty {
-            return currentVisibleDate
+        // Show date when first row has scrolled past the top edge
+        if firstRowTopOffset < 0 {
+            if !currentVisibleDate.isEmpty {
+                return currentVisibleDate
+            }
         }
         return L10n.PhotoGrid.title
     }
@@ -337,33 +345,45 @@ struct PhotoGridView: View {
                 ForEach(0..<displayCount, id: \.self) { displayIndex in
                     let actualIndex = resolveActualIndex(displayIndex)
                     gridItemView(assetIndex: actualIndex, displayIndex: displayIndex)
+                        .background(
+                            // Track first row position using GeometryReader
+                            displayIndex == 0 ? AnyView(firstRowTracker) : AnyView(EmptyView())
+                        )
                 }
             }
             .padding(.horizontal, 1)
             .id(refreshToken)
         }
+        .coordinateSpace(name: "scrollView")
         .refreshable {
             await refreshPhotosAsync()
         }
     }
     
+    /// Invisible view to track the first row's position relative to scroll view
+    private var firstRowTracker: some View {
+        GeometryReader { geo in
+            Color.clear
+                .preference(
+                    key: FirstRowOffsetKey.self,
+                    value: geo.frame(in: .named("scrollView")).minY
+                )
+        }
+        .onPreferenceChange(FirstRowOffsetKey.self) { offset in
+            firstRowTopOffset = offset
+        }
+    }
+    
     private func updateVisibleDate(for displayIndex: Int, assetIndex: Int, isAppearing: Bool) {
-        // Track visible indices
         if isAppearing {
-            visibleIndices.insert(displayIndex)
+            visibleDisplayIndices.insert(displayIndex)
         } else {
-            visibleIndices.remove(displayIndex)
+            visibleDisplayIndices.remove(displayIndex)
         }
         
-        // Update isFirstItemVisible based on whether index 0 is in the visible set
-        let firstVisible = visibleIndices.contains(0)
-        if firstVisible != isFirstItemVisible {
-            isFirstItemVisible = firstVisible
-        }
-        
-        // Update date text for the topmost visible item
-        guard let minVisible = visibleIndices.min() else { return }
-        let minAssetIndex = resolveActualIndex(minVisible)
+        // Update date text based on current minimum visible item
+        guard let minDisplayIndex = visibleDisplayIndices.min() else { return }
+        let minAssetIndex = resolveActualIndex(minDisplayIndex)
         guard let date = photoLibraryManager.creationDate(at: minAssetIndex) else { return }
         
         let newText = DateFormatting.formatSectionDate(date)
@@ -599,6 +619,11 @@ struct PhotoGridView: View {
         Task { @MainActor in
             // Small delay allows refresh indicator animation to complete first
             try? await Task.sleep(nanoseconds: 50_000_000)
+            
+            // Reset scroll tracking state before refreshing grid
+            visibleDisplayIndices.removeAll()
+            currentVisibleDate = ""
+            firstRowTopOffset = 0
             
             refreshToken = UUID()
             
