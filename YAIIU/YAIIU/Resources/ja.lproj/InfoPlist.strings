@@ -1,0 +1,8 @@
+/* 
+  InfoPlist.strings (Japanese)
+  YAIIU
+*/
+
+"NSPhotoLibraryUsageDescription" = "Immichサーバーにアップロードする写真を選択するには、写真ライブラリへのアクセスが必要です";
+"NSPhotoLibraryAddUsageDescription" = "Immichサーバーにアップロードする写真を選択するには、写真ライブラリへのアクセスが必要です";
+"CFBundleDisplayName" = "YAIIU";

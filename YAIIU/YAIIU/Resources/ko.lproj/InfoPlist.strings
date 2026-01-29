@@ -1,0 +1,8 @@
+/* 
+  InfoPlist.strings (Korean)
+  YAIIU
+*/
+
+"NSPhotoLibraryUsageDescription" = "Immich 서버에 업로드할 사진을 선택하려면 사진 라이브러리에 대한 접근 권한이 필요합니다";
+"NSPhotoLibraryAddUsageDescription" = "Immich 서버에 업로드할 사진을 선택하려면 사진 라이브러리에 대한 접근 권한이 필요합니다";
+"CFBundleDisplayName" = "YAIIU";

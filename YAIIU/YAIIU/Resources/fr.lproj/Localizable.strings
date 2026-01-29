@@ -1,0 +1,261 @@
+/* 
+  Localizable.strings (French)
+  YAIIU
+*/
+
+// MARK: - Tab Items
+"tab.photos" = "Photos";
+"tab.upload" = "Téléverser";
+"tab.settings" = "Réglages";
+
+// MARK: - Login View
+"login.title" = "YAIIU";
+"login.subtitle" = "Téléversez vos photos sur le serveur Immich";
+"login.serverURL" = "URL du serveur (externe)";
+"login.serverURL.placeholder" = "Ex. : https://immich.example.com";
+"login.internalServerURL" = "URL du serveur interne";
+"login.internalServerURL.placeholder" = "Ex. : http://192.168.1.100:2283";
+"login.internalServerURL.hint" = "Optionnel. Utilisé lorsque vous êtes connecté à votre réseau local pour des téléversements plus rapides.";
+"login.advancedSettings" = "Réglages avancés";
+"login.apiKey" = "Clé API";
+"login.apiKey.placeholder" = "Entrez votre clé API";
+"login.button" = "Connexion";
+"login.button.connecting" = "Connexion en cours...";
+"login.error.title" = "Erreur de connexion";
+"login.error.invalidApiKey" = "Impossible de valider la clé API, veuillez vérifier si votre clé API est correcte";
+"login.error.connectionFailed" = "Impossible de se connecter au serveur : %@";
+"login.error.ok" = "OK";
+"login.backgroundUploadNote.title" = "💡 Note sur le téléversement en arrière-plan iOS 26.1+";
+"login.backgroundUploadNote.message" = "Si vous utilisez iOS 26.1 ou version ultérieure et souhaitez utiliser la fonction de téléversement en arrière-plan, vous devez déployer immich-proxy séparément.";
+"login.backgroundUploadNote.learnMore" = "En savoir plus";
+"login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
+
+// MARK: - Settings View
+"settings.title" = "Réglages";
+"settings.serverInfo" = "Informations du serveur";
+"settings.serverURL" = "URL du serveur";
+"settings.networkSettings" = "Paramètres réseau";
+"settings.currentStatus" = "État actuel";
+"settings.externalServerURL" = "URL du serveur externe";
+"settings.externalServerURL.placeholder" = "Ex. : https://immich.example.com";
+"settings.externalServerURL.hint" = "L'URL publique utilisée pour accéder à votre serveur Immich depuis l'extérieur de votre réseau.";
+"settings.internalServerURL" = "URL du serveur interne";
+"settings.internalServerURL.placeholder" = "Ex. : http://192.168.1.100:2283";
+"settings.internalServerURL.hint" = "Optionnel. Utilisé lorsque vous êtes connecté à votre réseau local pour des téléversements plus rapides.";
+"settings.notConfigured" = "Non configuré";
+"settings.edit" = "Modifier";
+"settings.save" = "Enregistrer";
+"settings.cancel" = "Annuler";
+"settings.apiKey" = "Clé API";
+"settings.internalNetworkSettings" = "Paramètres du réseau interne";
+"settings.wifiSSID" = "Nom du réseau WiFi";
+"settings.wifiSSID.placeholder" = "Ex. : MaisonWiFi";
+"settings.wifiSSID.hint" = "Lorsque vous êtes connecté à ce réseau WiFi, l'URL du serveur interne sera utilisée.";
+"settings.wifiNotDetected" = "WiFi non détecté";
+"settings.useCurrentWiFi" = "Utiliser le WiFi actuel";
+"settings.clearInternalNetwork" = "Effacer les paramètres du réseau interne";
+"settings.locationPermissionRequired" = "Autorisation de localisation requise";
+"settings.locationPermissionHint" = "iOS nécessite l'autorisation de localisation pour détecter le nom du réseau WiFi. Cela est utilisé pour basculer automatiquement entre les URL de serveur interne et externe.";
+"settings.grantLocationPermission" = "Accorder l'autorisation de localisation";
+"settings.preciseLocationRequired" = "Localisation précise requise";
+"settings.preciseLocationHint" = "iOS nécessite une localisation précise pour détecter le nom du réseau WiFi. Veuillez activer « Localisation précise » dans Réglages > Confidentialité > Services de localisation > YAIIU.";
+"settings.openSettings" = "Ouvrir les réglages";
+"settings.usingInternalNetwork" = "Réseau interne";
+"settings.usingExternalNetwork" = "Réseau externe";
+"settings.statistics" = "Statistiques";
+"settings.uploadedCount" = "Photos téléversées";
+"settings.cachedHashCount" = "Hachages en cache";
+"settings.confirmedOnCloud" = "Confirmé dans le cloud";
+"settings.dataManagement" = "Gestion des données";
+"settings.importImmichData" = "Importer les données de l'app Immich";
+"settings.logout" = "Déconnexion";
+"settings.logout.confirm.title" = "Confirmer la déconnexion";
+"settings.logout.confirm.message" = "Êtes-vous sûr de vouloir vous déconnecter ?";
+"settings.logout.cancel" = "Annuler";
+"settings.logs" = "Journaux";
+"settings.logCount" = "Entrées de journal";
+"settings.logFileSize" = "Taille du fichier journal";
+"settings.viewLogs" = "Voir les journaux";
+"settings.exportLogs" = "Exporter les journaux";
+"settings.clearLogs" = "Effacer les journaux";
+"settings.clearLogs.confirm.title" = "Effacer les journaux";
+"settings.clearLogs.confirm.message" = "Êtes-vous sûr de vouloir effacer tous les journaux ? Cette action ne peut pas être annulée.";
+"settings.clearLogs.cancel" = "Annuler";
+"settings.appVersion" = "Version";
+"settings.searchLogs" = "Rechercher dans les journaux...";
+"settings.filterAll" = "Tous";
+"settings.refreshLogs" = "Actualiser";
+"settings.scrollToBottom" = "Défiler vers le bas";
+"settings.noLogsAvailable" = "Aucun journal disponible";
+"settings.language" = "Langue";
+"settings.languageSection" = "Paramètres de langue";
+"settings.currentLanguage" = "Langue actuelle";
+"settings.changeLanguage" = "Changer la langue";
+"settings.systemDefault" = "Par défaut du système";
+
+// MARK: - Photo Grid View
+"photoGrid.title" = "Bibliothèque de photos";
+"photoGrid.select" = "Sélectionner";
+"photoGrid.cancel" = "Annuler";
+"photoGrid.upload" = "Téléverser (%d)";
+"photoGrid.confirm.title" = "Confirmer le téléversement";
+"photoGrid.confirm.message" = "Êtes-vous sûr de vouloir téléverser %d photos/vidéos ?";
+"photoGrid.confirm.cancel" = "Annuler";
+"photoGrid.confirm.upload" = "Téléverser";
+"photoGrid.processing.preparing" = "Préparation";
+"photoGrid.processing.comparing" = "Comparaison %d/%d";
+"photoGrid.processing.checking" = "Vérification";
+"photoGrid.processing.default" = "...";
+"photoGrid.permission.title" = "Accès à la bibliothèque de photos requis";
+"photoGrid.permission.message" = "Veuillez accorder l'accès à la bibliothèque de photos pour sélectionner des photos à téléverser";
+"photoGrid.permission.grant" = "Accorder l'accès";
+"photoGrid.permission.denied.title" = "Impossible d'accéder à la bibliothèque de photos";
+"photoGrid.permission.denied.message" = "Veuillez autoriser l'accès à la bibliothèque de photos dans les réglages";
+"photoGrid.permission.openSettings" = "Ouvrir les réglages";
+"photoGrid.filter.all" = "Toutes les photos";
+"photoGrid.filter.notUploaded" = "Non téléversées";
+"photoGrid.filter.active" = "Affichage de %d éléments";
+"photoGrid.section.today" = "Aujourd'hui";
+"photoGrid.section.yesterday" = "Hier";
+
+// MARK: - Upload Progress View
+"uploadProgress.title" = "Progression du téléversement";
+"uploadProgress.pause" = "Pause";
+"uploadProgress.resume" = "Reprendre";
+"uploadProgress.empty.title" = "Aucun élément en cours de téléversement";
+"uploadProgress.empty.message" = "Sélectionnez des photos et appuyez sur téléverser pour commencer";
+"uploadProgress.empty.success" = "%d éléments téléversés avec succès";
+"uploadProgress.overall" = "Progression du téléversement";
+"uploadProgress.uploading" = "Téléversement en cours...";
+"uploadProgress.paused" = "En pause";
+"uploadProgress.files" = "(%d/%d fichiers)";
+"uploadProgress.fileCount" = "%d fichiers";
+"uploadProgress.video" = "Vidéo";
+
+// MARK: - Upload Item Status
+"uploadStatus.pending" = "En attente";
+"uploadStatus.uploading" = "Téléversement %d%%";
+"uploadStatus.completed" = "Terminé";
+"uploadStatus.failed" = "Échec";
+
+// MARK: - Import Database View
+"import.title" = "Importer les données de hachage";
+"import.cancel" = "Annuler";
+"import.done" = "Terminé";
+"import.instruction.title" = "Instructions";
+"import.instruction.description" = "Cette fonctionnalité vous permet d'importer des données de hachage pré-calculées depuis l'app Immich iOS, évitant ainsi de recalculer tous les hachages de photos.";
+"import.instruction.step1" = "Dans l'app Immich iOS, appuyez sur l'avatar utilisateur en haut à droite et allez dans Réglages";
+"import.instruction.step2" = "Sélectionnez État de synchronisation, puis appuyez sur Exporter la base de données pour enregistrer le fichier SQLite dans l'app Fichiers";
+"import.instruction.step3" = "Appuyez sur le bouton ci-dessous et sélectionnez le fichier SQLite exporté pour l'importer";
+"import.selectFile" = "Sélectionner le fichier SQLite";
+"import.reselectFile" = "Sélectionner un autre fichier";
+"import.validation.success" = "Validation du fichier réussie";
+"import.validation.failed" = "Validation du fichier échouée";
+"import.validation.recordCount" = "Enregistrements disponibles pour l'import :";
+"import.validation.records" = "%d enregistrements";
+"import.statistics.title" = "Statistiques de la base de données";
+"import.statistics.totalAssets" = "Total des ressources";
+"import.statistics.assetsWithHash" = "Ressources avec hachage";
+"import.statistics.imageCount" = "Nombre d'images";
+"import.statistics.videoCount" = "Nombre de vidéos";
+"import.statistics.serverSync" = "État de synchronisation du serveur";
+"import.statistics.remoteAssets" = "Ressources sur le serveur";
+"import.statistics.localSynced" = "Synchronisé localement";
+"import.import.button" = "Démarrer l'importation";
+"import.import.importing" = "Importation en cours...";
+"import.import.progress" = "%d / %d enregistrements traités";
+"import.result.success" = "Importation terminée";
+"import.result.error" = "Erreur d'importation";
+"import.result.totalRecords" = "Enregistrements lus :";
+"import.result.importedRecords" = "Importés avec succès :";
+"import.result.alreadyOnServer" = "Déjà sur le serveur :";
+"import.result.skippedRecords" = "Enregistrements ignorés :";
+"import.result.tip" = "💡 Les photos/vidéos déjà sur le serveur ne seront pas téléversées à nouveau";
+"import.alert.ok" = "OK";
+"import.alert.importFailed" = "Échec de l'importation";
+
+// MARK: - Onboarding Import View
+"onboarding.title" = "Importer des données existantes ?";
+"onboarding.description" = "Si vous avez précédemment utilisé l'app Immich iOS, vous pouvez importer sa base de données pour éviter de recalculer tous les hachages de photos.";
+"onboarding.import.button" = "Importer depuis l'app Immich";
+"onboarding.import.description" = "Importer des données de hachage pré-calculées";
+"onboarding.skip" = "Ignorer pour l'instant";
+"onboarding.continue" = "Continuer";
+"onboarding.changeFile" = "Modifier";
+"onboarding.validation.success" = "%d enregistrements trouvés prêts à importer";
+"onboarding.startImport" = "Démarrer l'importation";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "Téléversement en arrière-plan";
+"backgroundUpload.settingsTitle" = "Paramètres de téléversement en arrière-plan";
+"backgroundUpload.enabled" = "Activé";
+"backgroundUpload.disabled" = "Désactivé";
+"backgroundUpload.description" = "Lorsqu'activé, les nouvelles photos seront automatiquement téléversées sur le serveur Immich en arrière-plan";
+"backgroundUpload.requiresIOS26" = "Nécessite iOS 26.1 ou version ultérieure";
+"backgroundUpload.section.autoUpload" = "Téléversement automatique";
+"backgroundUpload.section.statistics" = "Statistiques";
+"backgroundUpload.section.debug" = "Débogage";
+"backgroundUpload.uploadedCount" = "Nombre téléversé";
+"backgroundUpload.pendingCount" = "En attente";
+"backgroundUpload.viewLogs" = "Voir les journaux";
+"backgroundUpload.clearLogs" = "Effacer les journaux";
+"backgroundUpload.logsTitle" = "Journaux de téléversement en arrière-plan";
+"backgroundUpload.noLogs" = "Aucun journal disponible";
+"backgroundUpload.notSupported" = "Fonctionnalité non supportée";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "L'accès complet à la bibliothèque de photos est requis pour activer le téléversement en arrière-plan";
+"backgroundUpload.error.notLoggedIn" = "Veuillez d'abord vous connecter au serveur Immich";
+"backgroundUpload.error.extensionNotAvailable" = "L'extension de téléversement en arrière-plan n'est pas disponible";
+
+// MARK: - Initial Setup View
+"initialSetup.title" = "Configuration";
+"initialSetup.description" = "Préparation de votre app pour la première utilisation";
+"initialSetup.syncing" = "Synchronisation avec le serveur";
+"initialSetup.syncingDescription" = "Récupération des données de votre bibliothèque de photos...";
+"initialSetup.completed" = "Synchronisation terminée";
+"initialSetup.completedDescription" = "Les données de votre serveur ont été synchronisées avec succès";
+"initialSetup.failed" = "Échec de la synchronisation";
+"initialSetup.failedDescription" = "Une erreur s'est produite lors de la synchronisation";
+"initialSetup.syncedAssets" = "Ressources synchronisées";
+"initialSetup.continue" = "Continuer";
+"initialSetup.retry" = "Réessayer";
+"initialSetup.skip" = "Ignorer pour l'instant";
+"initialSetup.fetchedAssets" = "%d ressources récupérées";
+"initialSetup.phase.connecting" = "Connexion au serveur...";
+"initialSetup.phase.fetchingUserInfo" = "Récupération des informations utilisateur...";
+"initialSetup.phase.fetchingPartners" = "Récupération des partenaires partagés...";
+"initialSetup.phase.fetchingAssets" = "Récupération des ressources (%d)...";
+"initialSetup.phase.fetchingAssetsInitial" = "Récupération des ressources...";
+"initialSetup.phase.processingAssets" = "Traitement de %d ressources...";
+"initialSetup.phase.savingToDatabase" = "Enregistrement dans la base de données locale...";
+
+// MARK: - Restart Required View
+"restartRequired.title" = "Redémarrage de l'app requis";
+"restartRequired.description" = "Pour activer la fonction de téléversement en arrière-plan, veuillez redémarrer l'app";
+"restartRequired.instructions" = "Fermez complètement cette app et rouvrez-la.";
+"restartRequired.closeApp" = "Fermer l'app";
+
+// MARK: - Photo Detail View
+"photoDetail.fileNameUnknown" = "Inconnu";
+"photoDetail.openInMaps" = "Ouvrir";
+"photoDetail.previewRequiresAssets" = "L'aperçu nécessite un vrai tableau PHAsset";
+
+// MARK: - iCloud ID Sync
+"cloudIdSync.title" = "Synchroniser les identifiants iCloud";
+"cloudIdSync.description" = "Téléversez les identifiants iCloud pour les photos déjà sur le serveur. Cela aide à la déduplication entre appareils.";
+"cloudIdSync.button" = "Synchroniser les identifiants iCloud";
+"cloudIdSync.syncing" = "Synchronisation...";
+"cloudIdSync.completed" = "Terminé";
+"cloudIdSync.success" = "%d ressources mises à jour";
+"cloudIdSync.error" = "Échec de la synchronisation : %@";
+"cloudIdSync.requiresIOS16" = "Nécessite iOS 16 ou version ultérieure";
+
+// MARK: - Language Names
+"language.en" = "English";
+"language.zh-Hant" = "繁體中文";
+"language.zh-Hans" = "简体中文";
+"language.ja" = "日本語";
+"language.ko" = "한국어";
+"language.es" = "Español";
+"language.de" = "Deutsch";
+"language.fr" = "Français";
+"language.system" = "Par défaut du système";

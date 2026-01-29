@@ -1,0 +1,261 @@
+/* 
+  Localizable.strings (Japanese)
+  YAIIU
+*/
+
+// MARK: - Tab Items
+"tab.photos" = "写真";
+"tab.upload" = "アップロード";
+"tab.settings" = "設定";
+
+// MARK: - Login View
+"login.title" = "YAIIU";
+"login.subtitle" = "写真をImmichサーバーにアップロード";
+"login.serverURL" = "サーバーURL（外部）";
+"login.serverURL.placeholder" = "例: https://immich.example.com";
+"login.internalServerURL" = "内部サーバーURL";
+"login.internalServerURL.placeholder" = "例: http://192.168.1.100:2283";
+"login.internalServerURL.hint" = "任意。ローカルネットワーク接続時に高速アップロードに使用されます。";
+"login.advancedSettings" = "詳細設定";
+"login.apiKey" = "APIキー";
+"login.apiKey.placeholder" = "APIキーを入力";
+"login.button" = "ログイン";
+"login.button.connecting" = "接続中...";
+"login.error.title" = "接続エラー";
+"login.error.invalidApiKey" = "APIキーを検証できません。APIキーが正しいか確認してください";
+"login.error.connectionFailed" = "サーバーに接続できません: %@";
+"login.error.ok" = "OK";
+"login.backgroundUploadNote.title" = "💡 iOS 26.1以降のバックグラウンドアップロードについて";
+"login.backgroundUploadNote.message" = "iOS 26.1以降でバックグラウンドアップロード機能を使用するには、immich-proxyを別途デプロイする必要があります。";
+"login.backgroundUploadNote.learnMore" = "詳細";
+"login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
+
+// MARK: - Settings View
+"settings.title" = "設定";
+"settings.serverInfo" = "サーバー情報";
+"settings.serverURL" = "サーバーURL";
+"settings.networkSettings" = "ネットワーク設定";
+"settings.currentStatus" = "現在の状態";
+"settings.externalServerURL" = "外部サーバーURL";
+"settings.externalServerURL.placeholder" = "例: https://immich.example.com";
+"settings.externalServerURL.hint" = "外部ネットワークからImmichサーバーにアクセスするための公開URL。";
+"settings.internalServerURL" = "内部サーバーURL";
+"settings.internalServerURL.placeholder" = "例: http://192.168.1.100:2283";
+"settings.internalServerURL.hint" = "任意。ローカルネットワーク接続時に高速アップロードに使用されます。";
+"settings.notConfigured" = "未設定";
+"settings.edit" = "編集";
+"settings.save" = "保存";
+"settings.cancel" = "キャンセル";
+"settings.apiKey" = "APIキー";
+"settings.internalNetworkSettings" = "内部ネットワーク設定";
+"settings.wifiSSID" = "WiFiネットワーク名";
+"settings.wifiSSID.placeholder" = "例: HomeWiFi";
+"settings.wifiSSID.hint" = "このWiFiネットワークに接続すると、内部サーバーURLが使用されます。";
+"settings.wifiNotDetected" = "WiFiが検出されません";
+"settings.useCurrentWiFi" = "現在のWiFiを使用";
+"settings.clearInternalNetwork" = "内部ネットワーク設定をクリア";
+"settings.locationPermissionRequired" = "位置情報の許可が必要";
+"settings.locationPermissionHint" = "iOSではWiFiネットワーク名を検出するために位置情報の許可が必要です。これは内部と外部のサーバーURLを自動的に切り替えるために使用されます。";
+"settings.grantLocationPermission" = "位置情報を許可";
+"settings.preciseLocationRequired" = "正確な位置情報が必要";
+"settings.preciseLocationHint" = "iOSではWiFiネットワーク名を検出するために正確な位置情報が必要です。「設定」>「プライバシー」>「位置情報サービス」> YAIIUで「正確な位置情報」を有効にしてください。";
+"settings.openSettings" = "設定を開く";
+"settings.usingInternalNetwork" = "内部ネットワーク";
+"settings.usingExternalNetwork" = "外部ネットワーク";
+"settings.statistics" = "統計";
+"settings.uploadedCount" = "アップロード済み写真";
+"settings.cachedHashCount" = "キャッシュ済みハッシュ数";
+"settings.confirmedOnCloud" = "クラウドで確認済み";
+"settings.dataManagement" = "データ管理";
+"settings.importImmichData" = "Immichアプリデータをインポート";
+"settings.logout" = "ログアウト";
+"settings.logout.confirm.title" = "ログアウトの確認";
+"settings.logout.confirm.message" = "ログアウトしてもよろしいですか？";
+"settings.logout.cancel" = "キャンセル";
+"settings.logs" = "ログ";
+"settings.logCount" = "ログエントリ数";
+"settings.logFileSize" = "ログファイルサイズ";
+"settings.viewLogs" = "ログを表示";
+"settings.exportLogs" = "ログをエクスポート";
+"settings.clearLogs" = "ログをクリア";
+"settings.clearLogs.confirm.title" = "ログをクリア";
+"settings.clearLogs.confirm.message" = "すべてのログをクリアしてもよろしいですか？この操作は取り消せません。";
+"settings.clearLogs.cancel" = "キャンセル";
+"settings.appVersion" = "バージョン";
+"settings.searchLogs" = "ログを検索...";
+"settings.filterAll" = "すべて";
+"settings.refreshLogs" = "更新";
+"settings.scrollToBottom" = "最下部へスクロール";
+"settings.noLogsAvailable" = "ログがありません";
+"settings.language" = "言語";
+"settings.languageSection" = "言語設定";
+"settings.currentLanguage" = "現在の言語";
+"settings.changeLanguage" = "言語を変更";
+"settings.systemDefault" = "システム設定に従う";
+
+// MARK: - Photo Grid View
+"photoGrid.title" = "写真ライブラリ";
+"photoGrid.select" = "選択";
+"photoGrid.cancel" = "キャンセル";
+"photoGrid.upload" = "アップロード (%d)";
+"photoGrid.confirm.title" = "アップロードの確認";
+"photoGrid.confirm.message" = "%d枚の写真/動画をアップロードしてもよろしいですか？";
+"photoGrid.confirm.cancel" = "キャンセル";
+"photoGrid.confirm.upload" = "アップロード";
+"photoGrid.processing.preparing" = "準備中";
+"photoGrid.processing.comparing" = "比較中 %d/%d";
+"photoGrid.processing.checking" = "確認中";
+"photoGrid.processing.default" = "...";
+"photoGrid.permission.title" = "写真ライブラリへのアクセスが必要";
+"photoGrid.permission.message" = "アップロードする写真を選択するには、写真ライブラリへのアクセスを許可してください";
+"photoGrid.permission.grant" = "アクセスを許可";
+"photoGrid.permission.denied.title" = "写真ライブラリにアクセスできません";
+"photoGrid.permission.denied.message" = "設定で写真ライブラリへのアクセスを許可してください";
+"photoGrid.permission.openSettings" = "設定を開く";
+"photoGrid.filter.all" = "すべての写真";
+"photoGrid.filter.notUploaded" = "未アップロード";
+"photoGrid.filter.active" = "%d件を表示";
+"photoGrid.section.today" = "今日";
+"photoGrid.section.yesterday" = "昨日";
+
+// MARK: - Upload Progress View
+"uploadProgress.title" = "アップロード進捗";
+"uploadProgress.pause" = "一時停止";
+"uploadProgress.resume" = "再開";
+"uploadProgress.empty.title" = "アップロード中の項目はありません";
+"uploadProgress.empty.message" = "写真を選択してアップロードをタップして開始";
+"uploadProgress.empty.success" = "%d件のアップロードが完了しました";
+"uploadProgress.overall" = "アップロード進捗";
+"uploadProgress.uploading" = "アップロード中...";
+"uploadProgress.paused" = "一時停止中";
+"uploadProgress.files" = "(%d/%dファイル)";
+"uploadProgress.fileCount" = "%dファイル";
+"uploadProgress.video" = "動画";
+
+// MARK: - Upload Item Status
+"uploadStatus.pending" = "待機中";
+"uploadStatus.uploading" = "アップロード中 %d%%";
+"uploadStatus.completed" = "完了";
+"uploadStatus.failed" = "失敗";
+
+// MARK: - Import Database View
+"import.title" = "ハッシュデータをインポート";
+"import.cancel" = "キャンセル";
+"import.done" = "完了";
+"import.instruction.title" = "使用方法";
+"import.instruction.description" = "この機能では、Immich iOSアプリから事前に計算されたハッシュデータをインポートし、すべての写真のハッシュを再計算する必要がなくなります。";
+"import.instruction.step1" = "Immich iOSアプリで、右上のユーザーアバターをタップし、設定に移動します";
+"import.instruction.step2" = "同期状態を選択し、データベースをエクスポートをタップしてSQLiteファイルをファイルアプリに保存します";
+"import.instruction.step3" = "下のボタンをタップし、エクスポートしたSQLiteファイルを選択してインポートします";
+"import.selectFile" = "SQLiteファイルを選択";
+"import.reselectFile" = "別のファイルを選択";
+"import.validation.success" = "ファイル検証成功";
+"import.validation.failed" = "ファイル検証失敗";
+"import.validation.recordCount" = "インポート可能なレコード数:";
+"import.validation.records" = "%dレコード";
+"import.statistics.title" = "データベース統計";
+"import.statistics.totalAssets" = "総アセット数";
+"import.statistics.assetsWithHash" = "ハッシュ付きアセット";
+"import.statistics.imageCount" = "画像数";
+"import.statistics.videoCount" = "動画数";
+"import.statistics.serverSync" = "サーバー同期状態";
+"import.statistics.remoteAssets" = "サーバー上のアセット";
+"import.statistics.localSynced" = "ローカル同期済み";
+"import.import.button" = "インポート開始";
+"import.import.importing" = "インポート中...";
+"import.import.progress" = "%d / %dレコードを処理";
+"import.result.success" = "インポート完了";
+"import.result.error" = "インポートエラー";
+"import.result.totalRecords" = "読み取りレコード数:";
+"import.result.importedRecords" = "インポート成功:";
+"import.result.alreadyOnServer" = "サーバーに既存:";
+"import.result.skippedRecords" = "スキップしたレコード:";
+"import.result.tip" = "💡 サーバー上に既にある写真/動画は再アップロードされません";
+"import.alert.ok" = "OK";
+"import.alert.importFailed" = "インポート失敗";
+
+// MARK: - Onboarding Import View
+"onboarding.title" = "既存データをインポートしますか？";
+"onboarding.description" = "以前にImmich iOSアプリを使用していた場合、そのデータベースをインポートして、すべての写真のハッシュを再計算する必要がなくなります。";
+"onboarding.import.button" = "Immichアプリからインポート";
+"onboarding.import.description" = "事前計算済みのハッシュデータをインポート";
+"onboarding.skip" = "後で";
+"onboarding.continue" = "続行";
+"onboarding.changeFile" = "変更";
+"onboarding.validation.success" = "インポート可能な%dレコードが見つかりました";
+"onboarding.startImport" = "インポート開始";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "バックグラウンドアップロード";
+"backgroundUpload.settingsTitle" = "バックグラウンドアップロード設定";
+"backgroundUpload.enabled" = "有効";
+"backgroundUpload.disabled" = "無効";
+"backgroundUpload.description" = "有効にすると、新しい写真がバックグラウンドで自動的にImmichサーバーにアップロードされます";
+"backgroundUpload.requiresIOS26" = "iOS 26.1以降が必要";
+"backgroundUpload.section.autoUpload" = "自動アップロード";
+"backgroundUpload.section.statistics" = "統計";
+"backgroundUpload.section.debug" = "デバッグ";
+"backgroundUpload.uploadedCount" = "アップロード済み数";
+"backgroundUpload.pendingCount" = "待機中の数";
+"backgroundUpload.viewLogs" = "ログを表示";
+"backgroundUpload.clearLogs" = "ログをクリア";
+"backgroundUpload.logsTitle" = "バックグラウンドアップロードログ";
+"backgroundUpload.noLogs" = "ログがありません";
+"backgroundUpload.notSupported" = "機能がサポートされていません";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "バックグラウンドアップロードを有効にするには、写真ライブラリへのフルアクセス権限が必要です";
+"backgroundUpload.error.notLoggedIn" = "まずImmichサーバーにログインしてください";
+"backgroundUpload.error.extensionNotAvailable" = "バックグラウンドアップロード拡張機能が利用できません";
+
+// MARK: - Initial Setup View
+"initialSetup.title" = "セットアップ中";
+"initialSetup.description" = "初回使用の準備をしています";
+"initialSetup.syncing" = "サーバーと同期中";
+"initialSetup.syncingDescription" = "写真ライブラリデータを取得中...";
+"initialSetup.completed" = "同期完了";
+"initialSetup.completedDescription" = "サーバーデータが正常に同期されました";
+"initialSetup.failed" = "同期失敗";
+"initialSetup.failedDescription" = "同期中にエラーが発生しました";
+"initialSetup.syncedAssets" = "同期済みアセット";
+"initialSetup.continue" = "続行";
+"initialSetup.retry" = "再試行";
+"initialSetup.skip" = "後で";
+"initialSetup.fetchedAssets" = "%d件のアセットを取得";
+"initialSetup.phase.connecting" = "サーバーに接続中...";
+"initialSetup.phase.fetchingUserInfo" = "ユーザー情報を取得中...";
+"initialSetup.phase.fetchingPartners" = "共有パートナーを取得中...";
+"initialSetup.phase.fetchingAssets" = "アセットを取得中 (%d)...";
+"initialSetup.phase.fetchingAssetsInitial" = "アセットを取得中...";
+"initialSetup.phase.processingAssets" = "%d件のアセットを処理中...";
+"initialSetup.phase.savingToDatabase" = "ローカルデータベースに保存中...";
+
+// MARK: - Restart Required View
+"restartRequired.title" = "アプリの再起動が必要";
+"restartRequired.description" = "バックグラウンドアップロード機能を有効にするには、アプリを再起動してください";
+"restartRequired.instructions" = "このアプリを完全に閉じてから再度開いてください。";
+"restartRequired.closeApp" = "アプリを閉じる";
+
+// MARK: - Photo Detail View
+"photoDetail.fileNameUnknown" = "不明";
+"photoDetail.openInMaps" = "開く";
+"photoDetail.previewRequiresAssets" = "プレビューには実際のPHAsset配列が必要です";
+
+// MARK: - iCloud ID Sync
+"cloudIdSync.title" = "iCloud IDを同期";
+"cloudIdSync.description" = "サーバー上の既存の写真にiCloud識別子をアップロードします。これはデバイス間の重複排除に役立ちます。";
+"cloudIdSync.button" = "iCloud IDを同期";
+"cloudIdSync.syncing" = "同期中...";
+"cloudIdSync.completed" = "完了";
+"cloudIdSync.success" = "%d件のアセットを更新しました";
+"cloudIdSync.error" = "同期失敗: %@";
+"cloudIdSync.requiresIOS16" = "iOS 16以降が必要";
+
+// MARK: - Language Names
+"language.en" = "English";
+"language.zh-Hant" = "繁體中文";
+"language.zh-Hans" = "简体中文";
+"language.ja" = "日本語";
+"language.ko" = "한국어";
+"language.es" = "Español";
+"language.de" = "Deutsch";
+"language.fr" = "Français";
+"language.system" = "システム設定に従う";

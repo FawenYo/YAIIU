@@ -1,0 +1,8 @@
+/* 
+  InfoPlist.strings (French)
+  YAIIU
+*/
+
+"NSPhotoLibraryUsageDescription" = "L'accès à la bibliothèque de photos est requis pour sélectionner des photos à téléverser sur le serveur Immich";
+"NSPhotoLibraryAddUsageDescription" = "L'accès à la bibliothèque de photos est requis pour sélectionner des photos à téléverser sur le serveur Immich";
+"CFBundleDisplayName" = "YAIIU";
