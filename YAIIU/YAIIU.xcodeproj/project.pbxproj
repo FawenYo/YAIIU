@@ -53,6 +53,7 @@
 		DB0000090000000000000001 /* ServerAssetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000A0000000000000001 /* ServerAssetRepository.swift */; };
 		DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000C0000000000000001 /* FavoriteRepository.swift */; };
 		NR0000010000000000000001 /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = NR0000020000000000000001 /* NetworkReachability.swift */; };
+		CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CI0000020000000000000001 /* CloudIdSyncService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -128,6 +129,7 @@
 		DB00000C0000000000000001 /* FavoriteRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteRepository.swift; sourceTree = "<group>"; };
 		NR0000020000000000000001 /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
 		BI0000020000000000000001 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
+		CI0000020000000000000001 /* CloudIdSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudIdSyncService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -224,6 +226,7 @@
 				DB0000510000000000000001 /* Import */,
 				BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */,
 				BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */,
+				CI0000020000000000000001 /* CloudIdSyncService.swift */,
 				2A00000E0000000000000001 /* ImmichAPIService.swift */,
 				NR0000020000000000000001 /* NetworkReachability.swift */,
 				2A0000100000000000000001 /* PhotoLibraryManager.swift */,
@@ -474,6 +477,7 @@
 				2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */,
 				2A00004E0000000000000001 /* LogViewerView.swift in Sources */,
 				BI0000010000000000000001 /* BuildInfo.swift in Sources */,
+				CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

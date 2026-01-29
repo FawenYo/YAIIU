@@ -13,6 +13,8 @@ class HashManager: ObservableObject {
     
     @Published var syncStatusCache: [String: PhotoSyncStatus] = [:]
     
+    @Published var iCloudIdMatchCount: Int = 0
+    
     private var processingQueue: [String] = []
     private var isHashingActive = false
     private var isCheckingActive = false
@@ -26,6 +28,8 @@ class HashManager: ObservableObject {
     private let checkConcurrency = 5
     /// Batch size for server checks
     private let checkBatchSize = 10
+    /// Batch size for iCloud ID lookups
+    private let iCloudIdBatchSize = 500
     
     private var shouldStop = false
     private var hashTask: Task<Void, Never>?
@@ -55,22 +59,109 @@ class HashManager: ObservableObject {
         
         shouldStop = false
         isProcessing = true
+        iCloudIdMatchCount = 0
         statusMessage = "Preparing..."
         
         DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
             guard let self = self else { return }
             
-            if needingHash.isEmpty {
-                self.statusMessage = "Checking cloud status..."
-                self.startServerCheck()
-            } else {
-                self.processingQueue = needingHash
-                self.totalAssetsToProcess = needingHash.count
-                self.processedAssetsCount = 0
-                self.processingProgress = 0
-                self.statusMessage = "Analyzing photos (0/\(needingHash.count))..."
+            // Ensure UI updates happen on main thread
+            Task { @MainActor in
+                if needingHash.isEmpty {
+                    self.statusMessage = "Checking cloud status..."
+                    self.startServerCheck()
+                } else {
+                    self.tryICloudIdMatching(identifiers: needingHash) { remainingNeedingHash in
+                        if remainingNeedingHash.isEmpty {
+                            self.statusMessage = "Checking cloud status..."
+                            self.startServerCheck()
+                        } else {
+                            self.processingQueue = remainingNeedingHash
+                            self.totalAssetsToProcess = remainingNeedingHash.count
+                            self.processedAssetsCount = 0
+                            self.processingProgress = 0
+                            self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
+                            
+                            self.processHashItemsParallel()
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func tryICloudIdMatching(identifiers: [String], completion: @escaping ([String]) -> Void) {
+        guard #available(iOS 16, *) else {
+            completion(identifiers)
+            return
+        }
+        
+        let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
+        guard hasServerCache else {
+            completion(identifiers)
+            return
+        }
+        
+        statusMessage = "Checking iCloud ID matches..."
+        
+        Task {
+            var remainingIdentifiers: [String] = []
+            var matchCount = 0
+            var identifierToICloudId: [String: String] = [:]
+            let totalBatches = (identifiers.count + iCloudIdBatchSize - 1) / iCloudIdBatchSize
+            for batchIndex in 0..<totalBatches {
+                let start = batchIndex * iCloudIdBatchSize
+                let end = min(start + iCloudIdBatchSize, identifiers.count)
+                let batch = Array(identifiers[start..<end])
                 
-                self.processHashItemsParallel()
+                let iCloudIdMap = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: batch)
+                for (identifier, result) in iCloudIdMap {
+                    if let cloudId = try? result.get() {
+                        identifierToICloudId[identifier] = cloudId.stringValue
+                    }
+                }
+            }
+            
+            if identifierToICloudId.isEmpty {
+                await MainActor.run {
+                    completion(identifiers)
+                }
+                return
+            }
+            
+            let iCloudIds = Array(identifierToICloudId.values)
+            let checksumMap = DatabaseManager.shared.getChecksumsByICloudIds(iCloudIds)
+            
+            for identifier in identifiers {
+                if let iCloudId = identifierToICloudId[identifier],
+                   let checksum = checksumMap[iCloudId] {
+                    DatabaseManager.shared.saveMultiResourceHashCache(
+                        localIdentifier: identifier,
+                        primaryHash: checksum,
+                        rawHash: nil,
+                        hasRAW: false
+                    )
+                    
+                    DatabaseManager.shared.updateMultiResourceHashCacheServerStatus(
+                        localIdentifier: identifier,
+                        primaryOnServer: true,
+                        rawOnServer: false
+                    )
+                    
+                    matchCount += 1
+                    logDebug("Found hash via iCloud ID for \(identifier.prefix(20))...: \(checksum.prefix(16))...", category: .hash)
+                } else {
+                    remainingIdentifiers.append(identifier)
+                }
+            }
+            
+            if matchCount > 0 {
+                logInfo("Found \(matchCount) hashes via iCloud ID matching, \(remainingIdentifiers.count) still need calculation", category: .hash)
+            }
+            
+            await MainActor.run {
+                self.iCloudIdMatchCount = matchCount
+                completion(remainingIdentifiers)
             }
         }
     }
@@ -207,16 +298,19 @@ class HashManager: ObservableObject {
         DatabaseManager.shared.getMultiResourceHashesNotFullyOnServerAsync { [weak self] records in
             guard let self = self else { return }
             
-            if records.isEmpty {
-                self.finishProcessing()
-                return
+            // Ensure UI updates happen on main thread
+            Task { @MainActor in
+                if records.isEmpty {
+                    self.finishProcessing()
+                    return
+                }
+                
+                self.totalAssetsToProcess = records.count
+                self.processedAssetsCount = 0
+                self.statusMessage = "Checking cloud status (0/\(records.count))..."
+                
+                self.checkMultiResourceHashesAgainstCache(records: records)
             }
-            
-            self.totalAssetsToProcess = records.count
-            self.processedAssetsCount = 0
-            self.statusMessage = "Checking cloud status (0/\(records.count))..."
-            
-            self.checkMultiResourceHashesAgainstCache(records: records)
         }
     }
     

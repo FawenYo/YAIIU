@@ -28,6 +28,16 @@ struct ServerAssetRecord {
     let originalFilename: String?
     let assetType: String?
     let updatedAt: String?
+    let iCloudId: String?
+    
+    init(immichId: String, checksum: String, originalFilename: String? = nil, assetType: String? = nil, updatedAt: String? = nil, iCloudId: String? = nil) {
+        self.immichId = immichId
+        self.checksum = checksum
+        self.originalFilename = originalFilename
+        self.assetType = assetType
+        self.updatedAt = updatedAt
+        self.iCloudId = iCloudId
+    }
 }
 
 struct SyncMetadata {

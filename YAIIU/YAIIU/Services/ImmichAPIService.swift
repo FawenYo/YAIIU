@@ -706,6 +706,78 @@ class ImmichAPIService: NSObject {
             throw error
         }
     }
+    
+    /// Updates metadata for multiple assets in bulk using the /api/assets/metadata endpoint.
+    /// Used for syncing iCloud IDs to already uploaded assets.
+    func updateBulkAssetMetadata(items: [MetadataUpdateItem], serverURL: String, apiKey: String) async throws {
+        guard !items.isEmpty else {
+            logDebug("No metadata items to update", category: .api)
+            return
+        }
+        
+        logInfo("Updating metadata for \(items.count) assets", category: .api)
+        
+        guard let url = URL(string: "\(serverURL)/api/assets/metadata") else {
+            logError("Invalid URL for updateBulkAssetMetadata", category: .api)
+            throw ImmichAPIError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.timeoutInterval = 60
+        
+        let body: [String: Any] = [
+            "items": items.map { $0.toDictionary() }
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                logError("Invalid response when updating bulk metadata", category: .api)
+                throw ImmichAPIError.invalidResponse
+            }
+            
+            guard httpResponse.statusCode == 200 else {
+                let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                logError("Bulk metadata update failed: HTTP \(httpResponse.statusCode) - \(errorMessage)", category: .api)
+                throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
+            }
+            
+            logInfo("Successfully updated metadata for \(items.count) assets", category: .api)
+        } catch let error as ImmichAPIError {
+            throw error
+        } catch {
+            logError("Bulk metadata update failed: \(error.localizedDescription)", category: .api)
+            throw error
+        }
+    }
+}
+
+/// Represents a single metadata update item for bulk API calls.
+struct MetadataUpdateItem {
+    let assetId: String
+    let key: String
+    let value: MobileAppMetadata
+    
+    func toDictionary() -> [String: Any] {
+        var valueDict: [String: Any] = [:]
+        if let iCloudId = value.iCloudId { valueDict["iCloudId"] = iCloudId }
+        if let createdAt = value.createdAt { valueDict["createdAt"] = createdAt }
+        if let adjustmentTime = value.adjustmentTime { valueDict["adjustmentTime"] = adjustmentTime }
+        if let latitude = value.latitude { valueDict["latitude"] = latitude }
+        if let longitude = value.longitude { valueDict["longitude"] = longitude }
+        
+        return [
+            "assetId": assetId,
+            "key": key,
+            "value": valueDict
+        ]
+    }
 }
 
 // MARK: - Error Types
@@ -760,6 +832,7 @@ struct ServerAsset: Codable {
     let originalFileName: String?
     let type: String?
     let updatedAt: String?
+    let metadata: [RemoteAssetMetadata]?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -767,7 +840,31 @@ struct ServerAsset: Codable {
         case originalFileName
         case type
         case updatedAt
+        case metadata
     }
+    
+    var iCloudId: String? {
+        guard let metadata = metadata else { return nil }
+        for item in metadata {
+            if item.key == RemoteAssetMetadataItem.mobileAppKey {
+                return item.value?.iCloudId
+            }
+        }
+        return nil
+    }
+}
+
+struct RemoteAssetMetadata: Codable {
+    let key: String
+    let value: RemoteAssetMetadataValue?
+}
+
+struct RemoteAssetMetadataValue: Codable {
+    let iCloudId: String?
+    let createdAt: String?
+    let adjustmentTime: String?
+    let latitude: String?
+    let longitude: String?
 }
 
 struct DeltaSyncResponse: Codable {

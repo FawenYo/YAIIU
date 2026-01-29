@@ -306,4 +306,20 @@ enum L10n {
         static let openInMaps = "photoDetail.openInMaps".localized
         static let previewRequiresAssets = "photoDetail.previewRequiresAssets".localized
     }
+    
+    // MARK: - iCloud ID Sync
+    enum CloudIdSync {
+        static let title = "cloudIdSync.title".localized
+        static let description = "cloudIdSync.description".localized
+        static let button = "cloudIdSync.button".localized
+        static let syncing = "cloudIdSync.syncing".localized
+        static let completed = "cloudIdSync.completed".localized
+        static func success(_ count: Int) -> String {
+            return "cloudIdSync.success".localized(with: count)
+        }
+        static func error(_ message: String) -> String {
+            return "cloudIdSync.error".localized(with: message)
+        }
+        static let requiresIOS16 = "cloudIdSync.requiresIOS16".localized
+    }
 }

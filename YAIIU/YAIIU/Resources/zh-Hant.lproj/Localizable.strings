@@ -233,3 +233,13 @@
 "photoDetail.fileNameUnknown" = "未知";
 "photoDetail.openInMaps" = "開啟";
 "photoDetail.previewRequiresAssets" = "預覽需要真實的 PHAsset 陣列";
+
+// MARK: - iCloud ID Sync
+"cloudIdSync.title" = "同步 iCloud ID";
+"cloudIdSync.description" = "將 iCloud 識別碼上傳到伺服器上已有的照片，有助於跨裝置去重。";
+"cloudIdSync.button" = "同步 iCloud ID";
+"cloudIdSync.syncing" = "同步中...";
+"cloudIdSync.completed" = "已完成";
+"cloudIdSync.success" = "已更新 %d 筆資產";
+"cloudIdSync.error" = "同步失敗: %@";
+"cloudIdSync.requiresIOS16" = "需要 iOS 16 或更新版本";

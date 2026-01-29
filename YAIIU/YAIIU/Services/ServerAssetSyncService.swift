@@ -265,7 +265,8 @@ class ServerAssetSyncService {
                 checksum: hexChecksum,
                 originalFilename: asset.originalFileName,
                 assetType: asset.type,
-                updatedAt: asset.updatedAt
+                updatedAt: asset.updatedAt,
+                iCloudId: asset.iCloudId
             )
         }
         
@@ -339,7 +340,8 @@ class ServerAssetSyncService {
                     checksum: hexChecksum,
                     originalFilename: asset.originalFileName,
                     assetType: asset.type,
-                    updatedAt: asset.updatedAt
+                    updatedAt: asset.updatedAt,
+                    iCloudId: asset.iCloudId
                 )
             }
             
