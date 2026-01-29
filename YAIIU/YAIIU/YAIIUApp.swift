@@ -65,8 +65,9 @@ final class MigrationManager: ObservableObject {
             await triggerCloudIdSync(settingsManager: settingsManager)
         }
         
-        // Only update the version if the sync has now completed.
-        if SharedSettings.shared.cloudIdSyncCompleted {
+        // Update version if sync completed, or if it was never needed.
+        // If it failed, the version is not updated, allowing a retry on next launch.
+        if SharedSettings.shared.cloudIdSyncCompleted || !needsCloudIdSync {
             SharedSettings.shared.lastAppVersion = currentVersion
         }
     }
