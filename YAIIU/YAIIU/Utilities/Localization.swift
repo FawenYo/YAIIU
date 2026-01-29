@@ -1,10 +1,117 @@
 import Foundation
+import SwiftUI
+
+// MARK: - Supported Languages
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system = "system"
+    case english = "en"
+    case traditionalChinese = "zh-Hant"
+    case simplifiedChinese = "zh-Hans"
+    case japanese = "ja"
+    case korean = "ko"
+    case spanish = "es"
+    case german = "de"
+    case french = "fr"
+    
+    var id: String { rawValue }
+    
+    var displayName: String {
+        switch self {
+        case .system:
+            return NSLocalizedString("language.system", bundle: LanguageManager.shared.bundle, comment: "")
+        case .english:
+            return "English"
+        case .traditionalChinese:
+            return "繁體中文"
+        case .simplifiedChinese:
+            return "简体中文"
+        case .japanese:
+            return "日本語"
+        case .korean:
+            return "한국어"
+        case .spanish:
+            return "Español"
+        case .german:
+            return "Deutsch"
+        case .french:
+            return "Français"
+        }
+    }
+    
+    var localeIdentifier: String? {
+        switch self {
+        case .system:
+            return nil
+        default:
+            return rawValue
+        }
+    }
+}
+
+// MARK: - Language Manager
+final class LanguageManager: ObservableObject {
+    static let shared = LanguageManager()
+    
+    private static let languageKey = "app_language"
+    
+    @Published private(set) var currentLanguage: AppLanguage {
+        didSet {
+            UserDefaults.standard.set(currentLanguage.rawValue, forKey: Self.languageKey)
+            updateBundle()
+        }
+    }
+    
+    private(set) var bundle: Bundle = .main
+    
+    private init() {
+        if let stored = UserDefaults.standard.string(forKey: Self.languageKey),
+           let language = AppLanguage(rawValue: stored) {
+            self.currentLanguage = language
+        } else {
+            self.currentLanguage = .system
+        }
+        updateBundle()
+    }
+    
+    var currentLanguageCode: String {
+        if currentLanguage == .system {
+            return Locale.current.language.languageCode?.identifier ?? "en"
+        }
+        return currentLanguage.rawValue
+    }
+    
+    func setLanguage(_ language: AppLanguage) {
+        guard language != currentLanguage else { return }
+        currentLanguage = language
+        objectWillChange.send()
+    }
+    
+    private func updateBundle() {
+        let languageCode: String
+        
+        if currentLanguage == .system {
+            languageCode = Locale.current.language.languageCode?.identifier ?? "en"
+        } else {
+            languageCode = currentLanguage.rawValue
+        }
+        
+        if let path = Bundle.main.path(forResource: languageCode, ofType: "lproj"),
+           let bundle = Bundle(path: path) {
+            self.bundle = bundle
+        } else if let path = Bundle.main.path(forResource: "en", ofType: "lproj"),
+                  let bundle = Bundle(path: path) {
+            self.bundle = bundle
+        } else {
+            self.bundle = .main
+        }
+    }
+}
 
 // MARK: - String Localization Extension
 extension String {
-    /// Returns a localized string using the key
+    /// Returns a localized string using the current app language
     var localized: String {
-        return NSLocalizedString(self, comment: "")
+        return NSLocalizedString(self, bundle: LanguageManager.shared.bundle, comment: "")
     }
     
     /// Returns a localized string with format arguments
@@ -18,308 +125,307 @@ extension String {
 enum L10n {
     // MARK: - Tab Items
     enum Tab {
-        static let photos = "tab.photos".localized
-        static let upload = "tab.upload".localized
-        static let settings = "tab.settings".localized
+        static var photos: String { "tab.photos".localized }
+        static var upload: String { "tab.upload".localized }
+        static var settings: String { "tab.settings".localized }
     }
     
     // MARK: - Login
     enum Login {
-        static let title = "login.title".localized
-        static let subtitle = "login.subtitle".localized
-        static let serverURL = "login.serverURL".localized
-        static let serverURLPlaceholder = "login.serverURL.placeholder".localized
-        static let internalServerURL = "login.internalServerURL".localized
-        static let internalServerURLPlaceholder = "login.internalServerURL.placeholder".localized
-        static let internalServerURLHint = "login.internalServerURL.hint".localized
-        static let advancedSettings = "login.advancedSettings".localized
-        static let apiKey = "login.apiKey".localized
-        static let apiKeyPlaceholder = "login.apiKey.placeholder".localized
-        static let button = "login.button".localized
-        static let buttonConnecting = "login.button.connecting".localized
-        static let errorTitle = "login.error.title".localized
-        static let errorInvalidApiKey = "login.error.invalidApiKey".localized
+        static var title: String { "login.title".localized }
+        static var subtitle: String { "login.subtitle".localized }
+        static var serverURL: String { "login.serverURL".localized }
+        static var serverURLPlaceholder: String { "login.serverURL.placeholder".localized }
+        static var internalServerURL: String { "login.internalServerURL".localized }
+        static var internalServerURLPlaceholder: String { "login.internalServerURL.placeholder".localized }
+        static var internalServerURLHint: String { "login.internalServerURL.hint".localized }
+        static var advancedSettings: String { "login.advancedSettings".localized }
+        static var apiKey: String { "login.apiKey".localized }
+        static var apiKeyPlaceholder: String { "login.apiKey.placeholder".localized }
+        static var button: String { "login.button".localized }
+        static var buttonConnecting: String { "login.button.connecting".localized }
+        static var errorTitle: String { "login.error.title".localized }
+        static var errorInvalidApiKey: String { "login.error.invalidApiKey".localized }
         static func errorConnectionFailed(_ error: String) -> String {
             return "login.error.connectionFailed".localized(with: error)
         }
-        static let errorOk = "login.error.ok".localized
-        // Background Upload Note (iOS 26.1+)
-        static let backgroundUploadNoteTitle = "login.backgroundUploadNote.title".localized
-        static let backgroundUploadNoteMessage = "login.backgroundUploadNote.message".localized
-        static let backgroundUploadNoteLearnMore = "login.backgroundUploadNote.learnMore".localized
-        static let backgroundUploadNoteLink = "login.backgroundUploadNote.link".localized
+        static var errorOk: String { "login.error.ok".localized }
+        static var backgroundUploadNoteTitle: String { "login.backgroundUploadNote.title".localized }
+        static var backgroundUploadNoteMessage: String { "login.backgroundUploadNote.message".localized }
+        static var backgroundUploadNoteLearnMore: String { "login.backgroundUploadNote.learnMore".localized }
+        static var backgroundUploadNoteLink: String { "login.backgroundUploadNote.link".localized }
     }
     
     // MARK: - Settings
     enum Settings {
-        static let title = "settings.title".localized
-        static let serverInfo = "settings.serverInfo".localized
-        static let serverURL = "settings.serverURL".localized
-        static let networkSettings = "settings.networkSettings".localized
-        static let currentStatus = "settings.currentStatus".localized
-        static let externalServerURL = "settings.externalServerURL".localized
-        static let externalServerURLPlaceholder = "settings.externalServerURL.placeholder".localized
-        static let externalServerURLHint = "settings.externalServerURL.hint".localized
-        static let internalServerURL = "settings.internalServerURL".localized
-        static let internalServerURLPlaceholder = "settings.internalServerURL.placeholder".localized
-        static let internalServerURLHint = "settings.internalServerURL.hint".localized
-        static let internalNetworkSettings = "settings.internalNetworkSettings".localized
-        static let notConfigured = "settings.notConfigured".localized
-        static let edit = "settings.edit".localized
-        static let save = "settings.save".localized
-        static let cancel = "settings.cancel".localized
-        static let apiKey = "settings.apiKey".localized
-        static let wifiSSID = "settings.wifiSSID".localized
-        static let wifiSSIDPlaceholder = "settings.wifiSSID.placeholder".localized
-        static let wifiSSIDHint = "settings.wifiSSID.hint".localized
-        static let wifiNotDetected = "settings.wifiNotDetected".localized
-        static let useCurrentWiFi = "settings.useCurrentWiFi".localized
-        static let clearInternalNetwork = "settings.clearInternalNetwork".localized
-        static let locationPermissionRequired = "settings.locationPermissionRequired".localized
-        static let locationPermissionHint = "settings.locationPermissionHint".localized
-        static let grantLocationPermission = "settings.grantLocationPermission".localized
-        static let preciseLocationRequired = "settings.preciseLocationRequired".localized
-        static let preciseLocationHint = "settings.preciseLocationHint".localized
-        static let openSettings = "settings.openSettings".localized
-        static let usingInternalNetwork = "settings.usingInternalNetwork".localized
-        static let usingExternalNetwork = "settings.usingExternalNetwork".localized
-        static let statistics = "settings.statistics".localized
-        static let uploadedCount = "settings.uploadedCount".localized
-        static let cachedHashCount = "settings.cachedHashCount".localized
-        static let confirmedOnCloud = "settings.confirmedOnCloud".localized
-        static let dataManagement = "settings.dataManagement".localized
-        static let importImmichData = "settings.importImmichData".localized
-        static let logout = "settings.logout".localized
-        static let logoutConfirmTitle = "settings.logout.confirm.title".localized
-        static let logoutConfirmMessage = "settings.logout.confirm.message".localized
-        static let logoutCancel = "settings.logout.cancel".localized
-        // Logs
-        static let logs = "settings.logs".localized
-        static let logCount = "settings.logCount".localized
-        static let logFileSize = "settings.logFileSize".localized
-        static let viewLogs = "settings.viewLogs".localized
-        static let exportLogs = "settings.exportLogs".localized
-        static let clearLogs = "settings.clearLogs".localized
-        static let clearLogsConfirmTitle = "settings.clearLogs.confirm.title".localized
-        static let clearLogsConfirmMessage = "settings.clearLogs.confirm.message".localized
-        static let clearLogsCancel = "settings.clearLogs.cancel".localized
-        static let appVersion = "settings.appVersion".localized
-        static let searchLogs = "settings.searchLogs".localized
-        static let filterAll = "settings.filterAll".localized
-        static let refreshLogs = "settings.refreshLogs".localized
-        static let scrollToBottom = "settings.scrollToBottom".localized
-        static let noLogsAvailable = "settings.noLogsAvailable".localized
+        static var title: String { "settings.title".localized }
+        static var serverInfo: String { "settings.serverInfo".localized }
+        static var serverURL: String { "settings.serverURL".localized }
+        static var networkSettings: String { "settings.networkSettings".localized }
+        static var currentStatus: String { "settings.currentStatus".localized }
+        static var externalServerURL: String { "settings.externalServerURL".localized }
+        static var externalServerURLPlaceholder: String { "settings.externalServerURL.placeholder".localized }
+        static var externalServerURLHint: String { "settings.externalServerURL.hint".localized }
+        static var internalServerURL: String { "settings.internalServerURL".localized }
+        static var internalServerURLPlaceholder: String { "settings.internalServerURL.placeholder".localized }
+        static var internalServerURLHint: String { "settings.internalServerURL.hint".localized }
+        static var internalNetworkSettings: String { "settings.internalNetworkSettings".localized }
+        static var notConfigured: String { "settings.notConfigured".localized }
+        static var edit: String { "settings.edit".localized }
+        static var save: String { "settings.save".localized }
+        static var cancel: String { "settings.cancel".localized }
+        static var apiKey: String { "settings.apiKey".localized }
+        static var wifiSSID: String { "settings.wifiSSID".localized }
+        static var wifiSSIDPlaceholder: String { "settings.wifiSSID.placeholder".localized }
+        static var wifiSSIDHint: String { "settings.wifiSSID.hint".localized }
+        static var wifiNotDetected: String { "settings.wifiNotDetected".localized }
+        static var useCurrentWiFi: String { "settings.useCurrentWiFi".localized }
+        static var clearInternalNetwork: String { "settings.clearInternalNetwork".localized }
+        static var locationPermissionRequired: String { "settings.locationPermissionRequired".localized }
+        static var locationPermissionHint: String { "settings.locationPermissionHint".localized }
+        static var grantLocationPermission: String { "settings.grantLocationPermission".localized }
+        static var preciseLocationRequired: String { "settings.preciseLocationRequired".localized }
+        static var preciseLocationHint: String { "settings.preciseLocationHint".localized }
+        static var openSettings: String { "settings.openSettings".localized }
+        static var usingInternalNetwork: String { "settings.usingInternalNetwork".localized }
+        static var usingExternalNetwork: String { "settings.usingExternalNetwork".localized }
+        static var statistics: String { "settings.statistics".localized }
+        static var uploadedCount: String { "settings.uploadedCount".localized }
+        static var cachedHashCount: String { "settings.cachedHashCount".localized }
+        static var confirmedOnCloud: String { "settings.confirmedOnCloud".localized }
+        static var dataManagement: String { "settings.dataManagement".localized }
+        static var importImmichData: String { "settings.importImmichData".localized }
+        static var logout: String { "settings.logout".localized }
+        static var logoutConfirmTitle: String { "settings.logout.confirm.title".localized }
+        static var logoutConfirmMessage: String { "settings.logout.confirm.message".localized }
+        static var logoutCancel: String { "settings.logout.cancel".localized }
+        static var logs: String { "settings.logs".localized }
+        static var logCount: String { "settings.logCount".localized }
+        static var logFileSize: String { "settings.logFileSize".localized }
+        static var viewLogs: String { "settings.viewLogs".localized }
+        static var exportLogs: String { "settings.exportLogs".localized }
+        static var clearLogs: String { "settings.clearLogs".localized }
+        static var clearLogsConfirmTitle: String { "settings.clearLogs.confirm.title".localized }
+        static var clearLogsConfirmMessage: String { "settings.clearLogs.confirm.message".localized }
+        static var clearLogsCancel: String { "settings.clearLogs.cancel".localized }
+        static var appVersion: String { "settings.appVersion".localized }
+        static var searchLogs: String { "settings.searchLogs".localized }
+        static var filterAll: String { "settings.filterAll".localized }
+        static var refreshLogs: String { "settings.refreshLogs".localized }
+        static var scrollToBottom: String { "settings.scrollToBottom".localized }
+        static var noLogsAvailable: String { "settings.noLogsAvailable".localized }
+        static var language: String { "settings.language".localized }
+        static var languageSection: String { "settings.languageSection".localized }
+        static var currentLanguage: String { "settings.currentLanguage".localized }
+        static var changeLanguage: String { "settings.changeLanguage".localized }
+        static var systemDefault: String { "settings.systemDefault".localized }
     }
     
     // MARK: - Photo Grid
     enum PhotoGrid {
-        static let title = "photoGrid.title".localized
-        static let select = "photoGrid.select".localized
-        static let cancel = "photoGrid.cancel".localized
+        static var title: String { "photoGrid.title".localized }
+        static var select: String { "photoGrid.select".localized }
+        static var cancel: String { "photoGrid.cancel".localized }
         static func upload(_ count: Int) -> String {
             return "photoGrid.upload".localized(with: count)
         }
-        static let confirmTitle = "photoGrid.confirm.title".localized
+        static var confirmTitle: String { "photoGrid.confirm.title".localized }
         static func confirmMessage(_ count: Int) -> String {
             return "photoGrid.confirm.message".localized(with: count)
         }
-        static let confirmCancel = "photoGrid.confirm.cancel".localized
-        static let confirmUpload = "photoGrid.confirm.upload".localized
-        static let processingPreparing = "photoGrid.processing.preparing".localized
+        static var confirmCancel: String { "photoGrid.confirm.cancel".localized }
+        static var confirmUpload: String { "photoGrid.confirm.upload".localized }
+        static var processingPreparing: String { "photoGrid.processing.preparing".localized }
         static func processingComparing(_ current: Int, _ total: Int) -> String {
             return "photoGrid.processing.comparing".localized(with: current, total)
         }
-        static let processingChecking = "photoGrid.processing.checking".localized
-        static let processingDefault = "photoGrid.processing.default".localized
-        static let permissionTitle = "photoGrid.permission.title".localized
-        static let permissionMessage = "photoGrid.permission.message".localized
-        static let permissionGrant = "photoGrid.permission.grant".localized
-        static let permissionDeniedTitle = "photoGrid.permission.denied.title".localized
-        static let permissionDeniedMessage = "photoGrid.permission.denied.message".localized
-        static let permissionOpenSettings = "photoGrid.permission.openSettings".localized
-        // Filter options
-        static let filterAll = "photoGrid.filter.all".localized
-        static let filterNotUploaded = "photoGrid.filter.notUploaded".localized
+        static var processingChecking: String { "photoGrid.processing.checking".localized }
+        static var processingDefault: String { "photoGrid.processing.default".localized }
+        static var permissionTitle: String { "photoGrid.permission.title".localized }
+        static var permissionMessage: String { "photoGrid.permission.message".localized }
+        static var permissionGrant: String { "photoGrid.permission.grant".localized }
+        static var permissionDeniedTitle: String { "photoGrid.permission.denied.title".localized }
+        static var permissionDeniedMessage: String { "photoGrid.permission.denied.message".localized }
+        static var permissionOpenSettings: String { "photoGrid.permission.openSettings".localized }
+        static var filterAll: String { "photoGrid.filter.all".localized }
+        static var filterNotUploaded: String { "photoGrid.filter.notUploaded".localized }
         static func filterActive(_ count: Int) -> String {
             return "photoGrid.filter.active".localized(with: count)
         }
-        // Timeline section headers
-        static let sectionToday = "photoGrid.section.today".localized
-        static let sectionYesterday = "photoGrid.section.yesterday".localized
+        static var sectionToday: String { "photoGrid.section.today".localized }
+        static var sectionYesterday: String { "photoGrid.section.yesterday".localized }
     }
     
     // MARK: - Upload Progress
     enum UploadProgress {
-        static let title = "uploadProgress.title".localized
-        static let pause = "uploadProgress.pause".localized
-        static let resume = "uploadProgress.resume".localized
-        static let emptyTitle = "uploadProgress.empty.title".localized
-        static let emptyMessage = "uploadProgress.empty.message".localized
+        static var title: String { "uploadProgress.title".localized }
+        static var pause: String { "uploadProgress.pause".localized }
+        static var resume: String { "uploadProgress.resume".localized }
+        static var emptyTitle: String { "uploadProgress.empty.title".localized }
+        static var emptyMessage: String { "uploadProgress.empty.message".localized }
         static func emptySuccess(_ count: Int) -> String {
             return "uploadProgress.empty.success".localized(with: count)
         }
-        static let overall = "uploadProgress.overall".localized
-        static let uploading = "uploadProgress.uploading".localized
-        static let paused = "uploadProgress.paused".localized
+        static var overall: String { "uploadProgress.overall".localized }
+        static var uploading: String { "uploadProgress.uploading".localized }
+        static var paused: String { "uploadProgress.paused".localized }
         static func files(_ current: Int, _ total: Int) -> String {
             return "uploadProgress.files".localized(with: current, total)
         }
         static func fileCount(_ count: Int) -> String {
             return "uploadProgress.fileCount".localized(with: count)
         }
-        static let video = "uploadProgress.video".localized
+        static var video: String { "uploadProgress.video".localized }
     }
     
     // MARK: - Upload Status
     enum UploadStatus {
-        static let pending = "uploadStatus.pending".localized
+        static var pending: String { "uploadStatus.pending".localized }
         static func uploading(_ percent: Int) -> String {
             return "uploadStatus.uploading".localized(with: percent)
         }
-        static let completed = "uploadStatus.completed".localized
-        static let failed = "uploadStatus.failed".localized
+        static var completed: String { "uploadStatus.completed".localized }
+        static var failed: String { "uploadStatus.failed".localized }
     }
     
     // MARK: - Import
     enum Import {
-        static let title = "import.title".localized
-        static let cancel = "import.cancel".localized
-        static let done = "import.done".localized
-        static let instructionTitle = "import.instruction.title".localized
-        static let instructionDescription = "import.instruction.description".localized
-        static let instructionStep1 = "import.instruction.step1".localized
-        static let instructionStep2 = "import.instruction.step2".localized
-        static let instructionStep3 = "import.instruction.step3".localized
-        static let selectFile = "import.selectFile".localized
-        static let reselectFile = "import.reselectFile".localized
-        static let validationSuccess = "import.validation.success".localized
-        static let validationFailed = "import.validation.failed".localized
-        static let validationRecordCount = "import.validation.recordCount".localized
+        static var title: String { "import.title".localized }
+        static var cancel: String { "import.cancel".localized }
+        static var done: String { "import.done".localized }
+        static var instructionTitle: String { "import.instruction.title".localized }
+        static var instructionDescription: String { "import.instruction.description".localized }
+        static var instructionStep1: String { "import.instruction.step1".localized }
+        static var instructionStep2: String { "import.instruction.step2".localized }
+        static var instructionStep3: String { "import.instruction.step3".localized }
+        static var selectFile: String { "import.selectFile".localized }
+        static var reselectFile: String { "import.reselectFile".localized }
+        static var validationSuccess: String { "import.validation.success".localized }
+        static var validationFailed: String { "import.validation.failed".localized }
+        static var validationRecordCount: String { "import.validation.recordCount".localized }
         static func validationRecords(_ count: Int) -> String {
             return "import.validation.records".localized(with: count)
         }
-        static let statisticsTitle = "import.statistics.title".localized
-        static let statisticsTotalAssets = "import.statistics.totalAssets".localized
-        static let statisticsAssetsWithHash = "import.statistics.assetsWithHash".localized
-        static let statisticsImageCount = "import.statistics.imageCount".localized
-        static let statisticsVideoCount = "import.statistics.videoCount".localized
-        static let statisticsServerSync = "import.statistics.serverSync".localized
-        static let statisticsRemoteAssets = "import.statistics.remoteAssets".localized
-        static let statisticsLocalSynced = "import.statistics.localSynced".localized
-        static let importButton = "import.import.button".localized
-        static let importImporting = "import.import.importing".localized
+        static var statisticsTitle: String { "import.statistics.title".localized }
+        static var statisticsTotalAssets: String { "import.statistics.totalAssets".localized }
+        static var statisticsAssetsWithHash: String { "import.statistics.assetsWithHash".localized }
+        static var statisticsImageCount: String { "import.statistics.imageCount".localized }
+        static var statisticsVideoCount: String { "import.statistics.videoCount".localized }
+        static var statisticsServerSync: String { "import.statistics.serverSync".localized }
+        static var statisticsRemoteAssets: String { "import.statistics.remoteAssets".localized }
+        static var statisticsLocalSynced: String { "import.statistics.localSynced".localized }
+        static var importButton: String { "import.import.button".localized }
+        static var importImporting: String { "import.import.importing".localized }
         static func importProgress(_ current: Int, _ total: Int) -> String {
             return "import.import.progress".localized(with: current, total)
         }
-        static let resultSuccess = "import.result.success".localized
-        static let resultError = "import.result.error".localized
-        static let resultTotalRecords = "import.result.totalRecords".localized
-        static let resultImportedRecords = "import.result.importedRecords".localized
-        static let resultAlreadyOnServer = "import.result.alreadyOnServer".localized
-        static let resultSkippedRecords = "import.result.skippedRecords".localized
-        static let resultTip = "import.result.tip".localized
-        static let alertOk = "import.alert.ok".localized
-        static let alertImportFailed = "import.alert.importFailed".localized
+        static var resultSuccess: String { "import.result.success".localized }
+        static var resultError: String { "import.result.error".localized }
+        static var resultTotalRecords: String { "import.result.totalRecords".localized }
+        static var resultImportedRecords: String { "import.result.importedRecords".localized }
+        static var resultAlreadyOnServer: String { "import.result.alreadyOnServer".localized }
+        static var resultSkippedRecords: String { "import.result.skippedRecords".localized }
+        static var resultTip: String { "import.result.tip".localized }
+        static var alertOk: String { "import.alert.ok".localized }
+        static var alertImportFailed: String { "import.alert.importFailed".localized }
     }
     
     // MARK: - Onboarding
     enum Onboarding {
-        static let title = "onboarding.title".localized
-        static let description = "onboarding.description".localized
-        static let importButton = "onboarding.import.button".localized
-        static let importDescription = "onboarding.import.description".localized
-        static let skip = "onboarding.skip".localized
-        static let continue_ = "onboarding.continue".localized
-        static let changeFile = "onboarding.changeFile".localized
+        static var title: String { "onboarding.title".localized }
+        static var description: String { "onboarding.description".localized }
+        static var importButton: String { "onboarding.import.button".localized }
+        static var importDescription: String { "onboarding.import.description".localized }
+        static var skip: String { "onboarding.skip".localized }
+        static var continue_: String { "onboarding.continue".localized }
+        static var changeFile: String { "onboarding.changeFile".localized }
         static func validationSuccess(_ count: Int) -> String {
             return "onboarding.validation.success".localized(with: count)
         }
-        static let startImport = "onboarding.startImport".localized
+        static var startImport: String { "onboarding.startImport".localized }
     }
     
     // MARK: - Initial Setup
     enum InitialSetup {
-        static let title = "initialSetup.title".localized
-        static let description = "initialSetup.description".localized
-        static let syncing = "initialSetup.syncing".localized
-        static let syncingDescription = "initialSetup.syncingDescription".localized
-        static let completed = "initialSetup.completed".localized
-        static let completedDescription = "initialSetup.completedDescription".localized
-        static let failed = "initialSetup.failed".localized
-        static let failedDescription = "initialSetup.failedDescription".localized
-        static let syncedAssets = "initialSetup.syncedAssets".localized
-        static let continue_ = "initialSetup.continue".localized
-        static let retry = "initialSetup.retry".localized
-        static let skip = "initialSetup.skip".localized
-        
-        // Progress indicators
+        static var title: String { "initialSetup.title".localized }
+        static var description: String { "initialSetup.description".localized }
+        static var syncing: String { "initialSetup.syncing".localized }
+        static var syncingDescription: String { "initialSetup.syncingDescription".localized }
+        static var completed: String { "initialSetup.completed".localized }
+        static var completedDescription: String { "initialSetup.completedDescription".localized }
+        static var failed: String { "initialSetup.failed".localized }
+        static var failedDescription: String { "initialSetup.failedDescription".localized }
+        static var syncedAssets: String { "initialSetup.syncedAssets".localized }
+        static var continue_: String { "initialSetup.continue".localized }
+        static var retry: String { "initialSetup.retry".localized }
+        static var skip: String { "initialSetup.skip".localized }
         static func fetchedAssets(_ count: Int) -> String {
             return "initialSetup.fetchedAssets".localized(with: count)
         }
-        static let phaseConnecting = "initialSetup.phase.connecting".localized
-        static let phaseFetchingUserInfo = "initialSetup.phase.fetchingUserInfo".localized
-        static let phaseFetchingPartners = "initialSetup.phase.fetchingPartners".localized
+        static var phaseConnecting: String { "initialSetup.phase.connecting".localized }
+        static var phaseFetchingUserInfo: String { "initialSetup.phase.fetchingUserInfo".localized }
+        static var phaseFetchingPartners: String { "initialSetup.phase.fetchingPartners".localized }
         static func phaseFetchingAssets(_ count: Int) -> String {
             return "initialSetup.phase.fetchingAssets".localized(with: count)
         }
-        static let phaseFetchingAssetsInitial = "initialSetup.phase.fetchingAssetsInitial".localized
+        static var phaseFetchingAssetsInitial: String { "initialSetup.phase.fetchingAssetsInitial".localized }
         static func phaseProcessingAssets(_ count: Int) -> String {
             return "initialSetup.phase.processingAssets".localized(with: count)
         }
-        static let phaseSavingToDatabase = "initialSetup.phase.savingToDatabase".localized
+        static var phaseSavingToDatabase: String { "initialSetup.phase.savingToDatabase".localized }
     }
     
     // MARK: - Restart Required
     enum RestartRequired {
-        static let title = "restartRequired.title".localized
-        static let description = "restartRequired.description".localized
-        static let instructions = "restartRequired.instructions".localized
-        static let closeApp = "restartRequired.closeApp".localized
+        static var title: String { "restartRequired.title".localized }
+        static var description: String { "restartRequired.description".localized }
+        static var instructions: String { "restartRequired.instructions".localized }
+        static var closeApp: String { "restartRequired.closeApp".localized }
     }
     
     // MARK: - Background Upload (iOS 26.1+)
     enum BackgroundUpload {
-        static let title = "backgroundUpload.title".localized
-        static let settingsTitle = "backgroundUpload.settingsTitle".localized
-        static let enabled = "backgroundUpload.enabled".localized
-        static let disabled = "backgroundUpload.disabled".localized
-        static let description = "backgroundUpload.description".localized
-        static let requiresIOS26 = "backgroundUpload.requiresIOS26".localized
-        static let sectionAutoUpload = "backgroundUpload.section.autoUpload".localized
-        static let sectionStatistics = "backgroundUpload.section.statistics".localized
-        static let sectionDebug = "backgroundUpload.section.debug".localized
-        static let uploadedCount = "backgroundUpload.uploadedCount".localized
-        static let pendingCount = "backgroundUpload.pendingCount".localized
-        static let viewLogs = "backgroundUpload.viewLogs".localized
-        static let clearLogs = "backgroundUpload.clearLogs".localized
-        static let logsTitle = "backgroundUpload.logsTitle".localized
-        static let noLogs = "backgroundUpload.noLogs".localized
-        static let notSupported = "backgroundUpload.notSupported".localized
-        static let errorPhotoLibraryNotAuthorized = "backgroundUpload.error.photoLibraryNotAuthorized".localized
-        static let errorNotLoggedIn = "backgroundUpload.error.notLoggedIn".localized
-        static let errorExtensionNotAvailable = "backgroundUpload.error.extensionNotAvailable".localized
+        static var title: String { "backgroundUpload.title".localized }
+        static var settingsTitle: String { "backgroundUpload.settingsTitle".localized }
+        static var enabled: String { "backgroundUpload.enabled".localized }
+        static var disabled: String { "backgroundUpload.disabled".localized }
+        static var description: String { "backgroundUpload.description".localized }
+        static var requiresIOS26: String { "backgroundUpload.requiresIOS26".localized }
+        static var sectionAutoUpload: String { "backgroundUpload.section.autoUpload".localized }
+        static var sectionStatistics: String { "backgroundUpload.section.statistics".localized }
+        static var sectionDebug: String { "backgroundUpload.section.debug".localized }
+        static var uploadedCount: String { "backgroundUpload.uploadedCount".localized }
+        static var pendingCount: String { "backgroundUpload.pendingCount".localized }
+        static var viewLogs: String { "backgroundUpload.viewLogs".localized }
+        static var clearLogs: String { "backgroundUpload.clearLogs".localized }
+        static var logsTitle: String { "backgroundUpload.logsTitle".localized }
+        static var noLogs: String { "backgroundUpload.noLogs".localized }
+        static var notSupported: String { "backgroundUpload.notSupported".localized }
+        static var errorPhotoLibraryNotAuthorized: String { "backgroundUpload.error.photoLibraryNotAuthorized".localized }
+        static var errorNotLoggedIn: String { "backgroundUpload.error.notLoggedIn".localized }
+        static var errorExtensionNotAvailable: String { "backgroundUpload.error.extensionNotAvailable".localized }
     }
     
     // MARK: - Photo Detail
     enum PhotoDetail {
-        static let fileNameUnknown = "photoDetail.fileNameUnknown".localized
-        static let openInMaps = "photoDetail.openInMaps".localized
-        static let previewRequiresAssets = "photoDetail.previewRequiresAssets".localized
+        static var fileNameUnknown: String { "photoDetail.fileNameUnknown".localized }
+        static var openInMaps: String { "photoDetail.openInMaps".localized }
+        static var previewRequiresAssets: String { "photoDetail.previewRequiresAssets".localized }
     }
     
     // MARK: - iCloud ID Sync
     enum CloudIdSync {
-        static let title = "cloudIdSync.title".localized
-        static let description = "cloudIdSync.description".localized
-        static let button = "cloudIdSync.button".localized
-        static let syncing = "cloudIdSync.syncing".localized
-        static let completed = "cloudIdSync.completed".localized
+        static var title: String { "cloudIdSync.title".localized }
+        static var description: String { "cloudIdSync.description".localized }
+        static var button: String { "cloudIdSync.button".localized }
+        static var syncing: String { "cloudIdSync.syncing".localized }
+        static var completed: String { "cloudIdSync.completed".localized }
         static func success(_ count: Int) -> String {
             return "cloudIdSync.success".localized(with: count)
         }
         static func error(_ message: String) -> String {
             return "cloudIdSync.error".localized(with: message)
         }
-        static let requiresIOS16 = "cloudIdSync.requiresIOS16".localized
+        static var requiresIOS16: String { "cloudIdSync.requiresIOS16".localized }
     }
 }
