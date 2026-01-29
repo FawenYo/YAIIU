@@ -37,6 +37,7 @@ struct ContentView: View {
 
 struct MainTabView: View {
     @State private var selectedTab = 0
+    @ObservedObject private var languageManager = LanguageManager.shared
     
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -58,6 +59,7 @@ struct MainTabView: View {
                 }
                 .tag(2)
         }
+        .id(languageManager.currentLanguage)
     }
 }
 
@@ -76,6 +78,7 @@ struct SettingsView: View {
     @State private var backgroundUploadError: String?
     
     @ObservedObject private var networkReachability = NetworkReachability.shared
+    @ObservedObject private var languageManager = LanguageManager.shared
     
     private var currentServerURL: String {
         if networkReachability.isOnInternalNetwork && !settingsManager.internalServerURL.isEmpty {
@@ -196,6 +199,21 @@ struct SettingsView: View {
                     // iCloud ID Sync button
                     if #available(iOS 16, *) {
                         CloudIdSyncButton()
+                    }
+                }
+                
+                // Language Settings
+                Section(header: Text(L10n.Settings.languageSection)) {
+                    NavigationLink(destination: LanguageSettingsView()) {
+                        HStack {
+                            Image(systemName: "globe")
+                                .foregroundColor(.blue)
+                            Text(L10n.Settings.language)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Text(languageManager.currentLanguage.displayName)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
                 

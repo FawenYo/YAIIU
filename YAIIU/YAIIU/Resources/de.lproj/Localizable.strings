@@ -1,0 +1,261 @@
+/* 
+  Localizable.strings (German)
+  YAIIU
+*/
+
+// MARK: - Tab Items
+"tab.photos" = "Fotos";
+"tab.upload" = "Hochladen";
+"tab.settings" = "Einstellungen";
+
+// MARK: - Login View
+"login.title" = "YAIIU";
+"login.subtitle" = "Laden Sie Ihre Fotos auf den Immich-Server hoch";
+"login.serverURL" = "Server-URL (extern)";
+"login.serverURL.placeholder" = "z.B.: https://immich.example.com";
+"login.internalServerURL" = "Interne Server-URL";
+"login.internalServerURL.placeholder" = "z.B.: http://192.168.1.100:2283";
+"login.internalServerURL.hint" = "Optional. Wird verwendet, wenn Sie mit Ihrem lokalen Netzwerk verbunden sind, für schnellere Uploads.";
+"login.advancedSettings" = "Erweiterte Einstellungen";
+"login.apiKey" = "API-Schlüssel";
+"login.apiKey.placeholder" = "Geben Sie Ihren API-Schlüssel ein";
+"login.button" = "Anmelden";
+"login.button.connecting" = "Verbindung wird hergestellt...";
+"login.error.title" = "Verbindungsfehler";
+"login.error.invalidApiKey" = "API-Schlüssel kann nicht überprüft werden. Bitte prüfen Sie, ob Ihr API-Schlüssel korrekt ist";
+"login.error.connectionFailed" = "Verbindung zum Server nicht möglich: %@";
+"login.error.ok" = "OK";
+"login.backgroundUploadNote.title" = "💡 Hinweis zum Hintergrund-Upload bei iOS 26.1+";
+"login.backgroundUploadNote.message" = "Wenn Sie iOS 26.1 oder höher verwenden und die Hintergrund-Upload-Funktion nutzen möchten, müssen Sie immich-proxy separat bereitstellen.";
+"login.backgroundUploadNote.learnMore" = "Mehr erfahren";
+"login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
+
+// MARK: - Settings View
+"settings.title" = "Einstellungen";
+"settings.serverInfo" = "Server-Informationen";
+"settings.serverURL" = "Server-URL";
+"settings.networkSettings" = "Netzwerkeinstellungen";
+"settings.currentStatus" = "Aktueller Status";
+"settings.externalServerURL" = "Externe Server-URL";
+"settings.externalServerURL.placeholder" = "z.B.: https://immich.example.com";
+"settings.externalServerURL.hint" = "Die öffentliche URL für den Zugriff auf Ihren Immich-Server von außerhalb Ihres Netzwerks.";
+"settings.internalServerURL" = "Interne Server-URL";
+"settings.internalServerURL.placeholder" = "z.B.: http://192.168.1.100:2283";
+"settings.internalServerURL.hint" = "Optional. Wird verwendet, wenn Sie mit Ihrem lokalen Netzwerk verbunden sind, für schnellere Uploads.";
+"settings.notConfigured" = "Nicht konfiguriert";
+"settings.edit" = "Bearbeiten";
+"settings.save" = "Speichern";
+"settings.cancel" = "Abbrechen";
+"settings.apiKey" = "API-Schlüssel";
+"settings.internalNetworkSettings" = "Interne Netzwerkeinstellungen";
+"settings.wifiSSID" = "WLAN-Netzwerkname";
+"settings.wifiSSID.placeholder" = "z.B.: HausWLAN";
+"settings.wifiSSID.hint" = "Wenn Sie mit diesem WLAN-Netzwerk verbunden sind, wird die interne Server-URL verwendet.";
+"settings.wifiNotDetected" = "WLAN nicht erkannt";
+"settings.useCurrentWiFi" = "Aktuelles WLAN verwenden";
+"settings.clearInternalNetwork" = "Interne Netzwerkeinstellungen löschen";
+"settings.locationPermissionRequired" = "Standortberechtigung erforderlich";
+"settings.locationPermissionHint" = "iOS benötigt eine Standortberechtigung, um den WLAN-Netzwerknamen zu erkennen. Dies wird verwendet, um automatisch zwischen internen und externen Server-URLs zu wechseln.";
+"settings.grantLocationPermission" = "Standortberechtigung erteilen";
+"settings.preciseLocationRequired" = "Genauer Standort erforderlich";
+"settings.preciseLocationHint" = "iOS benötigt einen genauen Standort, um den WLAN-Netzwerknamen zu erkennen. Bitte aktivieren Sie 'Genauer Standort' unter Einstellungen > Datenschutz > Ortungsdienste > YAIIU.";
+"settings.openSettings" = "Einstellungen öffnen";
+"settings.usingInternalNetwork" = "Internes Netzwerk";
+"settings.usingExternalNetwork" = "Externes Netzwerk";
+"settings.statistics" = "Statistiken";
+"settings.uploadedCount" = "Hochgeladene Fotos";
+"settings.cachedHashCount" = "Zwischengespeicherte Hashes";
+"settings.confirmedOnCloud" = "In der Cloud bestätigt";
+"settings.dataManagement" = "Datenverwaltung";
+"settings.importImmichData" = "Immich-App-Daten importieren";
+"settings.logout" = "Abmelden";
+"settings.logout.confirm.title" = "Abmeldung bestätigen";
+"settings.logout.confirm.message" = "Sind Sie sicher, dass Sie sich abmelden möchten?";
+"settings.logout.cancel" = "Abbrechen";
+"settings.logs" = "Protokolle";
+"settings.logCount" = "Protokolleinträge";
+"settings.logFileSize" = "Protokolldateigröße";
+"settings.viewLogs" = "Protokolle anzeigen";
+"settings.exportLogs" = "Protokolle exportieren";
+"settings.clearLogs" = "Protokolle löschen";
+"settings.clearLogs.confirm.title" = "Protokolle löschen";
+"settings.clearLogs.confirm.message" = "Sind Sie sicher, dass Sie alle Protokolle löschen möchten? Diese Aktion kann nicht rückgängig gemacht werden.";
+"settings.clearLogs.cancel" = "Abbrechen";
+"settings.appVersion" = "Version";
+"settings.searchLogs" = "Protokolle durchsuchen...";
+"settings.filterAll" = "Alle";
+"settings.refreshLogs" = "Aktualisieren";
+"settings.scrollToBottom" = "Nach unten scrollen";
+"settings.noLogsAvailable" = "Keine Protokolle verfügbar";
+"settings.language" = "Sprache";
+"settings.languageSection" = "Spracheinstellungen";
+"settings.currentLanguage" = "Aktuelle Sprache";
+"settings.changeLanguage" = "Sprache ändern";
+"settings.systemDefault" = "Systemstandard";
+
+// MARK: - Photo Grid View
+"photoGrid.title" = "Fotobibliothek";
+"photoGrid.select" = "Auswählen";
+"photoGrid.cancel" = "Abbrechen";
+"photoGrid.upload" = "Hochladen (%d)";
+"photoGrid.confirm.title" = "Upload bestätigen";
+"photoGrid.confirm.message" = "Sind Sie sicher, dass Sie %d Fotos/Videos hochladen möchten?";
+"photoGrid.confirm.cancel" = "Abbrechen";
+"photoGrid.confirm.upload" = "Hochladen";
+"photoGrid.processing.preparing" = "Wird vorbereitet";
+"photoGrid.processing.comparing" = "Vergleiche %d/%d";
+"photoGrid.processing.checking" = "Wird überprüft";
+"photoGrid.processing.default" = "...";
+"photoGrid.permission.title" = "Zugriff auf Fotobibliothek erforderlich";
+"photoGrid.permission.message" = "Bitte gewähren Sie Zugriff auf die Fotobibliothek, um Fotos zum Hochladen auszuwählen";
+"photoGrid.permission.grant" = "Zugriff gewähren";
+"photoGrid.permission.denied.title" = "Zugriff auf Fotobibliothek nicht möglich";
+"photoGrid.permission.denied.message" = "Bitte erlauben Sie den Zugriff auf die Fotobibliothek in den Einstellungen";
+"photoGrid.permission.openSettings" = "Einstellungen öffnen";
+"photoGrid.filter.all" = "Alle Fotos";
+"photoGrid.filter.notUploaded" = "Nicht hochgeladen";
+"photoGrid.filter.active" = "%d Elemente werden angezeigt";
+"photoGrid.section.today" = "Heute";
+"photoGrid.section.yesterday" = "Gestern";
+
+// MARK: - Upload Progress View
+"uploadProgress.title" = "Upload-Fortschritt";
+"uploadProgress.pause" = "Pausieren";
+"uploadProgress.resume" = "Fortsetzen";
+"uploadProgress.empty.title" = "Keine Elemente werden hochgeladen";
+"uploadProgress.empty.message" = "Wählen Sie Fotos aus und tippen Sie auf Hochladen, um zu beginnen";
+"uploadProgress.empty.success" = "%d Elemente erfolgreich hochgeladen";
+"uploadProgress.overall" = "Upload-Fortschritt";
+"uploadProgress.uploading" = "Wird hochgeladen...";
+"uploadProgress.paused" = "Pausiert";
+"uploadProgress.files" = "(%d/%d Dateien)";
+"uploadProgress.fileCount" = "%d Dateien";
+"uploadProgress.video" = "Video";
+
+// MARK: - Upload Item Status
+"uploadStatus.pending" = "Ausstehend";
+"uploadStatus.uploading" = "Hochladen %d%%";
+"uploadStatus.completed" = "Abgeschlossen";
+"uploadStatus.failed" = "Fehlgeschlagen";
+
+// MARK: - Import Database View
+"import.title" = "Hash-Daten importieren";
+"import.cancel" = "Abbrechen";
+"import.done" = "Fertig";
+"import.instruction.title" = "Anleitung";
+"import.instruction.description" = "Diese Funktion ermöglicht es Ihnen, vorberechnete Hash-Daten aus der Immich iOS-App zu importieren und vermeidet so die Neuberechnung aller Foto-Hashes.";
+"import.instruction.step1" = "Tippen Sie in der Immich iOS-App auf den Benutzer-Avatar oben rechts und gehen Sie zu Einstellungen";
+"import.instruction.step2" = "Wählen Sie Synchronisierungsstatus, tippen Sie dann auf Datenbank exportieren, um die SQLite-Datei in der Dateien-App zu speichern";
+"import.instruction.step3" = "Tippen Sie auf die Schaltfläche unten und wählen Sie die exportierte SQLite-Datei zum Importieren aus";
+"import.selectFile" = "SQLite-Datei auswählen";
+"import.reselectFile" = "Andere Datei auswählen";
+"import.validation.success" = "Dateivalidierung erfolgreich";
+"import.validation.failed" = "Dateivalidierung fehlgeschlagen";
+"import.validation.recordCount" = "Zum Import verfügbare Datensätze:";
+"import.validation.records" = "%d Datensätze";
+"import.statistics.title" = "Datenbankstatistiken";
+"import.statistics.totalAssets" = "Gesamte Assets";
+"import.statistics.assetsWithHash" = "Assets mit Hash";
+"import.statistics.imageCount" = "Bildanzahl";
+"import.statistics.videoCount" = "Videoanzahl";
+"import.statistics.serverSync" = "Server-Synchronisierungsstatus";
+"import.statistics.remoteAssets" = "Assets auf dem Server";
+"import.statistics.localSynced" = "Lokal synchronisiert";
+"import.import.button" = "Import starten";
+"import.import.importing" = "Wird importiert...";
+"import.import.progress" = "%d / %d Datensätze verarbeitet";
+"import.result.success" = "Import abgeschlossen";
+"import.result.error" = "Importfehler";
+"import.result.totalRecords" = "Gelesene Datensätze:";
+"import.result.importedRecords" = "Erfolgreich importiert:";
+"import.result.alreadyOnServer" = "Bereits auf dem Server:";
+"import.result.skippedRecords" = "Übersprungene Datensätze:";
+"import.result.tip" = "💡 Fotos/Videos, die bereits auf dem Server sind, werden nicht erneut hochgeladen";
+"import.alert.ok" = "OK";
+"import.alert.importFailed" = "Import fehlgeschlagen";
+
+// MARK: - Onboarding Import View
+"onboarding.title" = "Vorhandene Daten importieren?";
+"onboarding.description" = "Wenn Sie zuvor die Immich iOS-App verwendet haben, können Sie deren Datenbank importieren, um die Neuberechnung aller Foto-Hashes zu vermeiden.";
+"onboarding.import.button" = "Aus Immich-App importieren";
+"onboarding.import.description" = "Vorberechnete Hash-Daten importieren";
+"onboarding.skip" = "Jetzt überspringen";
+"onboarding.continue" = "Weiter";
+"onboarding.changeFile" = "Ändern";
+"onboarding.validation.success" = "%d Datensätze zum Import gefunden";
+"onboarding.startImport" = "Import starten";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "Hintergrund-Upload";
+"backgroundUpload.settingsTitle" = "Hintergrund-Upload-Einstellungen";
+"backgroundUpload.enabled" = "Aktiviert";
+"backgroundUpload.disabled" = "Deaktiviert";
+"backgroundUpload.description" = "Wenn aktiviert, werden neue Fotos automatisch im Hintergrund auf den Immich-Server hochgeladen";
+"backgroundUpload.requiresIOS26" = "Erfordert iOS 26.1 oder höher";
+"backgroundUpload.section.autoUpload" = "Automatischer Upload";
+"backgroundUpload.section.statistics" = "Statistiken";
+"backgroundUpload.section.debug" = "Debug";
+"backgroundUpload.uploadedCount" = "Hochgeladene Anzahl";
+"backgroundUpload.pendingCount" = "Ausstehende Anzahl";
+"backgroundUpload.viewLogs" = "Protokolle anzeigen";
+"backgroundUpload.clearLogs" = "Protokolle löschen";
+"backgroundUpload.logsTitle" = "Hintergrund-Upload-Protokolle";
+"backgroundUpload.noLogs" = "Keine Protokolle verfügbar";
+"backgroundUpload.notSupported" = "Funktion nicht unterstützt";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "Vollständiger Zugriff auf die Fotobibliothek ist erforderlich, um den Hintergrund-Upload zu aktivieren";
+"backgroundUpload.error.notLoggedIn" = "Bitte melden Sie sich zuerst beim Immich-Server an";
+"backgroundUpload.error.extensionNotAvailable" = "Hintergrund-Upload-Erweiterung ist nicht verfügbar";
+
+// MARK: - Initial Setup View
+"initialSetup.title" = "Einrichtung";
+"initialSetup.description" = "App wird für die erste Verwendung vorbereitet";
+"initialSetup.syncing" = "Synchronisierung mit Server";
+"initialSetup.syncingDescription" = "Fotobibliotheksdaten werden abgerufen...";
+"initialSetup.completed" = "Synchronisierung abgeschlossen";
+"initialSetup.completedDescription" = "Ihre Serverdaten wurden erfolgreich synchronisiert";
+"initialSetup.failed" = "Synchronisierung fehlgeschlagen";
+"initialSetup.failedDescription" = "Während der Synchronisierung ist ein Fehler aufgetreten";
+"initialSetup.syncedAssets" = "Synchronisierte Assets";
+"initialSetup.continue" = "Weiter";
+"initialSetup.retry" = "Erneut versuchen";
+"initialSetup.skip" = "Jetzt überspringen";
+"initialSetup.fetchedAssets" = "%d Assets abgerufen";
+"initialSetup.phase.connecting" = "Verbindung zum Server wird hergestellt...";
+"initialSetup.phase.fetchingUserInfo" = "Benutzerinformationen werden abgerufen...";
+"initialSetup.phase.fetchingPartners" = "Geteilte Partner werden abgerufen...";
+"initialSetup.phase.fetchingAssets" = "Assets werden abgerufen (%d)...";
+"initialSetup.phase.fetchingAssetsInitial" = "Assets werden abgerufen...";
+"initialSetup.phase.processingAssets" = "%d Assets werden verarbeitet...";
+"initialSetup.phase.savingToDatabase" = "In lokale Datenbank speichern...";
+
+// MARK: - Restart Required View
+"restartRequired.title" = "App-Neustart erforderlich";
+"restartRequired.description" = "Um die Hintergrund-Upload-Funktion zu aktivieren, starten Sie bitte die App neu";
+"restartRequired.instructions" = "Schließen Sie diese App vollständig und öffnen Sie sie erneut.";
+"restartRequired.closeApp" = "App schließen";
+
+// MARK: - Photo Detail View
+"photoDetail.fileNameUnknown" = "Unbekannt";
+"photoDetail.openInMaps" = "Öffnen";
+"photoDetail.previewRequiresAssets" = "Vorschau erfordert ein echtes PHAsset-Array";
+
+// MARK: - iCloud ID Sync
+"cloudIdSync.title" = "iCloud-IDs synchronisieren";
+"cloudIdSync.description" = "Laden Sie iCloud-Kennungen für Fotos hoch, die bereits auf dem Server sind. Dies hilft bei der geräteübergreifenden Deduplizierung.";
+"cloudIdSync.button" = "iCloud-IDs synchronisieren";
+"cloudIdSync.syncing" = "Synchronisierung...";
+"cloudIdSync.completed" = "Abgeschlossen";
+"cloudIdSync.success" = "%d Assets aktualisiert";
+"cloudIdSync.error" = "Synchronisierung fehlgeschlagen: %@";
+"cloudIdSync.requiresIOS16" = "Erfordert iOS 16 oder höher";
+
+// MARK: - Language Names
+"language.en" = "English";
+"language.zh-Hant" = "繁體中文";
+"language.zh-Hans" = "简体中文";
+"language.ja" = "日本語";
+"language.ko" = "한국어";
+"language.es" = "Español";
+"language.de" = "Deutsch";
+"language.fr" = "Français";
+"language.system" = "Systemstandard";

@@ -1,0 +1,261 @@
+/* 
+  Localizable.strings (Korean)
+  YAIIU
+*/
+
+// MARK: - Tab Items
+"tab.photos" = "사진";
+"tab.upload" = "업로드";
+"tab.settings" = "설정";
+
+// MARK: - Login View
+"login.title" = "YAIIU";
+"login.subtitle" = "사진을 Immich 서버에 업로드";
+"login.serverURL" = "서버 URL (외부)";
+"login.serverURL.placeholder" = "예: https://immich.example.com";
+"login.internalServerURL" = "내부 서버 URL";
+"login.internalServerURL.placeholder" = "예: http://192.168.1.100:2283";
+"login.internalServerURL.hint" = "선택 사항. 로컬 네트워크 연결 시 빠른 업로드에 사용됩니다.";
+"login.advancedSettings" = "고급 설정";
+"login.apiKey" = "API 키";
+"login.apiKey.placeholder" = "API 키를 입력하세요";
+"login.button" = "로그인";
+"login.button.connecting" = "연결 중...";
+"login.error.title" = "연결 오류";
+"login.error.invalidApiKey" = "API 키를 확인할 수 없습니다. API 키가 올바른지 확인하세요";
+"login.error.connectionFailed" = "서버에 연결할 수 없습니다: %@";
+"login.error.ok" = "확인";
+"login.backgroundUploadNote.title" = "💡 iOS 26.1+ 백그라운드 업로드 안내";
+"login.backgroundUploadNote.message" = "iOS 26.1 이상에서 백그라운드 업로드 기능을 사용하려면 immich-proxy를 별도로 배포해야 합니다.";
+"login.backgroundUploadNote.learnMore" = "자세히 알아보기";
+"login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
+
+// MARK: - Settings View
+"settings.title" = "설정";
+"settings.serverInfo" = "서버 정보";
+"settings.serverURL" = "서버 URL";
+"settings.networkSettings" = "네트워크 설정";
+"settings.currentStatus" = "현재 상태";
+"settings.externalServerURL" = "외부 서버 URL";
+"settings.externalServerURL.placeholder" = "예: https://immich.example.com";
+"settings.externalServerURL.hint" = "외부 네트워크에서 Immich 서버에 접속하기 위한 공개 URL.";
+"settings.internalServerURL" = "내부 서버 URL";
+"settings.internalServerURL.placeholder" = "예: http://192.168.1.100:2283";
+"settings.internalServerURL.hint" = "선택 사항. 로컬 네트워크 연결 시 빠른 업로드에 사용됩니다.";
+"settings.notConfigured" = "설정되지 않음";
+"settings.edit" = "편집";
+"settings.save" = "저장";
+"settings.cancel" = "취소";
+"settings.apiKey" = "API 키";
+"settings.internalNetworkSettings" = "내부 네트워크 설정";
+"settings.wifiSSID" = "WiFi 네트워크 이름";
+"settings.wifiSSID.placeholder" = "예: HomeWiFi";
+"settings.wifiSSID.hint" = "이 WiFi 네트워크에 연결하면 내부 서버 URL이 사용됩니다.";
+"settings.wifiNotDetected" = "WiFi를 감지할 수 없음";
+"settings.useCurrentWiFi" = "현재 WiFi 사용";
+"settings.clearInternalNetwork" = "내부 네트워크 설정 초기화";
+"settings.locationPermissionRequired" = "위치 권한 필요";
+"settings.locationPermissionHint" = "iOS는 WiFi 네트워크 이름을 감지하기 위해 위치 권한이 필요합니다. 이는 내부 및 외부 서버 URL을 자동으로 전환하는 데 사용됩니다.";
+"settings.grantLocationPermission" = "위치 권한 허용";
+"settings.preciseLocationRequired" = "정확한 위치 필요";
+"settings.preciseLocationHint" = "iOS는 WiFi 네트워크 이름을 감지하기 위해 정확한 위치가 필요합니다. 설정 > 개인정보 보호 > 위치 서비스 > YAIIU에서 '정확한 위치'를 활성화하세요.";
+"settings.openSettings" = "설정 열기";
+"settings.usingInternalNetwork" = "내부 네트워크";
+"settings.usingExternalNetwork" = "외부 네트워크";
+"settings.statistics" = "통계";
+"settings.uploadedCount" = "업로드된 사진";
+"settings.cachedHashCount" = "캐시된 해시 수";
+"settings.confirmedOnCloud" = "클라우드에서 확인됨";
+"settings.dataManagement" = "데이터 관리";
+"settings.importImmichData" = "Immich 앱 데이터 가져오기";
+"settings.logout" = "로그아웃";
+"settings.logout.confirm.title" = "로그아웃 확인";
+"settings.logout.confirm.message" = "로그아웃하시겠습니까?";
+"settings.logout.cancel" = "취소";
+"settings.logs" = "로그";
+"settings.logCount" = "로그 항목";
+"settings.logFileSize" = "로그 파일 크기";
+"settings.viewLogs" = "로그 보기";
+"settings.exportLogs" = "로그 내보내기";
+"settings.clearLogs" = "로그 지우기";
+"settings.clearLogs.confirm.title" = "로그 지우기";
+"settings.clearLogs.confirm.message" = "모든 로그를 지우시겠습니까? 이 작업은 취소할 수 없습니다.";
+"settings.clearLogs.cancel" = "취소";
+"settings.appVersion" = "버전";
+"settings.searchLogs" = "로그 검색...";
+"settings.filterAll" = "전체";
+"settings.refreshLogs" = "새로고침";
+"settings.scrollToBottom" = "맨 아래로 스크롤";
+"settings.noLogsAvailable" = "로그가 없습니다";
+"settings.language" = "언어";
+"settings.languageSection" = "언어 설정";
+"settings.currentLanguage" = "현재 언어";
+"settings.changeLanguage" = "언어 변경";
+"settings.systemDefault" = "시스템 설정 따름";
+
+// MARK: - Photo Grid View
+"photoGrid.title" = "사진 라이브러리";
+"photoGrid.select" = "선택";
+"photoGrid.cancel" = "취소";
+"photoGrid.upload" = "업로드 (%d)";
+"photoGrid.confirm.title" = "업로드 확인";
+"photoGrid.confirm.message" = "%d개의 사진/동영상을 업로드하시겠습니까?";
+"photoGrid.confirm.cancel" = "취소";
+"photoGrid.confirm.upload" = "업로드";
+"photoGrid.processing.preparing" = "준비 중";
+"photoGrid.processing.comparing" = "비교 중 %d/%d";
+"photoGrid.processing.checking" = "확인 중";
+"photoGrid.processing.default" = "...";
+"photoGrid.permission.title" = "사진 라이브러리 접근 필요";
+"photoGrid.permission.message" = "업로드할 사진을 선택하려면 사진 라이브러리에 대한 접근 권한을 허용하세요";
+"photoGrid.permission.grant" = "접근 허용";
+"photoGrid.permission.denied.title" = "사진 라이브러리에 접근할 수 없음";
+"photoGrid.permission.denied.message" = "설정에서 사진 라이브러리 접근을 허용하세요";
+"photoGrid.permission.openSettings" = "설정 열기";
+"photoGrid.filter.all" = "모든 사진";
+"photoGrid.filter.notUploaded" = "업로드되지 않음";
+"photoGrid.filter.active" = "%d개 표시 중";
+"photoGrid.section.today" = "오늘";
+"photoGrid.section.yesterday" = "어제";
+
+// MARK: - Upload Progress View
+"uploadProgress.title" = "업로드 진행";
+"uploadProgress.pause" = "일시 정지";
+"uploadProgress.resume" = "재개";
+"uploadProgress.empty.title" = "업로드 중인 항목 없음";
+"uploadProgress.empty.message" = "사진을 선택하고 업로드를 탭하여 시작하세요";
+"uploadProgress.empty.success" = "%d개 항목 업로드 완료";
+"uploadProgress.overall" = "업로드 진행";
+"uploadProgress.uploading" = "업로드 중...";
+"uploadProgress.paused" = "일시 정지됨";
+"uploadProgress.files" = "(%d/%d 파일)";
+"uploadProgress.fileCount" = "%d개 파일";
+"uploadProgress.video" = "동영상";
+
+// MARK: - Upload Item Status
+"uploadStatus.pending" = "대기 중";
+"uploadStatus.uploading" = "업로드 중 %d%%";
+"uploadStatus.completed" = "완료됨";
+"uploadStatus.failed" = "실패";
+
+// MARK: - Import Database View
+"import.title" = "해시 데이터 가져오기";
+"import.cancel" = "취소";
+"import.done" = "완료";
+"import.instruction.title" = "사용 방법";
+"import.instruction.description" = "이 기능을 사용하면 Immich iOS 앱에서 미리 계산된 해시 데이터를 가져와 모든 사진의 해시를 다시 계산할 필요가 없습니다.";
+"import.instruction.step1" = "Immich iOS 앱에서 오른쪽 상단의 사용자 아바타를 탭하고 설정으로 이동합니다";
+"import.instruction.step2" = "동기화 상태를 선택한 다음 데이터베이스 내보내기를 탭하여 SQLite 파일을 파일 앱에 저장합니다";
+"import.instruction.step3" = "아래 버튼을 탭하고 내보낸 SQLite 파일을 선택하여 가져옵니다";
+"import.selectFile" = "SQLite 파일 선택";
+"import.reselectFile" = "다른 파일 선택";
+"import.validation.success" = "파일 검증 성공";
+"import.validation.failed" = "파일 검증 실패";
+"import.validation.recordCount" = "가져올 수 있는 레코드:";
+"import.validation.records" = "%d개 레코드";
+"import.statistics.title" = "데이터베이스 통계";
+"import.statistics.totalAssets" = "전체 자산";
+"import.statistics.assetsWithHash" = "해시가 있는 자산";
+"import.statistics.imageCount" = "이미지 수";
+"import.statistics.videoCount" = "동영상 수";
+"import.statistics.serverSync" = "서버 동기화 상태";
+"import.statistics.remoteAssets" = "서버의 자산";
+"import.statistics.localSynced" = "로컬 동기화됨";
+"import.import.button" = "가져오기 시작";
+"import.import.importing" = "가져오는 중...";
+"import.import.progress" = "%d / %d 레코드 처리됨";
+"import.result.success" = "가져오기 완료";
+"import.result.error" = "가져오기 오류";
+"import.result.totalRecords" = "읽은 레코드:";
+"import.result.importedRecords" = "성공적으로 가져옴:";
+"import.result.alreadyOnServer" = "이미 서버에 있음:";
+"import.result.skippedRecords" = "건너뛴 레코드:";
+"import.result.tip" = "💡 이미 서버에 있는 사진/동영상은 다시 업로드되지 않습니다";
+"import.alert.ok" = "확인";
+"import.alert.importFailed" = "가져오기 실패";
+
+// MARK: - Onboarding Import View
+"onboarding.title" = "기존 데이터를 가져오시겠습니까?";
+"onboarding.description" = "이전에 Immich iOS 앱을 사용했다면 데이터베이스를 가져와 모든 사진의 해시를 다시 계산할 필요가 없습니다.";
+"onboarding.import.button" = "Immich 앱에서 가져오기";
+"onboarding.import.description" = "미리 계산된 해시 데이터 가져오기";
+"onboarding.skip" = "나중에";
+"onboarding.continue" = "계속";
+"onboarding.changeFile" = "변경";
+"onboarding.validation.success" = "가져올 수 있는 %d개 레코드 발견";
+"onboarding.startImport" = "가져오기 시작";
+
+// MARK: - Background Upload (iOS 26.1+)
+"backgroundUpload.title" = "백그라운드 업로드";
+"backgroundUpload.settingsTitle" = "백그라운드 업로드 설정";
+"backgroundUpload.enabled" = "활성화됨";
+"backgroundUpload.disabled" = "비활성화됨";
+"backgroundUpload.description" = "활성화하면 새 사진이 백그라운드에서 자동으로 Immich 서버에 업로드됩니다";
+"backgroundUpload.requiresIOS26" = "iOS 26.1 이상 필요";
+"backgroundUpload.section.autoUpload" = "자동 업로드";
+"backgroundUpload.section.statistics" = "통계";
+"backgroundUpload.section.debug" = "디버그";
+"backgroundUpload.uploadedCount" = "업로드된 수";
+"backgroundUpload.pendingCount" = "대기 중인 수";
+"backgroundUpload.viewLogs" = "로그 보기";
+"backgroundUpload.clearLogs" = "로그 지우기";
+"backgroundUpload.logsTitle" = "백그라운드 업로드 로그";
+"backgroundUpload.noLogs" = "로그가 없습니다";
+"backgroundUpload.notSupported" = "지원되지 않는 기능";
+"backgroundUpload.error.photoLibraryNotAuthorized" = "백그라운드 업로드를 활성화하려면 사진 라이브러리에 대한 전체 접근 권한이 필요합니다";
+"backgroundUpload.error.notLoggedIn" = "먼저 Immich 서버에 로그인하세요";
+"backgroundUpload.error.extensionNotAvailable" = "백그라운드 업로드 확장을 사용할 수 없습니다";
+
+// MARK: - Initial Setup View
+"initialSetup.title" = "설정 중";
+"initialSetup.description" = "앱을 처음 사용하기 위한 준비 중";
+"initialSetup.syncing" = "서버와 동기화 중";
+"initialSetup.syncingDescription" = "사진 라이브러리 데이터를 가져오는 중...";
+"initialSetup.completed" = "동기화 완료";
+"initialSetup.completedDescription" = "서버 데이터가 성공적으로 동기화되었습니다";
+"initialSetup.failed" = "동기화 실패";
+"initialSetup.failedDescription" = "동기화 중 오류가 발생했습니다";
+"initialSetup.syncedAssets" = "동기화된 자산";
+"initialSetup.continue" = "계속";
+"initialSetup.retry" = "다시 시도";
+"initialSetup.skip" = "나중에";
+"initialSetup.fetchedAssets" = "%d개 자산 가져옴";
+"initialSetup.phase.connecting" = "서버에 연결 중...";
+"initialSetup.phase.fetchingUserInfo" = "사용자 정보 가져오는 중...";
+"initialSetup.phase.fetchingPartners" = "공유 파트너 가져오는 중...";
+"initialSetup.phase.fetchingAssets" = "자산 가져오는 중 (%d)...";
+"initialSetup.phase.fetchingAssetsInitial" = "자산 가져오는 중...";
+"initialSetup.phase.processingAssets" = "%d개 자산 처리 중...";
+"initialSetup.phase.savingToDatabase" = "로컬 데이터베이스에 저장 중...";
+
+// MARK: - Restart Required View
+"restartRequired.title" = "앱 재시작 필요";
+"restartRequired.description" = "백그라운드 업로드 기능을 활성화하려면 앱을 재시작하세요";
+"restartRequired.instructions" = "이 앱을 완전히 닫았다가 다시 여세요.";
+"restartRequired.closeApp" = "앱 닫기";
+
+// MARK: - Photo Detail View
+"photoDetail.fileNameUnknown" = "알 수 없음";
+"photoDetail.openInMaps" = "열기";
+"photoDetail.previewRequiresAssets" = "미리보기에는 실제 PHAsset 배열이 필요합니다";
+
+// MARK: - iCloud ID Sync
+"cloudIdSync.title" = "iCloud ID 동기화";
+"cloudIdSync.description" = "서버에 이미 있는 사진에 iCloud 식별자를 업로드합니다. 이는 장치 간 중복 제거에 도움이 됩니다.";
+"cloudIdSync.button" = "iCloud ID 동기화";
+"cloudIdSync.syncing" = "동기화 중...";
+"cloudIdSync.completed" = "완료됨";
+"cloudIdSync.success" = "%d개 자산 업데이트됨";
+"cloudIdSync.error" = "동기화 실패: %@";
+"cloudIdSync.requiresIOS16" = "iOS 16 이상 필요";
+
+// MARK: - Language Names
+"language.en" = "English";
+"language.zh-Hant" = "繁體中文";
+"language.zh-Hans" = "简体中文";
+"language.ja" = "日本語";
+"language.ko" = "한국어";
+"language.es" = "Español";
+"language.de" = "Deutsch";
+"language.fr" = "Français";
+"language.system" = "시스템 설정 따름";

@@ -54,6 +54,7 @@
 		DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000C0000000000000001 /* FavoriteRepository.swift */; };
 		NR0000010000000000000001 /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = NR0000020000000000000001 /* NetworkReachability.swift */; };
 		CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CI0000020000000000000001 /* CloudIdSyncService.swift */; };
+		LS0000010000000000000001 /* LanguageSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LS0000020000000000000001 /* LanguageSettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -130,6 +131,19 @@
 		NR0000020000000000000001 /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
 		BI0000020000000000000001 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
 		CI0000020000000000000001 /* CloudIdSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudIdSyncService.swift; sourceTree = "<group>"; };
+		LS0000020000000000000001 /* LanguageSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageSettingsView.swift; sourceTree = "<group>"; };
+		L10000010000000000000001 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000020000000000000001 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000030000000000000001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		L10000040000000000000001 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000050000000000000001 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000060000000000000001 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
+		IP0000010000000000000001 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		IP0000020000000000000001 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		IP0000030000000000000001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		IP0000040000000000000001 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		IP0000050000000000000001 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		IP0000060000000000000001 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -215,6 +229,7 @@
 				2A0000580000000000000001 /* RestartRequiredView.swift */,
 				2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */,
 				2A00004F0000000000000001 /* LogViewerView.swift */,
+				LS0000020000000000000001 /* LanguageSettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -401,6 +416,12 @@
 				en,
 				Base,
 				"zh-Hant",
+				ja,
+				ko,
+				"zh-Hans",
+				es,
+				de,
+				fr,
 			);
 			mainGroup = 2A00001E0000000000000001;
 			productRefGroup = 2A0000200000000000000001 /* Products */;
@@ -478,6 +499,7 @@
 				2A00004E0000000000000001 /* LogViewerView.swift in Sources */,
 				BI0000010000000000000001 /* BuildInfo.swift in Sources */,
 				CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */,
+				LS0000010000000000000001 /* LanguageSettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -531,6 +553,12 @@
 			children = (
 				2A00003A0000000000000001 /* en */,
 				2A00003B0000000000000001 /* zh-Hant */,
+				L10000010000000000000001 /* ja */,
+				L10000020000000000000001 /* ko */,
+				L10000030000000000000001 /* zh-Hans */,
+				L10000040000000000000001 /* es */,
+				L10000050000000000000001 /* de */,
+				L10000060000000000000001 /* fr */,
 			);
 			name = Localizable.strings;
 			sourceTree = "<group>";
@@ -540,6 +568,12 @@
 			children = (
 				2A0000400000000000000001 /* en */,
 				2A0000410000000000000001 /* zh-Hant */,
+				IP0000010000000000000001 /* ja */,
+				IP0000020000000000000001 /* ko */,
+				IP0000030000000000000001 /* zh-Hans */,
+				IP0000040000000000000001 /* es */,
+				IP0000050000000000000001 /* de */,
+				IP0000060000000000000001 /* fr */,
 			);
 			name = InfoPlist.strings;
 			sourceTree = "<group>";
