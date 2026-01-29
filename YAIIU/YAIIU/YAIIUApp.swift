@@ -37,14 +37,17 @@ final class MigrationManager: ObservableObject {
         let currentVersion = BuildInfo.version
         let lastVersion = SharedSettings.shared.lastAppVersion
         
-        // Update stored version
-        SharedSettings.shared.lastAppVersion = currentVersion
-        
         // Skip if user is not logged in
-        guard settingsManager.isLoggedIn else { return }
+        guard settingsManager.isLoggedIn else {
+            SharedSettings.shared.lastAppVersion = currentVersion
+            return
+        }
         
-        // Skip if iCloud ID sync already completed
-        guard !SharedSettings.shared.cloudIdSyncCompleted else { return }
+        // If sync is already completed, just update version and exit.
+        if SharedSettings.shared.cloudIdSyncCompleted {
+            SharedSettings.shared.lastAppVersion = currentVersion
+            return
+        }
         
         // Trigger iCloud ID sync on upgrade from versions before 0.1.0
         // or when lastVersion is nil (fresh install with imported data)
@@ -60,6 +63,11 @@ final class MigrationManager: ObservableObject {
         if needsCloudIdSync {
             logInfo("Migration: triggering iCloud ID sync (upgrade from \(lastVersion ?? "unknown") to \(currentVersion))", category: .app)
             await triggerCloudIdSync(settingsManager: settingsManager)
+        }
+        
+        // Only update the version if the sync has now completed.
+        if SharedSettings.shared.cloudIdSyncCompleted {
+            SharedSettings.shared.lastAppVersion = currentVersion
         }
     }
     
