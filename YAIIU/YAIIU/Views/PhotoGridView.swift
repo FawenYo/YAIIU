@@ -459,7 +459,7 @@ struct PhotoGridView: View {
             }
             Spacer()
             Button {
-                currentFilter = .all
+                applyFilter(.all)
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundColor(.secondary)
@@ -509,6 +509,9 @@ struct PhotoGridView: View {
         
         if filter == .notUploaded {
             refreshFilterCache()
+        } else {
+            // Force grid rebuild when switching back to "all"
+            refreshToken = UUID()
         }
     }
     
@@ -519,11 +522,15 @@ struct PhotoGridView: View {
         filterCacheVersion += 1
         let currentVersion = filterCacheVersion
         
-        let totalCount = photoLibraryManager.assetCount
-        let statusCache = hashManager.syncStatusCache
         let manager = photoLibraryManager
+        let hash = hashManager
         
+        // Capture statusCache inside the Task to get the latest snapshot
         Task.detached(priority: .userInitiated) {
+            // Read latest status cache on background thread
+            let statusCache = await MainActor.run { hash.syncStatusCache }
+            let totalCount = await MainActor.run { manager.assetCount }
+            
             var indices: [Int] = []
             indices.reserveCapacity(totalCount / 4)
             
@@ -542,20 +549,26 @@ struct PhotoGridView: View {
                 self.filteredIndices = indices
                 self.cachedNotUploadedCount = indices.count
                 self.isFilteringInProgress = false
+                // Force grid rebuild to display correct thumbnails
+                self.refreshToken = UUID()
             }
         }
     }
     
     private func updateNotUploadedCount() {
-        let totalCount = photoLibraryManager.assetCount
-        let statusCache = hashManager.syncStatusCache
-        
         guard let fetchResult = photoLibraryManager.fetchResult else {
-            cachedNotUploadedCount = totalCount
+            cachedNotUploadedCount = photoLibraryManager.assetCount
             return
         }
         
+        let manager = photoLibraryManager
+        let hash = hashManager
+        
         Task.detached(priority: .utility) {
+            // Read latest values on background thread
+            let statusCache = await MainActor.run { hash.syncStatusCache }
+            let totalCount = await MainActor.run { manager.assetCount }
+            
             var uploadedCount = 0
             fetchResult.enumerateObjects { (asset, _, _) in
                 if statusCache[asset.localIdentifier] == .uploaded {
@@ -800,15 +813,15 @@ private struct PhotoGridItemView: View {
             onLongPress()
         }
         .onAppear {
-            let newAsset = photoLibraryManager.asset(at: assetIndex)
-            asset = newAsset
-            if let id = newAsset?.localIdentifier {
-                syncStatus = hashManager.getSyncStatus(for: id)
-            }
+            loadAsset()
             onAppear()
         }
         .onDisappear {
             onDisappear()
+        }
+        .onChange(of: assetIndex) { _, _ in
+            // Reload asset when index changes (e.g., filter updates)
+            loadAsset()
         }
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { newCache in
             guard let id = asset?.localIdentifier else { return }
@@ -816,6 +829,14 @@ private struct PhotoGridItemView: View {
             if syncStatus != newStatus {
                 syncStatus = newStatus
             }
+        }
+    }
+    
+    private func loadAsset() {
+        let newAsset = photoLibraryManager.asset(at: assetIndex)
+        asset = newAsset
+        if let id = newAsset?.localIdentifier {
+            syncStatus = hashManager.getSyncStatus(for: id)
         }
     }
 }
