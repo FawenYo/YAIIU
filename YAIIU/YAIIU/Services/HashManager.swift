@@ -39,6 +39,20 @@ class HashManager: ObservableObject {
         loadCachedStatus()
     }
     
+    func setPreparingState() {
+        guard !isProcessing else { return }
+        isProcessing = true
+        statusMessage = "Preparing..."
+        processingProgress = 0
+        processedAssetsCount = 0
+        totalAssetsToProcess = 0
+    }
+    
+    func clearPreparingState() {
+        isProcessing = false
+        statusMessage = ""
+    }
+    
     private func loadCachedStatus() {
         DatabaseManager.shared.getAllSyncStatusAsync { [weak self] statusMap in
             DispatchQueue.main.async {
@@ -53,7 +67,7 @@ class HashManager: ObservableObject {
     }
     
     func startBackgroundProcessing(identifiers: [String]) {
-        guard !isProcessing else {
+        guard !isHashingActive && !isCheckingActive else {
             return
         }
         

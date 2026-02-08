@@ -281,7 +281,16 @@ struct PhotoGridView: View {
     }
     
     private func startBackgroundProcessing() {
-        guard photoLibraryManager.assetCount > 0 else { return }
+        guard photoLibraryManager.assetCount > 0 else {
+            if hashManager.isProcessing {
+                hashManager.clearPreparingState()
+            }
+            return
+        }
+        
+        if !hashManager.isProcessing {
+            hashManager.setPreparingState()
+        }
         
         let manager = photoLibraryManager
         Task.detached(priority: .utility) {
@@ -725,9 +734,12 @@ struct PhotoGridView: View {
         let serverURL = settingsManager.serverURL
         let apiKey = settingsManager.apiKey
         
+        if !hashManager.isProcessing {
+            hashManager.setPreparingState()
+        }
+        
         guard !serverURL.isEmpty && !apiKey.isEmpty else {
             logDebug("Server sync skipped: server not configured", category: .sync)
-            // Start background processing even without server sync
             startBackgroundProcessing()
             return
         }
