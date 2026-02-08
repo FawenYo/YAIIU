@@ -536,9 +536,10 @@ struct PhotoGridView: View {
         
         // Capture statusCache inside the Task to get the latest snapshot
         Task.detached(priority: .userInitiated) {
-            // Read latest status cache on background thread
-            let statusCache = await MainActor.run { hash.syncStatusCache }
-            let totalCount = await MainActor.run { manager.assetCount }
+            // Read latest values on background thread
+            let (statusCache, totalCount) = await MainActor.run {
+                (hash.syncStatusCache, manager.assetCount)
+            }
             
             var indices: [Int] = []
             indices.reserveCapacity(totalCount / 4)
@@ -575,8 +576,9 @@ struct PhotoGridView: View {
         
         Task.detached(priority: .utility) {
             // Read latest values on background thread
-            let statusCache = await MainActor.run { hash.syncStatusCache }
-            let totalCount = await MainActor.run { manager.assetCount }
+            let (statusCache, totalCount) = await MainActor.run {
+                (hash.syncStatusCache, manager.assetCount)
+            }
             
             var uploadedCount = 0
             fetchResult.enumerateObjects { (asset, _, _) in
