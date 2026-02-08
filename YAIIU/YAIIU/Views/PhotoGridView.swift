@@ -536,15 +536,15 @@ struct PhotoGridView: View {
         
         // Capture statusCache inside the Task to get the latest snapshot
         Task.detached(priority: .userInitiated) {
-            // Read latest values on background thread
-            let (statusCache, totalCount) = await MainActor.run {
-                (hash.syncStatusCache, manager.assetCount)
+            // Read latest values atomically to ensure consistency
+            let (statusCache, totalCount, fetchResult) = await MainActor.run {
+                (hash.syncStatusCache, manager.assetCount, manager.fetchResult)
             }
             
             var indices: [Int] = []
             indices.reserveCapacity(totalCount / 4)
             
-            if let fetchResult = manager.fetchResult {
+            if let fetchResult = fetchResult {
                 fetchResult.enumerateObjects { (asset, index, _) in
                     let status = statusCache[asset.localIdentifier] ?? .pending
                     if status != .uploaded {
@@ -566,18 +566,20 @@ struct PhotoGridView: View {
     }
     
     private func updateNotUploadedCount() {
-        guard let fetchResult = photoLibraryManager.fetchResult else {
-            cachedNotUploadedCount = photoLibraryManager.assetCount
-            return
-        }
-        
         let manager = photoLibraryManager
         let hash = hashManager
         
         Task.detached(priority: .utility) {
-            // Read latest values on background thread
-            let (statusCache, totalCount) = await MainActor.run {
-                (hash.syncStatusCache, manager.assetCount)
+            // Read latest values atomically to ensure consistency
+            let (statusCache, totalCount, fetchResult) = await MainActor.run {
+                (hash.syncStatusCache, manager.assetCount, manager.fetchResult)
+            }
+            
+            guard let fetchResult = fetchResult else {
+                await MainActor.run {
+                    self.cachedNotUploadedCount = totalCount
+                }
+                return
             }
             
             var uploadedCount = 0
