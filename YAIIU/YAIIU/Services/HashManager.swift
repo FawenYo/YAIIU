@@ -53,6 +53,9 @@ class HashManager: ObservableObject {
     func clearPreparingState() {
         isProcessing = false
         statusMessage = ""
+        processingProgress = 0
+        processedAssetsCount = 0
+        totalAssetsToProcess = 0
     }
     
     private func loadCachedStatus() {
