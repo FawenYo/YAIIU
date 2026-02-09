@@ -454,8 +454,12 @@ class UploadManager: ObservableObject {
     /// Prevent the screen from dimming while uploads are active.
     /// The system automatically re-enables the idle timer when the app terminates.
     private func setIdleTimerDisabled(_ disabled: Bool) {
-        DispatchQueue.main.async {
+        if Thread.isMainThread {
             UIApplication.shared.isIdleTimerDisabled = disabled
+        } else {
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = disabled
+            }
         }
     }
     
