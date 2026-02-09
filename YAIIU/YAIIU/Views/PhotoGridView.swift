@@ -1,6 +1,7 @@
 import SwiftUI
 import Photos
 import Combine
+import UIKit
 
 // MARK: - Photo Filter Options
 
@@ -35,6 +36,190 @@ private struct FirstRowOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+// MARK: - Drag Selection State
+
+private final class DragSelectionState: ObservableObject {
+    var anchorIndex: Int?
+    var currentIndex: Int?
+    /// Selection snapshot at drag start, used to restore items outside the drag range.
+    var baseSelection: Set<String> = []
+    var isDeselecting: Bool = false
+
+    func reset() {
+        anchorIndex = nil
+        currentIndex = nil
+        baseSelection.removeAll()
+        isDeselecting = false
+    }
+}
+
+// MARK: - ScrollViewGestureInjector
+
+/// Injects a horizontal `UIPanGestureRecognizer` on the parent `UIScrollView`
+/// for drag-to-select. Disables scrolling while the gesture is active.
+private struct ScrollViewGestureInjector: UIViewRepresentable {
+    let isEnabled: Bool
+    let onBegan: (CGPoint) -> Void
+    let onChanged: (CGPoint) -> Void
+    let onEnded: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onBegan = onBegan
+        context.coordinator.onChanged = onChanged
+        context.coordinator.onEnded = onEnded
+        context.coordinator.installIfNeeded(on: uiView)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var isEnabled = false
+        var onBegan: ((CGPoint) -> Void)?
+        var onChanged: ((CGPoint) -> Void)?
+        var onEnded: (() -> Void)?
+
+        private weak var installedScrollView: UIScrollView?
+        private var pan: UIPanGestureRecognizer?
+        private var scrollWasEnabled = true
+
+        private var displayLink: CADisplayLink?
+        private var autoScrollSpeed: CGFloat = 0
+        private let edgeInset: CGFloat = 60
+        private let maxScrollSpeed: CGFloat = 800
+
+        deinit {
+            stopAutoScroll()
+        }
+
+        func installIfNeeded(on marker: UIView) {
+            guard installedScrollView == nil || installedScrollView?.window == nil else { return }
+
+            var candidate: UIView? = marker.superview
+            while let v = candidate {
+                if let sv = v as? UIScrollView {
+                    install(on: sv)
+                    return
+                }
+                candidate = v.superview
+            }
+        }
+
+        private func install(on scrollView: UIScrollView) {
+            if let old = pan {
+                old.view?.removeGestureRecognizer(old)
+            }
+            let gesture = UIPanGestureRecognizer(
+                target: self,
+                action: #selector(handlePan(_:))
+            )
+            gesture.delegate = self
+            scrollView.addGestureRecognizer(gesture)
+            pan = gesture
+            installedScrollView = scrollView
+        }
+
+        private func startAutoScroll() {
+            guard displayLink == nil else { return }
+            let link = CADisplayLink(target: self, selector: #selector(autoScrollTick(_:)))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+
+        private func stopAutoScroll() {
+            displayLink?.invalidate()
+            displayLink = nil
+            autoScrollSpeed = 0
+        }
+
+        /// `pt` is in the scroll view's frame coordinate space.
+        private func updateAutoScroll(frameRelativeTouch pt: CGPoint) {
+            guard let scrollView = installedScrollView else { return }
+            let frameHeight = scrollView.frame.height
+
+            if pt.y < edgeInset {
+                let ratio = max(0, (edgeInset - pt.y) / edgeInset)
+                autoScrollSpeed = -maxScrollSpeed * ratio
+                startAutoScroll()
+            } else if pt.y > frameHeight - edgeInset {
+                let ratio = max(0, (pt.y - (frameHeight - edgeInset)) / edgeInset)
+                autoScrollSpeed = maxScrollSpeed * ratio
+                startAutoScroll()
+            } else {
+                stopAutoScroll()
+            }
+        }
+
+        @objc private func autoScrollTick(_ link: CADisplayLink) {
+            guard let scrollView = installedScrollView,
+                  let gesture = pan,
+                  gesture.state == .changed || gesture.state == .began else {
+                stopAutoScroll()
+                return
+            }
+
+            let dt = CGFloat(link.targetTimestamp - link.timestamp)
+            let delta = autoScrollSpeed * dt
+            var offset = scrollView.contentOffset
+            let inset = scrollView.adjustedContentInset
+
+            offset.y += delta
+            let minY = -inset.top
+            let maxY = max(minY, scrollView.contentSize.height - scrollView.bounds.height + inset.bottom)
+            offset.y = min(max(offset.y, minY), maxY)
+            scrollView.contentOffset = offset
+
+            let loc = gesture.location(in: scrollView)
+            onChanged?(loc)
+        }
+
+        @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard isEnabled, let scrollView = installedScrollView else { return }
+            let loc = gesture.location(in: scrollView)
+
+            switch gesture.state {
+            case .began:
+                scrollWasEnabled = scrollView.isScrollEnabled
+                scrollView.isScrollEnabled = false
+                onBegan?(loc)
+            case .changed:
+                onChanged?(loc)
+                let touchInFrame = gesture.location(in: scrollView.superview ?? scrollView)
+                let frameOriginY = scrollView.frame.origin.y
+                let touchRelative = CGPoint(x: touchInFrame.x, y: touchInFrame.y - frameOriginY)
+                updateAutoScroll(frameRelativeTouch: touchRelative)
+            case .ended, .cancelled, .failed:
+                stopAutoScroll()
+                scrollView.isScrollEnabled = scrollWasEnabled
+                onEnded?()
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard isEnabled else { return false }
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+                  let view = pan.view else { return false }
+            let vel = pan.velocity(in: view)
+            return abs(vel.x) > abs(vel.y)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
     }
 }
 
@@ -86,22 +271,23 @@ struct PhotoGridView: View {
     @State private var isSyncing = false
     @State private var currentFilter: PhotoFilterOption = .all
     
-    // Cached filter results
     @State private var filteredIndices: [Int] = []
     @State private var cachedNotUploadedCount: Int = 0
     @State private var isFilteringInProgress = false
     @State private var filterCacheVersion: Int = 0
     
-    // Refresh trigger to force grid re-render when photo library changes
     @State private var refreshToken: UUID = UUID()
-    
-    // Task management for background processing
     @State private var processingTask: Task<Void, Never>?
-    
-    // Photo detail view states
     @State private var selectedPhotoIndex: Int = 0
     @State private var showingPhotoDetail = false
     @Namespace private var photoTransitionNamespace
+    
+    @StateObject private var dragState = DragSelectionState()
+    @State private var gridContainerWidth: CGFloat = 0
+    
+    private static let columnCount = 3
+    private static let gridSpacing: CGFloat = 2
+    private static let gridHorizontalPadding: CGFloat = 1
     
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -141,6 +327,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.cancel) {
                                 isSelectionMode = false
                                 selectedAssets.removeAll()
+                                dragState.reset()
                             }
                         } else {
                             HStack(spacing: 8) {
@@ -323,6 +510,8 @@ struct PhotoGridView: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .onAppear { gridContainerWidth = geometry.size.width }
+            .onChange(of: geometry.size.width) { _, w in gridContainerWidth = w }
             .onDisappear {
                 visibleDisplayIndices.removeAll()
             }
@@ -348,12 +537,11 @@ struct PhotoGridView: View {
     
     private var simpleGridView: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 2) {
+            LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
                 ForEach(0..<displayCount, id: \.self) { displayIndex in
                     let actualIndex = resolveActualIndex(displayIndex)
                     gridItemView(assetIndex: actualIndex, displayIndex: displayIndex)
                         .background(
-                            // Track first row position using GeometryReader
                             Group {
                                 if displayIndex == 0 {
                                     firstRowTracker
@@ -362,7 +550,16 @@ struct PhotoGridView: View {
                         )
                 }
             }
-            .padding(.horizontal, 1)
+            .padding(.horizontal, Self.gridHorizontalPadding)
+            .background {
+                ScrollViewGestureInjector(
+                    isEnabled: isSelectionMode,
+                    onBegan: { handleDragBegan(at: $0) },
+                    onChanged: { handleDragChanged(at: $0) },
+                    onEnded: { handleDragEnded() }
+                )
+                .frame(width: 0, height: 0)
+            }
             .id(refreshToken)
         }
         .coordinateSpace(name: "scrollView")
@@ -703,6 +900,74 @@ struct PhotoGridView: View {
         }
     }
     
+    // MARK: - Drag-to-Select
+    
+    private var cellSize: CGFloat {
+        let usable = gridContainerWidth - Self.gridHorizontalPadding * 2
+        let gaps = Self.gridSpacing * CGFloat(Self.columnCount - 1)
+        return max((usable - gaps) / CGFloat(Self.columnCount), 1)
+    }
+    
+    private func displayIndex(at point: CGPoint) -> Int? {
+        let side = cellSize
+        let stride = side + Self.gridSpacing
+        let originX = Self.gridHorizontalPadding
+        
+        let col = Int((point.x - originX) / stride)
+        let row = Int(point.y / stride)
+        
+        guard col >= 0, col < Self.columnCount, row >= 0 else { return nil }
+        
+        let index = row * Self.columnCount + col
+        guard index >= 0, index < displayCount else { return nil }
+        return index
+    }
+    
+    private func handleDragBegan(at point: CGPoint) {
+        guard let idx = displayIndex(at: point) else { return }
+        let actualIdx = resolveActualIndex(idx)
+        
+        dragState.baseSelection = selectedAssets
+        dragState.anchorIndex = idx
+        dragState.currentIndex = idx
+        
+        if let id = photoLibraryManager.localIdentifier(at: actualIdx) {
+            dragState.isDeselecting = selectedAssets.contains(id)
+        }
+        
+        applyDragRange(from: idx, to: idx)
+    }
+    
+    private func handleDragChanged(at point: CGPoint) {
+        guard let anchor = dragState.anchorIndex else { return }
+        guard let idx = displayIndex(at: point) else { return }
+        guard idx != dragState.currentIndex else { return }
+        
+        dragState.currentIndex = idx
+        applyDragRange(from: anchor, to: idx)
+    }
+    
+    private func handleDragEnded() {
+        dragState.reset()
+    }
+    
+    private func applyDragRange(from: Int, to: Int) {
+        let lo = min(from, to)
+        let hi = max(from, to)
+        
+        var next = dragState.baseSelection
+        for i in lo...hi {
+            let actual = resolveActualIndex(i)
+            guard let id = photoLibraryManager.localIdentifier(at: actual) else { continue }
+            if dragState.isDeselecting {
+                next.remove(id)
+            } else {
+                next.insert(id)
+            }
+        }
+        selectedAssets = next
+    }
+    
     private func toggleSelection(at index: Int) {
         guard let identifier = photoLibraryManager.localIdentifier(at: index) else { return }
         if selectedAssets.contains(identifier) {
@@ -728,6 +993,7 @@ struct PhotoGridView: View {
                 manager.uploadAssets(assetsToUpload)
                 isSelectionMode = false
                 selectedAssets.removeAll()
+                dragState.reset()
             }
         }
     }
