@@ -158,6 +158,7 @@ class UploadManager: ObservableObject {
         logInfo("Starting upload process", category: .upload)
         isUploading = true
         isPaused = false
+        setIdleTimerDisabled(true)
         
         uploadTask = Task {
             await processUploadQueueParallel()
@@ -168,6 +169,7 @@ class UploadManager: ObservableObject {
         logInfo("Upload paused", category: .upload)
         isPaused = true
         isUploading = false
+        setIdleTimerDisabled(false)
     }
     
     func resumeUpload() {
@@ -186,6 +188,7 @@ class UploadManager: ObservableObject {
             logError("Cannot process upload queue: server URL or API key is empty", category: .upload)
             await MainActor.run {
                 isUploading = false
+                setIdleTimerDisabled(false)
             }
             return
         }
@@ -266,6 +269,7 @@ class UploadManager: ObservableObject {
         
         await MainActor.run {
             isUploading = false
+            setIdleTimerDisabled(false)
             uploadQueue.removeAll { $0.status == .completed }
         }
     }
@@ -441,7 +445,18 @@ class UploadManager: ObservableObject {
         logInfo("Clearing all upload items", category: .upload)
         uploadTask?.cancel()
         isUploading = false
+        setIdleTimerDisabled(false)
         uploadQueue.removeAll()
+    }
+    
+    // MARK: - Idle Timer
+    
+    /// Prevent the screen from dimming while uploads are active.
+    /// The system automatically re-enables the idle timer when the app terminates.
+    private func setIdleTimerDisabled(_ disabled: Bool) {
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = disabled
+        }
     }
     
     // MARK: - iCloud Identifier
