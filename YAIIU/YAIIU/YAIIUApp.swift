@@ -48,11 +48,17 @@ enum TemporaryFileCleanup {
 
     private static func cleanDirectory(at url: URL) {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: .skipsHiddenFiles
-        ) else {
+
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: .skipsHiddenFiles
+            )
+        } catch {
+            // Directory may not exist (e.g. App Group tmp/ never created).
+            logDebug("Temp directory not readable at \(url.lastPathComponent): \(error.localizedDescription)", category: .app)
             return
         }
 
