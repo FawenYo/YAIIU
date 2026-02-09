@@ -44,7 +44,7 @@ enum TemporaryFileCleanup {
         }
     }
 
-    private static let staleThreshold: TimeInterval = 300 // 5 minutes
+    private static let staleThreshold: TimeInterval = 3600
 
     private static func cleanDirectory(at url: URL) {
         let fm = FileManager.default
