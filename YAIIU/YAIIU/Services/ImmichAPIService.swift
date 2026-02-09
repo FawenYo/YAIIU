@@ -56,9 +56,11 @@ class ImmichAPIService: NSObject {
         super.init()
         
         let config = URLSessionConfiguration.default
-        // Allow large file uploads without timeout during transfer
         config.timeoutIntervalForRequest = 300
         config.timeoutIntervalForResource = 3600
+        // Upload-only session has no use for response caching on disk
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         
         uploadSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         logInfo("ImmichAPIService initialized with upload session", category: .api)

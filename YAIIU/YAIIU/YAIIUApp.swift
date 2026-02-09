@@ -6,6 +6,10 @@ struct YAIIUApp: App {
     @StateObject private var uploadManager = UploadManager()
     @StateObject private var migrationManager = MigrationManager()
     
+    init() {
+        TemporaryFileCleanup.purgeStaleFiles()
+    }
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -15,6 +19,56 @@ struct YAIIUApp: App {
                 .task {
                     await migrationManager.performMigrationIfNeeded(settingsManager: settingsManager)
                 }
+        }
+    }
+}
+
+// MARK: - Temporary File Cleanup
+
+/// Removes leftover temporary files that may accumulate when the app is
+/// terminated mid-upload (e.g. user force-quits, system kills the process).
+enum TemporaryFileCleanup {
+
+    /// Fire-and-forget cleanup dispatched at low QoS so it never
+    /// contends with app launch or upload work.
+    static func purgeStaleFiles() {
+        DispatchQueue.global(qos: .utility).async {
+            cleanDirectory(at: FileManager.default.temporaryDirectory)
+
+            if let groupContainer = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: "group.com.fawenyo.yaiiu"
+            ) {
+                let groupTmp = groupContainer.appendingPathComponent("tmp", isDirectory: true)
+                cleanDirectory(at: groupTmp)
+            }
+        }
+    }
+
+    private static func cleanDirectory(at url: URL) {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        ) else {
+            return
+        }
+
+        var removedCount = 0
+        for entry in entries {
+            do {
+                try fm.removeItem(at: entry)
+                removedCount += 1
+            } catch {
+                // Best-effort; skip files still locked by the system.
+            }
+        }
+
+        if removedCount > 0 {
+            logInfo(
+                "Purged \(removedCount) stale temporary file(s) from \(url.lastPathComponent)",
+                category: .app
+            )
         }
     }
 }
