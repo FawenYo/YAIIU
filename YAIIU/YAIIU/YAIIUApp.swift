@@ -44,23 +44,36 @@ enum TemporaryFileCleanup {
         }
     }
 
+    private static let staleThreshold: TimeInterval = 300 // 5 minutes
+
     private static func cleanDirectory(at url: URL) {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
             at: url,
-            includingPropertiesForKeys: nil,
+            includingPropertiesForKeys: [.contentModificationDateKey],
             options: .skipsHiddenFiles
         ) else {
             return
         }
 
+        let cutoff = Date().addingTimeInterval(-staleThreshold)
         var removedCount = 0
+
         for entry in entries {
+            guard let values = try? entry.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let modDate = values.contentModificationDate,
+                  modDate < cutoff else {
+                continue
+            }
+
             do {
                 try fm.removeItem(at: entry)
                 removedCount += 1
             } catch {
-                // Best-effort; skip files still locked by the system.
+                logDebug(
+                    "Skipped temp item \(entry.lastPathComponent): \(error.localizedDescription)",
+                    category: .app
+                )
             }
         }
 
