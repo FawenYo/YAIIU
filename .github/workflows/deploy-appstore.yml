@@ -238,10 +238,12 @@ jobs:
 
       - name: Cleanup keychain
         if: always()
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
         run: |
           security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
           rm -f $RUNNER_TEMP/build_certificate.p12
           rm -f $RUNNER_TEMP/appstore_profile.mobileprovision
           rm -f $RUNNER_TEMP/appstore_extension_profile.mobileprovision
           rm -f $RUNNER_TEMP/AuthKey.p8
-          rm -rf ~/.private_keys
+          rm -f ~/.private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8
