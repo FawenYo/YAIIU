@@ -1,0 +1,140 @@
+name: Build Ad Hoc IPA
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "YAIIU/**"
+      - ".github/workflows/build-ipa.yml"
+
+concurrency:
+  group: build-ipa-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Ad Hoc IPA
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install Apple certificate and provisioning profile
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          ADHOC_PROVISIONING_PROFILE_BASE64: ${{ secrets.ADHOC_PROVISIONING_PROFILE_BASE64 }}
+          ADHOC_EXTENSION_PROVISIONING_PROFILE_BASE64: ${{ secrets.ADHOC_EXTENSION_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Create variables
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          PP_PATH=$RUNNER_TEMP/adhoc_profile.mobileprovision
+          PP_EXT_PATH=$RUNNER_TEMP/adhoc_extension_profile.mobileprovision
+
+          # Decode files from secrets
+          echo -n "$CERTIFICATE_P12_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+          echo -n "$ADHOC_PROVISIONING_PROFILE_BASE64" | base64 --decode -o $PP_PATH
+          echo -n "$ADHOC_EXTENSION_PROVISIONING_PROFILE_BASE64" | base64 --decode -o $PP_EXT_PATH
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import certificate to keychain
+          security import $CERTIFICATE_PATH -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          # Install provisioning profiles
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+          cp $PP_EXT_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      - name: Generate BuildInfo.swift
+        working-directory: YAIIU
+        run: |
+          export MARKETING_VERSION="0.1.1"
+          export CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+          bash Scripts/set_build_info.sh
+
+      - name: Generate ExportOptions plist
+        env:
+          ADHOC_PROVISIONING_PROFILE_NAME: ${{ secrets.ADHOC_PROVISIONING_PROFILE_NAME }}
+          ADHOC_EXTENSION_PROVISIONING_PROFILE_NAME: ${{ secrets.ADHOC_EXTENSION_PROVISIONING_PROFILE_NAME }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          cat > $RUNNER_TEMP/ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>ad-hoc</string>
+            <key>teamID</key>
+            <string>${TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>compileBitcode</key>
+            <false/>
+            <key>thinning</key>
+            <string>&lt;none&gt;</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.fawenyo.yaiiu</key>
+              <string>${ADHOC_PROVISIONING_PROFILE_NAME}</string>
+              <key>com.fawenyo.yaiiu.BackgroundUploadExtension</key>
+              <string>${ADHOC_EXTENSION_PROVISIONING_PROFILE_NAME}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Build archive
+        working-directory: YAIIU
+        run: |
+          xcodebuild archive \
+            -project YAIIU.xcodeproj \
+            -scheme YAIIU \
+            -configuration Release \
+            -archivePath $RUNNER_TEMP/YAIIU.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="${{ secrets.TEAM_ID }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.ADHOC_PROVISIONING_PROFILE_NAME }}" \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            | xcpretty --color
+
+      - name: Export IPA (Ad Hoc)
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/YAIIU.xcarchive \
+            -exportOptionsPlist $RUNNER_TEMP/ExportOptions.plist \
+            -exportPath $RUNNER_TEMP/export \
+            | xcpretty --color
+
+      - name: Upload IPA as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YAIIU-AdHoc-${{ github.sha }}
+          path: ${{ runner.temp }}/export/YAIIU.ipa
+          retention-days: 14
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+          rm -f $RUNNER_TEMP/build_certificate.p12
+          rm -f $RUNNER_TEMP/adhoc_profile.mobileprovision
+          rm -f $RUNNER_TEMP/adhoc_extension_profile.mobileprovision
