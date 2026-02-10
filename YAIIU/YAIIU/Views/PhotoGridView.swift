@@ -287,11 +287,9 @@ struct PhotoGridView: View {
     private static let gridSpacing: CGFloat = 2
     private static let gridHorizontalPadding: CGFloat = 1
     
-    private let columns = [
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2),
-        GridItem(.flexible(), spacing: 2)
-    ]
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: Self.gridSpacing), count: Self.columnCount)
+    }
     
     private let prefetchBuffer = 30
     
