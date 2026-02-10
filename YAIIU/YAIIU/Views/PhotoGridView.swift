@@ -147,11 +147,11 @@ private struct ScrollViewGestureInjector: UIViewRepresentable {
             let frameHeight = scrollView.frame.height
 
             if pt.y < edgeInset {
-                let ratio = max(0, (edgeInset - pt.y) / edgeInset)
+                let ratio = min(1, max(0, (edgeInset - pt.y) / edgeInset))
                 autoScrollSpeed = -maxScrollSpeed * ratio
                 startAutoScroll()
             } else if pt.y > frameHeight - edgeInset {
-                let ratio = max(0, (pt.y - (frameHeight - edgeInset)) / edgeInset)
+                let ratio = min(1, max(0, (pt.y - (frameHeight - edgeInset)) / edgeInset))
                 autoScrollSpeed = maxScrollSpeed * ratio
                 startAutoScroll()
             } else {
