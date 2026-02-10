@@ -99,6 +99,81 @@ jobs:
           </plist>
           EOF
 
+      - name: Configure manual signing in project
+        working-directory: YAIIU
+        env:
+          ADHOC_PROVISIONING_PROFILE_NAME: ${{ secrets.ADHOC_PROVISIONING_PROFILE_NAME }}
+          ADHOC_EXTENSION_PROVISIONING_PROFILE_NAME: ${{ secrets.ADHOC_EXTENSION_PROVISIONING_PROFILE_NAME }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          # Patch pbxproj to set per-target provisioning profiles.
+          # Cannot use xcodebuild CLI PROVISIONING_PROFILE_SPECIFIER because
+          # it applies globally to ALL targets, causing a bundle ID mismatch
+          # for the BackgroundUploadExtension target.
+          python3 - <<'PYEOF'
+          import os
+
+          pbxproj = "YAIIU.xcodeproj/project.pbxproj"
+          with open(pbxproj, "r") as f:
+              lines = f.readlines()
+
+          app_profile = os.environ["ADHOC_PROVISIONING_PROFILE_NAME"]
+          ext_profile = os.environ["ADHOC_EXTENSION_PROVISIONING_PROFILE_NAME"]
+          team_id = os.environ["TEAM_ID"]
+
+          # Track which buildSettings block we're in
+          in_build_settings = False
+          current_target = None  # "app", "ext", or None
+          brace_depth = 0
+
+          result = []
+          for line in lines:
+              stripped = line.strip()
+
+              if "buildSettings = {" in stripped:
+                  in_build_settings = True
+                  current_target = None
+                  brace_depth = 1
+                  result.append(line)
+                  continue
+
+              if in_build_settings:
+                  # Track braces for nested structures like arrays
+                  brace_depth += stripped.count("{") - stripped.count("}")
+
+                  if "CODE_SIGN_ENTITLEMENTS = YAIIU/YAIIU.entitlements" in stripped:
+                      current_target = "app"
+                  elif "CODE_SIGN_ENTITLEMENTS = BackgroundUploadExtension/" in stripped:
+                      current_target = "ext"
+
+                  # Patch CODE_SIGN_STYLE to Manual for both targets
+                  if current_target and "CODE_SIGN_STYLE = Automatic" in stripped:
+                      line = line.replace("Automatic", "Manual")
+
+                  # Patch PROVISIONING_PROFILE_SPECIFIER for extension
+                  if current_target == "ext" and 'PROVISIONING_PROFILE_SPECIFIER = ""' in stripped:
+                      line = line.replace(
+                          'PROVISIONING_PROFILE_SPECIFIER = ""',
+                          f'PROVISIONING_PROFILE_SPECIFIER = "{ext_profile}"'
+                      )
+
+                  # Add PROVISIONING_PROFILE_SPECIFIER for app target before closing brace
+                  if current_target == "app" and brace_depth == 0 and stripped == "};":
+                      indent = line[:len(line) - len(line.lstrip())]
+                      result.append(f'{indent}\tPROVISIONING_PROFILE_SPECIFIER = "{app_profile}";\n')
+
+                  if brace_depth == 0:
+                      in_build_settings = False
+                      current_target = None
+
+              result.append(line)
+
+          with open(pbxproj, "w") as f:
+              f.writelines(result)
+
+          print("✅ Patched pbxproj with per-target provisioning profiles")
+          PYEOF
+
       - name: Build archive
         working-directory: YAIIU
         run: |
@@ -111,7 +186,6 @@ jobs:
             -destination "generic/platform=iOS" \
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="${{ secrets.TEAM_ID }}" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.ADHOC_PROVISIONING_PROFILE_NAME }}" \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             ENABLE_USER_SCRIPT_SANDBOXING=NO \
