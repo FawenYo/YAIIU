@@ -193,12 +193,8 @@ private struct ScrollViewGestureInjector: UIViewRepresentable {
                 onBegan?(loc)
             case .changed:
                 onChanged?(loc)
-                if let superview = scrollView.superview {
-                    let touchInFrame = gesture.location(in: superview)
-                    let frameOriginY = scrollView.frame.origin.y
-                    let touchRelative = CGPoint(x: touchInFrame.x, y: touchInFrame.y - frameOriginY)
-                    updateAutoScroll(frameRelativeTouch: touchRelative)
-                }
+                let touchRelative = CGPoint(x: loc.x, y: loc.y - scrollView.contentOffset.y)
+                updateAutoScroll(frameRelativeTouch: touchRelative)
             case .ended, .cancelled, .failed:
                 stopAutoScroll()
                 scrollView.isScrollEnabled = scrollWasEnabled
