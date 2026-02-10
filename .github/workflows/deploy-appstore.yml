@@ -101,6 +101,7 @@ jobs:
       - name: Build archive
         working-directory: YAIIU
         run: |
+          set -o pipefail
           xcodebuild archive \
             -project YAIIU.xcodeproj \
             -scheme YAIIU \
@@ -113,15 +114,24 @@ jobs:
             CODE_SIGN_IDENTITY="Apple Distribution" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             ENABLE_USER_SCRIPT_SANDBOXING=NO \
-            | xcpretty --color
+            2>&1 | tee $RUNNER_TEMP/xcodebuild-archive.log | xcpretty --color
+
+      - name: Show raw build log on failure
+        if: failure()
+        run: cat $RUNNER_TEMP/xcodebuild-archive.log | grep -A 5 -i "error:" || tail -100 $RUNNER_TEMP/xcodebuild-archive.log
 
       - name: Export IPA (App Store)
         run: |
+          set -o pipefail
           xcodebuild -exportArchive \
             -archivePath $RUNNER_TEMP/YAIIU.xcarchive \
             -exportOptionsPlist $RUNNER_TEMP/ExportOptions.plist \
             -exportPath $RUNNER_TEMP/export \
-            | xcpretty --color
+            2>&1 | tee $RUNNER_TEMP/xcodebuild-export.log | xcpretty --color
+
+      - name: Show raw export log on failure
+        if: failure()
+        run: cat $RUNNER_TEMP/xcodebuild-export.log | tail -50
 
       - name: Upload to App Store Connect
         env:
