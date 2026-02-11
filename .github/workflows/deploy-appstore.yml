@@ -69,7 +69,7 @@ jobs:
           # Query App Store Connect API for the latest build number, then +1
 
           # Ensure PyJWT with cryptography backend is available for ES256
-          pip3 install PyJWT cryptography --quiet
+          pip3 install PyJWT cryptography --quiet --break-system-packages
 
           BUILD_NUMBER=$(python3 - <<'PYEOF'
           import json, time, os, sys, urllib.request, base64
