@@ -85,7 +85,7 @@ jobs:
           # Generate JWT token for App Store Connect API
           now = int(time.time())
           token = jwt.encode(
-              {"iss": issuer_id, "iat": now, "exp": now + 1200, "aud": "appstoreconnect-v1"},
+              {"iss": issuer_id, "iat": now, "exp": now + 300, "aud": "appstoreconnect-v1"},
               private_key,
               algorithm="ES256",
               headers={"kid": key_id}
@@ -99,8 +99,8 @@ jobs:
               app_data = json.loads(resp.read())
 
           if not app_data.get("data"):
-              print("1", end="")
-              sys.exit(0)
+              print(f"Error: App with bundle ID '{bundle_id}' not found.", file=sys.stderr)
+              sys.exit(1)
 
           app_id = app_data["data"][0]["id"]
 
