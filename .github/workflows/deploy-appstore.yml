@@ -59,11 +59,89 @@ jobs:
           cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
           cp $PP_EXT_PATH ~/Library/MobileDevice/Provisioning\ Profiles/
 
+      - name: Get next build number from App Store Connect
+        id: build_number
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: |
+          # Query App Store Connect API for the latest build number, then +1
+
+          # Ensure PyJWT with cryptography backend is available for ES256
+          pip3 install PyJWT cryptography --quiet
+
+          BUILD_NUMBER=$(python3 - <<'PYEOF'
+          import json, time, os, sys, urllib.request, base64
+          import jwt
+
+          key_id = os.environ["APP_STORE_CONNECT_API_KEY_ID"]
+          issuer_id = os.environ["APP_STORE_CONNECT_ISSUER_ID"]
+          bundle_id = "com.fawenyo.yaiiu"
+
+          # Decode API key directly in memory (never written to disk)
+          private_key = base64.b64decode(os.environ["APP_STORE_CONNECT_API_KEY_BASE64"])
+
+          # Generate JWT token for App Store Connect API
+          now = int(time.time())
+          token = jwt.encode(
+              {"iss": issuer_id, "iat": now, "exp": now + 300, "aud": "appstoreconnect-v1"},
+              private_key,
+              algorithm="ES256",
+              headers={"kid": key_id}
+          )
+          headers = {"Authorization": f"Bearer {token}"}
+
+          # Step 1: Get app ID by bundle ID
+          app_url = f"https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]={bundle_id}&fields[apps]=bundleId"
+          req = urllib.request.Request(app_url, headers=headers)
+          with urllib.request.urlopen(req) as resp:
+              app_data = json.loads(resp.read())
+
+          if not app_data.get("data"):
+              print(f"Error: App with bundle ID '{bundle_id}' not found.", file=sys.stderr)
+              sys.exit(1)
+
+          app_id = app_data["data"][0]["id"]
+
+          # Step 2: Get all builds and find the highest version number
+          # API sort=-version uses string sorting, so we fetch multiple and compare numerically
+          max_version = 0
+          builds_url = (
+              f"https://api.appstoreconnect.apple.com/v1/builds"
+              f"?filter[app]={app_id}"
+              f"&fields[builds]=version"
+              f"&limit=200"
+          )
+
+          while builds_url:
+              req = urllib.request.Request(builds_url, headers=headers)
+              with urllib.request.urlopen(req) as resp:
+                  builds_data = json.loads(resp.read())
+
+              for build in builds_data.get("data", []):
+                  try:
+                      v = int(build["attributes"]["version"])
+                      if v > max_version:
+                          max_version = v
+                  except (ValueError, KeyError):
+                      pass
+
+              # Handle pagination
+              builds_url = builds_data.get("links", {}).get("next")
+
+          print(max_version + 1, end="")
+          PYEOF
+          )
+
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "✅ Next build number: $BUILD_NUMBER"
+
       - name: Generate BuildInfo.swift
         working-directory: YAIIU
         run: |
           export MARKETING_VERSION="0.1.1"
-          export CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+          export CURRENT_PROJECT_VERSION="${{ steps.build_number.outputs.BUILD_NUMBER }}"
           bash Scripts/set_build_info.sh
 
       - name: Generate ExportOptions plist
@@ -186,7 +264,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="${{ secrets.TEAM_ID }}" \
             CODE_SIGN_IDENTITY="Apple Distribution" \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.build_number.outputs.BUILD_NUMBER }}" \
             ENABLE_USER_SCRIPT_SANDBOXING=NO \
             2>&1 | tee $RUNNER_TEMP/xcodebuild-archive.log | xcpretty --color
 
