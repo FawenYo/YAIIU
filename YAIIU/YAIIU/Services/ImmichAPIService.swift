@@ -1156,7 +1156,7 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
             delegate.progressHandler?(progress)
         }
 
-        if !delegate.bytesSentCallbackFired && progress >= 1.0 {
+        if !delegate.bytesSentCallbackFired && totalBytesExpectedToSend > 0 && totalBytesSent >= totalBytesExpectedToSend {
             delegate.bytesSentCallbackFired = true
             logDebug("Upload bytes fully sent for \(delegate.filename)", category: .api)
             delegate.onBytesSent?()
