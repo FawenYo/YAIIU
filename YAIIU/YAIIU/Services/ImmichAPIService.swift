@@ -277,10 +277,6 @@ class ImmichAPIService: NSObject {
             longitude: longitude
         )
 
-        defer {
-            try? FileManager.default.removeItem(at: multipartFileURL)
-        }
-
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -294,6 +290,11 @@ class ImmichAPIService: NSObject {
                 filename: filename,
                 progressHandler: progressHandler,
                 completion: { result in
+                    // Clean up the temporary multipart file after the upload task is complete
+                    defer {
+                        try? FileManager.default.removeItem(at: multipartFileURL)
+                    }
+
                     switch result {
                     case .success:
                         // If upload succeeded but onBytesSent wasn't called (shouldn't happen),

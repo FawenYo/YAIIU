@@ -362,15 +362,16 @@ class UploadManager: ObservableObject {
                         if useFileExport {
                             let fileURL = try await photoLibraryManager.exportResourceToFile(for: resource)
 
-                            enum FileAttributeError: Error { case missingSize }
-                            let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
-                            guard let fileSize = fileAttrs[.size] as? Int64 else {
-                                logError("Could not determine file size for \(fileURL.path)", category: .upload)
-                                throw FileAttributeError.missingSize
-                            }
-                            uploadedFileSize = fileSize
+                            do {
+                                enum FileAttributeError: Error { case missingSize }
+                                let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+                                guard let fileSize = fileAttrs[.size] as? Int64 else {
+                                    logError("Could not determine file size for \(fileURL.path)", category: .upload)
+                                    throw FileAttributeError.missingSize
+                                }
+                                uploadedFileSize = fileSize
 
-                            try await ImmichAPIService.shared.uploadAssetFromFileNonBlocking(
+                                try await ImmichAPIService.shared.uploadAssetFromFileNonBlocking(
                                 fileURL: fileURL,
                                 filename: filename,
                                 mimeType: mimeType,
@@ -420,6 +421,11 @@ class UploadManager: ObservableObject {
                                         responseTracker.markFailed(error: error)
                                     }
                                 }
+                            }
+                            } catch {
+                                // Ensure temporary file is cleaned up on error before upload starts
+                                try? FileManager.default.removeItem(at: fileURL)
+                                responseTracker.markFailed(error: error)
                             }
                         } else {
                             let fileData = try await photoLibraryManager.getResourceData(for: resource)
