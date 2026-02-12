@@ -79,7 +79,7 @@ enum TimezoneGeocodingError: Error {
 private class ResponseTracker {
     private let lock = NSLock()
     private var completedCount = 0
-    private var hasError = false
+    private var isFinished = false
     private let totalCount: Int
     private let onAllCompleted: () -> Void
     private let onError: (Error) -> Void
@@ -94,10 +94,11 @@ private class ResponseTracker {
         lock.lock()
         defer { lock.unlock() }
 
-        guard !hasError else { return }
+        guard !isFinished else { return }
 
         completedCount += 1
         if completedCount == totalCount {
+            isFinished = true
             onAllCompleted()
         }
     }
@@ -106,9 +107,9 @@ private class ResponseTracker {
         lock.lock()
         defer { lock.unlock() }
 
-        guard !hasError else { return }
+        guard !isFinished else { return }
 
-        hasError = true
+        isFinished = true
         onError(error)
     }
 }
@@ -426,6 +427,7 @@ class UploadManager: ObservableObject {
                                 // Ensure temporary file is cleaned up on error before upload starts
                                 try? FileManager.default.removeItem(at: fileURL)
                                 responseTracker.markFailed(error: error)
+                                break  // Stop processing remaining resources since upload has failed
                             }
                         } else {
                             let fileData = try await photoLibraryManager.getResourceData(for: resource)
