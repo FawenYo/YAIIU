@@ -1529,17 +1529,7 @@ struct PhotoDetailView: View {
             let resources = PHAssetResource.assetResources(for: asset)
             guard let primaryResource = resources.first else { return }
             
-            let rawFilename = primaryResource.originalFilename
-            let nameWithoutExtension = (rawFilename as NSString).deletingPathExtension
-            let resourceFilename: String
-            if nameWithoutExtension == "FullSizeRender",
-               let originalResource = resources.first(where: { $0.type == .photo }) {
-                let originalName = (originalResource.originalFilename as NSString).deletingPathExtension
-                let editedExtension = (rawFilename as NSString).pathExtension
-                resourceFilename = editedExtension.isEmpty ? originalResource.originalFilename : "\(originalName).\(editedExtension)"
-            } else {
-                resourceFilename = rawFilename
-            }
+            let resourceFilename = primaryResource.resolvedFilename(using: asset)
             
             await MainActor.run {
                 self.fileName = resourceFilename
