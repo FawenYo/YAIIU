@@ -46,6 +46,8 @@
 		BC7F352A2EFED8F200747537 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35252EFED8F200747537 /* SharedSettings.swift */; };
 		BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
 		BC7F352D2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
+		RF0000010000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */ = {isa = PBXBuildFile; fileRef = RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */; };
+		RF0000030000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */ = {isa = PBXBuildFile; fileRef = RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */; };
 		DB0000010000000000000001 /* SQLiteConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000020000000000000001 /* SQLiteConnection.swift */; };
 		DB0000030000000000000001 /* DatabaseModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000040000000000000001 /* DatabaseModels.swift */; };
 		DB0000050000000000000001 /* UploadRecordRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000060000000000000001 /* UploadRecordRepository.swift */; };
@@ -122,6 +124,7 @@
 		BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadDatabase.swift; sourceTree = "<group>"; };
 		BC7F35252EFED8F200747537 /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
 		BC7F352C2EFED90000747537 /* SharedLogTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedLogTypes.swift; sourceTree = "<group>"; };
+		RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PHAssetResource+ResolvedFilename.swift"; sourceTree = "<group>"; };
 		DB0000020000000000000001 /* SQLiteConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteConnection.swift; sourceTree = "<group>"; };
 		DB0000040000000000000001 /* DatabaseModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseModels.swift; sourceTree = "<group>"; };
 		DB0000060000000000000001 /* UploadRecordRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadRecordRepository.swift; sourceTree = "<group>"; };
@@ -285,6 +288,7 @@
 			isa = PBXGroup;
 			children = (
 				BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */,
+				RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */,
 				BC7F35252EFED8F200747537 /* SharedSettings.swift */,
 				BC7F352C2EFED90000747537 /* SharedLogTypes.swift */,
 			);
@@ -483,6 +487,7 @@
 				BC7F35272EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */,
 				BC7F35282EFED8F200747537 /* SharedSettings.swift in Sources */,
 				BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */,
+				RF0000010000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */,
 				2A0000320000000000000001 /* ImmichSQLiteImporter.swift in Sources */,
 				2A0000340000000000000001 /* ImportDatabaseView.swift in Sources */,
 				2A0000360000000000000001 /* Localization.swift in Sources */,
@@ -510,6 +515,7 @@
 				BC7F35292EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */,
 				BC7F352A2EFED8F200747537 /* SharedSettings.swift in Sources */,
 				BC7F352D2EFED90000747537 /* SharedLogTypes.swift in Sources */,
+				RF0000030000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

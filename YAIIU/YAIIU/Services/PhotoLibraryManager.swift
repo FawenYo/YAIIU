@@ -370,6 +370,6 @@ final class PhotoLibraryManager: ObservableObject {
     }
     
     func getFilename(for resource: PHAssetResource) -> String {
-        return resource.originalFilename
+        return resource.resolvedFilename()
     }
 }

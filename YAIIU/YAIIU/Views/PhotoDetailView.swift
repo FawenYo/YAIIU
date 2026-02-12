@@ -1529,7 +1529,7 @@ struct PhotoDetailView: View {
             let resources = PHAssetResource.assetResources(for: asset)
             guard let primaryResource = resources.first else { return }
             
-            let resourceFilename = primaryResource.originalFilename
+            let resourceFilename = primaryResource.resolvedFilename(using: asset)
             
             await MainActor.run {
                 self.fileName = resourceFilename

@@ -88,14 +88,35 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             options: nil
         )
 
+        // Batch-fetch all assets to avoid per-item fetch in resolvedFilename()
+        var identifiers = [String]()
+        for i in 0..<jobs.count {
+            identifiers.append(jobs.object(at: i).resource.assetLocalIdentifier)
+        }
+        let fetchResult = PHAsset.fetchAssets(
+            withLocalIdentifiers: Array(Set(identifiers)),
+            options: nil
+        )
+        var assetsById = [String: PHAsset]()
+        fetchResult.enumerateObjects { asset, _, _ in
+            assetsById[asset.localIdentifier] = asset
+        }
+
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
             let resource = job.resource
 
+            let resolvedFilename: String
+            if let asset = assetsById[resource.assetLocalIdentifier] {
+                resolvedFilename = resource.resolvedFilename(using: asset)
+            } else {
+                resolvedFilename = resource.resolvedFilename()
+            }
+
             database.recordUploadedAsset(
                 assetId: resource.assetLocalIdentifier,
                 resourceType: resourceTypeString(for: resource),
-                filename: resource.originalFilename,
+                filename: resolvedFilename,
                 immichId: "unknown",
                 fileSize: 0,
                 isDuplicate: false
@@ -118,7 +139,8 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 guard let dest = self.buildDestination(for: resource) else {
                     continue
                 }
-                self.logDebug("Creating upload job for resource: \(resource.originalFilename)")
+                let resolvedFilename = resource.resolvedFilename()
+                self.logDebug("Creating upload job for resource: \(resolvedFilename)")
 
                 PHAssetResourceUploadJobChangeRequest.createJob(
                     destination: dest,
@@ -127,7 +149,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 self.database.createOrUpdateJob(
                     assetId: resource.assetLocalIdentifier,
                     resourceType: self.resourceTypeString(for: resource),
-                    filename: resource.originalFilename,
+                    filename: resolvedFilename,
                     status: .uploading
                 )
             }
@@ -294,19 +316,16 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             return nil
         }
 
-        // Ensure we can fetch the asset; skip if not found to avoid incorrect metadata
         guard let asset = fetchAsset(for: resource) else {
             logWarning("Could not fetch asset for resource: \(resource.originalFilename), skipping upload")
             return nil
         }
+        let resolvedFilename = resource.resolvedFilename(using: asset)
         
         let created = asset.creationDate ?? Date()
         let modified = asset.modificationDate ?? Date()
         let isFavorite = asset.isFavorite
         
-        // Use device's current timezone for background extension
-        // Note: We cannot use CLGeocoder in background extension due to strict execution time limits
-        // The system may terminate the extension if we block for network calls
         let timezone = TimeZone.current
         
         let fmt = ISO8601DateFormatter()
@@ -318,9 +337,8 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(settings.apiKey, forHTTPHeaderField: "x-api-key")
 
-        // Metadata passed via headers for proxy server conversion
         let deviceAssetId =
-            "\(resource.assetLocalIdentifier)-\(resourceTypeString(for: resource))-\(resource.originalFilename)"
+            "\(resource.assetLocalIdentifier)-\(resourceTypeString(for: resource))-\(resolvedFilename)"
         req.setValue(deviceAssetId, forHTTPHeaderField: "X-Device-Asset-Id")
         req.setValue("ios-fawenyo-yaiiu", forHTTPHeaderField: "X-Device-Id")
         req.setValue(
@@ -333,7 +351,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         )
         req.setValue(isFavorite ? "true" : "false", forHTTPHeaderField: "X-Is-Favorite")
         req.setValue(
-            resource.originalFilename,
+            resolvedFilename,
             forHTTPHeaderField: "X-Filename"
         )
         req.setValue(

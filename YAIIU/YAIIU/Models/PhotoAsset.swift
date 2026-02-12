@@ -77,7 +77,7 @@ struct AssetResource: Identifiable {
     }
     
     var filename: String {
-        resource.originalFilename
+        resource.resolvedFilename()
     }
     
     var uniformTypeIdentifier: String {
