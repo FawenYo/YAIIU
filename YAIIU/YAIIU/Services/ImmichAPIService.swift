@@ -138,6 +138,166 @@ class ImmichAPIService: NSObject {
         }
     }
     
+    func uploadAssetNonBlocking(
+        fileData: Data,
+        filename: String,
+        mimeType: String,
+        deviceAssetId: String,
+        createdAt: Date,
+        modifiedAt: Date,
+        isFavorite: Bool,
+        serverURL: String,
+        apiKey: String,
+        timezone: TimeZone? = nil,
+        iCloudId: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        progressHandler: ((Double) -> Void)? = nil,
+        responseHandler: ((Result<UploadResponse, Error>) -> Void)? = nil
+    ) async throws {
+        let fileSizeMB = Double(fileData.count) / 1024.0 / 1024.0
+        let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
+        logInfo("Starting non-blocking upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB), mimeType: \(mimeType), favorite: \(isFavorite)\(cloudIdInfo)", category: .api)
+
+        guard let url = URL(string: "\(serverURL)/api/assets") else {
+            logError("Invalid upload URL: \(serverURL)/api/assets", category: .api)
+            throw ImmichAPIError.invalidURL
+        }
+
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        let body = buildMultipartBody(
+            boundary: boundary,
+            fileData: fileData,
+            filename: filename,
+            mimeType: mimeType,
+            deviceAssetId: deviceAssetId,
+            createdAt: createdAt,
+            modifiedAt: modifiedAt,
+            isFavorite: isFavorite,
+            timezone: timezone,
+            iCloudId: iCloudId,
+            latitude: latitude,
+            longitude: longitude
+        )
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var bytesFullySent = false
+
+            let taskDelegate = UploadTaskDelegate(
+                filename: filename,
+                progressHandler: progressHandler,
+                completion: { result in
+                    responseHandler?(result)
+                }
+            )
+
+            taskDelegate.onBytesSent = {
+                if !bytesFullySent {
+                    bytesFullySent = true
+                    continuation.resume()
+                }
+            }
+
+            let task = uploadSession.uploadTask(with: request, from: body)
+            let taskId = task.taskIdentifier
+
+            delegateQueue.async(flags: .barrier) {
+                self.uploadDelegates[taskId] = taskDelegate
+            }
+
+            task.resume()
+        }
+    }
+
+    func uploadAssetFromFileNonBlocking(
+        fileURL: URL,
+        filename: String,
+        mimeType: String,
+        deviceAssetId: String,
+        createdAt: Date,
+        modifiedAt: Date,
+        isFavorite: Bool,
+        serverURL: String,
+        apiKey: String,
+        timezone: TimeZone? = nil,
+        iCloudId: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        progressHandler: ((Double) -> Void)? = nil,
+        responseHandler: ((Result<UploadResponse, Error>) -> Void)? = nil
+    ) async throws {
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+        let fileSizeMB = Double(fileSize) / 1024.0 / 1024.0
+        let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
+        logInfo("Starting non-blocking file upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
+
+        guard let url = URL(string: "\(serverURL)/api/assets") else {
+            logError("Invalid upload URL: \(serverURL)/api/assets", category: .api)
+            throw ImmichAPIError.invalidURL
+        }
+
+        let boundary = UUID().uuidString
+
+        let multipartFileURL = try buildMultipartFile(
+            boundary: boundary,
+            sourceFileURL: fileURL,
+            filename: filename,
+            mimeType: mimeType,
+            deviceAssetId: deviceAssetId,
+            createdAt: createdAt,
+            modifiedAt: modifiedAt,
+            isFavorite: isFavorite,
+            timezone: timezone,
+            iCloudId: iCloudId,
+            latitude: latitude,
+            longitude: longitude
+        )
+
+        defer {
+            try? FileManager.default.removeItem(at: multipartFileURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var bytesFullySent = false
+
+            let taskDelegate = UploadTaskDelegate(
+                filename: filename,
+                progressHandler: progressHandler,
+                completion: { result in
+                    responseHandler?(result)
+                }
+            )
+
+            taskDelegate.onBytesSent = {
+                if !bytesFullySent {
+                    bytesFullySent = true
+                    continuation.resume()
+                }
+            }
+
+            let task = uploadSession.uploadTask(with: request, fromFile: multipartFileURL)
+            let taskId = task.taskIdentifier
+
+            delegateQueue.async(flags: .barrier) {
+                self.uploadDelegates[taskId] = taskDelegate
+            }
+
+            task.resume()
+        }
+    }
+
     /// Uploads an asset from a file URL using streaming to avoid memory pressure.
     func uploadAssetFromFile(
         fileURL: URL,
@@ -925,9 +1085,11 @@ class UploadTaskDelegate {
     let filename: String
     let progressHandler: ((Double) -> Void)?
     let completion: (Result<UploadResponse, Error>) -> Void
-    
+
     var responseData = Data()
-    
+    var onBytesSent: (() -> Void)?
+    var bytesSentCallbackFired = false
+
     init(
         filename: String,
         progressHandler: ((Double) -> Void)?,
@@ -950,12 +1112,18 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
         totalBytesExpectedToSend: Int64
     ) {
         guard let delegate = getUploadDelegate(for: task.taskIdentifier) else { return }
-        
+
         let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
         logDebug("Upload progress for \(delegate.filename): \(Int(progress * 100))%", category: .api)
-        
+
         DispatchQueue.main.async {
             delegate.progressHandler?(progress)
+        }
+
+        if !delegate.bytesSentCallbackFired && progress >= 1.0 {
+            delegate.bytesSentCallbackFired = true
+            logDebug("Upload bytes fully sent for \(delegate.filename)", category: .api)
+            delegate.onBytesSent?()
         }
     }
     

@@ -135,6 +135,7 @@
 // MARK: - Upload Item Status
 "uploadStatus.pending" = "Pendiente";
 "uploadStatus.uploading" = "Subiendo %d%%";
+"uploadStatus.processing" = "Procesando";
 "uploadStatus.completed" = "Completado";
 "uploadStatus.failed" = "Fallido";
 

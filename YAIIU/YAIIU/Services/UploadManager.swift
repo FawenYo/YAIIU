@@ -7,9 +7,10 @@ import SwiftUI
 enum UploadStatus: String {
     case pending = "pending"
     case uploading = "uploading"
+    case processing = "processing"
     case completed = "completed"
     case failed = "failed"
-    
+
     var description: String {
         return rawValue
     }
@@ -45,19 +46,23 @@ class UploadItem: Identifiable, ObservableObject {
             return L10n.UploadStatus.pending
         case .uploading:
             return L10n.UploadStatus.uploading(Int(progress * 100))
+        case .processing:
+            return L10n.UploadStatus.processing
         case .completed:
             return L10n.UploadStatus.completed
         case .failed:
             return errorMessage ?? L10n.UploadStatus.failed
         }
     }
-    
+
     var statusColor: Color {
         switch status {
         case .pending:
             return .gray
         case .uploading:
             return .blue
+        case .processing:
+            return .orange
         case .completed:
             return .green
         case .failed:
@@ -69,6 +74,43 @@ class UploadItem: Identifiable, ObservableObject {
 enum TimezoneGeocodingError: Error {
     case timeout
     case failed
+}
+
+private class ResponseTracker {
+    private let lock = NSLock()
+    private var completedCount = 0
+    private var hasError = false
+    private let totalCount: Int
+    private let onAllCompleted: () -> Void
+    private let onError: (Error) -> Void
+
+    init(totalCount: Int, onAllCompleted: @escaping () -> Void, onError: @escaping (Error) -> Void) {
+        self.totalCount = totalCount
+        self.onAllCompleted = onAllCompleted
+        self.onError = onError
+    }
+
+    func markCompleted() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !hasError else { return }
+
+        completedCount += 1
+        if completedCount == totalCount {
+            onAllCompleted()
+        }
+    }
+
+    func markFailed(error: Error) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !hasError else { return }
+
+        hasError = true
+        onError(error)
+    }
 }
 
 class UploadManager: ObservableObject {
@@ -245,16 +287,16 @@ class UploadManager: ObservableObject {
                 
                 if let (item, success) = await group.next() {
                     activeCount -= 1
-                    
+
                     if success {
                         successCount += 1
                         logInfo("Upload successful: \(item.filename)", category: .upload)
-                        
+
+                        // Status will be set to .completed by responseHandler after all responses received
                         await MainActor.run {
-                            item.status = .completed
                             item.progress = 1.0
                         }
-                        
+
                         DatabaseManager.shared.getUploadedCountAsync { [weak self] count in
                             self?.uploadedCount = count
                         }
@@ -277,14 +319,14 @@ class UploadManager: ObservableObject {
     private func uploadItem(_ item: UploadItem, serverURL: String, apiKey: String) async throws {
         let resources = photoLibraryManager.getUploadableResources(for: item.asset)
         let totalResources = resources.count
-        
+
         guard totalResources > 0 else {
             logWarning("No uploadable resources found for: \(item.filename)", category: .upload)
             return
         }
-        
+
         logDebug("Uploading \(totalResources) resource(s) for: \(item.filename)", category: .upload)
-        
+
         let isFavorite = item.asset.isFavorite
         let createdAt = item.asset.creationDate ?? Date()
         let modifiedAt = item.asset.modificationDate ?? Date()
@@ -292,91 +334,140 @@ class UploadManager: ObservableObject {
         let iCloudId = getCloudIdentifier(for: item.asset)
         let latitude = item.asset.location?.coordinate.latitude
         let longitude = item.asset.location?.coordinate.longitude
-        
-        for (index, resource) in resources.enumerated() {
-            let resourceType = getResourceType(for: resource)
-            let filename = photoLibraryManager.getFilename(for: resource)
-            let mimeType = photoLibraryManager.getMimeType(for: resource)
-            let deviceAssetId = "\(item.localIdentifier)-\(resourceType)-\(filename)"
-            
-            let useFileExport = photoLibraryManager.shouldUseFileExport(for: resource)
-            var uploadedFileSize: Int64 = 0
-            
-            let response: UploadResponse
-            
-            if useFileExport {
-                let fileURL = try await photoLibraryManager.exportResourceToFile(for: resource)
-                defer {
-                    try? FileManager.default.removeItem(at: fileURL)
+
+        // Use continuation to wait for all responses
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let responseTracker = ResponseTracker(totalCount: totalResources) { [weak item] in
+                Task { @MainActor in
+                    item?.status = .completed
                 }
-                
-                enum FileAttributeError: Error { case missingSize }
-                let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
-                guard let fileSize = fileAttrs[.size] as? Int64 else {
-                    logError("Could not determine file size for \(fileURL.path)", category: .upload)
-                    throw FileAttributeError.missingSize
-                }
-                uploadedFileSize = fileSize
-                
-                response = try await ImmichAPIService.shared.uploadAssetFromFile(
-                    fileURL: fileURL,
-                    filename: filename,
-                    mimeType: mimeType,
-                    deviceAssetId: deviceAssetId,
-                    createdAt: createdAt,
-                    modifiedAt: modifiedAt,
-                    isFavorite: isFavorite,
-                    serverURL: serverURL,
-                    apiKey: apiKey,
-                    timezone: timezone,
-                    iCloudId: iCloudId,
-                    latitude: latitude,
-                    longitude: longitude
-                ) { progress in
-                    let baseProgress = Double(index) / Double(totalResources)
-                    let resourceProgress = progress / Double(totalResources)
-                    item.progress = baseProgress + resourceProgress
-                }
-            } else {
-                let fileData = try await photoLibraryManager.getResourceData(for: resource)
-                uploadedFileSize = Int64(fileData.count)
-                
-                response = try await ImmichAPIService.shared.uploadAsset(
-                    fileData: fileData,
-                    filename: filename,
-                    mimeType: mimeType,
-                    deviceAssetId: deviceAssetId,
-                    createdAt: createdAt,
-                    modifiedAt: modifiedAt,
-                    isFavorite: isFavorite,
-                    serverURL: serverURL,
-                    apiKey: apiKey,
-                    timezone: timezone,
-                    iCloudId: iCloudId,
-                    latitude: latitude,
-                    longitude: longitude
-                ) { progress in
-                    let baseProgress = Double(index) / Double(totalResources)
-                    let resourceProgress = progress / Double(totalResources)
-                    item.progress = baseProgress + resourceProgress
-                }
+                continuation.resume()
+            } onError: { error in
+                continuation.resume(throwing: error)
             }
-            
-            DatabaseManager.shared.recordUploadedAsset(
-                localIdentifier: item.localIdentifier,
-                resourceType: resourceType,
-                filename: filename,
-                immichId: response.id,
-                fileSize: uploadedFileSize,
-                isDuplicate: response.duplicate ?? false,
-                isFavorite: isFavorite
-            )
-            
-            logDebug("Resource uploaded: \(filename) -> immichId: \(response.id)", category: .upload)
-            
-            await MainActor.run {
-                item.resourcesUploaded[resourceType] = true
-                item.progress = Double(index + 1) / Double(totalResources)
+
+            Task {
+                do {
+                    for (index, resource) in resources.enumerated() {
+                        let resourceType = getResourceType(for: resource)
+                        let filename = photoLibraryManager.getFilename(for: resource)
+                        let mimeType = photoLibraryManager.getMimeType(for: resource)
+                        let deviceAssetId = "\(item.localIdentifier)-\(resourceType)-\(filename)"
+                        let currentIndex = index
+                        let isLastResource = (index + 1 == totalResources)
+
+                        let useFileExport = photoLibraryManager.shouldUseFileExport(for: resource)
+                        var uploadedFileSize: Int64 = 0
+
+                        if useFileExport {
+                            let fileURL = try await photoLibraryManager.exportResourceToFile(for: resource)
+                            defer {
+                                try? FileManager.default.removeItem(at: fileURL)
+                            }
+
+                            enum FileAttributeError: Error { case missingSize }
+                            let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+                            guard let fileSize = fileAttrs[.size] as? Int64 else {
+                                logError("Could not determine file size for \(fileURL.path)", category: .upload)
+                                throw FileAttributeError.missingSize
+                            }
+                            uploadedFileSize = fileSize
+
+                            try await ImmichAPIService.shared.uploadAssetFromFileNonBlocking(
+                                fileURL: fileURL,
+                                filename: filename,
+                                mimeType: mimeType,
+                                deviceAssetId: deviceAssetId,
+                                createdAt: createdAt,
+                                modifiedAt: modifiedAt,
+                                isFavorite: isFavorite,
+                                serverURL: serverURL,
+                                apiKey: apiKey,
+                                timezone: timezone,
+                                iCloudId: iCloudId,
+                                latitude: latitude,
+                                longitude: longitude
+                            ) { progress in
+                                let baseProgress = Double(currentIndex) / Double(totalResources)
+                                let resourceProgress = progress / Double(totalResources)
+                                item.progress = baseProgress + resourceProgress
+                            } responseHandler: { [weak item] result in
+                                Task { @MainActor in
+                                    switch result {
+                                    case .success(let response):
+                                        DatabaseManager.shared.recordUploadedAsset(
+                                            localIdentifier: item?.localIdentifier ?? "",
+                                            resourceType: resourceType,
+                                            filename: filename,
+                                            immichId: response.id,
+                                            fileSize: uploadedFileSize,
+                                            isDuplicate: response.duplicate ?? false,
+                                            isFavorite: isFavorite
+                                        )
+                                        logDebug("Resource \(filename) processed by server: \(response.id)", category: .upload)
+                                        responseTracker.markCompleted()
+                                    case .failure(let error):
+                                        logWarning("Server response error for \(filename): \(error.localizedDescription)", category: .upload)
+                                        responseTracker.markFailed(error: error)
+                                    }
+                                }
+                            }
+                        } else {
+                            let fileData = try await photoLibraryManager.getResourceData(for: resource)
+                            uploadedFileSize = Int64(fileData.count)
+
+                            try await ImmichAPIService.shared.uploadAssetNonBlocking(
+                                fileData: fileData,
+                                filename: filename,
+                                mimeType: mimeType,
+                                deviceAssetId: deviceAssetId,
+                                createdAt: createdAt,
+                                modifiedAt: modifiedAt,
+                                isFavorite: isFavorite,
+                                serverURL: serverURL,
+                                apiKey: apiKey,
+                                timezone: timezone,
+                                iCloudId: iCloudId,
+                                latitude: latitude,
+                                longitude: longitude
+                            ) { progress in
+                                let baseProgress = Double(currentIndex) / Double(totalResources)
+                                let resourceProgress = progress / Double(totalResources)
+                                item.progress = baseProgress + resourceProgress
+                            } responseHandler: { [weak item] result in
+                                Task { @MainActor in
+                                    switch result {
+                                    case .success(let response):
+                                        DatabaseManager.shared.recordUploadedAsset(
+                                            localIdentifier: item?.localIdentifier ?? "",
+                                            resourceType: resourceType,
+                                            filename: filename,
+                                            immichId: response.id,
+                                            fileSize: uploadedFileSize,
+                                            isDuplicate: response.duplicate ?? false,
+                                            isFavorite: isFavorite
+                                        )
+                                        logDebug("Resource \(filename) processed by server: \(response.id)", category: .upload)
+                                        responseTracker.markCompleted()
+                                    case .failure(let error):
+                                        logWarning("Server response error for \(filename): \(error.localizedDescription)", category: .upload)
+                                        responseTracker.markFailed(error: error)
+                                    }
+                                }
+                            }
+                        }
+
+                        await MainActor.run {
+                            item.resourcesUploaded[resourceType] = true
+                            item.progress = Double(currentIndex + 1) / Double(totalResources)
+                            if isLastResource {
+                                item.status = .processing
+                            }
+                        }
+                    }
+                } catch {
+                    responseTracker.markFailed(error: error)
+                }
             }
         }
     }

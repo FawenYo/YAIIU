@@ -135,6 +135,7 @@
 // MARK: - Upload Item Status
 "uploadStatus.pending" = "대기 중";
 "uploadStatus.uploading" = "업로드 중 %d%%";
+"uploadStatus.processing" = "처리 중";
 "uploadStatus.completed" = "완료됨";
 "uploadStatus.failed" = "실패";
 

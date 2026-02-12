@@ -193,6 +193,9 @@ struct UploadItemRow: View {
                     case .uploading:
                         ProgressView()
                             .scaleEffect(0.8)
+                    case .processing:
+                        ProgressView()
+                            .scaleEffect(0.8)
                     case .completed:
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.green)

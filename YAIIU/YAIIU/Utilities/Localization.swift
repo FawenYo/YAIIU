@@ -299,6 +299,7 @@ enum L10n {
         static func uploading(_ percent: Int) -> String {
             return "uploadStatus.uploading".localized(with: percent)
         }
+        static var processing: String { "uploadStatus.processing".localized }
         static var completed: String { "uploadStatus.completed".localized }
         static var failed: String { "uploadStatus.failed".localized }
     }

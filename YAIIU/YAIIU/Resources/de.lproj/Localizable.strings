@@ -135,6 +135,7 @@
 // MARK: - Upload Item Status
 "uploadStatus.pending" = "Ausstehend";
 "uploadStatus.uploading" = "Hochladen %d%%";
+"uploadStatus.processing" = "Wird verarbeitet";
 "uploadStatus.completed" = "Abgeschlossen";
 "uploadStatus.failed" = "Fehlgeschlagen";
 
