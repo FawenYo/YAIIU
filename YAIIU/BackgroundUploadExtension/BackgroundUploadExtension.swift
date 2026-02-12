@@ -88,14 +88,35 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             options: nil
         )
 
+        // Batch-fetch all assets to avoid per-item fetch in resolvedFilename()
+        var identifiers = [String]()
+        for i in 0..<jobs.count {
+            identifiers.append(jobs.object(at: i).resource.assetLocalIdentifier)
+        }
+        let fetchResult = PHAsset.fetchAssets(
+            withLocalIdentifiers: Array(Set(identifiers)),
+            options: nil
+        )
+        var assetsById = [String: PHAsset]()
+        fetchResult.enumerateObjects { asset, _, _ in
+            assetsById[asset.localIdentifier] = asset
+        }
+
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
             let resource = job.resource
 
+            let resolvedFilename: String
+            if let asset = assetsById[resource.assetLocalIdentifier] {
+                resolvedFilename = resource.resolvedFilename(using: asset)
+            } else {
+                resolvedFilename = resource.resolvedFilename()
+            }
+
             database.recordUploadedAsset(
                 assetId: resource.assetLocalIdentifier,
                 resourceType: resourceTypeString(for: resource),
-                filename: resource.resolvedFilename(),
+                filename: resolvedFilename,
                 immichId: "unknown",
                 fileSize: 0,
                 isDuplicate: false

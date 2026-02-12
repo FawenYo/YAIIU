@@ -39,8 +39,10 @@ extension PHAssetResource {
         _ filename: String, asset: PHAsset
     ) -> String {
         let resources = PHAssetResource.assetResources(for: asset)
-        guard let originalResource = resources.first(where: { $0.type == .photo })
-        else {
+        guard let originalResource = resources.first(where: {
+            ($0.type == .photo || $0.type == .fullSizePhoto)
+                && !$0.originalFilename.hasPrefix("FullSizeRender")
+        }) else {
             return filename
         }
 
