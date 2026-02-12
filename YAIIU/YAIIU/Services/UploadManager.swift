@@ -170,7 +170,7 @@ class UploadManager: ObservableObject {
             
             let resources = photoLibraryManager.getUploadableResources(for: asset)
             let hasRAW = photoLibraryManager.hasRAWResource(asset)
-            let filename = resources.first?.originalFilename ?? "unknown"
+            let filename = resources.first.map { photoLibraryManager.resolveOriginalFilename(for: $0) } ?? "unknown"
             
             let item = UploadItem(asset: asset, filename: filename, hasRAW: hasRAW)
             item.totalResources = resources.count

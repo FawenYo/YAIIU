@@ -77,7 +77,30 @@ struct AssetResource: Identifiable {
     }
     
     var filename: String {
-        resource.originalFilename
+        let name = resource.originalFilename
+        let nameWithoutExtension = (name as NSString).deletingPathExtension
+        
+        guard nameWithoutExtension == "FullSizeRender" else {
+            return name
+        }
+        
+        let assetId = resource.assetLocalIdentifier
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+        guard let asset = assets.firstObject else {
+            return name
+        }
+        
+        let allResources = PHAssetResource.assetResources(for: asset)
+        if let originalResource = allResources.first(where: { $0.type == .photo }) {
+            let originalName = (originalResource.originalFilename as NSString).deletingPathExtension
+            let editedExtension = (name as NSString).pathExtension
+            if editedExtension.isEmpty {
+                return originalResource.originalFilename
+            }
+            return "\(originalName).\(editedExtension)"
+        }
+        
+        return name
     }
     
     var uniformTypeIdentifier: String {
