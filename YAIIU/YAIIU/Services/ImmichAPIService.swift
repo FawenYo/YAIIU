@@ -187,19 +187,25 @@ class ImmichAPIService: NSObject {
         )
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var bytesFullySent = false
+            var resumed = false
 
             let taskDelegate = UploadTaskDelegate(
                 filename: filename,
                 progressHandler: progressHandler,
                 completion: { result in
+                    if case .failure(let error) = result {
+                        if !resumed {
+                            resumed = true
+                            continuation.resume(throwing: error)
+                        }
+                    }
                     responseHandler?(result)
                 }
             )
 
             taskDelegate.onBytesSent = {
-                if !bytesFullySent {
-                    bytesFullySent = true
+                if !resumed {
+                    resumed = true
                     continuation.resume()
                 }
             }
@@ -270,19 +276,25 @@ class ImmichAPIService: NSObject {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var bytesFullySent = false
+            var resumed = false
 
             let taskDelegate = UploadTaskDelegate(
                 filename: filename,
                 progressHandler: progressHandler,
                 completion: { result in
+                    if case .failure(let error) = result {
+                        if !resumed {
+                            resumed = true
+                            continuation.resume(throwing: error)
+                        }
+                    }
                     responseHandler?(result)
                 }
             )
 
             taskDelegate.onBytesSent = {
-                if !bytesFullySent {
-                    bytesFullySent = true
+                if !resumed {
+                    resumed = true
                     continuation.resume()
                 }
             }
