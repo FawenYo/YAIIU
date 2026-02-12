@@ -361,9 +361,6 @@ class UploadManager: ObservableObject {
 
                         if useFileExport {
                             let fileURL = try await photoLibraryManager.exportResourceToFile(for: resource)
-                            defer {
-                                try? FileManager.default.removeItem(at: fileURL)
-                            }
 
                             enum FileAttributeError: Error { case missingSize }
                             let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
@@ -392,11 +389,23 @@ class UploadManager: ObservableObject {
                                 let resourceProgress = progress / Double(totalResources)
                                 item.progress = baseProgress + resourceProgress
                             } responseHandler: { [weak item] result in
+                                // Clean up temporary file after upload completes
+                                defer {
+                                    try? FileManager.default.removeItem(at: fileURL)
+                                }
+
                                 Task { @MainActor in
+                                    guard let item = item else {
+                                        enum UploadError: Error { case itemDeallocated }
+                                        logError("Upload item deallocated before response received for \(filename)", category: .upload)
+                                        responseTracker.markFailed(error: UploadError.itemDeallocated)
+                                        return
+                                    }
+
                                     switch result {
                                     case .success(let response):
                                         DatabaseManager.shared.recordUploadedAsset(
-                                            localIdentifier: item?.localIdentifier ?? "",
+                                            localIdentifier: item.localIdentifier,
                                             resourceType: resourceType,
                                             filename: filename,
                                             immichId: response.id,
@@ -436,10 +445,17 @@ class UploadManager: ObservableObject {
                                 item.progress = baseProgress + resourceProgress
                             } responseHandler: { [weak item] result in
                                 Task { @MainActor in
+                                    guard let item = item else {
+                                        enum UploadError: Error { case itemDeallocated }
+                                        logError("Upload item deallocated before response received for \(filename)", category: .upload)
+                                        responseTracker.markFailed(error: UploadError.itemDeallocated)
+                                        return
+                                    }
+
                                     switch result {
                                     case .success(let response):
                                         DatabaseManager.shared.recordUploadedAsset(
-                                            localIdentifier: item?.localIdentifier ?? "",
+                                            localIdentifier: item.localIdentifier,
                                             resourceType: resourceType,
                                             filename: filename,
                                             immichId: response.id,

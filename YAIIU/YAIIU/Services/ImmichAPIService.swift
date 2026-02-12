@@ -193,7 +193,16 @@ class ImmichAPIService: NSObject {
                 filename: filename,
                 progressHandler: progressHandler,
                 completion: { result in
-                    if case .failure(let error) = result {
+                    switch result {
+                    case .success:
+                        // If upload succeeded but onBytesSent wasn't called (shouldn't happen),
+                        // resume here as a safety fallback
+                        if !resumed {
+                            resumed = true
+                            continuation.resume()
+                            logWarning("Upload succeeded but onBytesSent was not called for \(filename)", category: .api)
+                        }
+                    case .failure(let error):
                         if !resumed {
                             resumed = true
                             continuation.resume(throwing: error)
@@ -207,6 +216,9 @@ class ImmichAPIService: NSObject {
                 if !resumed {
                     resumed = true
                     continuation.resume()
+                } else {
+                    // This should never happen - log for debugging
+                    logWarning("onBytesSent called but continuation already resumed for \(filename)", category: .api)
                 }
             }
 
@@ -282,7 +294,16 @@ class ImmichAPIService: NSObject {
                 filename: filename,
                 progressHandler: progressHandler,
                 completion: { result in
-                    if case .failure(let error) = result {
+                    switch result {
+                    case .success:
+                        // If upload succeeded but onBytesSent wasn't called (shouldn't happen),
+                        // resume here as a safety fallback
+                        if !resumed {
+                            resumed = true
+                            continuation.resume()
+                            logWarning("Upload succeeded but onBytesSent was not called for \(filename)", category: .api)
+                        }
+                    case .failure(let error):
                         if !resumed {
                             resumed = true
                             continuation.resume(throwing: error)
@@ -296,6 +317,9 @@ class ImmichAPIService: NSObject {
                 if !resumed {
                     resumed = true
                     continuation.resume()
+                } else {
+                    // This should never happen - log for debugging
+                    logWarning("onBytesSent called but continuation already resumed for \(filename)", category: .api)
                 }
             }
 
