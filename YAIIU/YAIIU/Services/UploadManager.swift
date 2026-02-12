@@ -391,12 +391,12 @@ class UploadManager: ObservableObject {
                                 let resourceProgress = progress / Double(totalResources)
                                 item.progress = baseProgress + resourceProgress
                             } responseHandler: { [weak item] result in
-                                // Clean up temporary file after upload completes
-                                defer {
-                                    try? FileManager.default.removeItem(at: fileURL)
-                                }
-
                                 Task { @MainActor in
+                                    // Clean up temporary file after upload completes
+                                    defer {
+                                        try? FileManager.default.removeItem(at: fileURL)
+                                    }
+
                                     guard let item = item else {
                                         enum UploadError: Error { case itemDeallocated }
                                         logError("Upload item deallocated before response received for \(filename)", category: .upload)

@@ -225,10 +225,10 @@ class ImmichAPIService: NSObject {
             let task = uploadSession.uploadTask(with: request, from: body)
             let taskId = task.taskIdentifier
 
-            delegateQueue.async(flags: .barrier) {
+            delegateQueue.sync(flags: .barrier) {
                 self.uploadDelegates[taskId] = taskDelegate
             }
-
+    
             task.resume()
         }
     }
@@ -327,10 +327,10 @@ class ImmichAPIService: NSObject {
             let task = uploadSession.uploadTask(with: request, fromFile: multipartFileURL)
             let taskId = task.taskIdentifier
 
-            delegateQueue.async(flags: .barrier) {
+            delegateQueue.sync(flags: .barrier) {
                 self.uploadDelegates[taskId] = taskDelegate
             }
-
+    
             task.resume()
         }
     }
@@ -1149,9 +1149,11 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
         totalBytesExpectedToSend: Int64
     ) {
         guard let delegate = getUploadDelegate(for: task.taskIdentifier) else { return }
-
+    
+        guard totalBytesExpectedToSend > 0 else { return }
+    
         let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
-
+    
         DispatchQueue.main.async {
             delegate.progressHandler?(progress)
         }
