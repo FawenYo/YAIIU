@@ -1126,7 +1126,6 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
         guard let delegate = getUploadDelegate(for: task.taskIdentifier) else { return }
 
         let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
-        logDebug("Upload progress for \(delegate.filename): \(Int(progress * 100))%", category: .api)
 
         DispatchQueue.main.async {
             delegate.progressHandler?(progress)
