@@ -232,7 +232,10 @@ final class SQLiteConnection {
             }
             
             if currentVersion < 3 {
-                migrateToV3()
+                // Remediation for users affected by the v2 init ordering bug.
+                // Re-running the v2 migration ensures the column exists.
+                logInfo("Running v3 remediation by ensuring v2 migration logic is complete", category: .database)
+                migrateToV2()
             }
             
             setSchemaVersion(SQLiteConnection.schemaVersion)
@@ -267,36 +270,6 @@ final class SQLiteConnection {
             logInfo("Added icloud_id column to server_assets_cache", category: .database)
         } else {
             logInfo("icloud_id column already exists, skipping", category: .database)
-        }
-    }
-    
-    /// Migration to version 3: Remediation for users affected by the v2 init
-    /// ordering bug where migrateIfNeeded() ran before createTables().
-    private func migrateToV3() {
-        logInfo("Migrating database to version 3: ensuring icloud_id column exists", category: .database)
-        
-        let checkSql = "PRAGMA table_info(server_assets_cache);"
-        var statement: OpaquePointer?
-        var hasICloudIdColumn = false
-        
-        if sqlite3_prepare_v2(db, checkSql, -1, &statement, nil) == SQLITE_OK {
-            while sqlite3_step(statement) == SQLITE_ROW {
-                if let columnName = sqlite3_column_text(statement, 1) {
-                    let name = String(cString: columnName)
-                    if name == "icloud_id" {
-                        hasICloudIdColumn = true
-                        break
-                    }
-                }
-            }
-        }
-        sqlite3_finalize(statement)
-        
-        if !hasICloudIdColumn {
-            executeStatement("ALTER TABLE server_assets_cache ADD COLUMN icloud_id TEXT;")
-            logInfo("Added missing icloud_id column to server_assets_cache (v3 remediation)", category: .database)
-        } else {
-            logInfo("icloud_id column already exists, skipping v3 remediation", category: .database)
         }
     }
     
