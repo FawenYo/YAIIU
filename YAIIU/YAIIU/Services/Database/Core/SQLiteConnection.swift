@@ -156,8 +156,7 @@ final class SQLiteConnection {
             original_filename TEXT,
             asset_type TEXT,
             updated_at TEXT,
-            synced_at REAL NOT NULL,
-            icloud_id TEXT
+            synced_at REAL NOT NULL
         );
         """
         executeStatement(sql)
