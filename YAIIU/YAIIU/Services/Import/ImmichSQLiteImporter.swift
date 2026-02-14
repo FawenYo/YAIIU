@@ -25,14 +25,6 @@ class ImmichSQLiteImporter {
         let isFavorite: Bool
     }
     
-    /// Detected Immich database schema version
-    private enum SchemaVersion {
-        /// Old schema: local_asset_entity has checksum directly
-        case legacy
-        /// New schema: checksum is NULL in local_asset_entity, uses remote_asset_cloud_id_entity + i_cloud_id
-        case cloudId
-    }
-    
     private init() {
         logInfo("ImmichSQLiteImporter initialized", category: .importer)
     }
@@ -83,61 +75,7 @@ class ImmichSQLiteImporter {
             sqlite3_close(db)
         }
         
-        let schemaVersion = detectSchemaVersion(db: db)
-        logInfo("Detected Immich schema version: \(schemaVersion)", category: .importer)
-        
-        switch schemaVersion {
-        case .legacy:
-            return importLegacySchema(db: db, progressCallback: progressCallback)
-        case .cloudId:
-            return importCloudIdSchema(db: db, progressCallback: progressCallback)
-        }
-    }
-    
-    // MARK: - Schema Detection
-    
-    /// Detect whether MySQL uses legacy (checksum in local_asset_entity) or new (cloud_id) schema
-    private func detectSchemaVersion(db: OpaquePointer?) -> SchemaVersion {
-        // Check if local_asset_entity has any non-null checksums
-        var statement: OpaquePointer?
-        let checksumCountSql = "SELECT COUNT(*) FROM local_asset_entity WHERE checksum IS NOT NULL AND checksum != '';"
-        
-        var localChecksumCount = 0
-        if sqlite3_prepare_v2(db, checksumCountSql, -1, &statement, nil) == SQLITE_OK {
-            if sqlite3_step(statement) == SQLITE_ROW {
-                localChecksumCount = Int(sqlite3_column_int(statement, 0))
-            }
-        }
-        sqlite3_finalize(statement)
-        
-        if localChecksumCount > 0 {
-            logDebug("Found \(localChecksumCount) local checksums - using legacy schema", category: .importer)
-            return .legacy
-        }
-        
-        // Check if remote_asset_cloud_id_entity table exists (new schema)
-        let cloudIdTableSql = "SELECT name FROM sqlite_master WHERE type='table' AND name='remote_asset_cloud_id_entity';"
-        var hasCloudIdTable = false
-        if sqlite3_prepare_v2(db, cloudIdTableSql, -1, &statement, nil) == SQLITE_OK {
-            hasCloudIdTable = sqlite3_step(statement) == SQLITE_ROW
-        }
-        sqlite3_finalize(statement)
-        
-        if hasCloudIdTable {
-            logDebug("Found remote_asset_cloud_id_entity table - using cloudId schema", category: .importer)
-            return .cloudId
-        }
-        
-        // Fallback to legacy if no cloud_id table found
-        logDebug("No cloud_id table found, falling back to legacy schema", category: .importer)
-        return .legacy
-    }
-    
-    // MARK: - Legacy Schema Import
-    
-    /// Import from old Immich schema where local_asset_entity has checksum directly
-    private func importLegacySchema(db: OpaquePointer?, progressCallback: ProgressCallback?) -> ImportResult {
-        logDebug("Reading remote checksums from database (legacy schema)", category: .importer)
+        logDebug("Reading remote checksums from database", category: .importer)
         var remoteChecksums: Set<String> = []
         let remoteSql = "SELECT checksum FROM remote_asset_entity WHERE checksum IS NOT NULL AND checksum != '';"
         var statement: OpaquePointer?
@@ -193,104 +131,6 @@ class ImmichSQLiteImporter {
             }
         }
         
-        return performBatchImport(hashDataList: hashDataList, skippedCount: skippedCount, progressCallback: progressCallback)
-    }
-    
-    // MARK: - CloudId Schema Import
-    
-    /// Import from new Immich schema where checksum is obtained via remote_asset_cloud_id_entity
-    private func importCloudIdSchema(db: OpaquePointer?, progressCallback: ProgressCallback?) -> ImportResult {
-        logDebug("Reading data from database (cloudId schema)", category: .importer)
-        
-        // Build a set of remote checksums for quick lookup
-        var remoteChecksums: Set<String> = []
-        let remoteSql = "SELECT checksum FROM remote_asset_entity WHERE checksum IS NOT NULL AND checksum != '';"
-        var statement: OpaquePointer?
-        
-        if sqlite3_prepare_v2(db, remoteSql, -1, &statement, nil) == SQLITE_OK {
-            while sqlite3_step(statement) == SQLITE_ROW {
-                if let cString = sqlite3_column_text(statement, 0) {
-                    remoteChecksums.insert(String(cString: cString))
-                }
-            }
-        }
-        sqlite3_finalize(statement)
-        logDebug("Found \(remoteChecksums.count) remote checksums", category: .importer)
-        
-        // Query: join local_asset_entity with remote_asset_cloud_id_entity and remote_asset_entity
-        // to get the checksum for each local asset
-        let joinSql = """
-        SELECT l.id, ra.checksum
-        FROM local_asset_entity l
-        JOIN remote_asset_cloud_id_entity rc ON l.i_cloud_id = rc.cloud_id
-        JOIN remote_asset_entity ra ON rc.asset_id = ra.id
-        WHERE ra.checksum IS NOT NULL AND ra.checksum != ''
-          AND l.i_cloud_id IS NOT NULL AND l.i_cloud_id != '';
-        """
-        
-        guard sqlite3_prepare_v2(db, joinSql, -1, &statement, nil) == SQLITE_OK else {
-            let errorMsg = String(cString: sqlite3_errmsg(db))
-            logError("Failed to prepare cloudId join query: \(errorMsg)", category: .importer)
-            return ImportResult(
-                totalRecords: 0,
-                importedRecords: 0,
-                skippedRecords: 0,
-                alreadyOnServer: 0,
-                errorMessage: "SQL preparation failed: \(errorMsg)"
-            )
-        }
-        
-        var hashDataList: [(localIdentifier: String, sha1Hash: String, checksumBase64: String, isOnServer: Bool)] = []
-        
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let id = String(cString: sqlite3_column_text(statement, 0))
-            if let checksumCString = sqlite3_column_text(statement, 1) {
-                let checksumStr = String(cString: checksumCString)
-                if let sha1Hex = convertBase64ToHex(checksumStr) {
-                    let isOnServer = remoteChecksums.contains(checksumStr)
-                    hashDataList.append((localIdentifier: id, sha1Hash: sha1Hex, checksumBase64: checksumStr, isOnServer: isOnServer))
-                }
-            }
-        }
-        sqlite3_finalize(statement)
-        
-        // Count local assets that have i_cloud_id but couldn't be matched (no remote record)
-        let unmatchedSql = """
-        SELECT COUNT(*) FROM local_asset_entity l
-        WHERE l.i_cloud_id IS NOT NULL AND l.i_cloud_id != ''
-          AND NOT EXISTS (SELECT 1 FROM remote_asset_cloud_id_entity rc WHERE rc.cloud_id = l.i_cloud_id);
-        """
-        var unmatchedCount = 0
-        if sqlite3_prepare_v2(db, unmatchedSql, -1, &statement, nil) == SQLITE_OK {
-            if sqlite3_step(statement) == SQLITE_ROW {
-                unmatchedCount = Int(sqlite3_column_int(statement, 0))
-            }
-        }
-        sqlite3_finalize(statement)
-        
-        // Count local assets without i_cloud_id at all
-        let noCloudIdSql = "SELECT COUNT(*) FROM local_asset_entity WHERE i_cloud_id IS NULL OR i_cloud_id = '';"
-        var noCloudIdCount = 0
-        if sqlite3_prepare_v2(db, noCloudIdSql, -1, &statement, nil) == SQLITE_OK {
-            if sqlite3_step(statement) == SQLITE_ROW {
-                noCloudIdCount = Int(sqlite3_column_int(statement, 0))
-            }
-        }
-        sqlite3_finalize(statement)
-        
-        let skippedCount = unmatchedCount + noCloudIdCount
-        logDebug("CloudId schema: \(unmatchedCount) unmatched assets, \(noCloudIdCount) without cloud_id", category: .importer)
-        
-        return performBatchImport(hashDataList: hashDataList, skippedCount: skippedCount, progressCallback: progressCallback)
-    }
-    
-    // MARK: - Shared Batch Import
-    
-    private func performBatchImport(
-        hashDataList: [(localIdentifier: String, sha1Hash: String, checksumBase64: String, isOnServer: Bool)],
-        skippedCount: Int,
-        progressCallback: ProgressCallback?
-    ) -> ImportResult {
         let totalCount = hashDataList.count
         let onServerCount = hashDataList.filter { $0.isOnServer }.count
         
@@ -391,45 +231,18 @@ class ImmichSQLiteImporter {
             return (false, 0, "local_asset_entity table not found, this may not be an Immich iOS App database")
         }
         
-        let schemaVersion = detectSchemaVersion(db: db)
-        
-        switch schemaVersion {
-        case .legacy:
-            let countSql = "SELECT COUNT(*) FROM local_asset_entity WHERE checksum IS NOT NULL AND checksum != '';"
-            guard sqlite3_prepare_v2(db, countSql, -1, &statement, nil) == SQLITE_OK else {
-                return (false, 0, "Unable to count records")
-            }
-            
-            var count = 0
-            if sqlite3_step(statement) == SQLITE_ROW {
-                count = Int(sqlite3_column_int(statement, 0))
-            }
-            sqlite3_finalize(statement)
-            
-            return (true, count, nil)
-            
-        case .cloudId:
-            // Count local assets that can be matched to remote checksums via cloud_id
-            let countSql = """
-            SELECT COUNT(*)
-            FROM local_asset_entity l
-            JOIN remote_asset_cloud_id_entity rc ON l.i_cloud_id = rc.cloud_id
-            JOIN remote_asset_entity ra ON rc.asset_id = ra.id
-            WHERE ra.checksum IS NOT NULL AND ra.checksum != ''
-              AND l.i_cloud_id IS NOT NULL AND l.i_cloud_id != '';
-            """
-            guard sqlite3_prepare_v2(db, countSql, -1, &statement, nil) == SQLITE_OK else {
-                return (false, 0, "Unable to count records")
-            }
-            
-            var count = 0
-            if sqlite3_step(statement) == SQLITE_ROW {
-                count = Int(sqlite3_column_int(statement, 0))
-            }
-            sqlite3_finalize(statement)
-            
-            return (true, count, nil)
+        let countSql = "SELECT COUNT(*) FROM local_asset_entity WHERE checksum IS NOT NULL AND checksum != '';"
+        guard sqlite3_prepare_v2(db, countSql, -1, &statement, nil) == SQLITE_OK else {
+            return (false, 0, "Unable to count records")
         }
+        
+        var count = 0
+        if sqlite3_step(statement) == SQLITE_ROW {
+            count = Int(sqlite3_column_int(statement, 0))
+        }
+        sqlite3_finalize(statement)
+        
+        return (true, count, nil)
     }
     
     func getStatistics(fileURL: URL) -> [String: Any]? {
@@ -453,8 +266,6 @@ class ImmichSQLiteImporter {
             sqlite3_close(db)
         }
         
-        let schemaVersion = detectSchemaVersion(db: db)
-        
         var stats: [String: Any] = [:]
         var statement: OpaquePointer?
         
@@ -466,33 +277,13 @@ class ImmichSQLiteImporter {
         }
         sqlite3_finalize(statement)
         
-        switch schemaVersion {
-        case .legacy:
-            let checksumSql = "SELECT COUNT(*) FROM local_asset_entity WHERE checksum IS NOT NULL AND checksum != '';"
-            if sqlite3_prepare_v2(db, checksumSql, -1, &statement, nil) == SQLITE_OK {
-                if sqlite3_step(statement) == SQLITE_ROW {
-                    stats["assetsWithChecksum"] = Int(sqlite3_column_int(statement, 0))
-                }
+        let checksumSql = "SELECT COUNT(*) FROM local_asset_entity WHERE checksum IS NOT NULL AND checksum != '';"
+        if sqlite3_prepare_v2(db, checksumSql, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_step(statement) == SQLITE_ROW {
+                stats["assetsWithChecksum"] = Int(sqlite3_column_int(statement, 0))
             }
-            sqlite3_finalize(statement)
-            
-        case .cloudId:
-            // For new schema, count assets that have matching remote checksums via cloud_id join
-            let checksumSql = """
-            SELECT COUNT(*)
-            FROM local_asset_entity l
-            JOIN remote_asset_cloud_id_entity rc ON l.i_cloud_id = rc.cloud_id
-            JOIN remote_asset_entity ra ON rc.asset_id = ra.id
-            WHERE ra.checksum IS NOT NULL AND ra.checksum != ''
-              AND l.i_cloud_id IS NOT NULL AND l.i_cloud_id != '';
-            """
-            if sqlite3_prepare_v2(db, checksumSql, -1, &statement, nil) == SQLITE_OK {
-                if sqlite3_step(statement) == SQLITE_ROW {
-                    stats["assetsWithChecksum"] = Int(sqlite3_column_int(statement, 0))
-                }
-            }
-            sqlite3_finalize(statement)
         }
+        sqlite3_finalize(statement)
         
         let imageSql = "SELECT COUNT(*) FROM local_asset_entity WHERE type = 1;"
         if sqlite3_prepare_v2(db, imageSql, -1, &statement, nil) == SQLITE_OK {
@@ -518,37 +309,17 @@ class ImmichSQLiteImporter {
         }
         sqlite3_finalize(statement)
         
-        switch schemaVersion {
-        case .legacy:
-            let matchedSql = """
-            SELECT COUNT(*) FROM local_asset_entity l
-            INNER JOIN remote_asset_entity r ON l.checksum = r.checksum
-            WHERE l.checksum IS NOT NULL AND l.checksum != '';
-            """
-            if sqlite3_prepare_v2(db, matchedSql, -1, &statement, nil) == SQLITE_OK {
-                if sqlite3_step(statement) == SQLITE_ROW {
-                    stats["assetsOnServer"] = Int(sqlite3_column_int(statement, 0))
-                }
+        let matchedSql = """
+        SELECT COUNT(*) FROM local_asset_entity l
+        INNER JOIN remote_asset_entity r ON l.checksum = r.checksum
+        WHERE l.checksum IS NOT NULL AND l.checksum != '';
+        """
+        if sqlite3_prepare_v2(db, matchedSql, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_step(statement) == SQLITE_ROW {
+                stats["assetsOnServer"] = Int(sqlite3_column_int(statement, 0))
             }
-            sqlite3_finalize(statement)
-            
-        case .cloudId:
-            // For new schema, assets on server = those matched via cloud_id that exist in remote_asset_entity
-            let matchedSql = """
-            SELECT COUNT(*)
-            FROM local_asset_entity l
-            JOIN remote_asset_cloud_id_entity rc ON l.i_cloud_id = rc.cloud_id
-            JOIN remote_asset_entity ra ON rc.asset_id = ra.id
-            WHERE ra.checksum IS NOT NULL AND ra.checksum != ''
-              AND l.i_cloud_id IS NOT NULL AND l.i_cloud_id != '';
-            """
-            if sqlite3_prepare_v2(db, matchedSql, -1, &statement, nil) == SQLITE_OK {
-                if sqlite3_step(statement) == SQLITE_ROW {
-                    stats["assetsOnServer"] = Int(sqlite3_column_int(statement, 0))
-                }
-            }
-            sqlite3_finalize(statement)
         }
+        sqlite3_finalize(statement)
         
         return stats
     }
