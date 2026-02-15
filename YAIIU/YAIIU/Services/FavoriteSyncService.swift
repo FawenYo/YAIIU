@@ -111,7 +111,7 @@ class FavoriteSyncService {
         try await ImmichAPIService.shared.updateAssetsFavorite(
             assetIds: assetIds,
             isFavorite: isFavorite,
-            serverURL: settingsManager.serverURL,
+            serverURL: settingsManager.activeServerURL,
             apiKey: settingsManager.apiKey
         )
     }

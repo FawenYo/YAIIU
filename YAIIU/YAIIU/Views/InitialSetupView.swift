@@ -186,7 +186,7 @@ struct InitialSetupView: View {
         logInfo("Starting initial setup sync", category: .sync)
         
         ServerAssetSyncService.shared.syncServerAssets(
-            serverURL: settingsManager.serverURL,
+            serverURL: settingsManager.activeServerURL,
             apiKey: settingsManager.apiKey,
             forceFullSync: true,
             progressHandler: { [self] progress in

@@ -224,7 +224,7 @@ class UploadManager: ObservableObject {
     
     private func processUploadQueueParallel() async {
         let settingsManager = SettingsManager()
-        let serverURL = settingsManager.serverURL
+        let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
         
         guard !serverURL.isEmpty && !apiKey.isEmpty else {
