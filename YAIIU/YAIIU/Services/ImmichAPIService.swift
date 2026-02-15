@@ -253,6 +253,7 @@ class ImmichAPIService: NSObject {
                 }
 
                 guard let fileHandle = try? FileHandle(forWritingTo: tempFileURL) else {
+                    try? FileManager.default.removeItem(at: tempFileURL)
                     continuation.resume(throwing: ImmichAPIError.uploadFailed(reason: "Failed to open temp file for writing: \(filename)"))
                     return
                 }
