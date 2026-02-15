@@ -357,23 +357,9 @@ class UploadManager: ObservableObject {
                         let currentIndex = index
                         let isLastResource = (index + 1 == totalResources)
 
-                        let useFileExport = photoLibraryManager.shouldUseFileExport(for: resource)
-                        var uploadedFileSize: Int64 = 0
-
-                        if useFileExport {
-                            let fileURL = try await photoLibraryManager.exportResourceToFile(for: resource)
-
-                            do {
-                                enum FileAttributeError: Error { case missingSize }
-                                let fileAttrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
-                                guard let fileSize = fileAttrs[.size] as? Int64 else {
-                                    logError("Could not determine file size for \(fileURL.path)", category: .upload)
-                                    throw FileAttributeError.missingSize
-                                }
-                                uploadedFileSize = fileSize
-
-                                try await ImmichAPIService.shared.uploadAssetFromFileNonBlocking(
-                                fileURL: fileURL,
+                        do {
+                            _ = try await ImmichAPIService.shared.uploadResourceNonBlocking(
+                                resource: resource,
                                 filename: filename,
                                 mimeType: mimeType,
                                 deviceAssetId: deviceAssetId,
@@ -390,68 +376,7 @@ class UploadManager: ObservableObject {
                                 let baseProgress = Double(currentIndex) / Double(totalResources)
                                 let resourceProgress = progress / Double(totalResources)
                                 item.progress = baseProgress + resourceProgress
-                            } responseHandler: { [weak item] result in
-                                Task { @MainActor in
-                                    // Clean up temporary file after upload completes
-                                    defer {
-                                        try? FileManager.default.removeItem(at: fileURL)
-                                    }
-
-                                    guard let item = item else {
-                                        enum UploadError: Error { case itemDeallocated }
-                                        logError("Upload item deallocated before response received for \(filename)", category: .upload)
-                                        responseTracker.markFailed(error: UploadError.itemDeallocated)
-                                        return
-                                    }
-
-                                    switch result {
-                                    case .success(let response):
-                                        DatabaseManager.shared.recordUploadedAsset(
-                                            localIdentifier: item.localIdentifier,
-                                            resourceType: resourceType,
-                                            filename: filename,
-                                            immichId: response.id,
-                                            fileSize: uploadedFileSize,
-                                            isDuplicate: response.duplicate ?? false,
-                                            isFavorite: isFavorite
-                                        )
-                                        logDebug("Resource \(filename) processed by server: \(response.id)", category: .upload)
-                                        responseTracker.markCompleted()
-                                    case .failure(let error):
-                                        logWarning("Server response error for \(filename): \(error.localizedDescription)", category: .upload)
-                                        responseTracker.markFailed(error: error)
-                                    }
-                                }
-                            }
-                            } catch {
-                                // Ensure temporary file is cleaned up on error before upload starts
-                                try? FileManager.default.removeItem(at: fileURL)
-                                responseTracker.markFailed(error: error)
-                                break  // Stop processing remaining resources since upload has failed
-                            }
-                        } else {
-                            let fileData = try await photoLibraryManager.getResourceData(for: resource)
-                            uploadedFileSize = Int64(fileData.count)
-
-                            try await ImmichAPIService.shared.uploadAssetNonBlocking(
-                                fileData: fileData,
-                                filename: filename,
-                                mimeType: mimeType,
-                                deviceAssetId: deviceAssetId,
-                                createdAt: createdAt,
-                                modifiedAt: modifiedAt,
-                                isFavorite: isFavorite,
-                                serverURL: serverURL,
-                                apiKey: apiKey,
-                                timezone: timezone,
-                                iCloudId: iCloudId,
-                                latitude: latitude,
-                                longitude: longitude
-                            ) { progress in
-                                let baseProgress = Double(currentIndex) / Double(totalResources)
-                                let resourceProgress = progress / Double(totalResources)
-                                item.progress = baseProgress + resourceProgress
-                            } responseHandler: { [weak item] result in
+                            } responseHandler: { [weak item] result, uploadedFileSize in
                                 Task { @MainActor in
                                     guard let item = item else {
                                         enum UploadError: Error { case itemDeallocated }
@@ -479,6 +404,9 @@ class UploadManager: ObservableObject {
                                     }
                                 }
                             }
+                        } catch {
+                            responseTracker.markFailed(error: error)
+                            break  // Stop processing remaining resources since upload has failed
                         }
 
                         await MainActor.run {
