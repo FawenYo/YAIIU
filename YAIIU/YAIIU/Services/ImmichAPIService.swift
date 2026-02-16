@@ -55,8 +55,8 @@ class ImmichAPIService: NSObject {
         super.init()
         
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 300
-        config.timeoutIntervalForResource = 3600
+        config.timeoutIntervalForRequest = 1800  // 30 minutes
+        config.timeoutIntervalForResource = 7200  // 2 hours total per upload
         // Upload-only session has no use for response caching on disk
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
