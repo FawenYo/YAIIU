@@ -115,7 +115,7 @@ class ImmichAPIService: NSObject {
         let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
         logInfo("Starting streaming upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
 
-        let streamBufferSize = 4 * 1024 * 1024
+        let streamBufferSize = 16 * 1024 * 1024
         var readStream: InputStream?
         var writeStream: OutputStream?
         Stream.getBoundStreams(withBufferSize: streamBufferSize, inputStream: &readStream, outputStream: &writeStream)
