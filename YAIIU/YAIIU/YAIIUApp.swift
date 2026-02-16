@@ -46,6 +46,8 @@ enum TemporaryFileCleanup {
 
     private static let staleThreshold: TimeInterval = 3600
 
+    private static let legacyUploadExtensions: Set<String> = ["multipart"]
+
     private static func cleanDirectory(at url: URL) {
         let fm = FileManager.default
 
@@ -57,7 +59,6 @@ enum TemporaryFileCleanup {
                 options: .skipsHiddenFiles
             )
         } catch {
-            // Directory may not exist (e.g. App Group tmp/ never created).
             logDebug("Temp directory not readable at \(url.lastPathComponent): \(error.localizedDescription)", category: .app)
             return
         }
@@ -66,10 +67,14 @@ enum TemporaryFileCleanup {
         var removedCount = 0
 
         for entry in entries {
-            guard let values = try? entry.resourceValues(forKeys: [.contentModificationDateKey]),
-                  let modDate = values.contentModificationDate,
-                  modDate < cutoff else {
-                continue
+            let isLegacyUploadFile = legacyUploadExtensions.contains(entry.pathExtension)
+
+            if !isLegacyUploadFile {
+                guard let values = try? entry.resourceValues(forKeys: [.contentModificationDateKey]),
+                      let modDate = values.contentModificationDate,
+                      modDate < cutoff else {
+                    continue
+                }
             }
 
             do {
