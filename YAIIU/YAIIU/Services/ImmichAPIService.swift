@@ -109,28 +109,27 @@ class ImmichAPIService: NSObject {
         let epilogueData = "\r\n--\(boundary)--\r\n".data(using: .utf8)!
 
         let assetFileSize: Int64 = (resource.value(forKey: "fileSize") as? CLong).map(Int64.init) ?? 0
+        let totalContentLength = Int64(preambleData.count) + assetFileSize + Int64(epilogueData.count)
 
         let fileSizeMB = Double(assetFileSize) / 1024.0 / 1024.0
         let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
-        logInfo("Starting file-based upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
+        logInfo("Starting streaming upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
 
-        // Write multipart body to a temp file so uploadTask(with:fromFile:) can bypass
-        // the bound-stream 256KB buffer bottleneck (~4-6 MB/s cap).
-        let tempFileURL = try await buildMultipartTempFile(
-            resource: resource,
-            preamble: preambleData,
-            epilogue: epilogueData,
-            filename: filename
-        )
+        let streamBufferSize = 4 * 1024 * 1024
+        var readStream: InputStream?
+        var writeStream: OutputStream?
+        Stream.getBoundStreams(withBufferSize: streamBufferSize, inputStream: &readStream, outputStream: &writeStream)
 
-        let totalContentLength = (try? FileManager.default.attributesOfItem(atPath: tempFileURL.path)[.size] as? Int64) ?? 0
+        guard let inputStream = readStream, let outputStream = writeStream else {
+            throw ImmichAPIError.uploadFailed(reason: "Failed to create bound streams for \(filename)")
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        if totalContentLength > 0 {
+        if assetFileSize > 0 {
             request.setValue(String(totalContentLength), forHTTPHeaderField: "Content-Length")
         }
 
@@ -140,10 +139,7 @@ class ImmichAPIService: NSObject {
             let taskDelegate = UploadTaskDelegate(
                 filename: filename,
                 progressHandler: progressHandler,
-                completion: { [tempFileURL] result in
-                    // Clean up temp file after upload completes (success or failure)
-                    try? FileManager.default.removeItem(at: tempFileURL)
-
+                completion: { result in
                     switch result {
                     case .success:
                         if !resumed {
@@ -170,20 +166,98 @@ class ImmichAPIService: NSObject {
                 }
             }
 
-            let task = uploadSession.uploadTask(with: request, fromFile: tempFileURL)
+            let task = uploadSession.uploadTask(withStreamedRequest: request)
             let taskId = task.taskIdentifier
+
+            taskDelegate.bodyStream = inputStream
 
             delegateQueue.sync(flags: .barrier) {
                 self.uploadDelegates[taskId] = taskDelegate
             }
 
             task.resume()
+
+            self.pumpAssetData(
+                resource: resource,
+                preamble: preambleData,
+                epilogue: epilogueData,
+                into: outputStream,
+                filename: filename
+            )
         }
 
         return assetFileSize
     }
 
-    // MARK: - Multipart preamble builder
+    private func pumpAssetData(
+        resource: PHAssetResource,
+        preamble: Data,
+        epilogue: Data,
+        into outputStream: OutputStream,
+        filename: String
+    ) {
+        let pumpQueue = DispatchQueue(label: "com.yaiiu.upload.pump.\(filename)", qos: .userInitiated)
+        pumpQueue.async {
+            outputStream.open()
+
+            func writeAll(_ data: Data) -> Bool {
+                var offset = 0
+                while offset < data.count {
+                    let written = data.withUnsafeBytes { rawBuffer -> Int in
+                        guard let base = rawBuffer.baseAddress else { return -1 }
+                        let ptr = base.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+                        return outputStream.write(ptr, maxLength: data.count - offset)
+                    }
+                    if written <= 0 {
+                        logError("OutputStream write failed for \(filename): \(outputStream.streamError?.localizedDescription ?? "unknown")", category: .api)
+                        return false
+                    }
+                    offset += written
+                }
+                return true
+            }
+
+            guard writeAll(preamble) else {
+                outputStream.close()
+                return
+            }
+
+            let chunkQueue = DispatchQueue(label: "com.yaiiu.upload.chunk.\(filename)")
+            let options = PHAssetResourceRequestOptions()
+            options.isNetworkAccessAllowed = true
+
+            let semaphore = DispatchSemaphore(value: 0)
+            var streamError: Error?
+
+            PHAssetResourceManager.default().requestData(
+                for: resource,
+                options: options
+            ) { chunk in
+                chunkQueue.sync {
+                    guard streamError == nil else { return }
+                    if !writeAll(chunk) {
+                        streamError = outputStream.streamError ?? ImmichAPIError.uploadFailed(reason: "Stream write failed")
+                    }
+                }
+            } completionHandler: { error in
+                if let error = error {
+                    chunkQueue.sync {
+                        streamError = error
+                    }
+                    logError("PHAssetResourceManager requestData failed for \(filename): \(error.localizedDescription)", category: .api)
+                }
+                semaphore.signal()
+            }
+
+            semaphore.wait()
+
+            if streamError == nil {
+                _ = writeAll(epilogue)
+            }
+
+            outputStream.close()
+        }
+    }
 
     private static func buildMultipartPreamble(
         boundary: String,
@@ -233,91 +307,6 @@ class ImmichAPIService: NSObject {
         return body
     }
 
-    // MARK: - Temp file builder
-
-    private func buildMultipartTempFile(
-        resource: PHAssetResource,
-        preamble: Data,
-        epilogue: Data,
-        filename: String
-    ) async throws -> URL {
-        let tempDir = FileManager.default.temporaryDirectory
-        let tempFileURL = tempDir.appendingPathComponent("upload_\(UUID().uuidString).multipart")
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let writeQueue = DispatchQueue(label: "com.yaiiu.upload.tempfile.\(filename)", qos: .userInitiated)
-            writeQueue.async {
-                guard FileManager.default.createFile(atPath: tempFileURL.path, contents: nil) else {
-                    continuation.resume(throwing: ImmichAPIError.uploadFailed(reason: "Failed to create temp file for \(filename)"))
-                    return
-                }
-
-                guard let fileHandle = try? FileHandle(forWritingTo: tempFileURL) else {
-                    try? FileManager.default.removeItem(at: tempFileURL)
-                    continuation.resume(throwing: ImmichAPIError.uploadFailed(reason: "Failed to open temp file for writing: \(filename)"))
-                    return
-                }
-
-                // Write preamble (multipart headers + form fields)
-                do {
-                    try fileHandle.write(contentsOf: preamble)
-                } catch {
-                    try? fileHandle.close()
-                    try? FileManager.default.removeItem(at: tempFileURL)
-                    continuation.resume(throwing: ImmichAPIError.uploadFailed(reason: "Failed to write preamble for \(filename): \(error.localizedDescription)"))
-                    return
-                }
-
-                // Stream asset data chunk by chunk into the file
-                let options = PHAssetResourceRequestOptions()
-                options.isNetworkAccessAllowed = true
-
-                let semaphore = DispatchSemaphore(value: 0)
-                var writeError: Error?
-
-                PHAssetResourceManager.default().requestData(
-                    for: resource,
-                    options: options
-                ) { chunk in
-                    guard writeError == nil else { return }
-                    do {
-                        try fileHandle.write(contentsOf: chunk)
-                    } catch {
-                        writeError = error
-                    }
-                } completionHandler: { error in
-                    if let error = error {
-                        writeError = writeError ?? error
-                        logError("PHAssetResourceManager requestData failed for \(filename): \(error.localizedDescription)", category: .api)
-                    }
-                    semaphore.signal()
-                }
-
-                semaphore.wait()
-
-                if let error = writeError {
-                    try? fileHandle.close()
-                    try? FileManager.default.removeItem(at: tempFileURL)
-                    continuation.resume(throwing: ImmichAPIError.uploadFailed(reason: "Failed to write asset data for \(filename): \(error.localizedDescription)"))
-                    return
-                }
-
-                // Write epilogue (multipart boundary end)
-                do {
-                    try fileHandle.write(contentsOf: epilogue)
-                    try fileHandle.close()
-                } catch {
-                    try? fileHandle.close()
-                    try? FileManager.default.removeItem(at: tempFileURL)
-                    continuation.resume(throwing: ImmichAPIError.uploadFailed(reason: "Failed to write epilogue for \(filename): \(error.localizedDescription)"))
-                    return
-                }
-
-                logDebug("Temp file created for \(filename): \(tempFileURL.lastPathComponent)", category: .api)
-                continuation.resume(returning: tempFileURL)
-            }
-        }
-    }
     
     func getUploadDelegate(for taskId: Int) -> UploadTaskDelegate? {
         var delegate: UploadTaskDelegate?
@@ -860,6 +849,7 @@ class UploadTaskDelegate {
     var responseData = Data()
     var onBytesSent: (() -> Void)?
     var bytesSentCallbackFired = false
+    var bodyStream: InputStream?
 
     init(
         filename: String,
@@ -875,6 +865,20 @@ class UploadTaskDelegate {
 // MARK: - URLSessionTaskDelegate
 
 extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
+
+    // MARK: Streamed upload body provider
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        needNewBodyStream completionHandler: @escaping (InputStream?) -> Void
+    ) {
+        guard let delegate = getUploadDelegate(for: task.taskIdentifier) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(delegate.bodyStream)
+    }
 
     // MARK: Upload progress
 
