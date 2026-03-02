@@ -140,7 +140,7 @@ jobs:
       - name: Generate BuildInfo.swift
         working-directory: YAIIU
         run: |
-          export MARKETING_VERSION="0.1.1"
+          export MARKETING_VERSION="0.1.2"
           export CURRENT_PROJECT_VERSION="${{ steps.build_number.outputs.BUILD_NUMBER }}"
           bash Scripts/set_build_info.sh
 

@@ -115,6 +115,7 @@
 "photoGrid.filter.all" = "모든 사진";
 "photoGrid.filter.notUploaded" = "업로드되지 않음";
 "photoGrid.filter.active" = "%d개 표시 중";
+"photoGrid.selectAllNotUploaded" = "업로드 안 된 항목 전체 선택";
 "photoGrid.section.today" = "오늘";
 "photoGrid.section.yesterday" = "어제";
 

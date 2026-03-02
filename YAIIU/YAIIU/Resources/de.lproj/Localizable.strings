@@ -115,6 +115,7 @@
 "photoGrid.filter.all" = "Alle Fotos";
 "photoGrid.filter.notUploaded" = "Nicht hochgeladen";
 "photoGrid.filter.active" = "%d Elemente werden angezeigt";
+"photoGrid.selectAllNotUploaded" = "Alle nicht hochgeladenen";
 "photoGrid.section.today" = "Heute";
 "photoGrid.section.yesterday" = "Gestern";
 

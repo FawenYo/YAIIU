@@ -115,6 +115,7 @@
 "photoGrid.filter.all" = "すべての写真";
 "photoGrid.filter.notUploaded" = "未アップロード";
 "photoGrid.filter.active" = "%d件を表示";
+"photoGrid.selectAllNotUploaded" = "未アップロードを全選択";
 "photoGrid.section.today" = "今日";
 "photoGrid.section.yesterday" = "昨日";
 

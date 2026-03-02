@@ -115,6 +115,7 @@
 "photoGrid.filter.all" = "所有照片";
 "photoGrid.filter.notUploaded" = "尚未上傳";
 "photoGrid.filter.active" = "顯示 %d 個項目";
+"photoGrid.selectAllNotUploaded" = "全選未上傳";
 "photoGrid.section.today" = "今天";
 "photoGrid.section.yesterday" = "昨天";
 

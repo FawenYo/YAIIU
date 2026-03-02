@@ -340,10 +340,16 @@ struct PhotoGridView: View {
                             }
                             .disabled(displayCount == 0)
                         } else {
-                            Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
-                                showingUploadConfirmation = true
+                            HStack(spacing: 12) {
+                                Button(L10n.PhotoGrid.selectAllNotUploaded) {
+                                    selectAllNotUploaded()
+                                }
+                                .disabled(hashManager.isProcessing)
+                                Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
+                                    showingUploadConfirmation = true
+                                }
+                                .disabled(selectedAssets.isEmpty)
                             }
-                            .disabled(selectedAssets.isEmpty)
                         }
                     }
                 }
@@ -520,13 +526,13 @@ struct PhotoGridView: View {
     @State private var visibleDisplayIndices: Set<Int> = []
     @State private var firstRowTopOffset: CGFloat = 0
     
-    /// Navigation title: shows "Photo Library" when first row top is visible, date otherwise
+    /// Navigation title: hidden in selection mode, shows date when scrolled, default title otherwise
     private var navigationTitle: String {
-        // Show date when first row has scrolled past the top edge
-        if firstRowTopOffset < 0 {
-            if !currentVisibleDate.isEmpty {
-                return currentVisibleDate
-            }
+        if isSelectionMode {
+            return ""
+        }
+        if firstRowTopOffset < 0, !currentVisibleDate.isEmpty {
+            return currentVisibleDate
         }
         return L10n.PhotoGrid.title
     }
@@ -964,6 +970,26 @@ struct PhotoGridView: View {
         selectedAssets = next
     }
     
+    private func selectAllNotUploaded() {
+        let statusCache = hashManager.syncStatusCache
+        guard let fetchResult = photoLibraryManager.fetchResult else { return }
+
+        Task.detached(priority: .userInitiated) {
+            var ids = Set<String>()
+            ids.reserveCapacity(fetchResult.count / 4)
+
+            fetchResult.enumerateObjects { asset, _, _ in
+                if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
+                    ids.insert(asset.localIdentifier)
+                }
+            }
+
+            await MainActor.run {
+                self.selectedAssets = ids
+            }
+        }
+    }
+
     private func toggleSelection(at index: Int) {
         guard let identifier = photoLibraryManager.localIdentifier(at: index) else { return }
         if selectedAssets.contains(identifier) {
