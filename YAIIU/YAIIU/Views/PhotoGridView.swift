@@ -274,6 +274,7 @@ struct PhotoGridView: View {
     @State private var isFilteringInProgress = false
     @State private var filterCacheVersion: Int = 0
     @State private var isSelectingAll = false
+    @State private var selectionTask: Task<Void, Never>?
     
     @State private var refreshToken: UUID = UUID()
     @State private var processingTask: Task<Void, Never>?
@@ -322,6 +323,8 @@ struct PhotoGridView: View {
                     ToolbarItem(placement: .navigationBarLeading) {
                         if isSelectionMode {
                             Button(L10n.PhotoGrid.cancel) {
+                                selectionTask?.cancel()
+                                selectionTask = nil
                                 isSelectionMode = false
                                 selectedAssets.removeAll()
                                 dragState.reset()
@@ -386,6 +389,10 @@ struct PhotoGridView: View {
                 photoLibraryManager.requestAuthorization()
                 performAutoSync()
             }
+        }
+        .onDisappear {
+            selectionTask?.cancel()
+            selectionTask = nil
         }
         .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
             if newValue > 0 && oldValue == 0 {
@@ -976,7 +983,8 @@ struct PhotoGridView: View {
         guard let fetchResult = photoLibraryManager.fetchResult, !isSelectingAll else { return }
 
         isSelectingAll = true
-        Task(priority: .userInitiated) {
+        selectionTask?.cancel()
+        selectionTask = Task(priority: .userInitiated) {
             var ids = Set<String>()
             ids.reserveCapacity(fetchResult.count / 4)
 
