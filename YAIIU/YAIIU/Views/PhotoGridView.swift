@@ -1001,7 +1001,9 @@ struct PhotoGridView: View {
             }
 
             await MainActor.run {
-                if !Task.isCancelled && self.isSelectionMode {
+                guard !Task.isCancelled else { return }
+
+                if self.isSelectionMode {
                     self.selectedAssets = ids
                 }
                 self.isSelectingAll = false
