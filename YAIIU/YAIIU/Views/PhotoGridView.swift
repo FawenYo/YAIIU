@@ -976,24 +976,25 @@ struct PhotoGridView: View {
         guard let fetchResult = photoLibraryManager.fetchResult, !isSelectingAll else { return }
 
         isSelectingAll = true
-        Task.detached(priority: .userInitiated) {
-            defer {
-                Task { @MainActor in
-                    self.isSelectingAll = false
-                }
-            }
-
+        Task(priority: .userInitiated) {
             var ids = Set<String>()
             ids.reserveCapacity(fetchResult.count / 4)
 
-            fetchResult.enumerateObjects { asset, _, _ in
+            fetchResult.enumerateObjects { asset, _, stop in
+                if Task.isCancelled {
+                    stop.pointee = true
+                    return
+                }
                 if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
                     ids.insert(asset.localIdentifier)
                 }
             }
 
             await MainActor.run {
-                self.selectedAssets = ids
+                if !Task.isCancelled {
+                    self.selectedAssets = ids
+                }
+                self.isSelectingAll = false
             }
         }
     }
