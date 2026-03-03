@@ -999,7 +999,7 @@ struct PhotoGridView: View {
             }
 
             await MainActor.run {
-                if !Task.isCancelled {
+                if !Task.isCancelled && self.isSelectionMode {
                     self.selectedAssets = ids
                 }
                 self.isSelectingAll = false
