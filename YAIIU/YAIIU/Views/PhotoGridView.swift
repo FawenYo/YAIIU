@@ -325,6 +325,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.cancel) {
                                 selectionTask?.cancel()
                                 selectionTask = nil
+                                isSelectingAll = false
                                 isSelectionMode = false
                                 selectedAssets.removeAll()
                                 dragState.reset()
@@ -393,6 +394,7 @@ struct PhotoGridView: View {
         .onDisappear {
             selectionTask?.cancel()
             selectionTask = nil
+            isSelectingAll = false
         }
         .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
             if newValue > 0 && oldValue == 0 {
