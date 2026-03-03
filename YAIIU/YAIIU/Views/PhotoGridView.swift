@@ -273,6 +273,7 @@ struct PhotoGridView: View {
     @State private var cachedNotUploadedCount: Int = 0
     @State private var isFilteringInProgress = false
     @State private var filterCacheVersion: Int = 0
+    @State private var isSelectingAll = false
     
     @State private var refreshToken: UUID = UUID()
     @State private var processingTask: Task<Void, Never>?
@@ -344,7 +345,7 @@ struct PhotoGridView: View {
                                 Button(L10n.PhotoGrid.selectAllNotUploaded) {
                                     selectAllNotUploaded()
                                 }
-                                .disabled(hashManager.isProcessing)
+                                .disabled(hashManager.isProcessing || isSelectingAll)
                                 Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
                                     showingUploadConfirmation = true
                                 }
@@ -972,9 +973,16 @@ struct PhotoGridView: View {
     
     private func selectAllNotUploaded() {
         let statusCache = hashManager.syncStatusCache
-        guard let fetchResult = photoLibraryManager.fetchResult else { return }
+        guard let fetchResult = photoLibraryManager.fetchResult, !isSelectingAll else { return }
 
+        isSelectingAll = true
         Task.detached(priority: .userInitiated) {
+            defer {
+                Task { @MainActor in
+                    self.isSelectingAll = false
+                }
+            }
+
             var ids = Set<String>()
             ids.reserveCapacity(fetchResult.count / 4)
 
