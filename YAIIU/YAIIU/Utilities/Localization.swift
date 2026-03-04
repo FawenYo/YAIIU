@@ -267,6 +267,7 @@ enum L10n {
         static func filterActive(_ count: Int) -> String {
             return "photoGrid.filter.active".localized(with: count)
         }
+        static var selectAllNotUploaded: String { "photoGrid.selectAllNotUploaded".localized }
         static var sectionToday: String { "photoGrid.section.today".localized }
         static var sectionYesterday: String { "photoGrid.section.yesterday".localized }
     }

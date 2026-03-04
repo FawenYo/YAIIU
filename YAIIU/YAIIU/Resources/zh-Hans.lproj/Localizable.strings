@@ -115,6 +115,7 @@
 "photoGrid.filter.all" = "所有照片";
 "photoGrid.filter.notUploaded" = "尚未上传";
 "photoGrid.filter.active" = "显示 %d 个项目";
+"photoGrid.selectAllNotUploaded" = "全选未上传";
 "photoGrid.section.today" = "今天";
 "photoGrid.section.yesterday" = "昨天";
 

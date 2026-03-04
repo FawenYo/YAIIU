@@ -115,6 +115,7 @@
 "photoGrid.filter.all" = "All Photos";
 "photoGrid.filter.notUploaded" = "Not Uploaded";
 "photoGrid.filter.active" = "Showing %d items";
+"photoGrid.selectAllNotUploaded" = "All Not Uploaded";
 "photoGrid.section.today" = "Today";
 "photoGrid.section.yesterday" = "Yesterday";
 

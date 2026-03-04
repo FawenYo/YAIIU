@@ -115,6 +115,7 @@
 "photoGrid.filter.all" = "Toutes les photos";
 "photoGrid.filter.notUploaded" = "Non téléversées";
 "photoGrid.filter.active" = "Affichage de %d éléments";
+"photoGrid.selectAllNotUploaded" = "Tout sélectionner non téléversé";
 "photoGrid.section.today" = "Aujourd'hui";
 "photoGrid.section.yesterday" = "Hier";
 
