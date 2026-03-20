@@ -255,11 +255,12 @@ private enum DateFormatting {
 // MARK: - PhotoGridView
 
 struct PhotoGridView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var uploadManager: UploadManager
     @StateObject private var photoLibraryManager = PhotoLibraryManager()
     @ObservedObject private var hashManager = HashManager.shared
-    
+
     @State private var selectedAssets: Set<String> = []
     @State private var isSelectionMode = false
     @State private var showingPermissionAlert = false
@@ -388,6 +389,11 @@ struct PhotoGridView: View {
             if !hasAppeared {
                 hasAppeared = true
                 photoLibraryManager.requestAuthorization()
+            }
+            performAutoSync()
+        }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            if newPhase == .active {
                 performAutoSync()
             }
         }
