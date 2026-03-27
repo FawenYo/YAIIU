@@ -41,7 +41,7 @@ struct RemoteAssetMetadataItem: Encodable {
     let key: String
     let value: MobileAppMetadata
     
-    static let mobileAppKey = "yaiiu-app"
+    static let mobileAppKey = "mobile-app"
 }
 
 class ImmichAPIService: NSObject {

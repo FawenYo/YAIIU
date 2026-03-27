@@ -274,7 +274,7 @@ func createMultipartRequest(metadata BackgroundUploadRequest, photoData []byte) 
 	// Include mobile-app metadata with iCloudId if available
 	if metadata.ICloudId != "" {
 		metadataItem := RemoteAssetMetadataItem{
-			Key: "yaiiu-app",
+			Key: "mobile-app",
 			Value: MobileAppMetadata{
 				ICloudId:  metadata.ICloudId,
 				CreatedAt: metadata.FileCreatedAt,
