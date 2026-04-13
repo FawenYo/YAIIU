@@ -18,6 +18,12 @@ struct YAIIUApp: App {
                 .environmentObject(migrationManager)
                 .task {
                     await migrationManager.performMigrationIfNeeded(settingsManager: settingsManager)
+                    if settingsManager.isLoggedIn {
+                        HashBackfillService.shared.run(
+                            serverURL: settingsManager.activeServerURL,
+                            apiKey: settingsManager.apiKey
+                        )
+                    }
                 }
         }
     }

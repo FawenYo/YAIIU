@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		BI0000010000000000000001 /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = BI0000020000000000000001 /* BuildInfo.swift */; };
 		2A0000010000000000000001 /* YAIIUApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000020000000000000001 /* YAIIUApp.swift */; };
 		2A0000030000000000000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000040000000000000001 /* ContentView.swift */; };
 		2A0000050000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000060000000000000001 /* Assets.xcassets */; };
@@ -46,17 +45,19 @@
 		BC7F352A2EFED8F200747537 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35252EFED8F200747537 /* SharedSettings.swift */; };
 		BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
 		BC7F352D2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
-		RF0000010000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */ = {isa = PBXBuildFile; fileRef = RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */; };
-		RF0000030000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */ = {isa = PBXBuildFile; fileRef = RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */; };
+		BCF05BE62F8CCE15002123FD /* HashBackfillService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCF05BE52F8CCE15002123FD /* HashBackfillService.swift */; };
+		BI0000010000000000000001 /* BuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = BI0000020000000000000001 /* BuildInfo.swift */; };
+		CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CI0000020000000000000001 /* CloudIdSyncService.swift */; };
 		DB0000010000000000000001 /* SQLiteConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000020000000000000001 /* SQLiteConnection.swift */; };
 		DB0000030000000000000001 /* DatabaseModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000040000000000000001 /* DatabaseModels.swift */; };
 		DB0000050000000000000001 /* UploadRecordRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000060000000000000001 /* UploadRecordRepository.swift */; };
 		DB0000070000000000000001 /* HashCacheRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB0000080000000000000001 /* HashCacheRepository.swift */; };
 		DB0000090000000000000001 /* ServerAssetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000A0000000000000001 /* ServerAssetRepository.swift */; };
 		DB00000B0000000000000001 /* FavoriteRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB00000C0000000000000001 /* FavoriteRepository.swift */; };
-		NR0000010000000000000001 /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = NR0000020000000000000001 /* NetworkReachability.swift */; };
-		CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CI0000020000000000000001 /* CloudIdSyncService.swift */; };
 		LS0000010000000000000001 /* LanguageSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LS0000020000000000000001 /* LanguageSettingsView.swift */; };
+		NR0000010000000000000001 /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = NR0000020000000000000001 /* NetworkReachability.swift */; };
+		RF0000010000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */ = {isa = PBXBuildFile; fileRef = RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */; };
+		RF0000030000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */ = {isa = PBXBuildFile; fileRef = RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -124,29 +125,30 @@
 		BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadDatabase.swift; sourceTree = "<group>"; };
 		BC7F35252EFED8F200747537 /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
 		BC7F352C2EFED90000747537 /* SharedLogTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedLogTypes.swift; sourceTree = "<group>"; };
-		RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PHAssetResource+ResolvedFilename.swift"; sourceTree = "<group>"; };
+		BCF05BE52F8CCE15002123FD /* HashBackfillService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashBackfillService.swift; sourceTree = "<group>"; };
+		BI0000020000000000000001 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
+		CI0000020000000000000001 /* CloudIdSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudIdSyncService.swift; sourceTree = "<group>"; };
 		DB0000020000000000000001 /* SQLiteConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteConnection.swift; sourceTree = "<group>"; };
 		DB0000040000000000000001 /* DatabaseModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseModels.swift; sourceTree = "<group>"; };
 		DB0000060000000000000001 /* UploadRecordRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadRecordRepository.swift; sourceTree = "<group>"; };
 		DB0000080000000000000001 /* HashCacheRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashCacheRepository.swift; sourceTree = "<group>"; };
 		DB00000A0000000000000001 /* ServerAssetRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetRepository.swift; sourceTree = "<group>"; };
 		DB00000C0000000000000001 /* FavoriteRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteRepository.swift; sourceTree = "<group>"; };
-		NR0000020000000000000001 /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
-		BI0000020000000000000001 /* BuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildInfo.swift; sourceTree = "<group>"; };
-		CI0000020000000000000001 /* CloudIdSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudIdSyncService.swift; sourceTree = "<group>"; };
-		LS0000020000000000000001 /* LanguageSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageSettingsView.swift; sourceTree = "<group>"; };
-		L10000010000000000000001 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
-		L10000020000000000000001 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
-		L10000030000000000000001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
-		L10000040000000000000001 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
-		L10000050000000000000001 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
-		L10000060000000000000001 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
 		IP0000010000000000000001 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		IP0000020000000000000001 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		IP0000030000000000000001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 		IP0000040000000000000001 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		IP0000050000000000000001 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		IP0000060000000000000001 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		L10000010000000000000001 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000020000000000000001 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000030000000000000001 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		L10000040000000000000001 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000050000000000000001 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
+		L10000060000000000000001 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
+		LS0000020000000000000001 /* LanguageSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageSettingsView.swift; sourceTree = "<group>"; };
+		NR0000020000000000000001 /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
+		RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PHAssetResource+ResolvedFilename.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -240,6 +242,7 @@
 		2A0000220000000000000001 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				BCF05BE52F8CCE15002123FD /* HashBackfillService.swift */,
 				DB0000500000000000000001 /* Database */,
 				DB0000510000000000000001 /* Import */,
 				BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */,
@@ -295,6 +298,14 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		BI0000030000000000000001 /* Generated */ = {
+			isa = PBXGroup;
+			children = (
+				BI0000020000000000000001 /* BuildInfo.swift */,
+			);
+			path = Generated;
+			sourceTree = "<group>";
+		};
 		DB0000500000000000000001 /* Database */ = {
 			isa = PBXGroup;
 			children = (
@@ -339,14 +350,6 @@
 				DB00000C0000000000000001 /* FavoriteRepository.swift */,
 			);
 			path = Repositories;
-			sourceTree = "<group>";
-		};
-		BI0000030000000000000001 /* Generated */ = {
-			isa = PBXGroup;
-			children = (
-				BI0000020000000000000001 /* BuildInfo.swift */,
-			);
-			path = Generated;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -458,6 +461,30 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		BI0000040000000000000001 /* Generate Build Info */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Scripts/set_build_info.sh",
+			);
+			name = "Generate Build Info";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/YAIIU/Generated/BuildInfo.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"${SRCROOT}/Scripts/set_build_info.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		2A0000260000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -500,6 +527,7 @@
 				2A0000570000000000000001 /* RestartRequiredView.swift in Sources */,
 				2A0000480000000000000001 /* PhotoDetailView.swift in Sources */,
 				2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */,
+				BCF05BE62F8CCE15002123FD /* HashBackfillService.swift in Sources */,
 				2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */,
 				2A00004E0000000000000001 /* LogViewerView.swift in Sources */,
 				BI0000010000000000000001 /* BuildInfo.swift in Sources */,
@@ -528,30 +556,6 @@
 			targetProxy = BC7F351B2EFED85E00747537 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		BI0000040000000000000001 /* Generate Build Info */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(SRCROOT)/Scripts/set_build_info.sh",
-			);
-			name = "Generate Build Info";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(SRCROOT)/YAIIU/Generated/BuildInfo.swift",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/bash;
-			shellScript = "\"${SRCROOT}/Scripts/set_build_info.sh\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXVariantGroup section */
 		2A0000390000000000000001 /* Localizable.strings */ = {
