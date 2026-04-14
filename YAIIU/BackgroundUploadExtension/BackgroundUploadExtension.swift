@@ -142,10 +142,17 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 let resolvedFilename = resource.resolvedFilename()
                 self.logDebug("Creating upload job for resource: \(resolvedFilename)")
 
-                PHAssetResourceUploadJobChangeRequest.createJob(
-                    destination: dest,
-                    resource: resource
-                )
+                if #available(iOS 26.4, *) {
+                    PHAssetResourceUploadJobChangeRequest.creationRequestForJob(
+                        destination: dest,
+                        resource: resource
+                    )
+                } else {
+                    PHAssetResourceUploadJobChangeRequest.createJob(
+                        destination: dest,
+                        resource: resource
+                    )
+                }
                 self.database.createOrUpdateJob(
                     assetId: resource.assetLocalIdentifier,
                     resourceType: self.resourceTypeString(for: resource),
