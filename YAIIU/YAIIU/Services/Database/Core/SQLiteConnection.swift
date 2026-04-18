@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 3
+    private static let schemaVersion = 4
     
     private init() {
         dbQueue.async { [weak self] in
@@ -237,6 +237,10 @@ final class SQLiteConnection {
                 logInfo("Running v3 remediation by ensuring v2 migration logic is complete", category: .database)
                 migrateToV2()
             }
+
+            if currentVersion < 4 {
+                migrateToV4()
+            }
             
             setSchemaVersion(SQLiteConnection.schemaVersion)
             logInfo("Database migration completed to version \(SQLiteConnection.schemaVersion)", category: .database)
@@ -272,7 +276,35 @@ final class SQLiteConnection {
             logInfo("icloud_id column already exists, skipping", category: .database)
         }
     }
-    
+
+    /// Migration to version 4: Add asset_modification_date column to hash_cache table.
+    private func migrateToV4() {
+        logInfo("Migrating database to version 4: adding asset_modification_date column", category: .database)
+
+        let checkSql = "PRAGMA table_info(hash_cache);"
+        var statement: OpaquePointer?
+        var hasColumn = false
+
+        if sqlite3_prepare_v2(db, checkSql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1) {
+                    if String(cString: columnName) == "asset_modification_date" {
+                        hasColumn = true
+                        break
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        if !hasColumn {
+            executeStatement("ALTER TABLE hash_cache ADD COLUMN asset_modification_date REAL;")
+            logInfo("Added asset_modification_date column to hash_cache", category: .database)
+        } else {
+            logInfo("asset_modification_date column already exists, skipping", category: .database)
+        }
+    }
+
     // MARK: - Statement Execution
     
     func executeStatement(_ sql: String) {

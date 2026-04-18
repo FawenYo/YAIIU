@@ -117,11 +117,21 @@ final class PhotoLibraryManager: ObservableObject {
         guard let result = fetchResult else { return [] }
         var identifiers: [String] = []
         identifiers.reserveCapacity(result.count)
-        
+
         result.enumerateObjects { asset, _, _ in
             identifiers.append(asset.localIdentifier)
         }
         return identifiers
+    }
+
+    func allAssets() -> [PHAsset] {
+        guard let result = fetchResult else { return [] }
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(result.count)
+        result.enumerateObjects { asset, _, _ in
+            assets.append(asset)
+        }
+        return assets
     }
     
     private func triggerFavoriteSync() async {

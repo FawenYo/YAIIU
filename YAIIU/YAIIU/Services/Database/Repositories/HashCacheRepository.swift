@@ -1,4 +1,5 @@
 import Foundation
+import Photos
 import SQLite3
 
 final class HashCacheRepository {
@@ -13,15 +14,16 @@ final class HashCacheRepository {
     func saveHashCache(localIdentifier: String, sha1Hash: String) {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
-            self.saveHashCacheInternal(localIdentifier: localIdentifier, sha1Hash: sha1Hash, rawHash: nil, hasRAW: false)
+            self.saveHashCacheInternal(localIdentifier: localIdentifier, sha1Hash: sha1Hash, rawHash: nil, hasRAW: false, modificationDate: nil)
         }
     }
-    
+
     func saveMultiResourceHashCache(
         localIdentifier: String,
         primaryHash: String,
         rawHash: String?,
-        hasRAW: Bool
+        hasRAW: Bool,
+        modificationDate: Date? = nil
     ) {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
@@ -29,35 +31,49 @@ final class HashCacheRepository {
                 localIdentifier: localIdentifier,
                 sha1Hash: primaryHash,
                 rawHash: rawHash,
-                hasRAW: hasRAW
+                hasRAW: hasRAW,
+                modificationDate: modificationDate
             )
         }
     }
-    
-    private func saveHashCacheInternal(localIdentifier: String, sha1Hash: String, rawHash: String?, hasRAW: Bool) {
+
+    private func saveHashCacheInternal(
+        localIdentifier: String,
+        sha1Hash: String,
+        rawHash: String?,
+        hasRAW: Bool,
+        modificationDate: Date?
+    ) {
         let sql = """
         INSERT OR REPLACE INTO hash_cache
-        (asset_id, sha1_hash, is_on_server, calculated_at, raw_hash, raw_on_server, has_raw)
-        VALUES (?, ?, 0, ?, ?, 0, ?);
+        (asset_id, sha1_hash, is_on_server, calculated_at, raw_hash, raw_on_server, has_raw, asset_modification_date)
+        VALUES (?, ?, 0, ?, ?, 0, ?, ?);
         """
-        
+
         var statement: OpaquePointer?
-        
+
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
             sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
             sqlite3_bind_text(statement, 2, (sha1Hash as NSString).utf8String, -1, nil)
             sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
-            
+
             if let rawHash = rawHash {
                 sqlite3_bind_text(statement, 4, (rawHash as NSString).utf8String, -1, nil)
             } else {
                 sqlite3_bind_null(statement, 4)
             }
-            
+
             sqlite3_bind_int(statement, 5, hasRAW ? 1 : 0)
+
+            if let modDate = modificationDate {
+                sqlite3_bind_double(statement, 6, modDate.timeIntervalSince1970)
+            } else {
+                sqlite3_bind_null(statement, 6)
+            }
+
             sqlite3_step(statement)
         }
-        
+
         sqlite3_finalize(statement)
     }
     
@@ -72,7 +88,8 @@ final class HashCacheRepository {
                     localIdentifier: item.localIdentifier,
                     sha1Hash: item.sha1Hash,
                     rawHash: nil,
-                    hasRAW: false
+                    hasRAW: false,
+                    modificationDate: nil
                 )
             }
             
@@ -472,6 +489,135 @@ final class HashCacheRepository {
         }
     }
     
+    // MARK: - Modified Asset Invalidation
+
+    /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate
+    /// has changed since the date was last stored. Assets with NULL stored dates are skipped.
+    func resetCacheForModifiedAssets(assets: [PHAsset]) {
+        guard !assets.isEmpty else { return }
+
+        connection.dbQueue.sync { [weak self] in
+            guard let self = self else { return }
+            self.resetCacheForModifiedAssetsInternal(assets: assets)
+        }
+    }
+
+    private func resetCacheForModifiedAssetsInternal(assets: [PHAsset]) {
+        // Fetch all stored modification dates in one query; NULL means not yet recorded
+        let sql = "SELECT asset_id, asset_modification_date FROM hash_cache;"
+        var statement: OpaquePointer?
+        var storedDates: [String: Double] = [:]      // asset_id -> stored timestamp
+        var nullDateIds: Set<String> = []             // asset_id with no stored date yet
+
+        if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let idCString = sqlite3_column_text(statement, 0) {
+                    let assetId = String(cString: idCString)
+                    if sqlite3_column_type(statement, 1) == SQLITE_NULL {
+                        nullDateIds.insert(assetId)
+                    } else {
+                        storedDates[assetId] = sqlite3_column_double(statement, 1)
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        // Backfill modificationDate for pre-migration rows that have no stored date.
+        // Cannot be done at migration time because PHAsset is unavailable there.
+        if !nullDateIds.isEmpty {
+            backfillModificationDates(assets: assets, assetIds: nullDateIds)
+        }
+
+        guard !storedDates.isEmpty else { return }
+
+        // Compare current modificationDate against stored date
+        var invalidatedIds: [String] = []
+
+        for asset in assets {
+            let identifier = asset.localIdentifier
+            guard let storedTimestamp = storedDates[identifier] else { continue }
+            guard let currentDate = asset.modificationDate else { continue }
+
+            let currentTimestamp = currentDate.timeIntervalSince1970
+            // Use 1-second tolerance to avoid floating point noise
+            if abs(currentTimestamp - storedTimestamp) > 1.0 {
+                invalidatedIds.append(identifier)
+            }
+        }
+
+        guard !invalidatedIds.isEmpty else { return }
+
+        logInfo("Invalidating \(invalidatedIds.count) modified assets", category: .hash)
+
+        // Delete both hash_cache and uploaded_assets for each invalidated asset
+        connection.beginTransaction()
+
+        let hashDeleteSql = "DELETE FROM hash_cache WHERE asset_id = ?;"
+        let uploadDeleteSql = "DELETE FROM uploaded_assets WHERE asset_id = ?;"
+
+        var hashStmt: OpaquePointer?
+        var uploadStmt: OpaquePointer?
+
+        guard sqlite3_prepare_v2(connection.db, hashDeleteSql, -1, &hashStmt, nil) == SQLITE_OK,
+              sqlite3_prepare_v2(connection.db, uploadDeleteSql, -1, &uploadStmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(hashStmt)
+            sqlite3_finalize(uploadStmt)
+            connection.rollbackTransaction()
+            return
+        }
+
+        var failed = false
+
+        for assetId in invalidatedIds {
+            sqlite3_bind_text(hashStmt, 1, (assetId as NSString).utf8String, -1, nil)
+            if sqlite3_step(hashStmt) != SQLITE_DONE {
+                failed = true
+                break
+            }
+            sqlite3_reset(hashStmt)
+
+            sqlite3_bind_text(uploadStmt, 1, (assetId as NSString).utf8String, -1, nil)
+            if sqlite3_step(uploadStmt) != SQLITE_DONE {
+                failed = true
+                break
+            }
+            sqlite3_reset(uploadStmt)
+        }
+
+        sqlite3_finalize(hashStmt)
+        sqlite3_finalize(uploadStmt)
+
+        if failed {
+            connection.rollbackTransaction()
+        } else {
+            connection.commitTransaction()
+        }
+
+        logDebug("Invalidated assets: \(invalidatedIds.map { String($0.prefix(20)) })", category: .hash)
+    }
+
+    private func backfillModificationDates(assets: [PHAsset], assetIds: Set<String>) {
+        let sql = "UPDATE hash_cache SET asset_modification_date = ? WHERE asset_id = ?;"
+        var statement: OpaquePointer?
+
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+
+        var count = 0
+        for asset in assets {
+            guard assetIds.contains(asset.localIdentifier),
+                  let modDate = asset.modificationDate else { continue }
+
+            sqlite3_bind_double(statement, 1, modDate.timeIntervalSince1970)
+            sqlite3_bind_text(statement, 2, (asset.localIdentifier as NSString).utf8String, -1, nil)
+            if sqlite3_step(statement) == SQLITE_DONE { count += 1 }
+            sqlite3_reset(statement)
+        }
+
+        sqlite3_finalize(statement)
+        logInfo("Backfilled modificationDate for \(count) pre-migration hash_cache entries", category: .hash)
+    }
+
     // MARK: - Clear
     
     func clearHashCache() {

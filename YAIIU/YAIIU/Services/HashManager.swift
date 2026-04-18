@@ -67,24 +67,23 @@ class HashManager: ObservableObject {
     }
     
     func startBackgroundProcessing(assets: [PHAsset]) {
-        let identifiers = assets.map { $0.localIdentifier }
-        startBackgroundProcessing(identifiers: identifiers)
+        // Invalidate modified assets before the normal refresh pipeline
+        DatabaseManager.shared.resetCacheForModifiedAssets(assets: assets)
+        startBackgroundProcessing(identifiers: assets.map { $0.localIdentifier })
     }
-    
+
     func startBackgroundProcessing(identifiers: [String]) {
-        guard !isHashingActive && !isCheckingActive else {
-            return
-        }
-        
+        guard !isHashingActive && !isCheckingActive else { return }
+
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
         statusMessage = "Preparing..."
-        
+
+        // identifiers-only path cannot compare modificationDate; no invalidation here
         DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
             guard let self = self else { return }
-            
-            // Ensure UI updates happen on main thread
+
             Task { @MainActor in
                 if needingHash.isEmpty {
                     self.statusMessage = "Checking cloud status..."
@@ -100,7 +99,7 @@ class HashManager: ObservableObject {
                             self.processedAssetsCount = 0
                             self.processingProgress = 0
                             self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
-                            
+
                             self.processHashItemsParallel()
                         }
                     }
@@ -288,7 +287,8 @@ class HashManager: ObservableObject {
                 localIdentifier: result.localIdentifier,
                 primaryHash: result.primaryHash,
                 rawHash: result.rawHash,
-                hasRAW: result.hasRAW
+                hasRAW: result.hasRAW,
+                modificationDate: asset.modificationDate
             )
             
             await MainActor.run {

@@ -1,4 +1,5 @@
 import Foundation
+import Photos
 import SQLite3
 
 /// Facade for database operations.
@@ -93,13 +94,15 @@ final class DatabaseManager {
         localIdentifier: String,
         primaryHash: String,
         rawHash: String?,
-        hasRAW: Bool
+        hasRAW: Bool,
+        modificationDate: Date? = nil
     ) {
         hashRepo.saveMultiResourceHashCache(
             localIdentifier: localIdentifier,
             primaryHash: primaryHash,
             rawHash: rawHash,
-            hasRAW: hasRAW
+            hasRAW: hasRAW,
+            modificationDate: modificationDate
         )
     }
     
@@ -202,6 +205,10 @@ final class DatabaseManager {
     
     func batchDeleteHashCacheRecords(localIdentifiers: [String]) {
         hashRepo.batchDeleteHashCacheRecords(localIdentifiers: localIdentifiers)
+    }
+
+    func resetCacheForModifiedAssets(assets: [PHAsset]) {
+        hashRepo.resetCacheForModifiedAssets(assets: assets)
     }
     
     // MARK: - Server Assets Cache Management
