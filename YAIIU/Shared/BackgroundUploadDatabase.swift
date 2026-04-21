@@ -456,39 +456,6 @@ final class BackgroundUploadDatabase {
         }
     }
     
-    func getModificationDateForAsset(assetId: String) -> Date? {
-        queue.sync {
-            let sql = "SELECT asset_modification_date FROM hash_cache WHERE asset_id = ?"
-
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-
-            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-
-            guard sqlite3_step(stmt) == SQLITE_ROW,
-                  sqlite3_column_type(stmt, 0) != SQLITE_NULL
-            else { return nil }
-
-            return Date(timeIntervalSince1970: sqlite3_column_double(stmt, 0))
-        }
-    }
-
-    func clearHashCacheForAsset(assetId: String) {
-        queue.sync {
-            let sql = "DELETE FROM hash_cache WHERE asset_id = ?"
-
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-
-            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-            sqlite3_step(stmt)
-        }
-    }
-
     func getHashForAsset(assetId: String) -> String? {
         queue.sync {
             let sql = "SELECT sha1_hash FROM hash_cache WHERE asset_id = ?"

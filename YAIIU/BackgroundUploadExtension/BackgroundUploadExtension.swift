@@ -261,17 +261,6 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     {
         let id = asset.localIdentifier
 
-        // If the asset has been modified since the hash was recorded, treat it
-        // as not-on-server so the modified version gets re-uploaded.
-        if let storedDate = database.getModificationDateForAsset(assetId: id),
-           let currentDate = asset.modificationDate,
-           abs(currentDate.timeIntervalSince1970 - storedDate.timeIntervalSince1970) > 1.0
-        {
-            logDebug("Asset \(id) modified since last hash — clearing cache")
-            database.clearHashCacheForAsset(assetId: id)
-            return false
-        }
-
         if let cached = database.getHashForAsset(assetId: id) {
             if checkServerForChecksum(cached) {
                 database.recordHashChecked(assetId: id, sha1Hash: cached, isOnServer: true)
