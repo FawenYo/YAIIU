@@ -602,7 +602,10 @@ final class HashCacheRepository {
         var statement: OpaquePointer?
 
         guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
 
+        connection.beginTransaction()
+        var failed = false
         var count = 0
         for asset in assets {
             guard assetIds.contains(asset.localIdentifier),
@@ -610,12 +613,21 @@ final class HashCacheRepository {
 
             sqlite3_bind_double(statement, 1, modDate.timeIntervalSince1970)
             sqlite3_bind_text(statement, 2, (asset.localIdentifier as NSString).utf8String, -1, nil)
-            if sqlite3_step(statement) == SQLITE_DONE { count += 1 }
+            if sqlite3_step(statement) != SQLITE_DONE {
+                failed = true
+                break
+            }
+            count += 1
             sqlite3_reset(statement)
         }
 
-        sqlite3_finalize(statement)
-        logInfo("Backfilled modificationDate for \(count) pre-migration hash_cache entries", category: .hash)
+        if failed {
+            connection.rollbackTransaction()
+            logError("Failed to backfill modification dates, rolling back.", category: .hash)
+        } else {
+            connection.commitTransaction()
+            logInfo("Backfilled modificationDate for \(count) pre-migration hash_cache entries", category: .hash)
+        }
     }
 
     // MARK: - Clear
