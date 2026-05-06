@@ -121,6 +121,23 @@ class HashService {
             }
         }
         
+        let isRAWOnly = primaryResource == nil
+            && resources.first(where: { !Self.isRAWResource($0) }) == nil
+            && rawResource != nil
+
+        if isRAWOnly, let raw = rawResource {
+            let (hash, size) = try await calculateSHA1Streaming(for: raw)
+            return MultiResourceHashResult(
+                localIdentifier: asset.localIdentifier,
+                primaryHash: hash,
+                primaryFileSize: Int64(size),
+                rawHash: nil,
+                rawFileSize: nil,
+                hasRAW: false,
+                calculatedAt: Date()
+            )
+        }
+
         guard let primary = primaryResource ?? resources.first(where: { !Self.isRAWResource($0) }) else {
             throw HashError.noResourceFound
         }

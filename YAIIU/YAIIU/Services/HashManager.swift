@@ -420,6 +420,9 @@ class HashManager: ObservableObject {
                     if DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "primary") ||
                        DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "photo") {
                         primaryOnServer = true
+                    } else if !record.hasRAW &&
+                              DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "raw") {
+                        primaryOnServer = true
                     } else if hasServerCache {
                         primaryOnServer = DatabaseManager.shared.isAssetOnServer(checksum: record.primaryHash)
                     }

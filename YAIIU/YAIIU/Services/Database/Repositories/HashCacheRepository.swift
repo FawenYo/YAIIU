@@ -278,16 +278,17 @@ final class HashCacheRepository {
                         let rawOnServer = sqlite3_column_int(statement, 4) == 1
                         
                         let uploadedTypes = uploadedResourceTypes[identifier] ?? []
-                        let hasUploadedPrimary = !uploadedTypes.isEmpty && uploadedTypes.contains(where: { $0 != "raw" })
+                        let hasUploadedNonRAW = !uploadedTypes.isEmpty && uploadedTypes.contains(where: { $0 != "raw" })
                         let hasUploadedRAW = uploadedTypes.contains("raw")
                         
                         var isFullyUploaded = false
                         
                         if hasRAW {
-                            let primaryComplete = hasUploadedPrimary || primaryOnServer
+                            let primaryComplete = hasUploadedNonRAW || primaryOnServer
                             let rawComplete = hasUploadedRAW || rawOnServer
                             isFullyUploaded = primaryComplete && rawComplete
                         } else {
+                            let hasUploadedPrimary = hasUploadedNonRAW || hasUploadedRAW
                             isFullyUploaded = hasUploadedPrimary || primaryOnServer
                         }
                         
