@@ -380,4 +380,59 @@ final class UploadRecordRepository {
         sqlite3_finalize(statement)
         return mappings
     }
+
+    // MARK: - Backfill Support
+
+    /// Returns asset IDs where immich_id was never resolved (recorded as 'unknown').
+    func getUnknownImmichIdAssetIds() -> [String] {
+        connection.ensureInitialized()
+        var assetIds: [String] = []
+
+        connection.dbQueue.sync { [weak self] in
+            guard let self = self else { return }
+            let sql = """
+            SELECT DISTINCT asset_id FROM uploaded_assets
+            WHERE immich_id = 'unknown';
+            """
+            var statement: OpaquePointer?
+            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let ptr = sqlite3_column_text(statement, 0) {
+                        assetIds.append(String(cString: ptr))
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+        }
+
+        return assetIds
+    }
+
+    /// Updates immich_id for all rows matching the given asset_id where immich_id is 'unknown'.
+    func batchUpdateImmichIds(_ mappings: [String: String]) {
+        guard !mappings.isEmpty else { return }
+        connection.ensureInitialized()
+
+        connection.dbQueue.sync { [weak self] in
+            guard let self = self else { return }
+            let sql = """
+            UPDATE uploaded_assets SET immich_id = ?
+            WHERE asset_id = ? AND immich_id = 'unknown';
+            """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK
+            else { return }
+
+            for (assetId, immichId) in mappings {
+                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 2, (assetId as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    logError("Failed to update immich_id for asset \(assetId): \(self.connection.lastErrorMessage)", category: .database)
+                }
+                sqlite3_reset(statement)
+            }
+
+            sqlite3_finalize(statement)
+        }
+    }
 }

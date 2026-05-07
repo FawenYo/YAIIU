@@ -189,7 +189,9 @@ class ServerAssetSyncService {
             userId: userId,
             totalAssets: syncResult.totalAssets
         )
-        
+
+        dbManager.backfillImmichIdsFromServerCache()
+
         logInfo("Sync completed: type=\(syncResult.syncType), total=\(syncResult.totalAssets), upserted=\(syncResult.upsertedCount), deleted=\(syncResult.deletedCount)", category: .sync)
         
         return syncResult
