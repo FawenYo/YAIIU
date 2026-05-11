@@ -344,7 +344,12 @@ final class SQLiteConnection {
         block()
         commitTransaction()
     }
-    
+
+    /// Flush WAL journal to the main database file so a file copy is complete.
+    func checkpointWAL() {
+        sqlite3_exec(db, "PRAGMA wal_checkpoint(FULL);", nil, nil, nil)
+    }
+
     // MARK: - Error Handling
     
     var lastErrorMessage: String {
