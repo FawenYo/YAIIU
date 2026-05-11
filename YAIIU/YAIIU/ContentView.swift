@@ -73,6 +73,7 @@ struct SettingsView: View {
     @State private var logFileSize: String = "0 KB"
     @State private var logCount: Int = 0
     @State private var exportedLogURL: URL?
+    @State private var exportedDatabaseURL: URL?
     @State private var backgroundUploadEnabled = false
     @State private var backgroundUploadLoading = false
     @State private var backgroundUploadError: String?
@@ -200,6 +201,21 @@ struct SettingsView: View {
                     if #available(iOS 16, *) {
                         CloudIdSyncButton()
                     }
+
+                    Button(action: {
+                        exportDatabase()
+                    }) {
+                        HStack {
+                            Image(systemName: "square.and.arrow.up")
+                                .foregroundColor(.blue)
+                            Text(L10n.Settings.exportDatabase)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
                 
                 // Language Settings
@@ -317,6 +333,9 @@ struct SettingsView: View {
             .sheet(item: $exportedLogURL) { url in
                 ShareSheet(activityItems: [url])
             }
+            .sheet(item: $exportedDatabaseURL) { url in
+                ShareSheet(activityItems: [url])
+            }
         }
     }
     
@@ -339,7 +358,39 @@ struct SettingsView: View {
             exportedLogURL = url
         }
     }
-    
+
+    private func exportDatabase() {
+        logInfo("User requested database export", category: .app)
+        let appGroupIdentifier = "group.com.fawenyo.yaiiu"
+        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else {
+            logError("Failed to get app group container for database export", category: .database)
+            return
+        }
+
+        let sourceURL = containerURL.appendingPathComponent("yaiiu.sqlite")
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            logError("Database file not found at \(sourceURL.path)", category: .database)
+            return
+        }
+
+        SQLiteConnection.shared.dbQueue.async {
+            SQLiteConnection.shared.checkpointWAL()
+
+            let exportURL = FileManager.default.temporaryDirectory.appendingPathComponent("yaiiu-export.sqlite")
+            do {
+                if FileManager.default.fileExists(atPath: exportURL.path) {
+                    try FileManager.default.removeItem(at: exportURL)
+                }
+                try FileManager.default.copyItem(at: sourceURL, to: exportURL)
+                DispatchQueue.main.async {
+                    exportedDatabaseURL = exportURL
+                }
+            } catch {
+                logError("Failed to export database: \(error.localizedDescription)", category: .database)
+            }
+        }
+    }
+
     private func loadBackgroundUploadStatus() {
         if #available(iOS 26.1, *) {
             let manager = BackgroundUploadManager.shared
