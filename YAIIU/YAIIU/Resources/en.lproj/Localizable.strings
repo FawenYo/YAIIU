@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "Confirmed on Cloud";
 "settings.dataManagement" = "Data Management";
 "settings.importImmichData" = "Import Immich App Data";
+"settings.exportDatabase" = "Export Database";
 "settings.logout" = "Logout";
 "settings.logout.confirm.title" = "Confirm Logout";
 "settings.logout.confirm.message" = "Are you sure you want to logout?";

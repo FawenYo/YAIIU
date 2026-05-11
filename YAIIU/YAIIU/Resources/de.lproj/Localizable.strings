@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "In der Cloud bestätigt";
 "settings.dataManagement" = "Datenverwaltung";
 "settings.importImmichData" = "Immich-App-Daten importieren";
+"settings.exportDatabase" = "Datenbank exportieren";
 "settings.logout" = "Abmelden";
 "settings.logout.confirm.title" = "Abmeldung bestätigen";
 "settings.logout.confirm.message" = "Sind Sie sicher, dass Sie sich abmelden möchten?";

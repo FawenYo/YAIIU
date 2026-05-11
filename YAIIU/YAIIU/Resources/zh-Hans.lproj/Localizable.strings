@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "已确认在云端";
 "settings.dataManagement" = "数据管理";
 "settings.importImmichData" = "导入 Immich App 数据";
+"settings.exportDatabase" = "导出数据库";
 "settings.logout" = "退出登录";
 "settings.logout.confirm.title" = "确认退出";
 "settings.logout.confirm.message" = "确定要退出登录吗？";

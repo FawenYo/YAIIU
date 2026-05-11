@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "클라우드에서 확인됨";
 "settings.dataManagement" = "데이터 관리";
 "settings.importImmichData" = "Immich 앱 데이터 가져오기";
+"settings.exportDatabase" = "데이터베이스 내보내기";
 "settings.logout" = "로그아웃";
 "settings.logout.confirm.title" = "로그아웃 확인";
 "settings.logout.confirm.message" = "로그아웃하시겠습니까?";

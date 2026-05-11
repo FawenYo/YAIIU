@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "クラウドで確認済み";
 "settings.dataManagement" = "データ管理";
 "settings.importImmichData" = "Immichアプリデータをインポート";
+"settings.exportDatabase" = "データベースをエクスポート";
 "settings.logout" = "ログアウト";
 "settings.logout.confirm.title" = "ログアウトの確認";
 "settings.logout.confirm.message" = "ログアウトしてもよろしいですか？";

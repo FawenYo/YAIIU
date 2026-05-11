@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "已確認在雲端";
 "settings.dataManagement" = "資料管理";
 "settings.importImmichData" = "匯入 Immich App 資料";
+"settings.exportDatabase" = "匯出資料庫";
 "settings.logout" = "登出";
 "settings.logout.confirm.title" = "確認登出";
 "settings.logout.confirm.message" = "確定要登出嗎？";

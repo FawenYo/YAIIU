@@ -210,6 +210,7 @@ enum L10n {
         static var confirmedOnCloud: String { "settings.confirmedOnCloud".localized }
         static var dataManagement: String { "settings.dataManagement".localized }
         static var importImmichData: String { "settings.importImmichData".localized }
+        static var exportDatabase: String { "settings.exportDatabase".localized }
         static var logout: String { "settings.logout".localized }
         static var logoutConfirmTitle: String { "settings.logout.confirm.title".localized }
         static var logoutConfirmMessage: String { "settings.logout.confirm.message".localized }

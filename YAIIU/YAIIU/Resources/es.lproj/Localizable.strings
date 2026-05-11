@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "Confirmado en la nube";
 "settings.dataManagement" = "Gestión de datos";
 "settings.importImmichData" = "Importar datos de Immich App";
+"settings.exportDatabase" = "Exportar base de datos";
 "settings.logout" = "Cerrar sesión";
 "settings.logout.confirm.title" = "Confirmar cierre de sesión";
 "settings.logout.confirm.message" = "¿Estás seguro de que quieres cerrar sesión?";

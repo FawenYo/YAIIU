@@ -68,6 +68,7 @@
 "settings.confirmedOnCloud" = "Confirmé dans le cloud";
 "settings.dataManagement" = "Gestion des données";
 "settings.importImmichData" = "Importer les données de l'app Immich";
+"settings.exportDatabase" = "Exporter la base de données";
 "settings.logout" = "Déconnexion";
 "settings.logout.confirm.title" = "Confirmer la déconnexion";
 "settings.logout.confirm.message" = "Êtes-vous sûr de vouloir vous déconnecter ?";
