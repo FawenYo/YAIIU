@@ -411,7 +411,7 @@ final class HashCacheRepository {
             let sql = """
                 SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server
                 FROM hash_cache
-                WHERE checked_at IS NULL;
+                WHERE is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0);
             """
             var statement: OpaquePointer?
             var records: [MultiResourceHashRecord] = []

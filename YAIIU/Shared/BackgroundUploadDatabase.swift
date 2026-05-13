@@ -164,6 +164,30 @@ final class BackgroundUploadDatabase {
             exec("DELETE FROM upload_jobs WHERE status = 'completed'")
         }
     }
+
+    func getInflightJobKeys() -> Set<String> {
+        queue.sync {
+            var keys = Set<String>()
+            let sql = """
+                SELECT asset_id, resource_type FROM upload_jobs
+                WHERE status IN ('pending', 'uploading', 'failed')
+            """
+
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return keys }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let aPtr = sqlite3_column_text(stmt, 0),
+                      let tPtr = sqlite3_column_text(stmt, 1) else { continue }
+                let assetId = String(cString: aPtr)
+                let type = String(cString: tPtr)
+                keys.insert("\(assetId)||\(type)")
+            }
+            return keys
+        }
+    }
     
     // MARK: - Uploaded Assets
     

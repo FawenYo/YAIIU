@@ -22,6 +22,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     // MARK: - PHBackgroundResourceUploadExtension
 
     func process() -> PHBackgroundResourceUploadProcessingResult {
+        cancelledState.withLock { $0 = false } // Reset cancellation state at the start of processing
         log("Processing background upload jobs...")
         guard !isCancelled else { return .processing }
         guard settings.isLoggedIn, settings.backgroundUploadEnabled else {
@@ -105,9 +106,11 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 resolvedFilename = resource.resolvedFilename()
             }
 
+            let resourceType = resourceTypeString(for: resource)
+
             database.recordUploadedAsset(
                 assetId: resource.assetLocalIdentifier,
-                resourceType: resourceTypeString(for: resource),
+                resourceType: resourceType,
                 filename: resolvedFilename,
                 immichId: "unknown",
                 fileSize: 0,
@@ -115,7 +118,8 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             )
 
             try library.performChangesAndWait {
-                PHAssetResourceUploadJobChangeRequest(for: job)?.acknowledge()
+                guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                request.acknowledge()
             }
         }
     }
@@ -159,86 +163,54 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
 
     private func fetchPendingResources() -> [PHAssetResource] {
         let uploaded = database.getAllUploadedAssetIds()
-        let skip = uploaded
+        let synced = database.getAllAssetsOnServer()
+        let skip = uploaded.union(synced)
+        let inflightKeys = database.getInflightJobKeys()
 
         let opts = PHFetchOptions()
         opts.sortDescriptors = [
             NSSortDescriptor(key: "creationDate", ascending: false)
         ]
-        
+
         let allAssets = PHAsset.fetchAssets(with: .image, options: opts)
         let allVideos = PHAsset.fetchAssets(with: .video, options: opts)
 
         var pending = [PHAssetResource]()
-        var candidates = [PHAsset]()
-        let batchSize = 100
-        let maxPending = 50
 
-        // Process photos
+        let collect: (PHAsset) -> Void = { asset in
+            let resources = PHAssetResource.assetResources(for: asset)
+            for r in resources where self.shouldUpload(r) {
+                let type = self.resourceTypeString(for: r)
+                let key = "\(asset.localIdentifier)||\(type)"
+                if inflightKeys.contains(key) { continue }
+                if !self.database.isResourceUploaded(
+                    assetId: asset.localIdentifier,
+                    resourceType: type
+                ) {
+                    pending.append(r)
+                }
+            }
+        }
+
         allAssets.enumerateObjects { asset, _, stop in
             if self.isCancelled {
                 stop.pointee = true
                 return
             }
             guard !skip.contains(asset.localIdentifier) else { return }
+            collect(asset)
+        }
 
-            candidates.append(asset)
-
-            if candidates.count >= batchSize {
-                pending.append(contentsOf: self.filterCandidates(candidates))
-                candidates.removeAll()
-                if pending.count >= maxPending { stop.pointee = true }
+        allVideos.enumerateObjects { asset, _, stop in
+            if self.isCancelled {
+                stop.pointee = true
+                return
             }
+            guard !skip.contains(asset.localIdentifier) else { return }
+            collect(asset)
         }
 
-        // Process videos if we haven't reached the limit
-        if pending.count < maxPending {
-            allVideos.enumerateObjects { asset, _, stop in
-                if self.isCancelled {
-                    stop.pointee = true
-                    return
-                }
-                guard !skip.contains(asset.localIdentifier) else { return }
-
-                candidates.append(asset)
-
-                if candidates.count >= batchSize {
-                    pending.append(contentsOf: self.filterCandidates(candidates))
-                    candidates.removeAll()
-                    if pending.count >= maxPending { stop.pointee = true }
-                }
-            }
-        }
-
-        // Process remaining candidates
-        if !candidates.isEmpty && pending.count < maxPending {
-            pending.append(contentsOf: filterCandidates(candidates))
-        }
-
-        return Array(pending.prefix(maxPending))
-    }
-
-    private func filterCandidates(_ candidates: [PHAsset]) -> [PHAssetResource]
-    {
-        var result = [PHAssetResource]()
-
-        for asset in candidates where !isCancelled {
-            let resources = PHAssetResource.assetResources(for: asset)
-
-            for r in resources where shouldUpload(r) {
-                let type = resourceTypeString(for: r)
-                if !database.isResourceUploaded(
-                    assetId: asset.localIdentifier,
-                    resourceType: type
-                ) {
-                    result.append(r)
-                }
-            }
-
-            if result.count >= 50 { break }
-        }
-
-        return result
+        return pending
     }
 
     // MARK: - Server Communication
