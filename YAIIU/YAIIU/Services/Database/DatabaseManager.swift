@@ -281,16 +281,7 @@ final class DatabaseManager {
     /// Should be called after a server sync completes so server_assets_cache is up to date.
     @discardableResult
     func backfillImmichIdsFromServerCache() -> Int {
-        let unknownAssetIds = uploadRepo.getUnknownImmichIdAssetIds()
-        guard !unknownAssetIds.isEmpty else { return 0 }
-
-        var resolved: [String: String] = [:]
-        for assetId in unknownAssetIds {
-            guard let hash = hashRepo.getHashCache(localIdentifier: assetId)?.sha1Hash else { continue }
-            guard let record = serverRepo.getServerAssetByChecksum(hash) else { continue }
-            resolved[assetId] = record.immichId
-        }
-
+        let resolved = uploadRepo.getResolvedImmichIdsFromServerCache()
         guard !resolved.isEmpty else { return 0 }
         uploadRepo.batchUpdateImmichIds(resolved)
         logInfo("Backfilled immich_id for \(resolved.count) background-uploaded assets", category: .database)

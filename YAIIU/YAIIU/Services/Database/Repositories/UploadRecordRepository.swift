@@ -383,6 +383,36 @@ final class UploadRecordRepository {
 
     // MARK: - Backfill Support
 
+    /// Returns a mapping of asset_id → immich_id for all 'unknown' rows that can be resolved
+    /// via a single JOIN across uploaded_assets, hash_cache, and server_assets_cache.
+    func getResolvedImmichIdsFromServerCache() -> [String: String] {
+        connection.ensureInitialized()
+        var resolved: [String: String] = [:]
+
+        connection.dbQueue.sync { [weak self] in
+            guard let self = self else { return }
+            let sql = """
+            SELECT ua.asset_id, sac.immich_id
+            FROM uploaded_assets ua
+            JOIN hash_cache hc ON hc.asset_id = ua.asset_id
+            JOIN server_assets_cache sac ON sac.checksum = hc.sha1_hash
+            WHERE ua.immich_id = 'unknown';
+            """
+            var statement: OpaquePointer?
+            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let assetPtr = sqlite3_column_text(statement, 0),
+                       let immichPtr = sqlite3_column_text(statement, 1) {
+                        resolved[String(cString: assetPtr)] = String(cString: immichPtr)
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+        }
+
+        return resolved
+    }
+
     /// Returns asset IDs where immich_id was never resolved (recorded as 'unknown').
     func getUnknownImmichIdAssetIds() -> [String] {
         connection.ensureInitialized()
