@@ -415,24 +415,27 @@ final class UploadRecordRepository {
 
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
-            let sql = """
-            UPDATE uploaded_assets SET immich_id = ?
-            WHERE asset_id = ? AND immich_id = 'unknown';
-            """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK
-            else { return }
-
-            for (assetId, immichId) in mappings {
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (assetId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
-                    logError("Failed to update immich_id for asset \(assetId): \(self.connection.lastErrorMessage)", category: .database)
+            self.connection.inTransaction {
+                let sql = """
+                UPDATE uploaded_assets SET immich_id = ?
+                WHERE asset_id = ? AND immich_id = 'unknown';
+                """
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    logError("Failed to prepare statement for batch immich_id update: \(self.connection.lastErrorMessage)", category: .database)
+                    return
                 }
-                sqlite3_reset(statement)
-            }
+                defer { sqlite3_finalize(statement) }
 
-            sqlite3_finalize(statement)
+                for (assetId, immichId) in mappings {
+                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 2, (assetId as NSString).utf8String, -1, nil)
+                    if sqlite3_step(statement) != SQLITE_DONE {
+                        logError("Failed to update immich_id for asset \(assetId): \(self.connection.lastErrorMessage)", category: .database)
+                    }
+                    sqlite3_reset(statement)
+                }
+            }
         }
     }
 }
