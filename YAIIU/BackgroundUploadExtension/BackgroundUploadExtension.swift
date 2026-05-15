@@ -162,9 +162,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     // MARK: - Resource Discovery
 
     private func fetchPendingResources() -> [PHAssetResource] {
-        let uploaded = database.getAllUploadedAssetIds()
-        let synced = database.getAllAssetsOnServer()
-        let skip = uploaded.union(synced)
+        let skip = database.getAllAssetsOnServer()
         let inflightKeys = database.getInflightJobKeys()
 
         let opts = PHFetchOptions()
