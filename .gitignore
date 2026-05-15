@@ -105,3 +105,10 @@ YAIIU/YAIIU/Generated/BuildInfo.swift
 *.swo
 *~
 .tmp/
+
+# LLM
+.agents/
+.claude/
+CLAUDE.md
+skills-lock.json
+docs/superpowers/
