@@ -376,19 +376,17 @@ struct SettingsView: View {
         SQLiteConnection.shared.dbQueue.async {
             SQLiteConnection.shared.checkpointWAL()
 
-            DispatchQueue.global(qos: .utility).async {
-                let exportURL = FileManager.default.temporaryDirectory.appendingPathComponent("yaiiu-export.sqlite")
-                do {
-                    if FileManager.default.fileExists(atPath: exportURL.path) {
-                        try FileManager.default.removeItem(at: exportURL)
-                    }
-                    try FileManager.default.copyItem(at: sourceURL, to: exportURL)
-                    DispatchQueue.main.async {
-                        exportedDatabaseURL = exportURL
-                    }
-                } catch {
-                    logError("Failed to export database: \(error.localizedDescription)", category: .database)
+            let exportURL = FileManager.default.temporaryDirectory.appendingPathComponent("yaiiu-export.sqlite")
+            do {
+                if FileManager.default.fileExists(atPath: exportURL.path) {
+                    try FileManager.default.removeItem(at: exportURL)
                 }
+                try FileManager.default.copyItem(at: sourceURL, to: exportURL)
+                DispatchQueue.main.async {
+                    exportedDatabaseURL = exportURL
+                }
+            } catch {
+                logError("Failed to export database: \(error.localizedDescription)", category: .database)
             }
         }
     }
