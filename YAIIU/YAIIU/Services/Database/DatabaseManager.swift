@@ -60,14 +60,6 @@ final class DatabaseManager {
         uploadRepo.getUploadedCountAsync(completion: completion)
     }
     
-    func getAllUploadedAssetIds() -> Set<String> {
-        uploadRepo.getAllUploadedAssetIds()
-    }
-    
-    func getAllUploadedAssetIdsAsync(completion: @escaping (Set<String>) -> Void) {
-        uploadRepo.getAllUploadedAssetIdsAsync(completion: completion)
-    }
-    
     func getUploadedResourceCount() -> Int {
         uploadRepo.getUploadedResourceCount()
     }

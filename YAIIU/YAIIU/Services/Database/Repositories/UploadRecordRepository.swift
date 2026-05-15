@@ -205,52 +205,7 @@ final class UploadRecordRepository {
     }
     
     // MARK: - Fetch Methods
-    
-    func getAllUploadedAssetIds() -> Set<String> {
-        connection.ensureInitialized()
-        var ids: Set<String> = []
-        
-        connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
-            ids = self.getAllUploadedAssetIdsInternal()
-        }
-        
-        return ids
-    }
-    
-    func getAllUploadedAssetIdsAsync(completion: @escaping (Set<String>) -> Void) {
-        connection.dbQueue.async { [weak self] in
-            guard let self = self else {
-                DispatchQueue.main.async { completion([]) }
-                return
-            }
-            let ids = self.getAllUploadedAssetIdsInternal()
-            DispatchQueue.main.async {
-                completion(ids)
-            }
-        }
-    }
-    
-    private func getAllUploadedAssetIdsInternal() -> Set<String> {
-        let sql = "SELECT DISTINCT asset_id FROM uploaded_assets WHERE asset_id != '' AND asset_id IS NOT NULL;"
-        var statement: OpaquePointer?
-        var ids: Set<String> = []
-        
-        if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            while sqlite3_step(statement) == SQLITE_ROW {
-                if let cString = sqlite3_column_text(statement, 0) {
-                    let identifier = String(cString: cString)
-                    if !identifier.isEmpty {
-                        ids.insert(identifier)
-                    }
-                }
-            }
-        }
-        
-        sqlite3_finalize(statement)
-        return ids
-    }
-    
+
     func getUploadRecords(for localIdentifier: String) -> [UploadRecord] {
         connection.ensureInitialized()
         var records: [UploadRecord] = []

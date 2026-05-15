@@ -258,25 +258,6 @@ final class BackgroundUploadDatabase {
         }
     }
     
-    func getAllUploadedAssetIds() -> Set<String> {
-        queue.sync {
-            var ids = Set<String>()
-            let sql = "SELECT DISTINCT asset_id FROM uploaded_assets WHERE asset_id IS NOT NULL"
-            
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-            
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return ids }
-            
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let cStr = sqlite3_column_text(stmt, 0) {
-                    ids.insert(String(cString: cStr))
-                }
-            }
-            return ids
-        }
-    }
-    
     func getUploadedCount() -> Int {
         queue.sync {
             let sql = "SELECT COUNT(DISTINCT asset_id) FROM uploaded_assets"
