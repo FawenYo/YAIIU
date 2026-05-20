@@ -673,7 +673,69 @@ class ImmichAPIService: NSObject {
         }
     }
     
-    /// Syncs iCloud IDs to already-uploaded assets in bulk.
+    /// Fetches asset metadata via the sync stream API and returns a map of assetId → iCloudId.
+    /// The response is NDJSON (newline-delimited JSON objects).
+    func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> [String: String] {
+        logInfo("Fetching asset metadata via sync stream", category: .api)
+
+        guard let url = URL(string: "\(serverURL)/api/sync/stream") else {
+            logError("Invalid URL for sync stream", category: .api)
+            throw ImmichAPIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 300
+
+        let body: [String: Any] = ["types": ["AssetMetadataV1"]]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                logError("Invalid response from sync stream", category: .api)
+                throw ImmichAPIError.invalidResponse
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                logError("Sync stream failed: HTTP \(httpResponse.statusCode) - \(errorMessage)", category: .api)
+                throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
+            }
+
+            var result: [String: String] = [:]
+
+            // Response is NDJSON — split by newline and parse each JSON object
+            let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+            for line in lines {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      let type = obj["type"] as? String, type == "AssetMetadataV1",
+                      let eventData = obj["data"] as? [String: Any],
+                      let assetId = eventData["assetId"] as? String,
+                      let key = eventData["key"] as? String, key == RemoteAssetMetadataItem.mobileAppKey,
+                      let value = eventData["value"] as? [String: Any],
+                      let iCloudId = value["iCloudId"] as? String
+                else {
+                    continue
+                }
+                result[assetId] = iCloudId
+            }
+
+            logInfo("Sync stream returned \(result.count) assets with iCloudId", category: .api)
+            return result
+        } catch let error as ImmichAPIError {
+            throw error
+        } catch {
+            logError("Sync stream failed: \(error.localizedDescription)", category: .api)
+            throw error
+        }
+    }
+
+
     func updateBulkAssetMetadata(items: [MetadataUpdateItem], serverURL: String, apiKey: String) async throws {
         guard !items.isEmpty else {
             logDebug("No metadata items to update", category: .api)

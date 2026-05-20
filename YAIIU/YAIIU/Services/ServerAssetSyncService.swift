@@ -146,12 +146,16 @@ class ServerAssetSyncService {
         let partnerIds = await fetchPartnerIds(serverURL: serverURL, apiKey: apiKey)
         let allUserIds = [userId] + partnerIds
         logDebug("All user IDs for sync: \(allUserIds)", category: .sync)
-        
+
+        // Fetch iCloudId map from stream API before sync
+        let iCloudIdMap = await fetchICloudIdMap(serverURL: serverURL, apiKey: apiKey)
+        logDebug("Fetched \(iCloudIdMap.count) iCloudId mappings from stream", category: .sync)
+
         let syncMetadata = dbManager.getSyncMetadata()
         let shouldUseDeltaSync = !forceFullSync && syncMetadata?.lastSyncTime != nil
-        
+
         var syncResult: SyncResult
-        
+
         if shouldUseDeltaSync, let lastSyncTime = syncMetadata?.lastSyncTime {
             logInfo("Attempting delta sync from \(lastSyncTime)", category: .sync)
             syncResult = try await performDeltaSync(
@@ -159,15 +163,17 @@ class ServerAssetSyncService {
                 lastSyncTime: lastSyncTime,
                 serverURL: serverURL,
                 apiKey: apiKey,
+                iCloudIdMap: iCloudIdMap,
                 progressHandler: progressHandler
             )
-            
+
             if syncResult.needsFullSync {
                 logInfo("Delta sync requires full sync, performing full sync", category: .sync)
                 syncResult = try await performFullSync(
                     userId: userId,
                     serverURL: serverURL,
                     apiKey: apiKey,
+                    iCloudIdMap: iCloudIdMap,
                     progressHandler: progressHandler
                 )
             }
@@ -177,6 +183,7 @@ class ServerAssetSyncService {
                 userId: userId,
                 serverURL: serverURL,
                 apiKey: apiKey,
+                iCloudIdMap: iCloudIdMap,
                 progressHandler: progressHandler
             )
         }
@@ -197,6 +204,15 @@ class ServerAssetSyncService {
         return syncResult
     }
     
+    private func fetchICloudIdMap(serverURL: String, apiKey: String) async -> [String: String] {
+        do {
+            return try await apiService.fetchAssetMetadataStream(serverURL: serverURL, apiKey: apiKey)
+        } catch {
+            logWarning("Failed to fetch iCloudId map from stream, proceeding without: \(error.localizedDescription)", category: .sync)
+            return [:]
+        }
+    }
+
     private func fetchPartnerIds(serverURL: String, apiKey: String) async -> [String] {
         do {
             let partners = try await apiService.fetchPartners(serverURL: serverURL, apiKey: apiKey)
@@ -213,6 +229,7 @@ class ServerAssetSyncService {
         userId: String,
         serverURL: String,
         apiKey: String,
+        iCloudIdMap: [String: String],
         progressHandler: ((SyncProgress) -> Void)?
     ) async throws -> SyncResult {
         var allAssets: [ServerAsset] = []
@@ -268,7 +285,7 @@ class ServerAssetSyncService {
                 originalFilename: asset.originalFileName,
                 assetType: asset.type,
                 updatedAt: asset.updatedAt,
-                iCloudId: asset.iCloudId
+                iCloudId: iCloudIdMap[asset.id]
             )
         }
         
@@ -298,6 +315,7 @@ class ServerAssetSyncService {
         lastSyncTime: Date,
         serverURL: String,
         apiKey: String,
+        iCloudIdMap: [String: String],
         progressHandler: ((SyncProgress) -> Void)?
     ) async throws -> SyncResult {
         logInfo("Starting delta sync from \(lastSyncTime) for \(userIds.count) user(s)", category: .sync)
@@ -343,7 +361,7 @@ class ServerAssetSyncService {
                     originalFilename: asset.originalFileName,
                     assetType: asset.type,
                     updatedAt: asset.updatedAt,
-                    iCloudId: asset.iCloudId
+                    iCloudId: iCloudIdMap[asset.id]
                 )
             }
             
