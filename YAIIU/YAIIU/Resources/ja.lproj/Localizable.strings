@@ -17,6 +17,10 @@
 "login.internalServerURL.placeholder" = "例: http://192.168.1.100:2283";
 "login.internalServerURL.hint" = "任意。ローカルネットワーク接続時に高速アップロードに使用されます。";
 "login.advancedSettings" = "詳細設定";
+"login.email" = "メールアドレス";
+"login.email.placeholder" = "メールアドレスを入力";
+"login.password" = "パスワード";
+"login.password.placeholder" = "パスワードを入力";
 "login.apiKey" = "APIキー";
 "login.apiKey.placeholder" = "APIキーを入力";
 "login.button" = "ログイン";

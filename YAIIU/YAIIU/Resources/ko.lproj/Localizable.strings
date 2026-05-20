@@ -17,6 +17,10 @@
 "login.internalServerURL.placeholder" = "예: http://192.168.1.100:2283";
 "login.internalServerURL.hint" = "선택 사항. 로컬 네트워크 연결 시 빠른 업로드에 사용됩니다.";
 "login.advancedSettings" = "고급 설정";
+"login.email" = "이메일";
+"login.email.placeholder" = "이메일을 입력하세요";
+"login.password" = "비밀번호";
+"login.password.placeholder" = "비밀번호를 입력하세요";
 "login.apiKey" = "API 키";
 "login.apiKey.placeholder" = "API 키를 입력하세요";
 "login.button" = "로그인";

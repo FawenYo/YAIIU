@@ -132,9 +132,9 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 		req.Header.Set("Content-Type", contentType)
 		req.Header.Set("Accept", "application/json")
 
-		// Forward the API key from the original request
-		if apiKey := r.Header.Get("x-api-key"); apiKey != "" {
-			req.Header.Set("x-api-key", apiKey)
+		// Forward the Authorization header from the original request
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			req.Header.Set("Authorization", auth)
 		}
 
 		// Send request to Immich

@@ -17,6 +17,10 @@
 "login.internalServerURL.placeholder" = "z.B.: http://192.168.1.100:2283";
 "login.internalServerURL.hint" = "Optional. Wird verwendet, wenn Sie mit Ihrem lokalen Netzwerk verbunden sind, für schnellere Uploads.";
 "login.advancedSettings" = "Erweiterte Einstellungen";
+"login.email" = "E-Mail";
+"login.email.placeholder" = "E-Mail-Adresse eingeben";
+"login.password" = "Passwort";
+"login.password.placeholder" = "Passwort eingeben";
 "login.apiKey" = "API-Schlüssel";
 "login.apiKey.placeholder" = "Geben Sie Ihren API-Schlüssel ein";
 "login.button" = "Anmelden";

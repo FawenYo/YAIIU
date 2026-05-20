@@ -17,6 +17,10 @@
 "login.internalServerURL.placeholder" = "例如: http://192.168.1.100:2283";
 "login.internalServerURL.hint" = "可选。连接到本地网络时将使用此 URL 以加快上传速度。";
 "login.advancedSettings" = "高级设置";
+"login.email" = "电子邮件";
+"login.email.placeholder" = "请输入电子邮件";
+"login.password" = "密码";
+"login.password.placeholder" = "请输入密码";
 "login.apiKey" = "API Key";
 "login.apiKey.placeholder" = "输入您的 API Key";
 "login.button" = "登录";

@@ -127,7 +127,7 @@ class ImmichAPIService: NSObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         if assetFileSize > 0 {
             request.setValue(String(totalContentLength), forHTTPHeaderField: "Content-Length")
@@ -334,9 +334,9 @@ class ImmichAPIService: NSObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
-        
+
         let body: [String: Any] = ["checksum": checksum]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
@@ -379,18 +379,60 @@ class ImmichAPIService: NSObject {
         }
     }
     
+    func login(email: String, password: String, serverURL: String) async throws -> String {
+        logInfo("Logging in with email: \(email)", category: .api)
+
+        guard let url = URL(string: "\(serverURL)/api/auth/login") else {
+            logError("Invalid URL for login", category: .api)
+            throw ImmichAPIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 15
+
+        let body: [String: String] = ["email": email, "password": password]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                logError("Invalid response during login", category: .api)
+                throw ImmichAPIError.invalidResponse
+            }
+
+            guard httpResponse.statusCode == 200 || httpResponse.statusCode == 201 else {
+                let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                logError("Login failed: HTTP \(httpResponse.statusCode) - \(errorMessage)", category: .api)
+                throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
+            }
+
+            let loginResponse = try JSONDecoder().decode(LoginResponse.self, from: data)
+            logInfo("Login succeeded for user: \(loginResponse.userEmail)", category: .api)
+            return loginResponse.accessToken
+        } catch let error as ImmichAPIError {
+            throw error
+        } catch {
+            logError("Login failed: \(error.localizedDescription)", category: .api)
+            throw error
+        }
+    }
+
     func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo {
         logInfo("Fetching current user info", category: .api)
-        
+
         guard let url = URL(string: "\(serverURL)/api/users/me") else {
             logError("Invalid URL for getCurrentUser", category: .api)
             throw ImmichAPIError.invalidURL
         }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
         
         do {
@@ -430,7 +472,7 @@ class ImmichAPIService: NSObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
         
         var body: [String: Any] = [
@@ -486,7 +528,7 @@ class ImmichAPIService: NSObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
         
         let formatter = ISO8601DateFormatter()
@@ -554,7 +596,7 @@ class ImmichAPIService: NSObject {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
         
         do {
@@ -599,7 +641,7 @@ class ImmichAPIService: NSObject {
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 30
         
         let body: [String: Any] = [
@@ -649,7 +691,7 @@ class ImmichAPIService: NSObject {
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
         
         let body: [String: Any] = [
@@ -725,6 +767,13 @@ enum ImmichAPIError: LocalizedError {
 }
 
 // MARK: - Response Types
+
+struct LoginResponse: Codable {
+    let accessToken: String
+    let userId: String
+    let userEmail: String
+    let name: String
+}
 
 struct UploadResponse: Codable {
     let id: String

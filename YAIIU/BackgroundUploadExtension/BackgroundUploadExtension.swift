@@ -240,7 +240,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue(settings.apiKey, forHTTPHeaderField: "x-api-key")
+        req.setValue("Bearer \(settings.apiKey)", forHTTPHeaderField: "Authorization")
 
         let deviceAssetId =
             "\(resource.assetLocalIdentifier)-\(resourceTypeString(for: resource))-\(resolvedFilename)"

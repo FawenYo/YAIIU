@@ -17,6 +17,10 @@
 "login.internalServerURL.placeholder" = "Ej.: http://192.168.1.100:2283";
 "login.internalServerURL.hint" = "Opcional. Se usa cuando estás conectado a tu red local para subidas más rápidas.";
 "login.advancedSettings" = "Ajustes avanzados";
+"login.email" = "Correo electrónico";
+"login.email.placeholder" = "Introduce tu correo electrónico";
+"login.password" = "Contraseña";
+"login.password.placeholder" = "Introduce tu contraseña";
 "login.apiKey" = "Clave API";
 "login.apiKey.placeholder" = "Introduce tu clave API";
 "login.button" = "Iniciar sesión";
