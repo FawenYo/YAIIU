@@ -29,14 +29,16 @@ struct ServerAssetRecord {
     let assetType: String?
     let updatedAt: String?
     let iCloudId: String?
-    
-    init(immichId: String, checksum: String, originalFilename: String? = nil, assetType: String? = nil, updatedAt: String? = nil, iCloudId: String? = nil) {
+    let ownerId: String?
+
+    init(immichId: String, checksum: String, originalFilename: String? = nil, assetType: String? = nil, updatedAt: String? = nil, iCloudId: String? = nil, ownerId: String? = nil) {
         self.immichId = immichId
         self.checksum = checksum
         self.originalFilename = originalFilename
         self.assetType = assetType
         self.updatedAt = updatedAt
         self.iCloudId = iCloudId
+        self.ownerId = ownerId
     }
 }
 
@@ -45,6 +47,7 @@ struct SyncMetadata {
     let lastSyncType: String?
     let userId: String?
     let totalAssets: Int
+    let lastAck: String?
 }
 
 struct MultiResourceHashRecord {

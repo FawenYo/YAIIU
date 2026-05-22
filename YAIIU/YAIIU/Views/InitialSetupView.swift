@@ -215,8 +215,6 @@ struct InitialSetupView: View {
             syncProgressText = L10n.InitialSetup.phaseConnecting
         case .fetchingUserInfo:
             syncProgressText = L10n.InitialSetup.phaseFetchingUserInfo
-        case .fetchingPartners:
-            syncProgressText = L10n.InitialSetup.phaseFetchingPartners
         case .fetchingAssets:
             if progress.fetchedCount > 0 {
                 syncProgressText = L10n.InitialSetup.phaseFetchingAssets(progress.fetchedCount)

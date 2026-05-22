@@ -673,7 +673,116 @@ class ImmichAPIService: NSObject {
         }
     }
     
-    /// Fetches asset metadata via the sync stream API and returns a map of assetId → iCloudId.
+    /// Fetches all assets via sync stream (AssetsV1). Returns parsed asset records and the last ack value.
+    /// If `lastAck` is provided, sends it first to the ack endpoint so the server only returns new assets.
+    func fetchAssetStream(serverURL: String, apiKey: String, lastAck: String?) async throws -> (assets: [StreamAsset], lastAck: String?) {
+        // Send ack before streaming to get only incremental updates
+        if let ack = lastAck {
+            try await sendSyncAck(acks: [ack], serverURL: serverURL, apiKey: apiKey)
+        }
+
+        logInfo("Fetching assets via sync stream (incremental: \(lastAck != nil))", category: .api)
+
+        guard let url = URL(string: "\(serverURL)/api/sync/stream") else {
+            logError("Invalid URL for sync stream", category: .api)
+            throw ImmichAPIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 300
+
+        let body: [String: Any] = ["types": ["AssetsV1"]]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw ImmichAPIError.invalidResponse
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                logError("Asset stream failed: HTTP \(httpResponse.statusCode) - \(errorMessage)", category: .api)
+                throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
+            }
+
+            var assets: [StreamAsset] = []
+            var finalAck: String?
+
+            let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+            for line in lines {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      let type = obj["type"] as? String, type == "AssetV1",
+                      let assetData = obj["data"] as? [String: Any],
+                      let id = assetData["id"] as? String,
+                      let checksum = assetData["checksum"] as? String
+                else {
+                    continue
+                }
+
+                let asset = StreamAsset(
+                    id: id,
+                    checksum: checksum,
+                    originalFileName: assetData["originalFileName"] as? String,
+                    fileCreatedAt: assetData["fileCreatedAt"] as? String,
+                    type: assetData["type"] as? String,
+                    ownerId: assetData["ownerId"] as? String,
+                    deletedAt: assetData["deletedAt"] as? String
+                )
+                assets.append(asset)
+
+                if let ack = obj["ack"] as? String {
+                    finalAck = ack
+                }
+            }
+
+            logInfo("Asset stream returned \(assets.count) assets", category: .api)
+            return (assets: assets, lastAck: finalAck)
+        } catch let error as ImmichAPIError {
+            throw error
+        } catch {
+            logError("Asset stream failed: \(error.localizedDescription)", category: .api)
+            throw error
+        }
+    }
+
+    /// Sends ack values to the server to mark events as processed, enabling incremental stream next call.
+    func sendSyncAck(acks: [String], serverURL: String, apiKey: String) async throws {
+        logDebug("Sending sync ack: \(acks)", category: .api)
+
+        guard let url = URL(string: "\(serverURL)/api/sync/ack") else {
+            throw ImmichAPIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+
+        let body: [String: Any] = ["acks": acks]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ImmichAPIError.invalidResponse
+        }
+
+        guard httpResponse.statusCode == 200 || httpResponse.statusCode == 204 else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            logError("Sync ack failed: HTTP \(httpResponse.statusCode) - \(errorMessage)", category: .api)
+            throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
+        }
+    }
+
+
     /// The response is NDJSON (newline-delimited JSON objects).
     func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> [String: String] {
         logInfo("Fetching asset metadata via sync stream", category: .api)
@@ -829,6 +938,19 @@ enum ImmichAPIError: LocalizedError {
 }
 
 // MARK: - Response Types
+
+struct StreamAsset {
+    let id: String
+    let checksum: String
+    let originalFileName: String?
+    let fileCreatedAt: String?
+    let type: String?
+    let ownerId: String?
+    /// Non-nil means soft-deleted on server
+    let deletedAt: String?
+
+    var isDeleted: Bool { deletedAt != nil }
+}
 
 struct LoginResponse: Codable {
     let accessToken: String

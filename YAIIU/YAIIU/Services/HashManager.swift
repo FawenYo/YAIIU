@@ -14,6 +14,10 @@ class HashManager: ObservableObject {
     @Published var syncStatusCache: [String: PhotoSyncStatus] = [:]
     
     @Published var iCloudIdMatchCount: Int = 0
+
+    /// Assets that were found on server by checksum but have no iCloudId recorded.
+    /// Consumers should read this after isProcessing becomes false and push updates to the server.
+    @Published var pendingICloudIdUpdates: [(immichId: String, iCloudId: String)] = []
     
     private var processingQueue: [String] = []
     private var isHashingActive = false
@@ -78,6 +82,7 @@ class HashManager: ObservableObject {
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
+        pendingICloudIdUpdates = []
         statusMessage = "Preparing..."
 
         // identifiers-only path cannot compare modificationDate; no invalidation here
@@ -167,7 +172,6 @@ class HashManager: ObservableObject {
                     )
                     
                     matchCount += 1
-                    logDebug("Found hash via iCloud ID for \(identifier.prefix(20))...: \(checksum.prefix(16))...", category: .hash)
                 } else {
                     remainingIdentifiers.append(identifier)
                 }
@@ -401,6 +405,25 @@ class HashManager: ObservableObject {
             
             // Check if server assets cache has been synced
             let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
+
+            // Preload localIdentifier → immichId map from upload records for iCloudId backfill
+            let uploadedMappings = DatabaseManager.shared.getAllUploadedAssetMappings()
+            let localToImmichId: [String: String] = Dictionary(uploadedMappings.map { ($0.localIdentifier, $0.immichId) }, uniquingKeysWith: { first, _ in first })
+
+            // Preload current user ID from sync metadata to filter out partner assets
+            let currentUserId = DatabaseManager.shared.getSyncMetadata()?.userId
+
+            // Preload iCloudIds for all valid record identifiers
+            var localToCloudId: [String: String] = [:]
+            if #available(iOS 16, *) {
+                let allIds = validRecords.map { $0.assetId }
+                let cloudMappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: allIds)
+                for (localId, result) in cloudMappings {
+                    if let cloudId = try? result.get(), !cloudId.stringValue.hasSuffix(":") {
+                        localToCloudId[localId] = cloudId.stringValue
+                    }
+                }
+            }
             
             for record in validRecords {
                 guard !self.shouldStop else { break }
@@ -425,6 +448,28 @@ class HashManager: ObservableObject {
                         primaryOnServer = true
                     } else if hasServerCache {
                         primaryOnServer = DatabaseManager.shared.isAssetOnServer(checksum: record.primaryHash)
+                    }
+                }
+
+                // Queue iCloudId update if asset is on server but server cache has no iCloudId
+                if primaryOnServer {
+                    if let iCloudId = localToCloudId[localIdentifier] {
+                        if let immichId = localToImmichId[localIdentifier] {
+                            // From upload records — queue regardless of server cache state
+                            await MainActor.run {
+                                self.pendingICloudIdUpdates.append((immichId: immichId, iCloudId: iCloudId))
+                            }
+                        } else if let serverAsset = DatabaseManager.shared.getServerAssetByChecksum(record.primaryHash),
+                                  serverAsset.iCloudId != iCloudId,
+                                  currentUserId == nil || serverAsset.ownerId == currentUserId {
+                            // From server cache (checksum match) — queue if iCloudId missing or stale, skip partner assets
+                            await MainActor.run {
+                                self.pendingICloudIdUpdates.append((immichId: serverAsset.immichId, iCloudId: iCloudId))
+                            }
+                        }
+                    } else {
+                        // Asset is on server but iCloud ID is incomplete or unavailable — log for diagnosis
+                        logInfo("Asset \(localIdentifier) on server but no valid iCloud ID (iCloud sync incomplete?)", category: .hash)
                     }
                 }
                 

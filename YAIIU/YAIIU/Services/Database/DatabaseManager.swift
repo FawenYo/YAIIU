@@ -67,6 +67,10 @@ final class DatabaseManager {
     func getUploadRecords(for localIdentifier: String) -> [UploadRecord] {
         uploadRepo.getUploadRecords(for: localIdentifier)
     }
+
+    func getAllUploadedAssetMappings() -> [(localIdentifier: String, immichId: String)] {
+        uploadRepo.getAllUploadedAssetMappings()
+    }
     
     func deleteUploadRecord(for localIdentifier: String) {
         uploadRepo.deleteUploadRecord(for: localIdentifier)
@@ -229,8 +233,8 @@ final class DatabaseManager {
         serverRepo.clearServerAssetsCache()
     }
     
-    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int) {
-        serverRepo.saveSyncMetadata(lastSyncTime: lastSyncTime, syncType: syncType, userId: userId, totalAssets: totalAssets)
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) {
+        serverRepo.saveSyncMetadata(lastSyncTime: lastSyncTime, syncType: syncType, userId: userId, totalAssets: totalAssets, lastAck: lastAck)
     }
     
     func getSyncMetadata() -> SyncMetadata? {

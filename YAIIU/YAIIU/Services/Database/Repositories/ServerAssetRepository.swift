@@ -20,8 +20,8 @@ final class ServerAssetRepository {
             
             let sql = """
             INSERT OR REPLACE INTO server_assets_cache
-            (immich_id, checksum, original_filename, asset_type, updated_at, synced_at, icloud_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            (immich_id, checksum, original_filename, asset_type, updated_at, synced_at, icloud_id, owner_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """
             
             var statement: OpaquePointer?
@@ -56,6 +56,12 @@ final class ServerAssetRepository {
                         sqlite3_bind_text(statement, 7, (iCloudId as NSString).utf8String, -1, nil)
                     } else {
                         sqlite3_bind_null(statement, 7)
+                    }
+
+                    if let ownerId = asset.ownerId {
+                        sqlite3_bind_text(statement, 8, (ownerId as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 8)
                     }
                     
                     if sqlite3_step(statement) != SQLITE_DONE {
@@ -131,12 +137,12 @@ final class ServerAssetRepository {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
             
-            let sql = "SELECT immich_id, checksum, original_filename, asset_type, updated_at, icloud_id FROM server_assets_cache WHERE checksum = ? LIMIT 1;"
+            let sql = "SELECT immich_id, checksum, original_filename, asset_type, updated_at, icloud_id, owner_id FROM server_assets_cache WHERE checksum = ? LIMIT 1;"
             var statement: OpaquePointer?
-            
+
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
                 sqlite3_bind_text(statement, 1, (checksum as NSString).utf8String, -1, nil)
-                
+
                 if sqlite3_step(statement) == SQLITE_ROW {
                     asset = ServerAssetRecord(
                         immichId: String(cString: sqlite3_column_text(statement, 0)),
@@ -144,7 +150,8 @@ final class ServerAssetRepository {
                         originalFilename: sqlite3_column_text(statement, 2).map { String(cString: $0) },
                         assetType: sqlite3_column_text(statement, 3).map { String(cString: $0) },
                         updatedAt: sqlite3_column_text(statement, 4).map { String(cString: $0) },
-                        iCloudId: sqlite3_column_text(statement, 5).map { String(cString: $0) }
+                        iCloudId: sqlite3_column_text(statement, 5).map { String(cString: $0) },
+                        ownerId: sqlite3_column_text(statement, 6).map { String(cString: $0) }
                     )
                 }
             }
@@ -162,12 +169,12 @@ final class ServerAssetRepository {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
             
-            let sql = "SELECT immich_id, checksum, original_filename, asset_type, updated_at, icloud_id FROM server_assets_cache WHERE icloud_id = ? LIMIT 1;"
+            let sql = "SELECT immich_id, checksum, original_filename, asset_type, updated_at, icloud_id, owner_id FROM server_assets_cache WHERE icloud_id = ? LIMIT 1;"
             var statement: OpaquePointer?
-            
+
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
                 sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
-                
+
                 if sqlite3_step(statement) == SQLITE_ROW {
                     asset = ServerAssetRecord(
                         immichId: String(cString: sqlite3_column_text(statement, 0)),
@@ -175,7 +182,8 @@ final class ServerAssetRepository {
                         originalFilename: sqlite3_column_text(statement, 2).map { String(cString: $0) },
                         assetType: sqlite3_column_text(statement, 3).map { String(cString: $0) },
                         updatedAt: sqlite3_column_text(statement, 4).map { String(cString: $0) },
-                        iCloudId: sqlite3_column_text(statement, 5).map { String(cString: $0) }
+                        iCloudId: sqlite3_column_text(statement, 5).map { String(cString: $0) },
+                        ownerId: sqlite3_column_text(statement, 6).map { String(cString: $0) }
                     )
                 }
             }
@@ -309,25 +317,30 @@ final class ServerAssetRepository {
     }
     
     // MARK: - Sync Metadata
-    
-    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int) {
+
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
-            
+
             let sql = """
             INSERT OR REPLACE INTO sync_metadata
-            (id, last_sync_time, last_sync_type, user_id, total_assets)
-            VALUES (1, ?, ?, ?, ?);
+            (id, last_sync_time, last_sync_type, user_id, total_assets, last_ack)
+            VALUES (1, ?, ?, ?, ?, ?);
             """
-            
+
             var statement: OpaquePointer?
-            
+
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
                 sqlite3_bind_double(statement, 1, lastSyncTime.timeIntervalSince1970)
                 sqlite3_bind_text(statement, 2, (syncType as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(statement, 3, (userId as NSString).utf8String, -1, nil)
                 sqlite3_bind_int(statement, 4, Int32(totalAssets))
-                
+                if let ack = lastAck {
+                    sqlite3_bind_text(statement, 5, (ack as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 5)
+                }
+
                 if sqlite3_step(statement) != SQLITE_DONE {
                     logError("Failed to save sync metadata: \(self.connection.lastErrorMessage)", category: .database)
                 }
@@ -335,16 +348,16 @@ final class ServerAssetRepository {
             sqlite3_finalize(statement)
         }
     }
-    
+
     func getSyncMetadata() -> SyncMetadata? {
         var metadata: SyncMetadata?
-        
+
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
-            
-            let sql = "SELECT * FROM sync_metadata WHERE id = 1;"
+
+            let sql = "SELECT id, last_sync_time, last_sync_type, user_id, total_assets, last_ack FROM sync_metadata WHERE id = 1;"
             var statement: OpaquePointer?
-            
+
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
                 if sqlite3_step(statement) == SQLITE_ROW {
                     let lastSyncTime = sqlite3_column_type(statement, 1) != SQLITE_NULL
@@ -353,18 +366,20 @@ final class ServerAssetRepository {
                     let lastSyncType = sqlite3_column_text(statement, 2).map { String(cString: $0) }
                     let userId = sqlite3_column_text(statement, 3).map { String(cString: $0) }
                     let totalAssets = Int(sqlite3_column_int(statement, 4))
-                    
+                    let lastAck = sqlite3_column_text(statement, 5).map { String(cString: $0) }
+
                     metadata = SyncMetadata(
                         lastSyncTime: lastSyncTime,
                         lastSyncType: lastSyncType,
                         userId: userId,
-                        totalAssets: totalAssets
+                        totalAssets: totalAssets,
+                        lastAck: lastAck
                     )
                 }
             }
             sqlite3_finalize(statement)
         }
-        
+
         return metadata
     }
 }

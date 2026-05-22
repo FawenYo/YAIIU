@@ -6,11 +6,10 @@ struct SyncProgress {
     let phase: SyncPhase
     let fetchedCount: Int
     let message: String
-    
+
     enum SyncPhase {
         case connecting
         case fetchingUserInfo
-        case fetchingPartners
         case fetchingAssets
         case processingAssets
         case savingToDatabase
@@ -18,38 +17,28 @@ struct SyncProgress {
 }
 
 class ServerAssetSyncService {
-    
+
     // MARK: - Checksum Conversion
-    
+
     /// Converts a Base64-encoded checksum to lowercase hexadecimal string.
     /// Immich server returns checksums in Base64 format, but iOS app calculates SHA1 in hex format.
-    /// This conversion is required for proper matching between local and server assets.
     private func convertBase64ToHex(_ base64String: String) -> String? {
-        guard let data = Data(base64Encoded: base64String) else {
-            return nil
-        }
+        guard let data = Data(base64Encoded: base64String) else { return nil }
         return data.map { String(format: "%02x", $0) }.joined()
     }
-    
+
     static let shared = ServerAssetSyncService()
-    
+
     private let apiService = ImmichAPIService.shared
     private let dbManager = DatabaseManager.shared
-    
+
     private var isSyncing = false
     private let syncQueue = DispatchQueue(label: "com.yaiiu.serverassetsync", qos: .userInitiated)
-    
+
     private init() {}
-    
+
     // MARK: - Public Methods
-    
-    /// Synchronize server assets with progress reporting.
-    /// - Parameters:
-    ///   - serverURL: The Immich server URL
-    ///   - apiKey: The API key for authentication
-    ///   - forceFullSync: Force a full sync instead of delta sync
-    ///   - progressHandler: Called periodically with sync progress updates
-    ///   - completion: Called when sync completes or fails
+
     func syncServerAssets(
         serverURL: String,
         apiKey: String,
@@ -59,12 +48,10 @@ class ServerAssetSyncService {
     ) {
         Task.detached(priority: .utility) { [weak self] in
             guard let self = self else {
-                await MainActor.run {
-                    completion(.failure(SyncError.syncFailed(reason: "Service deallocated")))
-                }
+                await MainActor.run { completion(.failure(SyncError.syncFailed(reason: "Service deallocated"))) }
                 return
             }
-            
+
             let shouldProceed = self.syncQueue.sync { () -> Bool in
                 guard !self.isSyncing else {
                     logWarning("Sync already in progress, skipping", category: .sync)
@@ -73,18 +60,14 @@ class ServerAssetSyncService {
                 self.isSyncing = true
                 return true
             }
-            
+
             guard shouldProceed else {
-                await MainActor.run {
-                    completion(.failure(SyncError.syncInProgress))
-                }
+                await MainActor.run { completion(.failure(SyncError.syncInProgress)) }
                 return
             }
-            
-            defer {
-                self.syncQueue.sync { self.isSyncing = false }
-            }
-            
+
+            defer { self.syncQueue.sync { self.isSyncing = false } }
+
             do {
                 let result = try await self.performSync(
                     serverURL: serverURL,
@@ -92,42 +75,34 @@ class ServerAssetSyncService {
                     forceFullSync: forceFullSync,
                     progressHandler: progressHandler
                 )
-                
-                await MainActor.run {
-                    completion(.success(result))
-                }
+                await MainActor.run { completion(.success(result)) }
             } catch {
                 logError("Sync failed: \(error.localizedDescription)", category: .sync)
-                
-                await MainActor.run {
-                    completion(.failure(error))
-                }
+                await MainActor.run { completion(.failure(error)) }
             }
         }
     }
-    
+
     func checkAssetExistsLocally(checksum: String) -> Bool {
         return dbManager.isAssetOnServer(checksum: checksum)
     }
-    
+
     func getLastSyncInfo() -> SyncMetadata? {
         return dbManager.getSyncMetadata()
     }
-    
+
     func clearCache() {
         dbManager.clearServerAssetsCache()
         logInfo("Server assets cache cleared", category: .sync)
     }
-    
+
     // MARK: - Private Methods
-    
+
     private func reportProgress(_ progress: SyncProgress, handler: ((SyncProgress) -> Void)?) {
         guard let handler = handler else { return }
-        DispatchQueue.main.async {
-            handler(progress)
-        }
+        DispatchQueue.main.async { handler(progress) }
     }
-    
+
     private func performSync(
         serverURL: String,
         apiKey: String,
@@ -135,146 +110,45 @@ class ServerAssetSyncService {
         progressHandler: ((SyncProgress) -> Void)?
     ) async throws -> SyncResult {
         logInfo("Starting server assets sync (forceFullSync: \(forceFullSync))", category: .sync)
-        
+
         reportProgress(SyncProgress(phase: .connecting, fetchedCount: 0, message: ""), handler: progressHandler)
-        
         reportProgress(SyncProgress(phase: .fetchingUserInfo, fetchedCount: 0, message: ""), handler: progressHandler)
+
         let userInfo = try await apiService.getCurrentUser(serverURL: serverURL, apiKey: apiKey)
         let userId = userInfo.id
-        
-        reportProgress(SyncProgress(phase: .fetchingPartners, fetchedCount: 0, message: ""), handler: progressHandler)
-        let partnerIds = await fetchPartnerIds(serverURL: serverURL, apiKey: apiKey)
-        let allUserIds = [userId] + partnerIds
-        logDebug("All user IDs for sync: \(allUserIds)", category: .sync)
-
-        // Fetch iCloudId map from stream API before sync
-        let iCloudIdMap = await fetchICloudIdMap(serverURL: serverURL, apiKey: apiKey)
-        logDebug("Fetched \(iCloudIdMap.count) iCloudId mappings from stream", category: .sync)
 
         let syncMetadata = dbManager.getSyncMetadata()
-        let shouldUseDeltaSync = !forceFullSync && syncMetadata?.lastSyncTime != nil
+        let lastAck = forceFullSync ? nil : syncMetadata?.lastAck
 
-        var syncResult: SyncResult
+        logInfo("Stream sync: lastAck=\(lastAck ?? "nil") (incremental: \(lastAck != nil))", category: .sync)
 
-        if shouldUseDeltaSync, let lastSyncTime = syncMetadata?.lastSyncTime {
-            logInfo("Attempting delta sync from \(lastSyncTime)", category: .sync)
-            syncResult = try await performDeltaSync(
-                userIds: allUserIds,
-                lastSyncTime: lastSyncTime,
-                serverURL: serverURL,
-                apiKey: apiKey,
-                iCloudIdMap: iCloudIdMap,
-                progressHandler: progressHandler
-            )
+        reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
 
-            if syncResult.needsFullSync {
-                logInfo("Delta sync requires full sync, performing full sync", category: .sync)
-                syncResult = try await performFullSync(
-                    userId: userId,
-                    serverURL: serverURL,
-                    apiKey: apiKey,
-                    iCloudIdMap: iCloudIdMap,
-                    progressHandler: progressHandler
-                )
-            }
-        } else {
-            logInfo("Performing full sync", category: .sync)
-            syncResult = try await performFullSync(
-                userId: userId,
-                serverURL: serverURL,
-                apiKey: apiKey,
-                iCloudIdMap: iCloudIdMap,
-                progressHandler: progressHandler
-            )
-        }
-        
-        reportProgress(SyncProgress(phase: .savingToDatabase, fetchedCount: syncResult.totalAssets, message: ""), handler: progressHandler)
-        
-        dbManager.saveSyncMetadata(
-            lastSyncTime: Date(),
-            syncType: syncResult.syncType,
-            userId: userId,
-            totalAssets: syncResult.totalAssets
+        // Fetch iCloudId map first (independent stream call)
+        let iCloudIdMap = await fetchICloudIdMap(serverURL: serverURL, apiKey: apiKey)
+        logDebug("Fetched \(iCloudIdMap.count) iCloudId mappings from metadata stream", category: .sync)
+
+        // Fetch assets via stream (sends ack first if incremental)
+        let streamResult = try await apiService.fetchAssetStream(
+            serverURL: serverURL,
+            apiKey: apiKey,
+            lastAck: lastAck
         )
 
-        dbManager.backfillImmichIdsFromServerCache()
+        let allAssets = streamResult.assets
+        let newAck = streamResult.lastAck
 
-        logInfo("Sync completed: type=\(syncResult.syncType), total=\(syncResult.totalAssets), upserted=\(syncResult.upsertedCount), deleted=\(syncResult.deletedCount)", category: .sync)
-        
-        return syncResult
-    }
-    
-    private func fetchICloudIdMap(serverURL: String, apiKey: String) async -> [String: String] {
-        do {
-            return try await apiService.fetchAssetMetadataStream(serverURL: serverURL, apiKey: apiKey)
-        } catch {
-            logWarning("Failed to fetch iCloudId map from stream, proceeding without: \(error.localizedDescription)", category: .sync)
-            return [:]
-        }
-    }
+        logInfo("Stream returned \(allAssets.count) assets, lastAck=\(newAck ?? "nil")", category: .sync)
 
-    private func fetchPartnerIds(serverURL: String, apiKey: String) async -> [String] {
-        do {
-            let partners = try await apiService.fetchPartners(serverURL: serverURL, apiKey: apiKey)
-            let partnerIds = partners.map { $0.id }
-            logDebug("Fetched \(partnerIds.count) partner IDs: \(partnerIds)", category: .sync)
-            return partnerIds
-        } catch {
-            logWarning("Failed to fetch partners, proceeding without partner IDs: \(error.localizedDescription)", category: .sync)
-            return []
-        }
-    }
-    
-    private func performFullSync(
-        userId: String,
-        serverURL: String,
-        apiKey: String,
-        iCloudIdMap: [String: String],
-        progressHandler: ((SyncProgress) -> Void)?
-    ) async throws -> SyncResult {
-        var allAssets: [ServerAsset] = []
-        var lastId: String? = nil
-        let chunkSize = 10000
-        let updatedUntil = Date()
-        
-        logInfo("Starting full sync for user \(userId)", category: .sync)
-        
-        reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
-        
-        while true {
-            let assets = try await apiService.fetchFullSync(
-                userId: userId,
-                limit: chunkSize,
-                lastId: lastId,
-                updatedUntil: updatedUntil,
-                serverURL: serverURL,
-                apiKey: apiKey
-            )
-            
-            logDebug("Fetched \(assets.count) assets (lastId: \(lastId ?? "nil"))", category: .sync)
-            allAssets.append(contentsOf: assets)
-            
-            reportProgress(
-                SyncProgress(phase: .fetchingAssets, fetchedCount: allAssets.count, message: ""),
-                handler: progressHandler
-            )
-            
-            if assets.count < chunkSize {
-                break
-            }
-            
-            lastId = assets.last?.id
-        }
-        
-        logInfo("Full sync fetched \(allAssets.count) total assets", category: .sync)
-        
         reportProgress(
             SyncProgress(phase: .processingAssets, fetchedCount: allAssets.count, message: ""),
             handler: progressHandler
         )
-        
-        // Convert Base64 checksums to hex format for matching with locally calculated SHA1 hashes
-        let serverAssetRecords = allAssets.compactMap { asset -> ServerAssetRecord? in
+
+        let activeAssets = allAssets.filter { !$0.isDeleted }
+        let deletedIds = allAssets.filter { $0.isDeleted }.map { $0.id }
+
+        let serverAssetRecords = activeAssets.compactMap { asset -> ServerAssetRecord? in
             guard let hexChecksum = convertBase64ToHex(asset.checksum) else {
                 logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
                 return nil
@@ -284,107 +158,64 @@ class ServerAssetSyncService {
                 checksum: hexChecksum,
                 originalFilename: asset.originalFileName,
                 assetType: asset.type,
-                updatedAt: asset.updatedAt,
-                iCloudId: iCloudIdMap[asset.id]
+                updatedAt: asset.fileCreatedAt,
+                iCloudId: iCloudIdMap[asset.id],
+                ownerId: asset.ownerId
             )
         }
-        
-        if serverAssetRecords.count != allAssets.count {
-            logWarning("Skipped \(allAssets.count - serverAssetRecords.count) assets due to checksum conversion failure", category: .sync)
-        }
-        
+
         reportProgress(
             SyncProgress(phase: .savingToDatabase, fetchedCount: allAssets.count, message: ""),
             handler: progressHandler
         )
-        
-        dbManager.clearServerAssetsCache()
-        dbManager.saveServerAssets(serverAssetRecords, syncType: "full")
-        
+
+        let syncType: String
+        if lastAck == nil {
+            // Full stream — replace entire cache
+            dbManager.clearServerAssetsCache()
+            syncType = "full"
+        } else {
+            syncType = "delta"
+        }
+
+        if !serverAssetRecords.isEmpty {
+            dbManager.saveServerAssets(serverAssetRecords, syncType: syncType)
+        }
+
+        if !deletedIds.isEmpty {
+            dbManager.deleteServerAssets(deletedIds)
+            logInfo("Deleted \(deletedIds.count) assets from cache", category: .sync)
+        }
+
+        dbManager.saveSyncMetadata(
+            lastSyncTime: Date(),
+            syncType: syncType,
+            userId: userId,
+            totalAssets: dbManager.getServerAssetsCacheCount(),
+            lastAck: newAck ?? lastAck
+        )
+
+        dbManager.backfillImmichIdsFromServerCache()
+
+        let total = dbManager.getServerAssetsCacheCount()
+        logInfo("Sync completed: type=\(syncType), total=\(total), upserted=\(serverAssetRecords.count), deleted=\(deletedIds.count)", category: .sync)
+
         return SyncResult(
-            syncType: "full",
-            totalAssets: allAssets.count,
-            upsertedCount: allAssets.count,
-            deletedCount: 0,
+            syncType: syncType,
+            totalAssets: total,
+            upsertedCount: serverAssetRecords.count,
+            deletedCount: deletedIds.count,
             needsFullSync: false
         )
     }
-    
-    private func performDeltaSync(
-        userIds: [String],
-        lastSyncTime: Date,
-        serverURL: String,
-        apiKey: String,
-        iCloudIdMap: [String: String],
-        progressHandler: ((SyncProgress) -> Void)?
-    ) async throws -> SyncResult {
-        logInfo("Starting delta sync from \(lastSyncTime) for \(userIds.count) user(s)", category: .sync)
-        
-        reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
-        
-        let deltaResponse = try await apiService.fetchDeltaSync(
-            updatedAfter: lastSyncTime,
-            userIds: userIds,
-            serverURL: serverURL,
-            apiKey: apiKey
-        )
-        
-        if deltaResponse.needsFullSync {
-            logInfo("Server requires full sync", category: .sync)
-            return SyncResult(
-                syncType: "delta",
-                totalAssets: 0,
-                upsertedCount: 0,
-                deletedCount: 0,
-                needsFullSync: true
-            )
+
+    private func fetchICloudIdMap(serverURL: String, apiKey: String) async -> [String: String] {
+        do {
+            return try await apiService.fetchAssetMetadataStream(serverURL: serverURL, apiKey: apiKey)
+        } catch {
+            logWarning("Failed to fetch iCloudId map from metadata stream: \(error.localizedDescription)", category: .sync)
+            return [:]
         }
-        
-        let totalChanges = deltaResponse.upserted.count + deltaResponse.deleted.count
-        logInfo("Delta sync: upserted=\(deltaResponse.upserted.count), deleted=\(deltaResponse.deleted.count)", category: .sync)
-        
-        reportProgress(
-            SyncProgress(phase: .processingAssets, fetchedCount: totalChanges, message: ""),
-            handler: progressHandler
-        )
-        
-        if !deltaResponse.upserted.isEmpty {
-            // Convert Base64 checksums to hex format for matching with locally calculated SHA1 hashes
-            let serverAssetRecords = deltaResponse.upserted.compactMap { asset -> ServerAssetRecord? in
-                guard let hexChecksum = convertBase64ToHex(asset.checksum) else {
-                    logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
-                    return nil
-                }
-                return ServerAssetRecord(
-                    immichId: asset.id,
-                    checksum: hexChecksum,
-                    originalFilename: asset.originalFileName,
-                    assetType: asset.type,
-                    updatedAt: asset.updatedAt,
-                    iCloudId: iCloudIdMap[asset.id]
-                )
-            }
-            
-            if serverAssetRecords.count != deltaResponse.upserted.count {
-                logWarning("Delta sync: skipped \(deltaResponse.upserted.count - serverAssetRecords.count) assets due to checksum conversion failure", category: .sync)
-            }
-            
-            dbManager.saveServerAssets(serverAssetRecords, syncType: "delta")
-        }
-        
-        if !deltaResponse.deleted.isEmpty {
-            dbManager.deleteServerAssets(deltaResponse.deleted)
-        }
-        
-        let currentTotal = dbManager.getServerAssetsCacheCount()
-        
-        return SyncResult(
-            syncType: "delta",
-            totalAssets: currentTotal,
-            upsertedCount: deltaResponse.upserted.count,
-            deletedCount: deltaResponse.deleted.count,
-            needsFullSync: false
-        )
     }
 }
 
@@ -401,7 +232,7 @@ struct SyncResult {
 enum SyncError: LocalizedError {
     case syncInProgress
     case syncFailed(reason: String)
-    
+
     var errorDescription: String? {
         switch self {
         case .syncInProgress:

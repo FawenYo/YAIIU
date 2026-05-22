@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 4
+    private static let schemaVersion = 5
     
     private init() {
         dbQueue.async { [weak self] in
@@ -241,7 +241,11 @@ final class SQLiteConnection {
             if currentVersion < 4 {
                 migrateToV4()
             }
-            
+
+            if currentVersion < 5 {
+                migrateToV5()
+            }
+
             setSchemaVersion(SQLiteConnection.schemaVersion)
             logInfo("Database migration completed to version \(SQLiteConnection.schemaVersion)", category: .database)
         }
@@ -302,6 +306,53 @@ final class SQLiteConnection {
             logInfo("Added asset_modification_date column to hash_cache", category: .database)
         } else {
             logInfo("asset_modification_date column already exists, skipping", category: .database)
+        }
+    }
+
+    /// Migration to version 5: Add last_ack column to sync_metadata table and owner_id column to server_assets_cache table.
+    private func migrateToV5() {
+        logInfo("Migrating database to version 5", category: .database)
+
+        let syncCheckSql = "PRAGMA table_info(sync_metadata);"
+        var statement: OpaquePointer?
+        var hasLastAck = false
+
+        if sqlite3_prepare_v2(db, syncCheckSql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1) {
+                    if String(cString: columnName) == "last_ack" {
+                        hasLastAck = true
+                        break
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        if !hasLastAck {
+            executeStatement("ALTER TABLE sync_metadata ADD COLUMN last_ack TEXT;")
+            logInfo("Added last_ack column to sync_metadata", category: .database)
+        }
+
+        let assetCheckSql = "PRAGMA table_info(server_assets_cache);"
+        var hasOwnerId = false
+
+        if sqlite3_prepare_v2(db, assetCheckSql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1) {
+                    if String(cString: columnName) == "owner_id" {
+                        hasOwnerId = true
+                        break
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        if !hasOwnerId {
+            executeStatement("ALTER TABLE server_assets_cache ADD COLUMN owner_id TEXT;")
+            executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_owner_id ON server_assets_cache(owner_id);")
+            logInfo("Added owner_id column to server_assets_cache", category: .database)
         }
     }
 

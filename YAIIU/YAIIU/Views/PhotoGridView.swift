@@ -443,6 +443,7 @@ struct PhotoGridView: View {
                 if currentFilter == .notUploaded {
                     refreshFilterCache()
                 }
+                syncPendingICloudIds()
             }
         }
     }
@@ -780,6 +781,50 @@ struct PhotoGridView: View {
         }
     }
     
+    private func syncPendingICloudIds() {
+        let updates = hashManager.pendingICloudIdUpdates
+        guard !updates.isEmpty else { return }
+
+        let serverURL = settingsManager.activeServerURL
+        let apiKey = settingsManager.apiKey
+        guard !serverURL.isEmpty && !apiKey.isEmpty else { return }
+
+        logInfo("Syncing \(updates.count) pending iCloud ID updates to server", category: .api)
+
+        Task {
+            let batchSize = 500
+            var successCount = 0
+            var skipCount = 0
+
+            for batchStart in stride(from: 0, to: updates.count, by: batchSize) {
+                let batch = Array(updates[batchStart..<min(batchStart + batchSize, updates.count)])
+                let items = batch.map { update in
+                    MetadataUpdateItem(
+                        assetId: update.immichId,
+                        key: RemoteAssetMetadataItem.mobileAppKey,
+                        value: MobileAppMetadata(iCloudId: update.iCloudId, createdAt: nil)
+                    )
+                }
+
+                do {
+                    try await ImmichAPIService.shared.updateBulkAssetMetadata(
+                        items: items,
+                        serverURL: serverURL,
+                        apiKey: apiKey
+                    )
+                    successCount += batch.count
+                } catch ImmichAPIError.serverError(let statusCode, _) where statusCode == 400 || statusCode == 403 {
+                    // Skip batch containing partner assets we don't own
+                    skipCount += batch.count
+                } catch {
+                    logWarning("Failed to update iCloud ID batch: \(error.localizedDescription)", category: .api)
+                }
+            }
+
+            logInfo("iCloud ID sync done: \(successCount) updated, \(skipCount) skipped (no access)", category: .api)
+        }
+    }
+
     private func updateNotUploadedCount() {
         let manager = photoLibraryManager
         let hash = hashManager
