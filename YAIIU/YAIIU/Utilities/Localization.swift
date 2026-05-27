@@ -173,6 +173,9 @@ enum L10n {
         static var backgroundUploadNoteMessage: String { "login.backgroundUploadNote.message".localized }
         static var backgroundUploadNoteLearnMore: String { "login.backgroundUploadNote.learnMore".localized }
         static var backgroundUploadNoteLink: String { "login.backgroundUploadNote.link".localized }
+        static var reLoginNoticeTitle: String { "login.reLoginNotice.title".localized }
+        static var reLoginNoticeMessage: String { "login.reLoginNotice.message".localized }
+        static var reLoginConfirm: String { "login.reLoginNotice.confirm".localized }
     }
     
     // MARK: - Settings

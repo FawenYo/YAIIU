@@ -33,7 +33,9 @@
 "login.backgroundUploadNote.message" = "Si vous utilisez iOS 26.1 ou version ultérieure et souhaitez utiliser la fonction de téléversement en arrière-plan, vous devez déployer immich-proxy séparément.";
 "login.backgroundUploadNote.learnMore" = "En savoir plus";
 "login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
-
+"login.reLoginNotice.title" = "Reconnexion requise";
+"login.reLoginNotice.message" = "YAIIU 0.1.4 a remplacé la clé API par une connexion email/mot de passe. Veuillez vous reconnecter avec vos identifiants Immich.";
+"login.reLoginNotice.confirm" = "Se reconnecter";
 // MARK: - Settings View
 "settings.title" = "Réglages";
 "settings.serverInfo" = "Informations du serveur";

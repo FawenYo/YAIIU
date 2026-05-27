@@ -33,7 +33,9 @@
 "login.backgroundUploadNote.message" = "iOS 26.1 이상에서 백그라운드 업로드 기능을 사용하려면 immich-proxy를 별도로 배포해야 합니다.";
 "login.backgroundUploadNote.learnMore" = "자세히 알아보기";
 "login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
-
+"login.reLoginNotice.title" = "다시 로그인 필요";
+"login.reLoginNotice.message" = "YAIIU 0.1.4에서 API 키 대신 이메일/비밀번호 로그인으로 변경되었습니다. Immich 계정으로 다시 로그인해 주세요.";
+"login.reLoginNotice.confirm" = "지금 다시 로그인";
 // MARK: - Settings View
 "settings.title" = "설정";
 "settings.serverInfo" = "서버 정보";

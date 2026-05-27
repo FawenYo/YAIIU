@@ -33,6 +33,9 @@
 "login.backgroundUploadNote.message" = "If you are using iOS 26.1 or later and want to use the background upload feature, you need to deploy immich-proxy separately.";
 "login.backgroundUploadNote.learnMore" = "Learn More";
 "login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
+"login.reLoginNotice.title" = "Re-login Required";
+"login.reLoginNotice.message" = "YAIIU 0.1.4 switched from API key to email/password login. Please log in again with your Immich account credentials.";
+"login.reLoginNotice.confirm" = "Re-login Now";
 
 // MARK: - Settings View
 "settings.title" = "Settings";

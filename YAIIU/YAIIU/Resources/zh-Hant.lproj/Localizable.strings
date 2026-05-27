@@ -33,6 +33,9 @@
 "login.backgroundUploadNote.message" = "如果您使用 iOS 26.1 或更新版本，且想要使用背景上傳功能，需要另外部署 immich-proxy。";
 "login.backgroundUploadNote.learnMore" = "了解更多";
 "login.backgroundUploadNote.link" = "https://github.com/FawenYo/YAIIU/blob/main/immich-proxy/README.md";
+"login.reLoginNotice.title" = "需要重新登入";
+"login.reLoginNotice.message" = "YAIIU 0.1.4 已從 API Key 改為帳號密碼登入。請使用您的 Immich 帳號重新登入。";
+"login.reLoginNotice.confirm" = "立即重新登入";
 
 // MARK: - Settings View
 "settings.title" = "設定";

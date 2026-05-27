@@ -28,6 +28,7 @@ extension View {
 
 struct LoginView: View {
     @EnvironmentObject var settingsManager: SettingsManager
+    @EnvironmentObject var migrationManager: MigrationManager
 
     @State private var serverURL: String = ""
     @State private var internalServerURL: String = ""
@@ -77,6 +78,11 @@ struct LoginView: View {
                     
                     // Input Fields
                     inputFieldsSection
+
+                    // Re-login notice banner (shown after v0.1.4 migration)
+                    if migrationManager.requiresReLogin {
+                        reLoginNoticeSection
+                    }
                     
                     // Login Button
                     loginButtonSection
@@ -390,6 +396,36 @@ struct LoginView: View {
         .padding(.top, 8)
     }
     
+    // MARK: - Re-Login Notice Section
+    private var reLoginNoticeSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle.fill")
+                    .font(.subheadline)
+                    .foregroundColor(.blue)
+                Text(L10n.Login.reLoginNoticeTitle)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.blue)
+            }
+
+            Text(L10n.Login.reLoginNoticeMessage)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.blue.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.blue.opacity(0.25), lineWidth: 1)
+        )
+    }
+
     // MARK: - Background Upload Note Section
     private var backgroundUploadNoteSection: some View {
         VStack(alignment: .leading, spacing: 12) {

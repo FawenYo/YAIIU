@@ -9,7 +9,8 @@ extension URL: @retroactive Identifiable {
 struct ContentView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var uploadManager: UploadManager
-    
+    @EnvironmentObject var migrationManager: MigrationManager
+
     var body: some View {
         Group {
             if settingsManager.isLoggedIn {
@@ -31,6 +32,13 @@ struct ContentView: View {
             } else {
                 LoginView()
             }
+        }
+        .alert(L10n.Login.reLoginNoticeTitle, isPresented: $migrationManager.showReLoginDialog) {
+            Button(L10n.Login.reLoginConfirm) {
+                migrationManager.confirmReLogin(settingsManager: settingsManager)
+            }
+        } message: {
+            Text(L10n.Login.reLoginNoticeMessage)
         }
     }
 }

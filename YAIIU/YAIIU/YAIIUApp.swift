@@ -104,28 +104,41 @@ final class MigrationManager: ObservableObject {
     @Published var cloudIdSyncProgress: Double = 0
     @Published var cloudIdSyncStatus: String = ""
     @Published var cloudIdSyncResult: CloudIdSyncResult?
-    
+    @Published var requiresReLogin: Bool = false
+    @Published var showReLoginDialog: Bool = false
+
     enum CloudIdSyncResult: Equatable {
         case success(Int)
         case error(String)
     }
-    
+
     /// Checks and performs migrations based on version upgrade.
     func performMigrationIfNeeded(settingsManager: SettingsManager) async {
         let currentVersion = BuildInfo.version
         let lastVersion = SharedSettings.shared.lastAppVersion
-        
+
         // Skip if user is not logged in
         guard settingsManager.isLoggedIn else {
             return
         }
-        
+
+        // v0.1.4: switched from API key to username/password login.
+        // Prompt existing users to re-login. The actual logout is deferred until
+        // the user confirms the dialog (see confirmReLogin), so lastAppVersion is
+        // not bumped here - this keeps the dialog showing if the app is killed
+        // before confirmation.
+        if let last = lastVersion, isVersionLessThan(last, "0.1.4") {
+            logInfo("Migration: prompting re-login for upgrade from \(last) to \(currentVersion)", category: .app)
+            showReLoginDialog = true
+            return
+        }
+
         // If sync is already completed, just update version and exit.
         if SharedSettings.shared.cloudIdSyncCompleted {
             SharedSettings.shared.lastAppVersion = currentVersion
             return
         }
-        
+
         // Trigger iCloud ID sync on upgrade from versions before 0.1.0
         // or when lastVersion is nil (fresh install with imported data)
         let needsCloudIdSync: Bool
@@ -138,12 +151,12 @@ final class MigrationManager: ObservableObject {
             }.value
             needsCloudIdSync = hasUploadedAssets
         }
-        
+
         if needsCloudIdSync {
             logInfo("Migration: triggering iCloud ID sync (upgrade from \(lastVersion ?? "unknown") to \(currentVersion))", category: .app)
             await triggerCloudIdSync(settingsManager: settingsManager)
         }
-        
+
         // Update version if sync completed, or if it was never needed.
         // If it failed, the version is not updated, allowing a retry on next launch.
         if SharedSettings.shared.cloudIdSyncCompleted || !needsCloudIdSync {
@@ -151,6 +164,15 @@ final class MigrationManager: ObservableObject {
         }
     }
     
+    /// Confirms the v0.1.4 re-login prompt: logs out and routes the user to the
+    /// login screen. Called when the user acknowledges the re-login dialog.
+    func confirmReLogin(settingsManager: SettingsManager) {
+        SharedSettings.shared.lastAppVersion = BuildInfo.version
+        settingsManager.logout()
+        requiresReLogin = true
+        showReLoginDialog = false
+    }
+
     /// Manually trigger iCloud ID sync.
     func triggerCloudIdSync(settingsManager: SettingsManager) async {
         guard #available(iOS 16, *) else {
