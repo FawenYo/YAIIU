@@ -1,6 +1,7 @@
 import CoreLocation
 import ExtensionFoundation
 import Photos
+import UniformTypeIdentifiers
 import os.lock
 
 @main
@@ -65,11 +66,18 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
 
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
+            // Build destination first; if PHAsset is temporarily unavailable (e.g.
+            // PHPhotosError 3300 during iCloud sync), skip this job rather than calling
+            // retry(destination: nil) which strips all custom headers and causes the
+            // proxy to fall back to "upload.jpg".
+            guard let destination = buildDestination(for: job.resource) else {
+                logWarning("Skipping retry for \(job.resource.originalFilename): PHAsset temporarily unavailable")
+                continue
+            }
             try library.performChangesAndWait {
                 guard let req = PHAssetResourceUploadJobChangeRequest(for: job)
                 else { return }
-                // Rebuild destination to refresh auth token if needed
-                req.retry(destination: self.buildDestination(for: job.resource))
+                req.retry(destination: destination)
             }
         }
     }
@@ -316,14 +324,24 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     }
 
     private func mimeType(for resource: PHAssetResource) -> String {
-        let uti = resource.uniformTypeIdentifier.lowercased()
+        // Use the system UTI registry for accurate MIME type resolution.
+        // Substring matching fails for UTIs like "public.hevc" which contain no
+        // recognisable keyword but map to a well-known MIME type.
+        if let utType = UTType(resource.uniformTypeIdentifier),
+            let mime = utType.preferredMIMEType
+        {
+            return mime
+        }
 
+        // Fallback for unrecognised UTIs
+        let uti = resource.uniformTypeIdentifier.lowercased()
         let mapping: [(check: (String) -> Bool, mime: String)] = [
             ({ $0.contains("jpeg") || $0.contains("jpg") }, "image/jpeg"),
             ({ $0.contains("png") }, "image/png"),
             ({ $0.contains("heic") || $0.contains("heif") }, "image/heic"),
             ({ $0.contains("gif") }, "image/gif"),
             ({ $0.contains("raw") || $0.contains("dng") }, "image/dng"),
+            ({ $0.contains("hevc") }, "video/mp4"),
             ({ $0.contains("mp4") }, "video/mp4"),
             (
                 { $0.contains("quicktime") || $0.contains("mov") },
