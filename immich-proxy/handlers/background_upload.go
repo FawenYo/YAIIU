@@ -113,12 +113,18 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 
 		// Last-resort safety net: if headers are missing or wrong, use magic byte
 		// detection to prevent video payloads from reaching Immich as image/jpeg.
-		if len(photoData) > 512 &&
+		if len(photoData) > 0 &&
 			(metadata.Filename == "upload.jpg" || metadata.ContentType == "application/octet-stream") {
 			detected := http.DetectContentType(photoData)
 			if strings.HasPrefix(detected, "video/") {
 				if metadata.Filename == "upload.jpg" {
-					metadata.Filename = "upload.mov"
+					switch detected {
+					case "video/mp4":
+						metadata.Filename = "upload.mp4"
+					default:
+						// .mov is a reasonable default for Apple ecosystem videos
+						metadata.Filename = "upload.mov"
+					}
 				}
 				metadata.ContentType = detected
 				log.Printf("[%s] Magic byte detection overrode metadata: filename=%s contentType=%s",
