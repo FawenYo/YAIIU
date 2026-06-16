@@ -8,6 +8,12 @@ final class PhotoLibraryManager: ObservableObject {
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var assetCount: Int = 0
+
+    /// Local identifiers in fetch order, materialized once per library load so
+    /// callers can derive counts/filters without re-enumerating the lazy
+    /// PHFetchResult (which loads each PHAsset on demand and is very slow for
+    /// large libraries).
+    @Published private(set) var orderedLocalIdentifiers: [String] = []
     
     private var _fetchResult: PHFetchResult<PHAsset>?
     private let fetchResultLock = NSLock()
@@ -61,20 +67,26 @@ final class PhotoLibraryManager: ObservableObject {
     func fetchAssetsAsync() async {
         isLoading = true
         
-        let (result, count) = await Task.detached(priority: .userInitiated) {
+        let (result, count, identifiers) = await Task.detached(priority: .userInitiated) {
             let fetchOptions = PHFetchOptions()
             fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             fetchOptions.includeHiddenAssets = false
-            
+
             let result = PHAsset.fetchAssets(with: fetchOptions)
-            return (result, result.count)
+            var identifiers: [String] = []
+            identifiers.reserveCapacity(result.count)
+            result.enumerateObjects { asset, _, _ in
+                identifiers.append(asset.localIdentifier)
+            }
+            return (result, result.count, identifiers)
         }.value
-        
+
         fetchResultLock.lock()
         _fetchResult = result
         fetchResultLock.unlock()
-        
+
         assetCount = count
+        orderedLocalIdentifiers = identifiers
         isLoading = false
         
         await triggerFavoriteSync()
