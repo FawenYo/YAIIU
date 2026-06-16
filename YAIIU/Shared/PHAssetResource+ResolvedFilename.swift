@@ -41,33 +41,26 @@ extension PHAssetResource {
         let resources = PHAssetResource.assetResources(for: asset)
         let editedExtension = (filename as NSString).pathExtension
 
-        // Try photo companion resource first (edited stills, Live Photos)
-        if let photoResource = resources.first(where: {
+        // Prefer the photo companion resource (edited stills, Live Photos), then
+        // fall back to the .video resource for pure video assets (e.g. Apple Log
+        // HDR exported by third-party camera apps) to recover the captured filename.
+        let originalResource = resources.first(where: {
             ($0.type == .photo || $0.type == .fullSizePhoto)
                 && !$0.originalFilename.hasPrefix("FullSizeRender")
-        }) {
-            let originalName =
-                (photoResource.originalFilename as NSString).deletingPathExtension
-            if editedExtension.isEmpty {
-                return photoResource.originalFilename
-            }
-            return "\(originalName).\(editedExtension)"
-        }
-
-        // For pure video assets (e.g. Apple Log HDR exported by third-party camera apps),
-        // fall back to the .video resource to recover the captured filename.
-        if let videoResource = resources.first(where: {
+        }) ?? resources.first(where: {
             $0.type == .video
                 && !$0.originalFilename.hasPrefix("FullSizeRender")
-        }) {
-            let originalName =
-                (videoResource.originalFilename as NSString).deletingPathExtension
-            if editedExtension.isEmpty {
-                return videoResource.originalFilename
-            }
-            return "\(originalName).\(editedExtension)"
+        })
+
+        guard let originalResource else {
+            return filename
         }
 
-        return filename
+        if editedExtension.isEmpty {
+            return originalResource.originalFilename
+        }
+        let originalName =
+            (originalResource.originalFilename as NSString).deletingPathExtension
+        return "\(originalName).\(editedExtension)"
     }
 }
