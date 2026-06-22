@@ -273,6 +273,7 @@ struct PhotoGridView: View {
     @State private var filteredIndices: [Int] = []
     @State private var cachedNotUploadedCount: Int = 0
     @State private var countRefreshTask: Task<Void, Never>?
+    @State private var recomputeTask: Task<Void, Never>?
     @State private var countComputeVersion: Int = 0
     @State private var isSelectingAll = false
     @State private var selectionTask: Task<Void, Never>?
@@ -403,6 +404,8 @@ struct PhotoGridView: View {
             isSelectingAll = false
             countRefreshTask?.cancel()
             countRefreshTask = nil
+            recomputeTask?.cancel()
+            recomputeTask = nil
             processingTask?.cancel()
             processingTask = nil
         }
@@ -801,10 +804,12 @@ struct PhotoGridView: View {
         let manager = photoLibraryManager
         let hash = hashManager
 
+        recomputeTask?.cancel()
+
         countComputeVersion += 1
         let version = countComputeVersion
 
-        Task.detached(priority: .utility) {
+        recomputeTask = Task(priority: .utility) {
             let (statusCache, identifiers) = await MainActor.run {
                 (hash.syncStatusCache, manager.orderedLocalIdentifiers)
             }
@@ -812,6 +817,7 @@ struct PhotoGridView: View {
             var notUploadedIndices: [Int] = []
             notUploadedIndices.reserveCapacity(identifiers.count / 4)
             for (index, id) in identifiers.enumerated() {
+                if Task.isCancelled { return }
                 if statusCache[id] != .uploaded {
                     notUploadedIndices.append(index)
                 }
@@ -821,7 +827,7 @@ struct PhotoGridView: View {
                 // Discard results from superseded invocations; without this guard
                 // a task that read an earlier cache snapshot could finish last and
                 // overwrite with a stale value (stale-wins race).
-                guard version == self.countComputeVersion else { return }
+                guard !Task.isCancelled, version == self.countComputeVersion else { return }
                 self.cachedNotUploadedCount = notUploadedIndices.count
                 self.filteredIndices = notUploadedIndices
                 if self.currentFilter == .notUploaded {
