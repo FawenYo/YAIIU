@@ -425,8 +425,10 @@ struct PhotoGridView: View {
                 Task {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     await MainActor.run {
+                        // refreshStatusCache() republishes syncStatusCache, which
+                        // the .onReceive listener already turns into a debounced
+                        // recomputeCounts(), so no direct call is needed here.
                         hashManager.refreshStatusCache()
-                        recomputeCounts()
                     }
                 }
             }
