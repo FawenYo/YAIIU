@@ -401,6 +401,10 @@ struct PhotoGridView: View {
             selectionTask?.cancel()
             selectionTask = nil
             isSelectingAll = false
+            countRefreshTask?.cancel()
+            countRefreshTask = nil
+            processingTask?.cancel()
+            processingTask = nil
         }
         .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
             if newValue > 0 && oldValue == 0 {
