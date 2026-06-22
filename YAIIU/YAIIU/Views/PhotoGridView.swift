@@ -732,11 +732,13 @@ struct PhotoGridView: View {
         if filter == .notUploaded {
             // filteredIndices is kept current by recomputeCounts(); rebuild it
             // off the main thread so tapping the filter never blocks the UI on
-            // large libraries.
+            // large libraries. recomputeCounts() flips refreshToken once the new
+            // indices land, so avoid rebuilding here with the stale set first.
             recomputeCounts()
+        } else {
+            // Other filters use the full set immediately, so rebuild now.
+            refreshToken = UUID()
         }
-        // Force grid rebuild to display the correct set
-        refreshToken = UUID()
     }
 
     private func syncPendingICloudIds() {
