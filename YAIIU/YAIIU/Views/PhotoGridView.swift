@@ -796,6 +796,7 @@ struct PhotoGridView: View {
     /// orderedLocalIdentifiers array (in-memory) rather than re-enumerating the
     /// lazy PHFetchResult, which is orders of magnitude faster on large
     /// libraries and lets the badge stay in sync with the per-photo icons.
+    @MainActor
     private func recomputeCounts() {
         let manager = photoLibraryManager
         let hash = hashManager
