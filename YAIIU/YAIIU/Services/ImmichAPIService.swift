@@ -673,7 +673,7 @@ class ImmichAPIService: NSObject {
         }
     }
     
-    /// Fetches all assets via sync stream (AssetsV1). Returns parsed asset records and the last ack value.
+    /// Fetches all assets via sync stream (AssetsV2). Returns parsed asset records and the last ack value.
     /// If `lastAck` is provided, sends it first to the ack endpoint so the server only returns new assets.
     func fetchAssetStream(serverURL: String, apiKey: String, lastAck: String?) async throws -> (assets: [StreamAsset], lastAck: String?) {
         // Send ack before streaming to get only incremental updates
@@ -695,7 +695,8 @@ class ImmichAPIService: NSObject {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 300
 
-        let body: [String: Any] = ["types": ["AssetsV1"]]
+        // AssetsV2 replaces the deprecated AssetsV1 request type in Immich 3.0.
+        let body: [String: Any] = ["types": ["AssetsV2"]]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
@@ -714,27 +715,42 @@ class ImmichAPIService: NSObject {
             var assets: [StreamAsset] = []
             var finalAck: String?
 
+            // AssetsV2 emits AssetV2 entities for upserts and AssetDeleteV1 entities
+            // for deletions. Unlike AssetsV1, deletes are no longer signaled via an
+            // inline deletedAt field, so they must be handled as a distinct entity type.
             let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
             for line in lines {
                 guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                      let type = obj["type"] as? String, type == "AssetV1",
-                      let assetData = obj["data"] as? [String: Any],
-                      let id = assetData["id"] as? String,
-                      let checksum = assetData["checksum"] as? String
+                      let type = obj["type"] as? String,
+                      let entityData = obj["data"] as? [String: Any]
                 else {
                     continue
                 }
 
-                let asset = StreamAsset(
-                    id: id,
-                    checksum: checksum,
-                    originalFileName: assetData["originalFileName"] as? String,
-                    fileCreatedAt: assetData["fileCreatedAt"] as? String,
-                    type: assetData["type"] as? String,
-                    ownerId: assetData["ownerId"] as? String,
-                    deletedAt: assetData["deletedAt"] as? String
-                )
-                assets.append(asset)
+                switch type {
+                case "AssetV2":
+                    guard let id = entityData["id"] as? String,
+                          let checksum = entityData["checksum"] as? String
+                    else {
+                        continue
+                    }
+                    assets.append(StreamAsset(
+                        id: id,
+                        checksum: checksum,
+                        originalFileName: entityData["originalFileName"] as? String,
+                        fileCreatedAt: entityData["fileCreatedAt"] as? String,
+                        type: entityData["type"] as? String,
+                        ownerId: entityData["ownerId"] as? String,
+                        deletedAt: entityData["deletedAt"] as? String
+                    ))
+                case "AssetDeleteV1":
+                    guard let assetId = entityData["assetId"] as? String else {
+                        continue
+                    }
+                    assets.append(StreamAsset.deleted(id: assetId))
+                default:
+                    break
+                }
 
                 if let ack = obj["ack"] as? String {
                     finalAck = ack
@@ -950,6 +966,20 @@ struct StreamAsset {
     let deletedAt: String?
 
     var isDeleted: Bool { deletedAt != nil }
+
+    /// Builds a record representing a server-side deletion (AssetDeleteV1 entity),
+    /// which only carries the asset id. Consumers only use `id` for deleted records.
+    static func deleted(id: String) -> StreamAsset {
+        StreamAsset(
+            id: id,
+            checksum: "",
+            originalFileName: nil,
+            fileCreatedAt: nil,
+            type: nil,
+            ownerId: nil,
+            deletedAt: "deleted"
+        )
+    }
 }
 
 struct LoginResponse: Codable {
