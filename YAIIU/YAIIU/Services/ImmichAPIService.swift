@@ -970,10 +970,33 @@ struct StreamAsset {
     let fileCreatedAt: String?
     let type: String?
     let ownerId: String?
-    /// Non-nil means soft-deleted on server
+    /// Soft-delete timestamp from an AssetV2 payload. The AssetDeleteV1 delete
+    /// event carries no timestamp, so this stays nil for those records.
     let deletedAt: String?
+    /// Set for AssetDeleteV1 delete events, which only carry the asset id.
+    let deleteEvent: Bool
 
-    var isDeleted: Bool { deletedAt != nil }
+    init(
+        id: String,
+        checksum: String,
+        originalFileName: String?,
+        fileCreatedAt: String?,
+        type: String?,
+        ownerId: String?,
+        deletedAt: String?,
+        deleteEvent: Bool = false
+    ) {
+        self.id = id
+        self.checksum = checksum
+        self.originalFileName = originalFileName
+        self.fileCreatedAt = fileCreatedAt
+        self.type = type
+        self.ownerId = ownerId
+        self.deletedAt = deletedAt
+        self.deleteEvent = deleteEvent
+    }
+
+    var isDeleted: Bool { deleteEvent || deletedAt != nil }
 
     /// Builds a record representing a server-side deletion (AssetDeleteV1 entity),
     /// which only carries the asset id. Consumers only use `id` for deleted records.
@@ -985,7 +1008,8 @@ struct StreamAsset {
             fileCreatedAt: nil,
             type: nil,
             ownerId: nil,
-            deletedAt: "deleted"
+            deletedAt: nil,
+            deleteEvent: true
         )
     }
 }
