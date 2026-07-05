@@ -720,7 +720,15 @@ class ImmichAPIService: NSObject {
             // inline deletedAt field, so they must be handled as a distinct entity type.
             let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
             for line in lines {
-                guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                let jsonObject: Any
+                do {
+                    jsonObject = try JSONSerialization.jsonObject(with: Data(line))
+                } catch {
+                    logError("Asset stream JSON deserialization failed: \(error.localizedDescription)", category: .api)
+                    continue
+                }
+
+                guard let obj = jsonObject as? [String: Any],
                       let type = obj["type"] as? String,
                       let entityData = obj["data"] as? [String: Any]
                 else {
