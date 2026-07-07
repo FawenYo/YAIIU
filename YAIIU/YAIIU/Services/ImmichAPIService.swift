@@ -674,14 +674,8 @@ class ImmichAPIService: NSObject {
     }
     
     /// Fetches all assets via sync stream (AssetsV2). Returns parsed asset records and the last ack value.
-    /// If `lastAck` is provided, sends it first to the ack endpoint so the server only returns new assets.
-    func fetchAssetStream(serverURL: String, apiKey: String, lastAck: String?) async throws -> (assets: [StreamAsset], lastAck: String?) {
-        // Send ack before streaming to get only incremental updates
-        if let ack = lastAck {
-            try await sendSyncAck(acks: [ack], serverURL: serverURL, apiKey: apiKey)
-        }
-
-        logInfo("Fetching assets via sync stream (incremental: \(lastAck != nil))", category: .api)
+    func fetchAssetStream(serverURL: String, apiKey: String) async throws -> (assets: [StreamAsset], lastAck: String?) {
+        logInfo("Fetching assets via sync stream", category: .api)
 
         guard let url = URL(string: "\(serverURL)/api/sync/stream") else {
             logError("Invalid URL for sync stream", category: .api)
@@ -767,6 +761,11 @@ class ImmichAPIService: NSObject {
             }
 
             logInfo("Asset stream returned \(assets.count) assets", category: .api)
+            
+            if let ack = finalAck {
+                try await sendSyncAck(acks: [ack], serverURL: serverURL, apiKey: apiKey)
+            }
+
             return (assets: assets, lastAck: finalAck)
         } catch let error as ImmichAPIError {
             throw error
@@ -842,12 +841,23 @@ class ImmichAPIService: NSObject {
             }
 
             var result: [String: String] = [:]
+            var finalAck: String?
 
             // Response is NDJSON — split by newline and parse each JSON object
             let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
             for line in lines {
                 guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                      let type = obj["type"] as? String, type == "AssetMetadataV1",
+                      let type = obj["type"] as? String
+                else {
+                    continue
+                }
+
+                // Track the last ack from a non-completion event;
+                if type != "SyncCompleteV1", let ack = obj["ack"] as? String {
+                    finalAck = ack
+                }
+
+                guard type == "AssetMetadataV1",
                       let eventData = obj["data"] as? [String: Any],
                       let assetId = eventData["assetId"] as? String,
                       let key = eventData["key"] as? String, key == RemoteAssetMetadataItem.mobileAppKey,
@@ -860,6 +870,11 @@ class ImmichAPIService: NSObject {
             }
 
             logInfo("Sync stream returned \(result.count) assets with iCloudId", category: .api)
+
+            if let ack = finalAck {
+                try await sendSyncAck(acks: [ack], serverURL: serverURL, apiKey: apiKey)
+            }
+
             return result
         } catch let error as ImmichAPIError {
             throw error

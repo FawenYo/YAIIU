@@ -42,7 +42,6 @@ class ServerAssetSyncService {
     func syncServerAssets(
         serverURL: String,
         apiKey: String,
-        forceFullSync: Bool = false,
         progressHandler: ((SyncProgress) -> Void)? = nil,
         completion: @escaping (Result<SyncResult, Error>) -> Void
     ) {
@@ -72,7 +71,6 @@ class ServerAssetSyncService {
                 let result = try await self.performSync(
                     serverURL: serverURL,
                     apiKey: apiKey,
-                    forceFullSync: forceFullSync,
                     progressHandler: progressHandler
                 )
                 await MainActor.run { completion(.success(result)) }
@@ -106,10 +104,9 @@ class ServerAssetSyncService {
     private func performSync(
         serverURL: String,
         apiKey: String,
-        forceFullSync: Bool,
         progressHandler: ((SyncProgress) -> Void)?
     ) async throws -> SyncResult {
-        logInfo("Starting server assets sync (forceFullSync: \(forceFullSync))", category: .sync)
+        logInfo("Starting server assets sync", category: .sync)
 
         reportProgress(SyncProgress(phase: .connecting, fetchedCount: 0, message: ""), handler: progressHandler)
         reportProgress(SyncProgress(phase: .fetchingUserInfo, fetchedCount: 0, message: ""), handler: progressHandler)
@@ -118,9 +115,7 @@ class ServerAssetSyncService {
         let userId = userInfo.id
 
         let syncMetadata = dbManager.getSyncMetadata()
-        let lastAck = forceFullSync ? nil : syncMetadata?.lastAck
-
-        logInfo("Stream sync: lastAck=\(lastAck ?? "nil") (incremental: \(lastAck != nil))", category: .sync)
+        let lastAck = syncMetadata?.lastAck
 
         reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
 
@@ -128,11 +123,10 @@ class ServerAssetSyncService {
         let iCloudIdMap = await fetchICloudIdMap(serverURL: serverURL, apiKey: apiKey)
         logDebug("Fetched \(iCloudIdMap.count) iCloudId mappings from metadata stream", category: .sync)
 
-        // Fetch assets via stream (sends ack first if incremental)
+        // Fetch assets via stream (acks the server once the stream completes)
         let streamResult = try await apiService.fetchAssetStream(
             serverURL: serverURL,
-            apiKey: apiKey,
-            lastAck: lastAck
+            apiKey: apiKey
         )
 
         let allAssets = streamResult.assets

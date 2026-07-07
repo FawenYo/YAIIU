@@ -188,7 +188,6 @@ struct InitialSetupView: View {
         ServerAssetSyncService.shared.syncServerAssets(
             serverURL: settingsManager.activeServerURL,
             apiKey: settingsManager.apiKey,
-            forceFullSync: true,
             progressHandler: { [self] progress in
                 handleSyncProgress(progress)
             }

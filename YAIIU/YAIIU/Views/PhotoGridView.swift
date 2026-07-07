@@ -1095,8 +1095,7 @@ struct PhotoGridView: View {
         
         ServerAssetSyncService.shared.syncServerAssets(
             serverURL: serverURL,
-            apiKey: apiKey,
-            forceFullSync: false
+            apiKey: apiKey
         ) { [self] result in
             DispatchQueue.main.async {
                 self.isSyncing = false
