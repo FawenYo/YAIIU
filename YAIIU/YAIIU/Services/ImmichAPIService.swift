@@ -760,7 +760,8 @@ class ImmichAPIService: NSObject {
                     break
                 }
 
-                if let ack = obj["ack"] as? String {
+                // Set finalAck to the last ack value received in the stream if the object type is not "SyncCompleteV1"
+                if type != "SyncCompleteV1", let ack = obj["ack"] as? String {
                     finalAck = ack
                 }
             }
