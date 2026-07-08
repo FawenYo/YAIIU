@@ -4,7 +4,7 @@ import UIKit
 
 /// Manages photo library access with lazy loading for optimal memory performance.
 /// Uses PHFetchResult directly instead of materializing all PHAsset objects into arrays.
-final class PhotoLibraryManager: ObservableObject {
+final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var assetCount: Int = 0
@@ -25,10 +25,54 @@ final class PhotoLibraryManager: ObservableObject {
         return _fetchResult
     }
     
-    init() {
+    override init() {
+        super.init()
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if authorizationStatus == .authorized || authorizationStatus == .limited {
             fetchAssets()
+        }
+        PHPhotoLibrary.shared().register(self)
+    }
+
+    deinit {
+        PHPhotoLibrary.shared().unregisterChangeObserver(self)
+    }
+
+    /// Incrementally applies library changes so photos captured while the app was
+    /// backgrounded appear on foreground without a full re-fetch. Updating from the
+    /// change details avoids swapping the fetch result out from under the grid, which
+    /// would blank all thumbnails while they reload.
+    func photoLibraryDidChange(_ changeInstance: PHChange) {
+        guard let currentResult = fetchResult,
+              let changes = changeInstance.changeDetails(for: currentResult) else {
+            return
+        }
+
+        // Skip when nothing actually changed. Registering the observer (and some
+        // foreground transitions) can deliver a change with no incremental edits;
+        // republishing in that case rebuilds the grid and blanks all thumbnails.
+        guard changes.hasIncrementalChanges,
+              changes.insertedIndexes?.isEmpty == false ||
+              changes.removedIndexes?.isEmpty == false ||
+              changes.changedIndexes?.isEmpty == false else {
+            return
+        }
+
+        let updatedResult = changes.fetchResultAfterChanges
+        var identifiers: [String] = []
+        identifiers.reserveCapacity(updatedResult.count)
+        updatedResult.enumerateObjects { asset, _, _ in
+            identifiers.append(asset.localIdentifier)
+        }
+        let count = updatedResult.count
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.fetchResultLock.lock()
+            self._fetchResult = updatedResult
+            self.fetchResultLock.unlock()
+            self.assetCount = count
+            self.orderedLocalIdentifiers = identifiers
         }
     }
     

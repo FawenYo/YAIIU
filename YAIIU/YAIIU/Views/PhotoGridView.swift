@@ -1075,7 +1075,7 @@ struct PhotoGridView: View {
     private func performAutoSync() {
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
-        
+
         if !hashManager.isProcessing {
             hashManager.setPreparingState()
         }
