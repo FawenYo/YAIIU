@@ -110,29 +110,37 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     @MainActor
     func fetchAssetsAsync() async {
         isLoading = true
-        
-        let (result, count, identifiers) = await Task.detached(priority: .userInitiated) {
+
+        // Fetch the lazy PHFetchResult first. `count` is O(1), so the grid can paint
+        // immediately via lazy `asset(at:)` access. Enumerating every identifier for a
+        // large library takes several seconds and must not block the first paint.
+        let result = await Task.detached(priority: .userInitiated) {
             let fetchOptions = PHFetchOptions()
             fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             fetchOptions.includeHiddenAssets = false
-
-            let result = PHAsset.fetchAssets(with: fetchOptions)
-            var identifiers: [String] = []
-            identifiers.reserveCapacity(result.count)
-            result.enumerateObjects { asset, _, _ in
-                identifiers.append(asset.localIdentifier)
-            }
-            return (result, result.count, identifiers)
+            return PHAsset.fetchAssets(with: fetchOptions)
         }.value
 
         fetchResultLock.lock()
         _fetchResult = result
         fetchResultLock.unlock()
 
-        assetCount = count
-        orderedLocalIdentifiers = identifiers
+        assetCount = result.count
         isLoading = false
-        
+
+        // Build the full identifier list off the critical path. It is only needed for
+        // the "not uploaded" filter/count, not for the default grid, so publishing it
+        // after first paint keeps launch responsive.
+        let identifiers = await Task.detached(priority: .utility) {
+            var ids: [String] = []
+            ids.reserveCapacity(result.count)
+            result.enumerateObjects { asset, _, _ in
+                ids.append(asset.localIdentifier)
+            }
+            return ids
+        }.value
+        orderedLocalIdentifiers = identifiers
+
         await triggerFavoriteSync()
     }
     
