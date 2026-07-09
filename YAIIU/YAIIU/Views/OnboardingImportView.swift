@@ -5,9 +5,7 @@ import UniformTypeIdentifiers
 struct OnboardingImportView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @ObservedObject var hashManager = HashManager.shared
-    
-    var showRestartOnComplete: Bool = false
-    
+
     @State private var isShowingFilePicker = false
     @State private var selectedFileURL: URL?
     @State private var validationResult: (isValid: Bool, recordCount: Int, errorMessage: String?)?
@@ -329,10 +327,6 @@ struct OnboardingImportView: View {
     
     private func completeOnboarding() {
         settingsManager.completeOnboarding()
-        
-        if showRestartOnComplete {
-            settingsManager.requestAppRestart()
-        }
     }
     
     private func showAlert(title: String, message: String) {

@@ -246,10 +246,6 @@
 "photoPermission.continue" = "続ける";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "アプリの再起動が必要";
-"restartRequired.description" = "バックグラウンドアップロード機能を有効にするには、アプリを再起動してください";
-"restartRequired.instructions" = "このアプリを完全に閉じてから再度開いてください。";
-"restartRequired.closeApp" = "アプリを閉じる";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "不明";

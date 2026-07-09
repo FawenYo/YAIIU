@@ -246,10 +246,6 @@
 "photoPermission.continue" = "继续";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "需要重新启动 App";
-"restartRequired.description" = "若要启用后台上传功能，请重新启动 App";
-"restartRequired.instructions" = "请完全关闭此 App 后重新打开。";
-"restartRequired.closeApp" = "关闭 App";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "未知";

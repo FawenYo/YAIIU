@@ -246,10 +246,6 @@
 "photoPermission.continue" = "Continuar";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "Se requiere reiniciar la app";
-"restartRequired.description" = "Para activar la función de subida en segundo plano, por favor reinicia la app";
-"restartRequired.instructions" = "Cierra esta app completamente y vuelve a abrirla.";
-"restartRequired.closeApp" = "Cerrar app";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "Desconocido";

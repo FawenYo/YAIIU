@@ -246,10 +246,6 @@
 "photoPermission.continue" = "계속";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "앱 재시작 필요";
-"restartRequired.description" = "백그라운드 업로드 기능을 활성화하려면 앱을 재시작하세요";
-"restartRequired.instructions" = "이 앱을 완전히 닫았다가 다시 여세요.";
-"restartRequired.closeApp" = "앱 닫기";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "알 수 없음";

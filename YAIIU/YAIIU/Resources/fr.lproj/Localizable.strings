@@ -246,10 +246,6 @@
 "photoPermission.continue" = "Continuer";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "Redémarrage de l'app requis";
-"restartRequired.description" = "Pour activer la fonction de téléversement en arrière-plan, veuillez redémarrer l'app";
-"restartRequired.instructions" = "Fermez complètement cette app et rouvrez-la.";
-"restartRequired.closeApp" = "Fermer l'app";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "Inconnu";

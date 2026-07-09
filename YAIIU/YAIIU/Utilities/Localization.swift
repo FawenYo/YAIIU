@@ -410,14 +410,6 @@ enum L10n {
         static var continue_: String { "photoPermission.continue".localized }
     }
 
-    // MARK: - Restart Required
-    enum RestartRequired {
-        static var title: String { "restartRequired.title".localized }
-        static var description: String { "restartRequired.description".localized }
-        static var instructions: String { "restartRequired.instructions".localized }
-        static var closeApp: String { "restartRequired.closeApp".localized }
-    }
-    
     // MARK: - Background Upload (iOS 26.1+)
     enum BackgroundUpload {
         static var title: String { "backgroundUpload.title".localized }

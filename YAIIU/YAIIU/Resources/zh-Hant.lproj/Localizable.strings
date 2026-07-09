@@ -247,10 +247,6 @@
 "photoPermission.continue" = "繼續";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "需要重新啟動 App";
-"restartRequired.description" = "若要啟用背景上傳功能，請重新啟動 App";
-"restartRequired.instructions" = "請完全關閉此 App 後重新開啟。";
-"restartRequired.closeApp" = "關閉 App";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "未知";

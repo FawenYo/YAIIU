@@ -247,10 +247,6 @@
 "photoPermission.continue" = "Continue";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "App Restart Required";
-"restartRequired.description" = "To enable background upload feature, please restart the app";
-"restartRequired.instructions" = "Close this app completely and reopen it.";
-"restartRequired.closeApp" = "Close App";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "Unknown";

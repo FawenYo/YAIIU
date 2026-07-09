@@ -246,10 +246,6 @@
 "photoPermission.continue" = "Weiter";
 
 // MARK: - Restart Required View
-"restartRequired.title" = "App-Neustart erforderlich";
-"restartRequired.description" = "Um die Hintergrund-Upload-Funktion zu aktivieren, starten Sie bitte die App neu";
-"restartRequired.instructions" = "Schließen Sie diese App vollständig und öffnen Sie sie erneut.";
-"restartRequired.closeApp" = "App schließen";
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "Unbekannt";
