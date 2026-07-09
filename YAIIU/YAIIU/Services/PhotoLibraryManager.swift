@@ -83,7 +83,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 identifiers.append(asset.localIdentifier)
             }
             await MainActor.run { [weak self] in
-                self?.orderedLocalIdentifiers = identifiers
+                guard let self else { return }
+                // Drop the result if a newer change superseded this fetch result
+                // while enumerating; otherwise a slow task could overwrite the
+                // identifiers with a stale list, desyncing them from _fetchResult.
+                if self.fetchResult === updatedResult {
+                    self.orderedLocalIdentifiers = identifiers
+                }
             }
         }
     }
