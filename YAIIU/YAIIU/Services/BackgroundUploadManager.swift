@@ -55,23 +55,27 @@ class BackgroundUploadManager: ObservableObject {
         
         // Enable the extension
         let library = PHPhotoLibrary.shared()
-        
+
+        let statusBeforeEnable = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        logInfo("Pre-enable diagnostics: authStatus=\(statusBeforeEnable.rawValue), currentlyEnabled=\(library.uploadJobExtensionEnabled)", category: .upload)
+
         do {
             try library.setUploadJobExtensionEnabled(true)
-            
+
             await MainActor.run {
                 self.isEnabled = true
                 self.sharedSettings.backgroundUploadEnabled = true
                 self.errorMessage = nil
             }
-            
+
             logInfo("Background upload extension enabled successfully", category: .upload)
-            
+
         } catch {
+            let nsError = error as NSError
+            logError("setUploadJobExtensionEnabled failed: domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)", category: .upload)
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
             }
-            logError("Failed to enable background upload extension: \(error.localizedDescription)", category: .upload)
             throw error
         }
     }
