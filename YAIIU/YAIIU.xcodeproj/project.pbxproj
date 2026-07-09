@@ -35,6 +35,7 @@
 		2A0000480000000000000001 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000490000000000000001 /* PhotoDetailView.swift */; };
 		2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */; };
 		2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004D0000000000000001 /* BackgroundUploadManager.swift */; };
+		2A0000920000000000000001 /* PhotoLibraryObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000930000000000000001 /* PhotoLibraryObserver.swift */; };
 		2A00004E0000000000000001 /* LogViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004F0000000000000001 /* LogViewerView.swift */; };
 		2A0000550000000000000001 /* InitialSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000560000000000000001 /* InitialSetupView.swift */; };
 		BC4F08F22F04C74C009E5C3E /* ServerAssetSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */; };
@@ -115,6 +116,7 @@
 		2A0000490000000000000001 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoDetailView.swift; sourceTree = "<group>"; };
 		2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadSettingsView.swift; sourceTree = "<group>"; };
 		2A00004D0000000000000001 /* BackgroundUploadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadManager.swift; sourceTree = "<group>"; };
+		2A0000930000000000000001 /* PhotoLibraryObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryObserver.swift; sourceTree = "<group>"; };
 		2A00004F0000000000000001 /* LogViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViewerView.swift; sourceTree = "<group>"; };
 		2A0000560000000000000001 /* InitialSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InitialSetupView.swift; sourceTree = "<group>"; };
 		BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetSyncService.swift; sourceTree = "<group>"; };
@@ -255,6 +257,7 @@
 				2A0000430000000000000001 /* LogService.swift */,
 				2A0000450000000000000001 /* ThumbnailCache.swift */,
 				2A00004D0000000000000001 /* BackgroundUploadManager.swift */,
+				2A0000930000000000000001 /* PhotoLibraryObserver.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -501,6 +504,7 @@
 				2A0000480000000000000001 /* PhotoDetailView.swift in Sources */,
 				2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */,
 				2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */,
+				2A0000920000000000000001 /* PhotoLibraryObserver.swift in Sources */,
 				2A00004E0000000000000001 /* LogViewerView.swift in Sources */,
 				BI0000010000000000000001 /* BuildInfo.swift in Sources */,
 				CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */,
