@@ -58,7 +58,6 @@ struct PhotoPermissionView: View {
         .padding(.vertical, 40)
         .onAppear {
             status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-            PhotoLibraryObserver.shared.warmUpIfAuthorized()
             loadBackgroundUploadStatus()
         }
     }
@@ -165,9 +164,6 @@ struct PhotoPermissionView: View {
             DispatchQueue.main.async {
                 self.status = newStatus
                 self.isRequesting = false
-                // Warm up the shared library once access is granted so the background
-                // upload extension can be enabled without PHPhotosErrorDomain 3202.
-                PhotoLibraryObserver.shared.warmUpIfAuthorized()
             }
         }
     }
