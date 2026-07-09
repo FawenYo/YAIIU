@@ -10,8 +10,17 @@ struct PhotoPermissionView: View {
     @State private var status: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var isRequesting = false
 
+    @State private var backgroundUploadEnabled = false
+    @State private var backgroundUploadLoading = false
+    @State private var backgroundUploadError: String?
+
     private var hasFullAccess: Bool { status == .authorized }
     private var needsUpgrade: Bool { status == .limited || status == .denied || status == .restricted }
+
+    private var backgroundUploadSupported: Bool {
+        if #available(iOS 26.1, *) { return true }
+        return false
+    }
 
     var body: some View {
         VStack(spacing: 32) {
@@ -37,6 +46,10 @@ struct PhotoPermissionView: View {
                 warningCard
             }
 
+            if hasFullAccess && backgroundUploadSupported {
+                backgroundUploadCard
+            }
+
             Spacer()
 
             actionSection
@@ -45,7 +58,48 @@ struct PhotoPermissionView: View {
         .padding(.vertical, 40)
         .onAppear {
             status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            loadBackgroundUploadStatus()
         }
+    }
+
+    private var backgroundUploadCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: $backgroundUploadEnabled) {
+                HStack {
+                    Image(systemName: "arrow.up.circle.badge.clock")
+                        .foregroundColor(.blue)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n.BackgroundUpload.title)
+                            .foregroundColor(.primary)
+                        Text(backgroundUploadEnabled ? L10n.BackgroundUpload.enabled : L10n.BackgroundUpload.disabled)
+                            .font(.caption)
+                            .foregroundColor(backgroundUploadEnabled ? .green : .secondary)
+                    }
+                }
+            }
+            .disabled(backgroundUploadLoading)
+            .onChange(of: backgroundUploadEnabled) { _, newValue in
+                toggleBackgroundUpload(enabled: newValue)
+            }
+
+            Text(L10n.BackgroundUpload.description)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if let error = backgroundUploadError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
     }
 
     private var warningCard: some View {
@@ -117,6 +171,43 @@ struct PhotoPermissionView: View {
     private func openSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
+        }
+    }
+
+    private func loadBackgroundUploadStatus() {
+        if #available(iOS 26.1, *) {
+            let manager = BackgroundUploadManager.shared
+            backgroundUploadEnabled = manager.isEnabled
+            backgroundUploadError = manager.errorMessage
+        }
+    }
+
+    private func toggleBackgroundUpload(enabled: Bool) {
+        guard #available(iOS 26.1, *) else { return }
+        let manager = BackgroundUploadManager.shared
+        guard enabled != manager.isEnabled else { return }
+
+        backgroundUploadLoading = true
+        backgroundUploadError = nil
+
+        Task {
+            do {
+                if enabled {
+                    try await manager.enableBackgroundUpload()
+                } else {
+                    try await manager.disableBackgroundUpload()
+                }
+                await MainActor.run {
+                    backgroundUploadLoading = false
+                    loadBackgroundUploadStatus()
+                }
+            } catch {
+                await MainActor.run {
+                    backgroundUploadLoading = false
+                    backgroundUploadEnabled = manager.isEnabled
+                    backgroundUploadError = error.localizedDescription
+                }
+            }
         }
     }
 }
