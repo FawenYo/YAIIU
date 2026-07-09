@@ -9,7 +9,7 @@ class SettingsManager: ObservableObject {
     @Published var isLoggedIn: Bool = false
     @Published var hasCompletedOnboarding: Bool = false
     @Published var hasCompletedInitialSetup: Bool = false
-    @Published var needsAppRestart: Bool = false
+    @Published var hasCompletedPhotoPermission: Bool = false
     
     private let serverURLKey = "immich_server_url"
     private let internalServerURLKey = "immich_internal_server_url"
@@ -18,7 +18,7 @@ class SettingsManager: ObservableObject {
     private let isLoggedInKey = "immich_is_logged_in"
     private let hasCompletedOnboardingKey = "immich_has_completed_onboarding"
     private let hasCompletedInitialSetupKey = "immich_has_completed_initial_setup"
-    private let needsAppRestartKey = "immich_needs_app_restart"
+    private let hasCompletedPhotoPermissionKey = "immich_has_completed_photo_permission"
     
     init() {
         loadSettings()
@@ -32,14 +32,8 @@ class SettingsManager: ObservableObject {
         isLoggedIn = UserDefaults.standard.bool(forKey: isLoggedInKey)
         hasCompletedOnboarding = UserDefaults.standard.bool(forKey: hasCompletedOnboardingKey)
         hasCompletedInitialSetup = UserDefaults.standard.bool(forKey: hasCompletedInitialSetupKey)
-        needsAppRestart = UserDefaults.standard.bool(forKey: needsAppRestartKey)
-        
-        // Clear restart flag on app launch - user has restarted the app
-        if needsAppRestart {
-            needsAppRestart = false
-            UserDefaults.standard.set(false, forKey: needsAppRestartKey)
-        }
-        
+        hasCompletedPhotoPermission = UserDefaults.standard.bool(forKey: hasCompletedPhotoPermissionKey)
+
         if isLoggedIn && (serverURL.isEmpty || apiKey.isEmpty) {
             isLoggedIn = false
             UserDefaults.standard.set(false, forKey: isLoggedInKey)
@@ -57,7 +51,7 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(isLoggedIn, forKey: isLoggedInKey)
         UserDefaults.standard.set(hasCompletedOnboarding, forKey: hasCompletedOnboardingKey)
         UserDefaults.standard.set(hasCompletedInitialSetup, forKey: hasCompletedInitialSetupKey)
-        UserDefaults.standard.set(needsAppRestart, forKey: needsAppRestartKey)
+        UserDefaults.standard.set(hasCompletedPhotoPermission, forKey: hasCompletedPhotoPermissionKey)
         saveAPIKeyToKeychain(apiKey)
     }
     
@@ -77,7 +71,8 @@ class SettingsManager: ObservableObject {
         self.isLoggedIn = true
         self.hasCompletedOnboarding = false
         self.hasCompletedInitialSetup = false
-        
+        self.hasCompletedPhotoPermission = false
+
         if let ssid = ssid, !ssid.isEmpty {
             NetworkReachability.shared.configure(ssid: ssid)
         }
@@ -132,12 +127,12 @@ class SettingsManager: ObservableObject {
         self.hasCompletedInitialSetup = true
         saveSettings()
     }
-    
-    func requestAppRestart() {
-        self.needsAppRestart = true
+
+    func completePhotoPermission() {
+        self.hasCompletedPhotoPermission = true
         saveSettings()
     }
-    
+
     func logout() {
         self.serverURL = ""
         self.internalServerURL = ""
