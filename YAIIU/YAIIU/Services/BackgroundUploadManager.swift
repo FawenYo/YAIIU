@@ -56,8 +56,19 @@ class BackgroundUploadManager: ObservableObject {
         // Enable the extension
         let library = PHPhotoLibrary.shared()
 
-        let statusBeforeEnable = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        logInfo("Pre-enable diagnostics: authStatus=\(statusBeforeEnable.rawValue), currentlyEnabled=\(library.uploadJobExtensionEnabled)", category: .upload)
+        // setUploadJobExtensionEnabled(true) throws PHPhotosErrorDomain 3202 when the
+        // extension is already enabled. The system state can already be enabled from a
+        // previous session, so treat an already-enabled extension as success and skip
+        // the redundant call.
+        guard !library.uploadJobExtensionEnabled else {
+            await MainActor.run {
+                self.isEnabled = true
+                self.sharedSettings.backgroundUploadEnabled = true
+                self.errorMessage = nil
+            }
+            logInfo("Background upload extension already enabled", category: .upload)
+            return
+        }
 
         do {
             try library.setUploadJobExtensionEnabled(true)
@@ -84,16 +95,28 @@ class BackgroundUploadManager: ObservableObject {
         logInfo("Disabling background upload extension...", category: .upload)
         
         let library = PHPhotoLibrary.shared()
-        
-        do {
-            try library.setUploadJobExtensionEnabled(false)
-            
+
+        // Skip the redundant call if the extension is already disabled to avoid a
+        // symmetric state error from setUploadJobExtensionEnabled(false).
+        guard library.uploadJobExtensionEnabled else {
             await MainActor.run {
                 self.isEnabled = false
                 self.sharedSettings.backgroundUploadEnabled = false
                 self.errorMessage = nil
             }
-            
+            logInfo("Background upload extension already disabled", category: .upload)
+            return
+        }
+
+        do {
+            try library.setUploadJobExtensionEnabled(false)
+
+            await MainActor.run {
+                self.isEnabled = false
+                self.sharedSettings.backgroundUploadEnabled = false
+                self.errorMessage = nil
+            }
+
             logInfo("Background upload extension disabled successfully", category: .upload)
             
         } catch {
