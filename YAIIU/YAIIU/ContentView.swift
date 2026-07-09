@@ -16,16 +16,10 @@ struct ContentView: View {
             if settingsManager.isLoggedIn {
                 if !settingsManager.hasCompletedInitialSetup {
                     InitialSetupView()
+                } else if !settingsManager.hasCompletedPhotoPermission {
+                    PhotoPermissionView()
                 } else if !settingsManager.hasCompletedOnboarding {
-                    // Only iOS 26.1+ needs restart to work around PHPhotosErrorDomain 3202
-                    if #available(iOS 26.1, *) {
-                        OnboardingImportView(showRestartOnComplete: true)
-                    } else {
-                        OnboardingImportView(showRestartOnComplete: false)
-                    }
-                } else if settingsManager.needsAppRestart {
-                    // RestartRequiredView only shown on iOS 26.1+ (set by showRestartOnComplete)
-                    RestartRequiredView()
+                    OnboardingImportView()
                 } else {
                     MainTabView()
                 }
