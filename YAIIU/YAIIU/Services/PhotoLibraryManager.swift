@@ -17,6 +17,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     
     private var _fetchResult: PHFetchResult<PHAsset>?
     private let fetchResultLock = NSLock()
+
+    /// Whether this instance is currently registered as a library change observer.
+    /// Registration is deferred until access is granted so that constructing this
+    /// manager (e.g. at app launch, before login) does not trigger the system photo
+    /// permission prompt.
+    private var isObservingLibrary = false
     
     /// Thread-safe access to fetch result
     var fetchResult: PHFetchResult<PHAsset>? {
@@ -30,12 +36,23 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if authorizationStatus == .authorized || authorizationStatus == .limited {
             fetchAssets()
+            startObservingLibrary()
         }
-        PHPhotoLibrary.shared().register(self)
     }
 
     deinit {
-        PHPhotoLibrary.shared().unregisterChangeObserver(self)
+        if isObservingLibrary {
+            PHPhotoLibrary.shared().unregisterChangeObserver(self)
+        }
+    }
+
+    /// Registers as a library change observer. Accessing PHPhotoLibrary.shared() while
+    /// authorization is undetermined prompts the user, so this is only called once
+    /// access has been granted.
+    private func startObservingLibrary() {
+        guard !isObservingLibrary else { return }
+        PHPhotoLibrary.shared().register(self)
+        isObservingLibrary = true
     }
 
     /// Incrementally applies library changes so photos captured while the app was
@@ -103,15 +120,17 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             if _fetchResult == nil {
                 fetchAssets()
             }
+            startObservingLibrary()
             return
         }
-        
+
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
             DispatchQueue.main.async {
                 self?.authorizationStatus = status
             }
             if status == .authorized || status == .limited {
                 self?.fetchAssets()
+                self?.startObservingLibrary()
             }
         }
     }
