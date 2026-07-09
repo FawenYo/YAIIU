@@ -48,31 +48,43 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             return
         }
 
-        // Skip when nothing actually changed. Registering the observer (and some
-        // foreground transitions) can deliver a change with no incremental edits;
-        // republishing in that case rebuilds the grid and blanks all thumbnails.
-        guard changes.hasIncrementalChanges,
-              changes.insertedIndexes?.isEmpty == false ||
-              changes.removedIndexes?.isEmpty == false ||
-              changes.changedIndexes?.isEmpty == false else {
-            return
+        // Skip only for incremental notifications that carry no actual edits.
+        // Registering the observer (and some foreground transitions) can deliver
+        // such a change; republishing then rebuilds the grid and blanks all
+        // thumbnails. Non-incremental changes (e.g. permission or full-library
+        // updates) must still be applied, otherwise the grid goes stale.
+        if changes.hasIncrementalChanges {
+            let insertedEmpty = changes.insertedIndexes?.isEmpty ?? true
+            let removedEmpty = changes.removedIndexes?.isEmpty ?? true
+            let changedEmpty = changes.changedIndexes?.isEmpty ?? true
+            if insertedEmpty && removedEmpty && changedEmpty && !changes.hasMoves {
+                return
+            }
         }
 
         let updatedResult = changes.fetchResultAfterChanges
-        var identifiers: [String] = []
-        identifiers.reserveCapacity(updatedResult.count)
-        updatedResult.enumerateObjects { asset, _, _ in
-            identifiers.append(asset.localIdentifier)
-        }
         let count = updatedResult.count
 
+        // Phase 1: publish the fetch result and count so the grid updates promptly.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.fetchResultLock.lock()
             self._fetchResult = updatedResult
             self.fetchResultLock.unlock()
             self.assetCount = count
-            self.orderedLocalIdentifiers = identifiers
+        }
+
+        // Phase 2: build the full identifier list off the critical path, matching
+        // the two-phase pattern in fetchAssetsAsync.
+        Task(priority: .utility) {
+            var identifiers: [String] = []
+            identifiers.reserveCapacity(count)
+            updatedResult.enumerateObjects { asset, _, _ in
+                identifiers.append(asset.localIdentifier)
+            }
+            await MainActor.run { [weak self] in
+                self?.orderedLocalIdentifiers = identifiers
+            }
         }
     }
     
