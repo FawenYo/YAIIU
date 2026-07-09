@@ -237,6 +237,14 @@
 "initialSetup.phase.processingAssets" = "%d Assets werden verarbeitet...";
 "initialSetup.phase.savingToDatabase" = "In lokale Datenbank speichern...";
 
+// MARK: - Photo Permission
+"photoPermission.title" = "Fotozugriff erlauben";
+"photoPermission.description" = "YAIIU benötigt vollen Zugriff auf deine Fotomediathek, um Fotos zu Immich hochzuladen. Der Hintergrund-Upload benötigt Zugriff auf alle Fotos, nicht nur auf eine Auswahl.";
+"photoPermission.grantButton" = "Vollzugriff erlauben";
+"photoPermission.limitedWarning" = "Voller Fotozugriff ist erforderlich. \"Ausgewählte Fotos\" reicht für den Hintergrund-Upload nicht aus.";
+"photoPermission.openSettings" = "Einstellungen öffnen";
+"photoPermission.continue" = "Weiter";
+
 // MARK: - Restart Required View
 "restartRequired.title" = "App-Neustart erforderlich";
 "restartRequired.description" = "Um die Hintergrund-Upload-Funktion zu aktivieren, starten Sie bitte die App neu";

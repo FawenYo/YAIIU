@@ -400,6 +400,16 @@ enum L10n {
         static var phaseSavingToDatabase: String { "initialSetup.phase.savingToDatabase".localized }
     }
     
+    // MARK: - Photo Permission
+    enum PhotoPermission {
+        static var title: String { "photoPermission.title".localized }
+        static var description: String { "photoPermission.description".localized }
+        static var grantButton: String { "photoPermission.grantButton".localized }
+        static var limitedWarning: String { "photoPermission.limitedWarning".localized }
+        static var openSettings: String { "photoPermission.openSettings".localized }
+        static var continue_: String { "photoPermission.continue".localized }
+    }
+
     // MARK: - Restart Required
     enum RestartRequired {
         static var title: String { "restartRequired.title".localized }

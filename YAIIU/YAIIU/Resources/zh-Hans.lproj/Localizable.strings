@@ -237,6 +237,14 @@
 "initialSetup.phase.processingAssets" = "正在处理 %d 个资源...";
 "initialSetup.phase.savingToDatabase" = "正在保存至本地数据库...";
 
+// MARK: - Photo Permission
+"photoPermission.title" = "允许照片访问";
+"photoPermission.description" = "YAIIU 需要完整的照片库访问权限才能上传照片到 Immich。后台上传需要访问所有照片，而非仅选取的部分照片。";
+"photoPermission.grantButton" = "允许完整访问";
+"photoPermission.limitedWarning" = "需要完整照片权限。「选中的照片」不足以支持后台上传。";
+"photoPermission.openSettings" = "打开设置";
+"photoPermission.continue" = "继续";
+
 // MARK: - Restart Required View
 "restartRequired.title" = "需要重新启动 App";
 "restartRequired.description" = "若要启用后台上传功能，请重新启动 App";

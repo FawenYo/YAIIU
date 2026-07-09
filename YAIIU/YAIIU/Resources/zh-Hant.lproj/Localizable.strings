@@ -238,6 +238,14 @@
 "initialSetup.phase.processingAssets" = "正在處理 %d 筆資源...";
 "initialSetup.phase.savingToDatabase" = "正在儲存至本機資料庫...";
 
+// MARK: - Photo Permission
+"photoPermission.title" = "允許照片存取";
+"photoPermission.description" = "YAIIU 需要完整的照片庫存取權限才能上傳照片到 Immich。背景上傳需要存取所有照片，而非僅選取的部分照片。";
+"photoPermission.grantButton" = "允許完整存取";
+"photoPermission.limitedWarning" = "需要完整照片權限。「選取的照片」不足以支援背景上傳。";
+"photoPermission.openSettings" = "開啟設定";
+"photoPermission.continue" = "繼續";
+
 // MARK: - Restart Required View
 "restartRequired.title" = "需要重新啟動 App";
 "restartRequired.description" = "若要啟用背景上傳功能，請重新啟動 App";

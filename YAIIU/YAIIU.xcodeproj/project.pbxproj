@@ -31,6 +31,7 @@
 		2A0000420000000000000001 /* LogService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000430000000000000001 /* LogService.swift */; };
 		2A0000440000000000000001 /* ThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000450000000000000001 /* ThumbnailCache.swift */; };
 		2A0000460000000000000001 /* OnboardingImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000470000000000000001 /* OnboardingImportView.swift */; };
+		2A0000900000000000000001 /* PhotoPermissionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000910000000000000001 /* PhotoPermissionView.swift */; };
 		2A0000480000000000000001 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000490000000000000001 /* PhotoDetailView.swift */; };
 		2A00004A0000000000000001 /* BackgroundUploadSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */; };
 		2A00004C0000000000000001 /* BackgroundUploadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00004D0000000000000001 /* BackgroundUploadManager.swift */; };
@@ -111,6 +112,7 @@
 		2A0000430000000000000001 /* LogService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogService.swift; sourceTree = "<group>"; };
 		2A0000450000000000000001 /* ThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailCache.swift; sourceTree = "<group>"; };
 		2A0000470000000000000001 /* OnboardingImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingImportView.swift; sourceTree = "<group>"; };
+		2A0000910000000000000001 /* PhotoPermissionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoPermissionView.swift; sourceTree = "<group>"; };
 		2A0000490000000000000001 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoDetailView.swift; sourceTree = "<group>"; };
 		2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadSettingsView.swift; sourceTree = "<group>"; };
 		2A00004D0000000000000001 /* BackgroundUploadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadManager.swift; sourceTree = "<group>"; };
@@ -228,6 +230,7 @@
 				2A00001A0000000000000001 /* UploadProgressView.swift */,
 				2A0000350000000000000001 /* ImportDatabaseView.swift */,
 				2A0000470000000000000001 /* OnboardingImportView.swift */,
+				2A0000910000000000000001 /* PhotoPermissionView.swift */,
 				2A0000560000000000000001 /* InitialSetupView.swift */,
 				2A0000580000000000000001 /* RestartRequiredView.swift */,
 				2A00004B0000000000000001 /* BackgroundUploadSettingsView.swift */,
@@ -496,6 +499,7 @@
 				BC4F08F42F04C75D009E5C3E /* FavoriteSyncService.swift in Sources */,
 				2A0000440000000000000001 /* ThumbnailCache.swift in Sources */,
 				2A0000460000000000000001 /* OnboardingImportView.swift in Sources */,
+				2A0000900000000000000001 /* PhotoPermissionView.swift in Sources */,
 				2A0000550000000000000001 /* InitialSetupView.swift in Sources */,
 				2A0000570000000000000001 /* RestartRequiredView.swift in Sources */,
 				2A0000480000000000000001 /* PhotoDetailView.swift in Sources */,

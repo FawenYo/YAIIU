@@ -238,6 +238,14 @@
 "initialSetup.phase.processingAssets" = "Processing %d assets...";
 "initialSetup.phase.savingToDatabase" = "Saving to local database...";
 
+// MARK: - Photo Permission
+"photoPermission.title" = "Allow Photo Access";
+"photoPermission.description" = "YAIIU needs full access to your photo library to upload photos to Immich. Background upload requires access to all photos, not just a selected subset.";
+"photoPermission.grantButton" = "Allow Full Access";
+"photoPermission.limitedWarning" = "Full photo access is required. \"Selected Photos\" is not enough for background upload.";
+"photoPermission.openSettings" = "Open Settings";
+"photoPermission.continue" = "Continue";
+
 // MARK: - Restart Required View
 "restartRequired.title" = "App Restart Required";
 "restartRequired.description" = "To enable background upload feature, please restart the app";

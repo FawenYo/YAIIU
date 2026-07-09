@@ -237,6 +237,14 @@
 "initialSetup.phase.processingAssets" = "Traitement de %d ressources...";
 "initialSetup.phase.savingToDatabase" = "Enregistrement dans la base de données locale...";
 
+// MARK: - Photo Permission
+"photoPermission.title" = "Autoriser l'accès aux photos";
+"photoPermission.description" = "YAIIU a besoin d'un accès complet à votre photothèque pour envoyer des photos vers Immich. L'envoi en arrière-plan nécessite l'accès à toutes les photos, et pas seulement à une sélection.";
+"photoPermission.grantButton" = "Autoriser l'accès complet";
+"photoPermission.limitedWarning" = "Un accès complet aux photos est requis. « Photos sélectionnées » ne suffit pas pour l'envoi en arrière-plan.";
+"photoPermission.openSettings" = "Ouvrir les Réglages";
+"photoPermission.continue" = "Continuer";
+
 // MARK: - Restart Required View
 "restartRequired.title" = "Redémarrage de l'app requis";
 "restartRequired.description" = "Pour activer la fonction de téléversement en arrière-plan, veuillez redémarrer l'app";

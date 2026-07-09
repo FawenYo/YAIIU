@@ -237,6 +237,14 @@
 "initialSetup.phase.processingAssets" = "Procesando %d activos...";
 "initialSetup.phase.savingToDatabase" = "Guardando en la base de datos local...";
 
+// MARK: - Photo Permission
+"photoPermission.title" = "Permitir acceso a fotos";
+"photoPermission.description" = "YAIIU necesita acceso completo a tu fototeca para subir fotos a Immich. La subida en segundo plano requiere acceso a todas las fotos, no solo a una selección.";
+"photoPermission.grantButton" = "Permitir acceso completo";
+"photoPermission.limitedWarning" = "Se requiere acceso completo a las fotos. \"Fotos seleccionadas\" no es suficiente para la subida en segundo plano.";
+"photoPermission.openSettings" = "Abrir Ajustes";
+"photoPermission.continue" = "Continuar";
+
 // MARK: - Restart Required View
 "restartRequired.title" = "Se requiere reiniciar la app";
 "restartRequired.description" = "Para activar la función de subida en segundo plano, por favor reinicia la app";

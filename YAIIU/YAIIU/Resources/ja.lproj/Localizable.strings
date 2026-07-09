@@ -237,6 +237,14 @@
 "initialSetup.phase.processingAssets" = "%d件のアセットを処理中...";
 "initialSetup.phase.savingToDatabase" = "ローカルデータベースに保存中...";
 
+// MARK: - Photo Permission
+"photoPermission.title" = "写真へのアクセスを許可";
+"photoPermission.description" = "YAIIU が Immich に写真をアップロードするには、写真ライブラリへのフルアクセスが必要です。バックグラウンドアップロードには、選択した一部の写真ではなく、すべての写真へのアクセスが必要です。";
+"photoPermission.grantButton" = "フルアクセスを許可";
+"photoPermission.limitedWarning" = "フルアクセスが必要です。「選択した写真」ではバックグラウンドアップロードに不十分です。";
+"photoPermission.openSettings" = "設定を開く";
+"photoPermission.continue" = "続ける";
+
 // MARK: - Restart Required View
 "restartRequired.title" = "アプリの再起動が必要";
 "restartRequired.description" = "バックグラウンドアップロード機能を有効にするには、アプリを再起動してください";
