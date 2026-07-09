@@ -47,6 +47,18 @@ struct BackgroundUploadSettingsView: View {
                             .font(.body)
                             .foregroundColor(.red)
                     }
+                    if viewModel.showOpenSettings {
+                        Button {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "gear")
+                                Text(L10n.PhotoPermission.openSettings)
+                            }
+                        }
+                    }
                 }
             }
             
@@ -77,6 +89,7 @@ class BackgroundUploadSettingsViewModel: ObservableObject {
     @Published var isLoading: Bool = false
     @Published var errorMessage: String?
     @Published var isSupported: Bool = false
+    @Published var showOpenSettings: Bool = false
     
     private var cancellables = Set<AnyCancellable>()
     private var managerRef: Any?
@@ -137,6 +150,11 @@ class BackgroundUploadSettingsViewModel: ObservableObject {
                         self.isLoading = false
                         self.isEnabled = manager.isEnabled
                         self.errorMessage = error.localizedDescription
+                        if case BackgroundUploadError.photoLibraryNotAuthorized = error {
+                            self.showOpenSettings = true
+                        } else {
+                            self.showOpenSettings = false
+                        }
                     }
                 }
             }
