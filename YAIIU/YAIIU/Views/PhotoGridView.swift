@@ -348,18 +348,18 @@ struct PhotoGridView: View {
                             .disabled(displayCount == 0)
                         }
                     } else {
-                        ToolbarItem(placement: .navigationBarTrailing) {
-                            Menu {
-                                Button(L10n.PhotoGrid.selectAllNotUploaded) {
-                                    selectAllNotUploaded()
-                                }
-                                .disabled(hashManager.isProcessing || isSelectingAll)
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
+                        ToolbarItem(placement: .bottomBar) {
+                            Button(L10n.PhotoGrid.selectAllNotUploaded) {
+                                selectAllNotUploaded()
                             }
+                            .disabled(hashManager.isProcessing || isSelectingAll)
                         }
 
-                        ToolbarItem(placement: .navigationBarTrailing) {
+                        ToolbarItem(placement: .bottomBar) {
+                            Spacer()
+                        }
+
+                        ToolbarItem(placement: .bottomBar) {
                             Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
                                 showingUploadConfirmation = true
                             }
@@ -377,7 +377,7 @@ struct PhotoGridView: View {
                 }
             }
             .navigationViewStyle(.stack)
-            .toolbar(showingPhotoDetail ? .hidden : .visible, for: .tabBar)
+            .toolbar((showingPhotoDetail || isSelectionMode) ? .hidden : .visible, for: .tabBar)
             .animation(.easeInOut(duration: 0.2), value: showingPhotoDetail)
             
             if showingPhotoDetail && displayCount > 0 {
