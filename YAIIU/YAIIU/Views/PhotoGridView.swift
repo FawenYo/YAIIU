@@ -340,23 +340,30 @@ struct PhotoGridView: View {
                         }
                     }
                     
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        if !isSelectionMode {
+                    if !isSelectionMode {
+                        ToolbarItem(placement: .navigationBarTrailing) {
                             Button(L10n.PhotoGrid.select) {
                                 isSelectionMode = true
                             }
                             .disabled(displayCount == 0)
-                        } else {
-                            HStack(spacing: 12) {
+                        }
+                    } else {
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Menu {
                                 Button(L10n.PhotoGrid.selectAllNotUploaded) {
                                     selectAllNotUploaded()
                                 }
                                 .disabled(hashManager.isProcessing || isSelectingAll)
-                                Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
-                                    showingUploadConfirmation = true
-                                }
-                                .disabled(selectedAssets.isEmpty)
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
                             }
+                        }
+
+                        ToolbarItem(placement: .navigationBarTrailing) {
+                            Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
+                                showingUploadConfirmation = true
+                            }
+                            .disabled(selectedAssets.isEmpty)
                         }
                     }
                 }
