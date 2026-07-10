@@ -122,6 +122,9 @@ struct PhotoPermissionView: View {
             DispatchQueue.main.async {
                 self.status = newStatus
                 self.isRequesting = false
+                if newStatus == .authorized {
+                    self.settingsManager.completePhotoPermission()
+                }
             }
         }
     }
