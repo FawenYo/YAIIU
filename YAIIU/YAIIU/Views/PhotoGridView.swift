@@ -305,7 +305,11 @@ struct PhotoGridView: View {
             return filteredIndices.count
         }
     }
-    
+
+    private var isTabBarHidden: Bool {
+        showingPhotoDetail || isSelectionMode
+    }
+
     var body: some View {
         ZStack {
             NavigationView {
@@ -373,8 +377,8 @@ struct PhotoGridView: View {
                 }
             }
             .navigationViewStyle(.stack)
-            .toolbar((showingPhotoDetail || isSelectionMode) ? .hidden : .visible, for: .tabBar)
-            .animation(.easeInOut(duration: 0.2), value: showingPhotoDetail || isSelectionMode)
+            .toolbar(isTabBarHidden ? .hidden : .visible, for: .tabBar)
+            .animation(.easeInOut(duration: 0.2), value: isTabBarHidden)
             
             if showingPhotoDetail && displayCount > 0 {
                 PhotoDetailView(
