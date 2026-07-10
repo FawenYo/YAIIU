@@ -344,15 +344,17 @@ struct PhotoGridView: View {
                         }
                     }
                     
-                    if !isSelectionMode {
-                        ToolbarItem(placement: .navigationBarTrailing) {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        if !isSelectionMode {
                             Button(L10n.PhotoGrid.select) {
                                 isSelectionMode = true
                             }
                             .disabled(displayCount == 0)
                         }
-                    } else {
-                        ToolbarItemGroup(placement: .bottomBar) {
+                    }
+
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        if isSelectionMode {
                             Button(L10n.PhotoGrid.selectAllNotUploaded) {
                                 selectAllNotUploaded()
                             }
