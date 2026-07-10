@@ -44,7 +44,19 @@ struct PhotoPermissionView: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 40)
         .onAppear {
-            status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            refreshStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            refreshStatus()
+        }
+    }
+
+    private func refreshStatus() {
+        let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if currentStatus == .authorized {
+            settingsManager.completePhotoPermission()
+        } else {
+            status = currentStatus
         }
     }
 
