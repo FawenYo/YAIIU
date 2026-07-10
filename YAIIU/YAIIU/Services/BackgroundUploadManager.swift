@@ -82,15 +82,18 @@ class BackgroundUploadManager: ObservableObject {
             logInfo("Background upload extension enabled successfully", category: .upload)
 
         } catch {
-            let nsError = error as NSError
-            logError("setUploadJobExtensionEnabled failed: domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)", category: .upload)
+            if let nsError = error as NSError? {
+                logError("setUploadJobExtensionEnabled failed: domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)", category: .upload)
+            } else {
+                logError("setUploadJobExtensionEnabled failed: \(error.localizedDescription)", category: .upload)
+            }
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
             }
             throw error
         }
     }
-    
+
     func disableBackgroundUpload() async throws {
         logInfo("Disabling background upload extension...", category: .upload)
         
