@@ -348,18 +348,14 @@ struct PhotoGridView: View {
                             .disabled(displayCount == 0)
                         }
                     } else {
-                        ToolbarItem(placement: .bottomBar) {
+                        ToolbarItemGroup(placement: .bottomBar) {
                             Button(L10n.PhotoGrid.selectAllNotUploaded) {
                                 selectAllNotUploaded()
                             }
                             .disabled(hashManager.isProcessing || isSelectingAll)
-                        }
 
-                        ToolbarItem(placement: .bottomBar) {
                             Spacer()
-                        }
 
-                        ToolbarItem(placement: .bottomBar) {
                             Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
                                 showingUploadConfirmation = true
                             }
@@ -378,7 +374,7 @@ struct PhotoGridView: View {
             }
             .navigationViewStyle(.stack)
             .toolbar((showingPhotoDetail || isSelectionMode) ? .hidden : .visible, for: .tabBar)
-            .animation(.easeInOut(duration: 0.2), value: showingPhotoDetail)
+            .animation(.easeInOut(duration: 0.2), value: showingPhotoDetail || isSelectionMode)
             
             if showingPhotoDetail && displayCount > 0 {
                 PhotoDetailView(
