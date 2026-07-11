@@ -209,7 +209,7 @@ struct PhotoPermissionView: View {
             } catch {
                 await MainActor.run {
                     backgroundUploadLoading = false
-                    backgroundUploadEnabled = manager.isEnabled
+                    backgroundUploadEnabled = !enabled
                     backgroundUploadError = error.localizedDescription
                 }
             }
