@@ -214,6 +214,8 @@
 "backgroundUpload.error.photoLibraryNotAuthorized" = "バックグラウンドアップロードを有効にするには、写真ライブラリへのフルアクセス権限が必要です";
 "backgroundUpload.error.notLoggedIn" = "まずImmichサーバーにログインしてください";
 "backgroundUpload.error.extensionNotAvailable" = "バックグラウンドアップロード拡張機能が利用できません";
+"backgroundUpload.lastUploadLabel" = "前回のバックグラウンドアップロード";
+"backgroundUpload.neverUploaded" = "未実行";
 
 // MARK: - Initial Setup View
 "initialSetup.title" = "セットアップ中";

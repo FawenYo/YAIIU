@@ -124,6 +124,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 fileSize: 0,
                 isDuplicate: false
             )
+            SharedSettings.shared.lastBackgroundUploadAt = Date()
 
             try library.performChangesAndWait {
                 guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }

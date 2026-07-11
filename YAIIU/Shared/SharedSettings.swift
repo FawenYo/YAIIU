@@ -19,6 +19,7 @@ class SharedSettings {
     private let uploadedAssetIdentifiersKey = "immich_uploaded_asset_identifiers"
     private let lastAppVersionKey = "yaiiu_last_app_version"
     private let cloudIdSyncCompletedKey = "yaiiu_cloud_id_sync_completed"
+    private let lastBackgroundUploadAtKey = "yaiiu_last_background_upload_at"
     
     // MARK: - Keychain
     private let keychainService = "com.fawenyo.yaiiu.shared"
@@ -92,6 +93,17 @@ class SharedSettings {
         }
     }
     
+    /// Timestamp of the most recent successful background upload, set by BackgroundUploadExtension.
+    var lastBackgroundUploadAt: Date? {
+        get {
+            let timestamp = userDefaults?.double(forKey: lastBackgroundUploadAtKey) ?? 0
+            return timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
+        }
+        set {
+            userDefaults?.set(newValue?.timeIntervalSince1970, forKey: lastBackgroundUploadAtKey)
+        }
+    }
+
     // MARK: - Change Token to track photo library changes
     
     var lastProcessedChangeToken: Data? {

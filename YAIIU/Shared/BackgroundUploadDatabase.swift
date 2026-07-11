@@ -284,7 +284,7 @@ final class BackgroundUploadDatabase {
             return Int(sqlite3_column_int(stmt, 0))
         }
     }
-    
+
     // MARK: - Change Token
     
     func saveChangeToken(_ data: Data?) {

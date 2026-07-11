@@ -214,6 +214,8 @@
 "backgroundUpload.error.photoLibraryNotAuthorized" = "Vollständiger Zugriff auf die Fotobibliothek ist erforderlich, um den Hintergrund-Upload zu aktivieren";
 "backgroundUpload.error.notLoggedIn" = "Bitte melden Sie sich zuerst beim Immich-Server an";
 "backgroundUpload.error.extensionNotAvailable" = "Hintergrund-Upload-Erweiterung ist nicht verfügbar";
+"backgroundUpload.lastUploadLabel" = "Letzter Hintergrund-Upload";
+"backgroundUpload.neverUploaded" = "Nie";
 
 // MARK: - Initial Setup View
 "initialSetup.title" = "Einrichtung";

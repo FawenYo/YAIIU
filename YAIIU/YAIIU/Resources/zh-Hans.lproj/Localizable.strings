@@ -214,6 +214,8 @@
 "backgroundUpload.error.photoLibraryNotAuthorized" = "需要完整的照片库访问权限才能启用后台上传";
 "backgroundUpload.error.notLoggedIn" = "请先登录 Immich 服务器";
 "backgroundUpload.error.extensionNotAvailable" = "后台上传扩展不可用";
+"backgroundUpload.lastUploadLabel" = "上次后台上传";
+"backgroundUpload.neverUploaded" = "尚未执行过";
 
 // MARK: - Initial Setup View
 "initialSetup.title" = "正在设置";

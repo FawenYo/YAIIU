@@ -214,6 +214,8 @@
 "backgroundUpload.error.photoLibraryNotAuthorized" = "백그라운드 업로드를 활성화하려면 사진 라이브러리에 대한 전체 접근 권한이 필요합니다";
 "backgroundUpload.error.notLoggedIn" = "먼저 Immich 서버에 로그인하세요";
 "backgroundUpload.error.extensionNotAvailable" = "백그라운드 업로드 확장을 사용할 수 없습니다";
+"backgroundUpload.lastUploadLabel" = "마지막 백그라운드 업로드";
+"backgroundUpload.neverUploaded" = "없음";
 
 // MARK: - Initial Setup View
 "initialSetup.title" = "설정 중";

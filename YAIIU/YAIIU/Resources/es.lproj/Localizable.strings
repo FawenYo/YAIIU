@@ -214,6 +214,8 @@
 "backgroundUpload.error.photoLibraryNotAuthorized" = "Se requiere acceso completo a la biblioteca de fotos para activar la subida en segundo plano";
 "backgroundUpload.error.notLoggedIn" = "Por favor inicia sesión en el servidor Immich primero";
 "backgroundUpload.error.extensionNotAvailable" = "La extensión de subida en segundo plano no está disponible";
+"backgroundUpload.lastUploadLabel" = "Última subida en segundo plano";
+"backgroundUpload.neverUploaded" = "Nunca";
 
 // MARK: - Initial Setup View
 "initialSetup.title" = "Configurando";

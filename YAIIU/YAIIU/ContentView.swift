@@ -79,6 +79,7 @@ struct SettingsView: View {
     @State private var backgroundUploadEnabled = false
     @State private var backgroundUploadLoading = false
     @State private var backgroundUploadError: String?
+    @State private var lastBackgroundUploadDate: Date?
     
     @ObservedObject private var networkReachability = NetworkReachability.shared
     @ObservedObject private var languageManager = LanguageManager.shared
@@ -178,6 +179,18 @@ struct SettingsView: View {
                                 Text(error)
                                     .font(.caption)
                                     .foregroundColor(.red)
+                            }
+                        }
+
+                        HStack {
+                            Text(L10n.BackgroundUpload.lastUploadLabel)
+                            Spacer()
+                            if let lastBackgroundUploadDate {
+                                Text(lastBackgroundUploadDate, format: .relative(presentation: .named))
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text(L10n.BackgroundUpload.neverUploaded)
+                                    .foregroundColor(.secondary)
                             }
                         }
                     }
@@ -399,6 +412,7 @@ struct SettingsView: View {
             backgroundUploadEnabled = manager.isEnabled
             backgroundUploadError = manager.errorMessage
         }
+        lastBackgroundUploadDate = SharedSettings.shared.lastBackgroundUploadAt
     }
     
     private func toggleBackgroundUpload(enabled: Bool) {

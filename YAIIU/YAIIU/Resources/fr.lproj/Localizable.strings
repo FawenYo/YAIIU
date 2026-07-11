@@ -214,6 +214,8 @@
 "backgroundUpload.error.photoLibraryNotAuthorized" = "L'accès complet à la bibliothèque de photos est requis pour activer le téléversement en arrière-plan";
 "backgroundUpload.error.notLoggedIn" = "Veuillez d'abord vous connecter au serveur Immich";
 "backgroundUpload.error.extensionNotAvailable" = "L'extension de téléversement en arrière-plan n'est pas disponible";
+"backgroundUpload.lastUploadLabel" = "Dernier téléversement en arrière-plan";
+"backgroundUpload.neverUploaded" = "Jamais";
 
 // MARK: - Initial Setup View
 "initialSetup.title" = "Configuration";
