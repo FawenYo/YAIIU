@@ -428,11 +428,19 @@ struct PhotoGridView: View {
                 processingTask?.cancel()
                 processingTask = Task(priority: .background) {
                     if Task.isCancelled { return }
-                    
+
                     await MainActor.run {
                         guard !Task.isCancelled, !photoLibraryManager.isLoading else { return }
                         recomputeCounts()
                     }
+                }
+
+                // performAutoSync() on first appear can race ahead of the initial
+                // asset fetch and no-op in startBackgroundProcessing() because
+                // assetCount was still 0. Retry now that assets have loaded so
+                // upload-status icons populate without requiring a manual refresh.
+                if !hashManager.isProcessing {
+                    startBackgroundProcessing()
                 }
             }
         }
