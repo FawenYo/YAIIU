@@ -21,7 +21,6 @@ class ImmichSQLiteImporter {
         let checksum: String?
         let width: Int?
         let height: Int?
-        let durationInSeconds: Int?
         let isFavorite: Bool
     }
     
@@ -91,7 +90,7 @@ class ImmichSQLiteImporter {
         logDebug("Found \(remoteChecksums.count) remote checksums", category: .importer)
         
         let localSql = """
-        SELECT id, name, type, checksum, width, height, duration_in_seconds, is_favorite
+        SELECT id, name, type, checksum, width, height, is_favorite
         FROM local_asset_entity
         WHERE checksum IS NOT NULL AND checksum != '';
         """
