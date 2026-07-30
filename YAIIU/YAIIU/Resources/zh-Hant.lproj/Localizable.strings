@@ -214,6 +214,7 @@
 "backgroundUpload.notSupported" = "不支援此功能";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "需要完整的照片庫存取權限才能啟用背景上傳";
 "backgroundUpload.error.notLoggedIn" = "請先登入 Immich 伺服器";
+"backgroundUpload.error.notUsingImmichProxy" = "背景上傳需要將伺服器 URL 設為 immich-proxy，請將 YAIIU 指向 immich-proxy，而不是官方 Immich 伺服器。";
 "backgroundUpload.error.extensionNotAvailable" = "背景上傳擴充功能無法使用";
 "backgroundUpload.lastUploadLabel" = "上次背景上傳";
 "backgroundUpload.neverUploaded" = "尚未執行過";

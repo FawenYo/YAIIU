@@ -6,6 +6,10 @@ import SwiftUI
 @available(iOS 26.1, *)
 class BackgroundUploadManager: ObservableObject {
     static let shared = BackgroundUploadManager()
+    private struct ProxyHealthResponse: Decodable {
+        let status: String
+        let time: String
+    }
     
     /// Whether background upload is enabled
     @Published var isEnabled: Bool = false
@@ -52,6 +56,8 @@ class BackgroundUploadManager: ObservableObject {
             logError("Not logged in", category: .upload)
             throw error
         }
+
+        try await validateImmichProxyServer()
         
         // Enable the extension
         let library = PHPhotoLibrary.shared()
@@ -183,6 +189,65 @@ class BackgroundUploadManager: ObservableObject {
         
         sharedSettings.clearAll()
     }
+
+    private func validateImmichProxyServer() async throws {
+        let serverURL = sharedSettings.serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !serverURL.isEmpty else {
+            let error = BackgroundUploadError.unknown("Server URL is empty")
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+            }
+            throw error
+        }
+
+        guard let healthURL = URL(string: "\(serverURL)/health") else {
+            let error = BackgroundUploadError.unknown("Invalid server URL: \(serverURL)")
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+            }
+            throw error
+        }
+
+        var request = URLRequest(url: healthURL)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                httpResponse.statusCode == 200
+            else {
+                let error = BackgroundUploadError.notUsingImmichProxy
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                }
+                logError("Background upload blocked: /health does not match immich-proxy", category: .upload)
+                throw error
+            }
+
+            guard let health = try? JSONDecoder().decode(ProxyHealthResponse.self, from: data),
+                health.status.lowercased() == "ok",
+                !health.time.isEmpty
+            else {
+                let error = BackgroundUploadError.notUsingImmichProxy
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
+                }
+                logError("Background upload blocked: health response format does not match immich-proxy", category: .upload)
+                throw error
+            }
+        } catch let error as BackgroundUploadError {
+            throw error
+        } catch {
+            let wrappedError = BackgroundUploadError.unknown(error.localizedDescription)
+            await MainActor.run {
+                self.errorMessage = wrappedError.localizedDescription
+            }
+            throw wrappedError
+        }
+    }
 }
 
 // MARK: - Error Types
@@ -190,6 +255,7 @@ class BackgroundUploadManager: ObservableObject {
 enum BackgroundUploadError: LocalizedError {
     case photoLibraryNotAuthorized
     case notLoggedIn
+    case notUsingImmichProxy
     case extensionNotAvailable
     case unknown(String)
     
@@ -199,6 +265,8 @@ enum BackgroundUploadError: LocalizedError {
             return L10n.BackgroundUpload.errorPhotoLibraryNotAuthorized
         case .notLoggedIn:
             return L10n.BackgroundUpload.errorNotLoggedIn
+        case .notUsingImmichProxy:
+            return L10n.BackgroundUpload.errorNotUsingImmichProxy
         case .extensionNotAvailable:
             return L10n.BackgroundUpload.errorExtensionNotAvailable
         case .unknown(let message):

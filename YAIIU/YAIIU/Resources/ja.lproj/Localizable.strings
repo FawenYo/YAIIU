@@ -213,6 +213,7 @@
 "backgroundUpload.notSupported" = "機能がサポートされていません";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "バックグラウンドアップロードを有効にするには、写真ライブラリへのフルアクセス権限が必要です";
 "backgroundUpload.error.notLoggedIn" = "まずImmichサーバーにログインしてください";
+"backgroundUpload.error.notUsingImmichProxy" = "バックグラウンドアップロードを利用するには、サーバーURLにimmich-proxyを指定する必要があります。YAIIUの接続先を公式Immichサーバーではなくimmich-proxyに設定してください。";
 "backgroundUpload.error.extensionNotAvailable" = "バックグラウンドアップロード拡張機能が利用できません";
 "backgroundUpload.lastUploadLabel" = "前回のバックグラウンドアップロード";
 "backgroundUpload.neverUploaded" = "未実行";

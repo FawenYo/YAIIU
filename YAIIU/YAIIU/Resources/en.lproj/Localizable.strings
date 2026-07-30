@@ -214,6 +214,7 @@
 "backgroundUpload.notSupported" = "Feature not supported";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "Full photo library access is required to enable background upload";
 "backgroundUpload.error.notLoggedIn" = "Please login to Immich server first";
+"backgroundUpload.error.notUsingImmichProxy" = "Background upload requires immich-proxy as the server URL. Please point YAIIU to immich-proxy instead of the official Immich server.";
 "backgroundUpload.error.extensionNotAvailable" = "Background upload extension is not available";
 "backgroundUpload.lastUploadLabel" = "Last Background Upload";
 "backgroundUpload.neverUploaded" = "Never";

@@ -213,6 +213,7 @@
 "backgroundUpload.notSupported" = "Función no soportada";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "Se requiere acceso completo a la biblioteca de fotos para activar la subida en segundo plano";
 "backgroundUpload.error.notLoggedIn" = "Por favor inicia sesión en el servidor Immich primero";
+"backgroundUpload.error.notUsingImmichProxy" = "La subida en segundo plano requiere que la URL del servidor apunte a immich-proxy. Configura YAIIU para usar immich-proxy en lugar del servidor oficial de Immich.";
 "backgroundUpload.error.extensionNotAvailable" = "La extensión de subida en segundo plano no está disponible";
 "backgroundUpload.lastUploadLabel" = "Última subida en segundo plano";
 "backgroundUpload.neverUploaded" = "Nunca";
