@@ -430,6 +430,7 @@ enum L10n {
         static var notSupported: String { "backgroundUpload.notSupported".localized }
         static var errorPhotoLibraryNotAuthorized: String { "backgroundUpload.error.photoLibraryNotAuthorized".localized }
         static var errorNotLoggedIn: String { "backgroundUpload.error.notLoggedIn".localized }
+        static var errorNotUsingImmichProxy: String { "backgroundUpload.error.notUsingImmichProxy".localized }
         static var errorExtensionNotAvailable: String { "backgroundUpload.error.extensionNotAvailable".localized }
         static var lastUploadLabel: String { "backgroundUpload.lastUploadLabel".localized }
         static var neverUploaded: String { "backgroundUpload.neverUploaded".localized }
