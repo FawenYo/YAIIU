@@ -200,7 +200,7 @@ class BackgroundUploadManager: ObservableObject {
             throw error
         }
 
-        guard let healthURL = URL(string: "\(serverURL)/health") else {
+        guard let healthURL = URL(string: serverURL)?.appendingPathComponent("health") else {
             let error = BackgroundUploadError.unknown("Invalid server URL: \(serverURL)")
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
