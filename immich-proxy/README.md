@@ -89,13 +89,14 @@ go run .
 
 ### Using Docker
 
-```bash
-docker run -p 8080:8080 \
-  -e IMMICH_SERVER_URL=http://your-immich-server:2283 \
-  fawenyo/immich-proxy:0.1.0
-```
+> [!IMPORTANT]
+> The currently published image tags are older than this source tree and do **not**
+> forward the `Authorization` header. Since the app switched from API-key login to
+> account login, background uploads through those images fail with
+> `401 {"message":"Authentication required"}`.
+> Until a new image is published, build from source as shown below.
 
-Or build your own:
+Build from source (recommended):
 
 ```bash
 cd immich-proxy
@@ -103,6 +104,14 @@ docker build -t immich-proxy .
 docker run -p 8080:8080 \
   -e IMMICH_SERVER_URL=http://your-immich-server:2283 \
   immich-proxy
+```
+
+Published image:
+
+```bash
+docker run -p 8080:8080 \
+  -e IMMICH_SERVER_URL=http://your-immich-server:2283 \
+  fawenyo/immich-proxy:0.1.0
 ```
 
 ### Using Helm (Kubernetes)
