@@ -769,7 +769,7 @@ class ImmichAPIService: NSObject {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 300
 
-        let body: [String: Any] = ["types": ["AssetMetadataV1", "AssetMetadataDeleteV1"]]
+        let body: [String: Any] = ["types": ["AssetMetadataV1"]]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
