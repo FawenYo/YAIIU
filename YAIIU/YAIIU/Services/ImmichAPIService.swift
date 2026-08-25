@@ -807,28 +807,38 @@ class ImmichAPIService: NSObject {
         var acksByType: [String: String] = [:]
 
         for object in streamObjects(from: data, description: "Asset metadata stream") {
-            collectLatestAck(from: object, into: &acksByType)
-
-            guard let type = object["type"] as? String,
-                  let eventData = object["data"] as? [String: Any],
-                  let assetId = eventData["assetId"] as? String,
-                  let key = eventData["key"] as? String,
-                  key == RemoteAssetMetadataItem.mobileAppKey
-            else {
+            guard let type = object["type"] as? String else {
                 continue
             }
 
             switch type {
             case "AssetMetadataV1":
-                guard let value = eventData["value"] as? [String: Any],
+                guard let eventData = object["data"] as? [String: Any],
+                      let assetId = eventData["assetId"] as? String,
+                      let key = eventData["key"] as? String,
+                      key == RemoteAssetMetadataItem.mobileAppKey,
+                      let value = eventData["value"] as? [String: Any],
                       let iCloudId = value["iCloudId"] as? String,
                       !iCloudId.isEmpty
                 else {
                     continue
                 }
                 iCloudIdUpserts[assetId] = iCloudId
+                iCloudIdDeletes.remove(assetId)
+                collectLatestAck(from: object, into: &acksByType)
             case "AssetMetadataDeleteV1":
+                guard let eventData = object["data"] as? [String: Any],
+                      let assetId = eventData["assetId"] as? String,
+                      let key = eventData["key"] as? String,
+                      key == RemoteAssetMetadataItem.mobileAppKey
+                else {
+                    continue
+                }
                 iCloudIdDeletes.insert(assetId)
+                iCloudIdUpserts.removeValue(forKey: assetId)
+                collectLatestAck(from: object, into: &acksByType)
+            case "SyncAckV1":
+                collectLatestAck(from: object, into: &acksByType)
             default:
                 break
             }
@@ -846,17 +856,14 @@ class ImmichAPIService: NSObject {
         var acksByType: [String: String] = [:]
 
         for object in streamObjects(from: data, description: "Asset stream") {
-            collectLatestAck(from: object, into: &acksByType)
-
-            guard let type = object["type"] as? String,
-                  let entityData = object["data"] as? [String: Any]
-            else {
+            guard let type = object["type"] as? String else {
                 continue
             }
 
             switch type {
             case "AssetV2":
-                guard let id = entityData["id"] as? String,
+                guard let entityData = object["data"] as? [String: Any],
+                      let id = entityData["id"] as? String,
                       let checksum = entityData["checksum"] as? String
                 else {
                     continue
@@ -870,11 +877,17 @@ class ImmichAPIService: NSObject {
                     ownerId: entityData["ownerId"] as? String,
                     deletedAt: entityData["deletedAt"] as? String
                 ))
+                collectLatestAck(from: object, into: &acksByType)
             case "AssetDeleteV1":
-                guard let assetId = entityData["assetId"] as? String else {
+                guard let entityData = object["data"] as? [String: Any],
+                      let assetId = entityData["assetId"] as? String
+                else {
                     continue
                 }
                 assets.append(StreamAsset.deleted(id: assetId))
+                collectLatestAck(from: object, into: &acksByType)
+            case "SyncAckV1":
+                collectLatestAck(from: object, into: &acksByType)
             default:
                 break
             }

@@ -84,6 +84,10 @@ To keep the scope clear:
 
 ⚠️ **Note:** This project was developed with AI assistance As a result, some parts of the codebase may be less organized or follow inconsistent patterns. Code refactoring and cleanup contributions are especially welcome!
 
+The server asset cache preserves an existing `icloud_id` when an asset stream event omits mobile-app metadata. Metadata stream upserts and deletes update existing cache rows by Immich asset ID after asset changes are persisted and before checkpoints are acknowledged.
+
+This synchronization is incremental going forward. Existing cache rows whose `icloud_id` is already null are not force-rebuilt; repopulating them requires a future matching metadata event or an explicit cache refresh.
+
 ## Contributing
 
 Contributions are very welcome, please feel free to open issues or submit PRs, even small PRs are appreciated!

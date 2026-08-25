@@ -10,82 +10,186 @@ final class ServerAssetRepository {
     
     // MARK: - Save Methods
     
-    func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String = "full") {
+    @discardableResult
+    func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String = "full") -> Bool {
         connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
+            guard let self = self else { return false }
             
             logInfo("Saving \(assets.count) server assets to cache (sync type: \(syncType))", category: .database)
             
             self.connection.beginTransaction()
+            var failed = false
             
             let sql = """
-            INSERT OR REPLACE INTO server_assets_cache
+            INSERT INTO server_assets_cache
             (immich_id, checksum, original_filename, asset_type, updated_at, synced_at, icloud_id, owner_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(immich_id) DO UPDATE SET
+                checksum = excluded.checksum,
+                original_filename = excluded.original_filename,
+                asset_type = excluded.asset_type,
+                updated_at = excluded.updated_at,
+                synced_at = excluded.synced_at,
+                icloud_id = COALESCE(excluded.icloud_id, server_assets_cache.icloud_id),
+                owner_id = excluded.owner_id;
             """
             
             var statement: OpaquePointer?
-            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                let syncTime = Date().timeIntervalSince1970
-                
-                for asset in assets {
-                    sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
-                    sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
-                    
-                    if let filename = asset.originalFilename {
-                        sqlite3_bind_text(statement, 3, (filename as NSString).utf8String, -1, nil)
-                    } else {
-                        sqlite3_bind_null(statement, 3)
-                    }
-                    
-                    if let type = asset.assetType {
-                        sqlite3_bind_text(statement, 4, (type as NSString).utf8String, -1, nil)
-                    } else {
-                        sqlite3_bind_null(statement, 4)
-                    }
-                    
-                    if let updatedAt = asset.updatedAt {
-                        sqlite3_bind_text(statement, 5, (updatedAt as NSString).utf8String, -1, nil)
-                    } else {
-                        sqlite3_bind_null(statement, 5)
-                    }
-                    
-                    sqlite3_bind_double(statement, 6, syncTime)
-                    
-                    if let iCloudId = asset.iCloudId {
-                        sqlite3_bind_text(statement, 7, (iCloudId as NSString).utf8String, -1, nil)
-                    } else {
-                        sqlite3_bind_null(statement, 7)
-                    }
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare server asset upsert: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
+            let syncTime = Date().timeIntervalSince1970
 
-                    if let ownerId = asset.ownerId {
-                        sqlite3_bind_text(statement, 8, (ownerId as NSString).utf8String, -1, nil)
-                    } else {
-                        sqlite3_bind_null(statement, 8)
-                    }
-                    
-                    if sqlite3_step(statement) != SQLITE_DONE {
-                        logError("Failed to save server asset: \(self.connection.lastErrorMessage)", category: .database)
-                    }
-                    
-                    sqlite3_reset(statement)
+            for asset in assets {
+                sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
+
+                if let filename = asset.originalFilename {
+                    sqlite3_bind_text(statement, 3, (filename as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 3)
                 }
+
+                if let type = asset.assetType {
+                    sqlite3_bind_text(statement, 4, (type as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 4)
+                }
+
+                if let updatedAt = asset.updatedAt {
+                    sqlite3_bind_text(statement, 5, (updatedAt as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 5)
+                }
+
+                sqlite3_bind_double(statement, 6, syncTime)
+
+                if let iCloudId = asset.iCloudId {
+                    sqlite3_bind_text(statement, 7, (iCloudId as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 7)
+                }
+
+                if let ownerId = asset.ownerId {
+                    sqlite3_bind_text(statement, 8, (ownerId as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 8)
+                }
+
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    failed = true
+                    logError("Failed to save server asset: \(self.connection.lastErrorMessage)", category: .database)
+                    break
+                }
+
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
             }
             sqlite3_finalize(statement)
-            
+
+            if failed {
+                self.connection.rollbackTransaction()
+                return false
+            }
+
             self.connection.commitTransaction()
-            
             logInfo("Server assets cache updated successfully", category: .database)
+            return true
         }
     }
     
+    @discardableResult
+    func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool {
+        guard !iCloudIdsByImmichId.isEmpty else { return true }
+
+        return connection.dbQueue.sync { [weak self] in
+            guard let self = self else { return false }
+
+            self.connection.beginTransaction()
+            let sql = "UPDATE server_assets_cache SET icloud_id = ? WHERE immich_id = ?;"
+            var statement: OpaquePointer?
+            var failed = false
+
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare iCloud ID updates: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
+
+            for (immichId, iCloudId) in iCloudIdsByImmichId {
+                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    failed = true
+                    logError("Failed to update iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
+                    break
+                }
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+            }
+
+            sqlite3_finalize(statement)
+            if failed {
+                self.connection.rollbackTransaction()
+                return false
+            }
+
+            self.connection.commitTransaction()
+            logInfo("Updated iCloud IDs for \(iCloudIdsByImmichId.count) cached assets", category: .database)
+            return true
+        }
+    }
+
+    @discardableResult
+    func clearICloudIds(for immichIds: Set<String>) -> Bool {
+        guard !immichIds.isEmpty else { return true }
+
+        return connection.dbQueue.sync { [weak self] in
+            guard let self = self else { return false }
+
+            self.connection.beginTransaction()
+            let sql = "UPDATE server_assets_cache SET icloud_id = NULL WHERE immich_id = ?;"
+            var statement: OpaquePointer?
+            var failed = false
+
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare iCloud ID deletes: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
+
+            for immichId in immichIds {
+                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    failed = true
+                    logError("Failed to clear iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
+                    break
+                }
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+            }
+
+            sqlite3_finalize(statement)
+            if failed {
+                self.connection.rollbackTransaction()
+                return false
+            }
+
+            self.connection.commitTransaction()
+            logInfo("Cleared iCloud IDs for \(immichIds.count) cached assets", category: .database)
+            return true
+        }
+    }
+
     // MARK: - Delete Methods
     
-    func deleteServerAssets(_ immichIds: [String]) {
+    @discardableResult
+    func deleteServerAssets(_ immichIds: [String]) -> Bool {
         connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
-            
-            if immichIds.isEmpty { return }
+            guard let self = self else { return false }
+            guard !immichIds.isEmpty else { return true }
             
             logInfo("Deleting \(immichIds.count) assets from server cache", category: .database)
             
@@ -93,17 +197,32 @@ final class ServerAssetRepository {
             
             let sql = "DELETE FROM server_assets_cache WHERE immich_id = ?;"
             var statement: OpaquePointer?
-            
-            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                for immichId in immichIds {
-                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
-                    sqlite3_step(statement)
-                    sqlite3_reset(statement)
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare server asset deletes: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
+
+            var failed = false
+            for immichId in immichIds {
+                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    failed = true
+                    logError("Failed to delete server asset: \(self.connection.lastErrorMessage)", category: .database)
+                    break
                 }
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
             }
             sqlite3_finalize(statement)
-            
+
+            if failed {
+                self.connection.rollbackTransaction()
+                return false
+            }
+
             self.connection.commitTransaction()
+            return true
         }
     }
     
@@ -318,9 +437,10 @@ final class ServerAssetRepository {
     
     // MARK: - Sync Metadata
 
-    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) {
+    @discardableResult
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) -> Bool {
         connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
+            guard let self = self else { return false }
 
             let sql = """
             INSERT OR REPLACE INTO sync_metadata
@@ -329,23 +449,28 @@ final class ServerAssetRepository {
             """
 
             var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                logError("Failed to prepare sync metadata save: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
 
-            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_double(statement, 1, lastSyncTime.timeIntervalSince1970)
-                sqlite3_bind_text(statement, 2, (syncType as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 3, (userId as NSString).utf8String, -1, nil)
-                sqlite3_bind_int(statement, 4, Int32(totalAssets))
-                if let ack = lastAck {
-                    sqlite3_bind_text(statement, 5, (ack as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 5)
-                }
+            sqlite3_bind_double(statement, 1, lastSyncTime.timeIntervalSince1970)
+            sqlite3_bind_text(statement, 2, (syncType as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 3, (userId as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(statement, 4, Int32(totalAssets))
+            if let ack = lastAck {
+                sqlite3_bind_text(statement, 5, (ack as NSString).utf8String, -1, nil)
+            } else {
+                sqlite3_bind_null(statement, 5)
+            }
 
-                if sqlite3_step(statement) != SQLITE_DONE {
-                    logError("Failed to save sync metadata: \(self.connection.lastErrorMessage)", category: .database)
-                }
+            if sqlite3_step(statement) != SQLITE_DONE {
+                logError("Failed to save sync metadata: \(self.connection.lastErrorMessage)", category: .database)
+                sqlite3_finalize(statement)
+                return false
             }
             sqlite3_finalize(statement)
+            return true
         }
     }
 
