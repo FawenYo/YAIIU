@@ -805,6 +805,7 @@ class ImmichAPIService: NSObject {
         var iCloudIdUpserts: [String: String] = [:]
         var iCloudIdDeletes: Set<String> = []
         var acksByType: [String: String] = [:]
+        var state: SyncStreamResultState = .data
 
         for object in streamObjects(from: data, description: "Asset metadata stream") {
             guard let type = object["type"] as? String else {
@@ -839,6 +840,10 @@ class ImmichAPIService: NSObject {
                 collectLatestAck(from: object, into: &acksByType)
             case "SyncAckV1":
                 collectLatestAck(from: object, into: &acksByType)
+            case "SyncResetV1":
+                if let ack = validResetAck(from: object) {
+                    state = .reset(ack: ack)
+                }
             default:
                 break
             }
@@ -847,13 +852,15 @@ class ImmichAPIService: NSObject {
         return AssetMetadataStreamResult(
             iCloudIdUpserts: iCloudIdUpserts,
             iCloudIdDeletes: iCloudIdDeletes,
-            acksByType: acksByType
+            acksByType: acksByType,
+            state: state
         )
     }
 
     static func parseAssetStream(_ data: Data) -> AssetStreamResult {
         var assets: [StreamAsset] = []
         var acksByType: [String: String] = [:]
+        var state: SyncStreamResultState = .data
 
         for object in streamObjects(from: data, description: "Asset stream") {
             guard let type = object["type"] as? String else {
@@ -888,12 +895,16 @@ class ImmichAPIService: NSObject {
                 collectLatestAck(from: object, into: &acksByType)
             case "SyncAckV1":
                 collectLatestAck(from: object, into: &acksByType)
+            case "SyncResetV1":
+                if let ack = validResetAck(from: object) {
+                    state = .reset(ack: ack)
+                }
             default:
                 break
             }
         }
 
-        return AssetStreamResult(assets: assets, acksByType: acksByType)
+        return AssetStreamResult(assets: assets, acksByType: acksByType, state: state)
     }
 
     private static func streamObjects(from data: Data, description: String) -> [[String: Any]] {
@@ -905,6 +916,20 @@ class ImmichAPIService: NSObject {
                 return nil
             }
         }
+    }
+
+    private static func validResetAck(from object: [String: Any]) -> String? {
+        guard object["data"] is [String: Any],
+              let ack = object["ack"] as? String,
+              let separator = ack.firstIndex(of: "|"),
+              ack[..<separator] == "SyncResetV1",
+              !ack[ack.index(after: separator)...].isEmpty,
+              !ack[ack.index(after: separator)...].contains("|")
+        else {
+            return nil
+        }
+
+        return ack
     }
 
     private static func collectLatestAck(
@@ -1070,19 +1095,36 @@ struct StreamAsset {
     }
 }
 
+enum SyncStreamResultState {
+    case data
+    case reset(ack: String)
+}
+
 struct AssetMetadataStreamResult {
     let iCloudIdUpserts: [String: String]
     let iCloudIdDeletes: Set<String>
     let acksByType: [String: String]
+    let state: SyncStreamResultState
 
     var acks: [String] { Array(acksByType.values) }
+
+    var resetAck: String? {
+        guard case .reset(let ack) = state else { return nil }
+        return ack
+    }
 }
 
 struct AssetStreamResult {
     let assets: [StreamAsset]
     let acksByType: [String: String]
+    let state: SyncStreamResultState
 
     var acks: [String] { Array(acksByType.values) }
+
+    var resetAck: String? {
+        guard case .reset(let ack) = state else { return nil }
+        return ack
+    }
 }
 
 struct LoginResponse: Codable {

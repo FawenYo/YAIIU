@@ -104,7 +104,8 @@ class ServerAssetSyncService {
     private func performSync(
         serverURL: String,
         apiKey: String,
-        progressHandler: ((SyncProgress) -> Void)?
+        progressHandler: ((SyncProgress) -> Void)?,
+        resetRetryRemaining: Bool = true
     ) async throws -> SyncResult {
         logInfo("Starting server assets sync", category: .sync)
 
@@ -127,6 +128,26 @@ class ServerAssetSyncService {
             serverURL: serverURL,
             apiKey: apiKey
         )
+
+        let resetAcks = [metadataResult.resetAck, streamResult.resetAck].compactMap { $0 }
+        if !resetAcks.isEmpty {
+            guard resetRetryRemaining else {
+                throw SyncError.repeatedServerReset
+            }
+
+            clearCache()
+            try await apiService.sendSyncAck(
+                acks: Array(Set(resetAcks)).sorted(),
+                serverURL: serverURL,
+                apiKey: apiKey
+            )
+            return try await performSync(
+                serverURL: serverURL,
+                apiKey: apiKey,
+                progressHandler: progressHandler,
+                resetRetryRemaining: false
+            )
+        }
 
         let allAssets = streamResult.assets
         logInfo(
@@ -233,6 +254,7 @@ struct SyncResult {
 enum SyncError: LocalizedError {
     case syncInProgress
     case syncFailed(reason: String)
+    case repeatedServerReset
 
     var errorDescription: String? {
         switch self {
@@ -240,6 +262,8 @@ enum SyncError: LocalizedError {
             return "Sync already in progress"
         case .syncFailed(let reason):
             return "Sync failed: \(reason)"
+        case .repeatedServerReset:
+            return "Sync failed: Server requested another reset after rebuilding the sync checkpoint"
         }
     }
 }
