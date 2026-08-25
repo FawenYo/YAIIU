@@ -900,15 +900,15 @@ class ImmichAPIService: NSObject {
     ) {
         guard let type = object["type"] as? String,
               type != "SyncCompleteV1",
-              let ack = object["ack"] as? String
+              let ack = object["ack"] as? String,
+              let separator = ack.firstIndex(of: "|"),
+              separator != ack.startIndex
         else {
             return
         }
 
-        let ackType = type == "SyncAckV1" ? object["ackType"] as? String : type
-        if let ackType {
-            acksByType[ackType] = ack
-        }
+        let ackType = String(ack[..<separator])
+        acksByType[ackType] = ack
     }
 
 

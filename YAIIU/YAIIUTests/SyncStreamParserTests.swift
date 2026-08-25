@@ -36,7 +36,7 @@ final class SyncStreamParserTests: XCTestCase {
         {"type":"AssetMetadataV1","ack":"AssetMetadataV1|ack-1","data":{"assetId":"asset-1","key":"mobile-app","value":{"iCloudId":"cloud-1"}}}
         {"type":"AssetMetadataDeleteV1","ack":"AssetMetadataDeleteV1|ack-1","data":{"assetId":"asset-2","key":"mobile-app"}}
         {"type":"AssetMetadataV1","ack":"AssetMetadataV1|ack-2","data":{"assetId":"asset-3","key":"mobile-app","value":{"iCloudId":"cloud-3"}}}
-        {"type":"SyncAckV1","ackType":"AssetMetadataDeleteV1","ack":"AssetMetadataDeleteV1|ack-2","data":{}}
+        {"type":"SyncAckV1","ack":"AssetMetadataDeleteV1|backfill-complete","data":{}}
         {"type":"SyncCompleteV1","ack":"completion-ack","data":{}}
         """.utf8)
 
@@ -44,7 +44,7 @@ final class SyncStreamParserTests: XCTestCase {
 
         XCTAssertEqual(result.acksByType, [
             "AssetMetadataV1": "AssetMetadataV1|ack-2",
-            "AssetMetadataDeleteV1": "AssetMetadataDeleteV1|ack-2",
+            "AssetMetadataDeleteV1": "AssetMetadataDeleteV1|backfill-complete",
         ])
         XCTAssertEqual(Set(result.acks), Set(result.acksByType.values))
     }
@@ -53,7 +53,7 @@ final class SyncStreamParserTests: XCTestCase {
         let data = Data("""
         {"type":"AssetV2","ack":"AssetV2|ack-1","data":{"id":"asset-1","checksum":"checksum-1","originalFileName":"photo.jpg","fileCreatedAt":"2025-01-01T00:00:00Z","type":"IMAGE","ownerId":"owner-1"}}
         {"type":"AssetDeleteV1","ack":"AssetDeleteV1|ack-1","data":{"assetId":"asset-2"}}
-        {"type":"SyncAckV1","ackType":"AssetV2","ack":"AssetV2|ack-2","data":{}}
+        {"type":"SyncAckV1","ack":"AssetV2|backfill-complete","data":{}}
         {"type":"SyncCompleteV1","ack":"completion-ack","data":{}}
         """.utf8)
 
@@ -65,7 +65,7 @@ final class SyncStreamParserTests: XCTestCase {
         XCTAssertEqual(result.assets[1].id, "asset-2")
         XCTAssertTrue(result.assets[1].isDeleted)
         XCTAssertEqual(result.acksByType, [
-            "AssetV2": "AssetV2|ack-2",
+            "AssetV2": "AssetV2|backfill-complete",
             "AssetDeleteV1": "AssetDeleteV1|ack-1",
         ])
         XCTAssertEqual(Set(result.acks), Set(result.acksByType.values))
