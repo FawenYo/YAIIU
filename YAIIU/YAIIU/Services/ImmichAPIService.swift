@@ -673,8 +673,8 @@ class ImmichAPIService: NSObject {
         }
     }
     
-    /// Fetches all assets via sync stream (AssetsV2). Returns parsed asset records and the last ack value.
-    func fetchAssetStream(serverURL: String, apiKey: String) async throws -> (assets: [StreamAsset], lastAck: String?) {
+    /// Fetches all assets via sync stream (AssetsV2) without acknowledging checkpoints.
+    func fetchAssetStream(serverURL: String, apiKey: String) async throws -> AssetStreamResult {
         logInfo("Fetching assets via sync stream", category: .api)
 
         guard let url = URL(string: "\(serverURL)/api/sync/stream") else {
@@ -706,67 +706,12 @@ class ImmichAPIService: NSObject {
                 throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
 
-            var assets: [StreamAsset] = []
-            var finalAck: String?
-
-            // AssetsV2 emits AssetV2 entities for upserts and AssetDeleteV1 entities
-            // for deletions. Unlike AssetsV1, deletes are no longer signaled via an
-            // inline deletedAt field, so they must be handled as a distinct entity type.
-            let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
-            for line in lines {
-                let jsonObject: Any
-                do {
-                    jsonObject = try JSONSerialization.jsonObject(with: Data(line))
-                } catch {
-                    logError("Asset stream JSON deserialization failed: \(error.localizedDescription)", category: .api)
-                    continue
-                }
-
-                guard let obj = jsonObject as? [String: Any],
-                      let type = obj["type"] as? String,
-                      let entityData = obj["data"] as? [String: Any]
-                else {
-                    continue
-                }
-
-                switch type {
-                case "AssetV2":
-                    guard let id = entityData["id"] as? String,
-                          let checksum = entityData["checksum"] as? String
-                    else {
-                        continue
-                    }
-                    assets.append(StreamAsset(
-                        id: id,
-                        checksum: checksum,
-                        originalFileName: entityData["originalFileName"] as? String,
-                        fileCreatedAt: entityData["fileCreatedAt"] as? String,
-                        type: entityData["type"] as? String,
-                        ownerId: entityData["ownerId"] as? String,
-                        deletedAt: entityData["deletedAt"] as? String
-                    ))
-                case "AssetDeleteV1":
-                    guard let assetId = entityData["assetId"] as? String else {
-                        continue
-                    }
-                    assets.append(StreamAsset.deleted(id: assetId))
-                default:
-                    break
-                }
-
-                // Set finalAck to the last ack value received in the stream if the object type is not "SyncCompleteV1"
-                if type != "SyncCompleteV1", let ack = obj["ack"] as? String {
-                    finalAck = ack
-                }
-            }
-
-            logInfo("Asset stream returned \(assets.count) assets", category: .api)
-            
-            if let ack = finalAck {
-                try await sendSyncAck(acks: [ack], serverURL: serverURL, apiKey: apiKey)
-            }
-
-            return (assets: assets, lastAck: finalAck)
+            let result = Self.parseAssetStream(data)
+            logInfo(
+                "Asset stream returned \(result.assets.count) assets and \(result.acks.count) checkpoints",
+                category: .api
+            )
+            return result
         } catch let error as ImmichAPIError {
             throw error
         } catch {
@@ -807,8 +752,9 @@ class ImmichAPIService: NSObject {
     }
 
 
+    /// Fetches asset metadata via sync stream without acknowledging checkpoints.
     /// The response is NDJSON (newline-delimited JSON objects).
-    func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> [String: String] {
+    func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> AssetMetadataStreamResult {
         logInfo("Fetching asset metadata via sync stream", category: .api)
 
         guard let url = URL(string: "\(serverURL)/api/sync/stream") else {
@@ -823,7 +769,7 @@ class ImmichAPIService: NSObject {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 300
 
-        let body: [String: Any] = ["types": ["AssetMetadataV1"]]
+        let body: [String: Any] = ["types": ["AssetMetadataV1", "AssetMetadataDeleteV1"]]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
@@ -840,47 +786,128 @@ class ImmichAPIService: NSObject {
                 throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
 
-            var result: [String: String] = [:]
-            var finalAck: String?
-
-            // Response is NDJSON — split by newline and parse each JSON object
-            let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
-            for line in lines {
-                guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                      let type = obj["type"] as? String
-                else {
-                    continue
-                }
-
-                // Track the last ack from a non-completion event;
-                if type != "SyncCompleteV1", let ack = obj["ack"] as? String {
-                    finalAck = ack
-                }
-
-                guard type == "AssetMetadataV1",
-                      let eventData = obj["data"] as? [String: Any],
-                      let assetId = eventData["assetId"] as? String,
-                      let key = eventData["key"] as? String, key == RemoteAssetMetadataItem.mobileAppKey,
-                      let value = eventData["value"] as? [String: Any],
-                      let iCloudId = value["iCloudId"] as? String
-                else {
-                    continue
-                }
-                result[assetId] = iCloudId
-            }
-
-            logInfo("Sync stream returned \(result.count) assets with iCloudId", category: .api)
-
-            if let ack = finalAck {
-                try await sendSyncAck(acks: [ack], serverURL: serverURL, apiKey: apiKey)
-            }
-
+            let result = Self.parseAssetMetadataStream(data)
+            logInfo(
+                "Sync stream returned \(result.iCloudIdUpserts.count) iCloudId upserts, "
+                    + "\(result.iCloudIdDeletes.count) deletes, and \(result.acks.count) checkpoints",
+                category: .api
+            )
             return result
         } catch let error as ImmichAPIError {
             throw error
         } catch {
             logError("Sync stream failed: \(error.localizedDescription)", category: .api)
             throw error
+        }
+    }
+
+    static func parseAssetMetadataStream(_ data: Data) -> AssetMetadataStreamResult {
+        var iCloudIdUpserts: [String: String] = [:]
+        var iCloudIdDeletes: Set<String> = []
+        var acksByType: [String: String] = [:]
+
+        for object in streamObjects(from: data, description: "Asset metadata stream") {
+            collectLatestAck(from: object, into: &acksByType)
+
+            guard let type = object["type"] as? String,
+                  let eventData = object["data"] as? [String: Any],
+                  let assetId = eventData["assetId"] as? String,
+                  let key = eventData["key"] as? String,
+                  key == RemoteAssetMetadataItem.mobileAppKey
+            else {
+                continue
+            }
+
+            switch type {
+            case "AssetMetadataV1":
+                guard let value = eventData["value"] as? [String: Any],
+                      let iCloudId = value["iCloudId"] as? String,
+                      !iCloudId.isEmpty
+                else {
+                    continue
+                }
+                iCloudIdUpserts[assetId] = iCloudId
+            case "AssetMetadataDeleteV1":
+                iCloudIdDeletes.insert(assetId)
+            default:
+                break
+            }
+        }
+
+        return AssetMetadataStreamResult(
+            iCloudIdUpserts: iCloudIdUpserts,
+            iCloudIdDeletes: iCloudIdDeletes,
+            acksByType: acksByType
+        )
+    }
+
+    static func parseAssetStream(_ data: Data) -> AssetStreamResult {
+        var assets: [StreamAsset] = []
+        var acksByType: [String: String] = [:]
+
+        for object in streamObjects(from: data, description: "Asset stream") {
+            collectLatestAck(from: object, into: &acksByType)
+
+            guard let type = object["type"] as? String,
+                  let entityData = object["data"] as? [String: Any]
+            else {
+                continue
+            }
+
+            switch type {
+            case "AssetV2":
+                guard let id = entityData["id"] as? String,
+                      let checksum = entityData["checksum"] as? String
+                else {
+                    continue
+                }
+                assets.append(StreamAsset(
+                    id: id,
+                    checksum: checksum,
+                    originalFileName: entityData["originalFileName"] as? String,
+                    fileCreatedAt: entityData["fileCreatedAt"] as? String,
+                    type: entityData["type"] as? String,
+                    ownerId: entityData["ownerId"] as? String,
+                    deletedAt: entityData["deletedAt"] as? String
+                ))
+            case "AssetDeleteV1":
+                guard let assetId = entityData["assetId"] as? String else {
+                    continue
+                }
+                assets.append(StreamAsset.deleted(id: assetId))
+            default:
+                break
+            }
+        }
+
+        return AssetStreamResult(assets: assets, acksByType: acksByType)
+    }
+
+    private static func streamObjects(from data: Data, description: String) -> [[String: Any]] {
+        data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true).compactMap { line in
+            do {
+                return try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any]
+            } catch {
+                logError("\(description) JSON deserialization failed: \(error.localizedDescription)", category: .api)
+                return nil
+            }
+        }
+    }
+
+    private static func collectLatestAck(
+        from object: [String: Any],
+        into acksByType: inout [String: String]
+    ) {
+        guard let type = object["type"] as? String,
+              type != "SyncCompleteV1",
+              let ack = object["ack"] as? String
+        else {
+            return
+        }
+
+        let ackType = type == "SyncAckV1" ? object["ackType"] as? String : type
+        if let ackType {
+            acksByType[ackType] = ack
         }
     }
 
@@ -1028,6 +1055,21 @@ struct StreamAsset {
             deleteEvent: true
         )
     }
+}
+
+struct AssetMetadataStreamResult {
+    let iCloudIdUpserts: [String: String]
+    let iCloudIdDeletes: Set<String>
+    let acksByType: [String: String]
+
+    var acks: [String] { Array(acksByType.values) }
+}
+
+struct AssetStreamResult {
+    let assets: [StreamAsset]
+    let acksByType: [String: String]
+
+    var acks: [String] { Array(acksByType.values) }
 }
 
 struct LoginResponse: Codable {

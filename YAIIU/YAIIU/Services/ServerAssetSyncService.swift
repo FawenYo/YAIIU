@@ -130,7 +130,7 @@ class ServerAssetSyncService {
         )
 
         let allAssets = streamResult.assets
-        let newAck = streamResult.lastAck
+        let newAck = streamResult.acks.sorted().last
 
         logInfo("Stream returned \(allAssets.count) assets, lastAck=\(newAck ?? "nil")", category: .sync)
 
@@ -205,7 +205,10 @@ class ServerAssetSyncService {
 
     private func fetchICloudIdMap(serverURL: String, apiKey: String) async -> [String: String] {
         do {
-            return try await apiService.fetchAssetMetadataStream(serverURL: serverURL, apiKey: apiKey)
+            return try await apiService.fetchAssetMetadataStream(
+                serverURL: serverURL,
+                apiKey: apiKey
+            ).iCloudIdUpserts
         } catch {
             logWarning("Failed to fetch iCloudId map from metadata stream: \(error.localizedDescription)", category: .sync)
             return [:]
