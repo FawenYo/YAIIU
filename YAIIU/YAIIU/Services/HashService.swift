@@ -181,7 +181,7 @@ class HashService {
             options.isNetworkAccessAllowed = true
             let requestStartedAt = Date()
             logInfo(
-                "Resource data request started: filename=\(resource.originalFilename), type=\(String(describing: resource.type)), networkAllowed=true",
+                "Resource data request started: type=\(String(describing: resource.type)), networkAllowed=true",
                 category: .hash
             )
             
@@ -190,14 +190,14 @@ class HashService {
             } completionHandler: { error in
                 if let error = error {
                     logError(
-                        "Resource data request failed: filename=\(resource.originalFilename), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(requestStartedAt)))s, error=\(error.localizedDescription)",
+                        "Resource data request failed: type=\(String(describing: resource.type)), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(requestStartedAt)))s, error=\(error.localizedDescription)",
                         category: .hash
                     )
                     continuation.resume(throwing: error)
                 } else {
                     let hash = sha1.finalize()
                     logInfo(
-                        "Resource data request finished: filename=\(resource.originalFilename), bytes=\(sha1.totalSize), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(requestStartedAt)))s",
+                        "Resource data request finished: type=\(String(describing: resource.type)), bytes=\(sha1.totalSize), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(requestStartedAt)))s",
                         category: .hash
                     )
                     continuation.resume(returning: (hash, sha1.totalSize))
