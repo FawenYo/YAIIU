@@ -84,10 +84,12 @@ class HashManager: ObservableObject {
         iCloudIdMatchCount = 0
         pendingICloudIdUpdates = []
         statusMessage = "Preparing..."
+        logInfo("Hash pipeline started: identifiers=\(identifiers.count)", category: .hash)
 
         // identifiers-only path cannot compare modificationDate; no invalidation here
         DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
             guard let self = self else { return }
+            logInfo("Hash cache lookup complete: total=\(identifiers.count), needingHash=\(needingHash.count)", category: .hash)
 
             Task { @MainActor in
                 if needingHash.isEmpty {
@@ -121,11 +123,14 @@ class HashManager: ObservableObject {
         
         let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
         guard hasServerCache else {
+            logInfo("iCloud ID matching skipped: server cache empty, candidates=\(identifiers.count)", category: .hash)
             completion(identifiers)
             return
         }
         
         statusMessage = "Checking iCloud ID matches..."
+        let matchingStartedAt = Date()
+        logInfo("iCloud ID matching started: candidates=\(identifiers.count)", category: .hash)
         
         Task {
             var remainingIdentifiers: [String] = []
@@ -144,6 +149,11 @@ class HashManager: ObservableObject {
                     }
                 }
             }
+
+            logInfo(
+                "iCloud ID mapping complete: mapped=\(identifierToICloudId.count), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(matchingStartedAt)))s",
+                category: .hash
+            )
             
             if identifierToICloudId.isEmpty {
                 await MainActor.run {
@@ -154,6 +164,10 @@ class HashManager: ObservableObject {
             
             let iCloudIds = Array(identifierToICloudId.values)
             let checksumMap = DatabaseManager.shared.getChecksumsByICloudIds(iCloudIds)
+            logInfo(
+                "Remote checksum lookup complete: requested=\(iCloudIds.count), matched=\(checksumMap.count), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(matchingStartedAt)))s",
+                category: .hash
+            )
             
             for identifier in identifiers {
                 if let iCloudId = identifierToICloudId[identifier],
@@ -183,6 +197,7 @@ class HashManager: ObservableObject {
             
             await MainActor.run {
                 self.iCloudIdMatchCount = matchCount
+                logInfo("iCloud ID matching finished: matched=\(matchCount), remaining=\(remainingIdentifiers.count), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(matchingStartedAt)))s", category: .hash)
                 completion(remainingIdentifiers)
             }
         }
@@ -273,6 +288,8 @@ class HashManager: ObservableObject {
     }
     
     private func processHashForAsset(identifier: String) async {
+        let hashStartedAt = Date()
+        logInfo("Hash started: asset=\(identifier)", category: .hash)
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
         
         guard let asset = fetchResult.firstObject else {
@@ -286,6 +303,10 @@ class HashManager: ObservableObject {
         do {
             // Use multi-resource hash to capture both JPEG and RAW hashes
             let result = try await HashService.shared.calculateMultiResourceHash(for: asset)
+            logInfo(
+                "Hash finished: asset=\(identifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s",
+                category: .hash
+            )
             
             DatabaseManager.shared.saveMultiResourceHashCache(
                 localIdentifier: result.localIdentifier,
@@ -301,6 +322,7 @@ class HashManager: ObservableObject {
             }
             
         } catch {
+            logError("Hash failed: asset=\(identifier), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s, error=\(error.localizedDescription)", category: .hash)
             await MainActor.run {
                 self.syncStatusCache[identifier] = .error
                 self.objectWillChange.send()
