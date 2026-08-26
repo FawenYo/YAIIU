@@ -82,4 +82,34 @@ final class SyncStreamParserTests: XCTestCase {
         XCTAssertEqual(result.assets.map(\.id), ["asset-1"])
         XCTAssertEqual(result.acksByType, ["AssetV2": "AssetV2|ack-1"])
     }
+
+    func testAssetParserDoesNotAckRejectedEvent() {
+        let data = Data(#"{"type":"AssetV2","ack":"AssetV2|ack-1","data":{"id":"asset-1"}}"#.utf8)
+
+        let result = ImmichAPIService.parseAssetStream(data)
+
+        XCTAssertTrue(result.assets.isEmpty)
+        XCTAssertTrue(result.acks.isEmpty)
+    }
+
+    func testMetadataParserDoesNotAckRejectedEvent() {
+        let data = Data(#"{"type":"AssetMetadataV1","ack":"AssetMetadataV1|ack-1","data":{"assetId":"asset-1","key":"mobile-app","value":{}}}"#.utf8)
+
+        let result = ImmichAPIService.parseAssetMetadataStream(data)
+
+        XCTAssertTrue(result.iCloudIdUpserts.isEmpty)
+        XCTAssertTrue(result.acks.isEmpty)
+    }
+
+    func testParsersSurfaceServerReset() {
+        let data = Data(#"{"type":"SyncResetV1","ack":"SyncResetV1|reset-1","data":{}}"#.utf8)
+
+        let metadataResult = ImmichAPIService.parseAssetMetadataStream(data)
+        let assetResult = ImmichAPIService.parseAssetStream(data)
+
+        XCTAssertEqual(metadataResult.resetAck, "SyncResetV1|reset-1")
+        XCTAssertEqual(assetResult.resetAck, "SyncResetV1|reset-1")
+        XCTAssertTrue(metadataResult.acks.isEmpty)
+        XCTAssertTrue(assetResult.acks.isEmpty)
+    }
 }

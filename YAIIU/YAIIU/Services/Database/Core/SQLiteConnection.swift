@@ -13,17 +13,28 @@ final class SQLiteConnection {
     
     private static let schemaVersion = 5
     
-    private init() {
+    private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
-            self?.openDatabase()
-            self?.createTables()
-            self?.migrateIfNeeded()
-            self?.initLock.lock()
-            self?.isInitialized = true
-            self?.initLock.unlock()
+            guard let self else { return }
+            if let databasePath {
+                self.openDatabaseAtPath(databasePath)
+            } else {
+                self.openDatabase()
+            }
+            self.createTables()
+            self.migrateIfNeeded()
+            self.initLock.lock()
+            self.isInitialized = true
+            self.initLock.unlock()
             logInfo("SQLiteConnection initialized", category: .database)
         }
     }
+
+#if DEBUG
+    static func testing(databasePath: String) -> SQLiteConnection {
+        SQLiteConnection(databasePath: databasePath)
+    }
+#endif
     
     deinit {
         sqlite3_close(db)

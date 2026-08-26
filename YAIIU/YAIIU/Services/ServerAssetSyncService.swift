@@ -16,6 +16,29 @@ struct SyncProgress {
     }
 }
 
+protocol ServerAssetSyncAPI {
+    func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo
+    func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> AssetMetadataStreamResult
+    func fetchAssetStream(serverURL: String, apiKey: String) async throws -> AssetStreamResult
+    func sendSyncAck(acks: [String], serverURL: String, apiKey: String) async throws
+}
+
+protocol ServerAssetSyncStore {
+    func isAssetOnServer(checksum: String) -> Bool
+    func getSyncMetadata() -> SyncMetadata?
+    func clearServerAssetsCache()
+    func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
+    func deleteServerAssets(_ immichIds: [String]) -> Bool
+    func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
+    func clearICloudIds(for immichIds: Set<String>) -> Bool
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String?) -> Bool
+    func getServerAssetsCacheCount() -> Int
+    func backfillImmichIdsFromServerCache() -> Int
+}
+
+extension ImmichAPIService: ServerAssetSyncAPI {}
+extension DatabaseManager: ServerAssetSyncStore {}
+
 class ServerAssetSyncService {
 
     // MARK: - Checksum Conversion
@@ -29,13 +52,19 @@ class ServerAssetSyncService {
 
     static let shared = ServerAssetSyncService()
 
-    private let apiService = ImmichAPIService.shared
-    private let dbManager = DatabaseManager.shared
+    private let apiService: ServerAssetSyncAPI
+    private let dbManager: ServerAssetSyncStore
 
     private var isSyncing = false
     private let syncQueue = DispatchQueue(label: "com.yaiiu.serverassetsync", qos: .userInitiated)
 
-    private init() {}
+    init(
+        apiService: ServerAssetSyncAPI = ImmichAPIService.shared,
+        dbManager: ServerAssetSyncStore = DatabaseManager.shared
+    ) {
+        self.apiService = apiService
+        self.dbManager = dbManager
+    }
 
     // MARK: - Public Methods
 
