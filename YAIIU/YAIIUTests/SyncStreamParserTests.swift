@@ -31,6 +31,30 @@ final class SyncStreamParserTests: XCTestCase {
         XCTAssertTrue(result.iCloudIdDeletes.isEmpty)
     }
 
+    func testMetadataParserAcknowledgesWellFormedUnrelatedMetadata() {
+        let data = Data("""
+        {"type":"AssetMetadataV1","ack":"AssetMetadataV1|ack-1","data":{"assetId":"asset-1","key":"sidecar","value":{}}}
+        {"type":"AssetMetadataDeleteV1","ack":"AssetMetadataDeleteV1|ack-1","data":{"assetId":"asset-2","key":"third-party"}}
+        """.utf8)
+
+        let result = ImmichAPIService.parseAssetMetadataStream(data)
+
+        XCTAssertTrue(result.iCloudIdUpserts.isEmpty)
+        XCTAssertTrue(result.iCloudIdDeletes.isEmpty)
+        XCTAssertEqual(result.acksByType, [
+            "AssetMetadataV1": "AssetMetadataV1|ack-1",
+            "AssetMetadataDeleteV1": "AssetMetadataDeleteV1|ack-1",
+        ])
+    }
+
+    func testMetadataParserDoesNotAckMalformedUnrelatedUpsert() {
+        let data = Data(#"{"type":"AssetMetadataV1","ack":"AssetMetadataV1|ack-1","data":{"assetId":"asset-1","key":"sidecar"}}"#.utf8)
+
+        let result = ImmichAPIService.parseAssetMetadataStream(data)
+
+        XCTAssertTrue(result.acks.isEmpty)
+    }
+
     func testMetadataParserRetainsLatestAckForEveryEntityType() throws {
         let data = Data("""
         {"type":"AssetMetadataV1","ack":"AssetMetadataV1|ack-1","data":{"assetId":"asset-1","key":"mobile-app","value":{"iCloudId":"cloud-1"}}}

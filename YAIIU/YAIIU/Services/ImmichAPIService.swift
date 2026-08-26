@@ -817,9 +817,15 @@ class ImmichAPIService: NSObject {
                 guard let eventData = object["data"] as? [String: Any],
                       let assetId = eventData["assetId"] as? String,
                       let key = eventData["key"] as? String,
-                      key == RemoteAssetMetadataItem.mobileAppKey,
-                      let value = eventData["value"] as? [String: Any],
-                      let iCloudId = value["iCloudId"] as? String,
+                      let value = eventData["value"] as? [String: Any]
+                else {
+                    continue
+                }
+                guard key == RemoteAssetMetadataItem.mobileAppKey else {
+                    collectLatestAck(from: object, into: &acksByType)
+                    continue
+                }
+                guard let iCloudId = value["iCloudId"] as? String,
                       !iCloudId.isEmpty
                 else {
                     continue
@@ -830,9 +836,12 @@ class ImmichAPIService: NSObject {
             case "AssetMetadataDeleteV1":
                 guard let eventData = object["data"] as? [String: Any],
                       let assetId = eventData["assetId"] as? String,
-                      let key = eventData["key"] as? String,
-                      key == RemoteAssetMetadataItem.mobileAppKey
+                      let key = eventData["key"] as? String
                 else {
+                    continue
+                }
+                guard key == RemoteAssetMetadataItem.mobileAppKey else {
+                    collectLatestAck(from: object, into: &acksByType)
                     continue
                 }
                 iCloudIdDeletes.insert(assetId)

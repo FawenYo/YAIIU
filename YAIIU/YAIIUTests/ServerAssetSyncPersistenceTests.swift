@@ -14,6 +14,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             return XCTFail("Expected sync to succeed")
         }
         XCTAssertEqual(operations.values, [
+            "clear-cache",
             "save-assets",
             "delete-assets",
             "update-icloud-ids",
@@ -44,6 +45,36 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
     func testSyncDoesNotAcknowledgeWhenResetCacheClearFails() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations, resetAck: "SyncResetV1|reset-1")
+        let store = StoreStub(operations: operations)
+        store.shouldFailCacheClear = true
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+
+        let result = await sync(service)
+
+        guard case .failure = result else {
+            return XCTFail("Expected sync to fail")
+        }
+        XCTAssertEqual(operations.values, ["clear-cache"])
+        XCTAssertTrue(api.sentAcks.isEmpty)
+    }
+
+    func testFullSyncClearsCacheBeforeSavingSnapshot() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+
+        let result = await sync(service)
+
+        guard case .success = result else {
+            return XCTFail("Expected sync to succeed")
+        }
+        XCTAssertEqual(Array(operations.values.prefix(2)), ["clear-cache", "save-assets"])
+    }
+
+    func testFullSyncDoesNotAcknowledgeWhenCacheClearFails() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
         let store = StoreStub(operations: operations)
         store.shouldFailCacheClear = true
         let service = ServerAssetSyncService(apiService: api, dbManager: store)

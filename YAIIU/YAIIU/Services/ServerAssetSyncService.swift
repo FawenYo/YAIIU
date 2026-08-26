@@ -223,6 +223,10 @@ class ServerAssetSyncService {
 
         let syncType = lastAck == nil ? "full" : "delta"
 
+        if syncType == "full", !clearCache() {
+            throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
+        }
+
         if !serverAssetRecords.isEmpty,
            !dbManager.saveServerAssets(serverAssetRecords, syncType: syncType) {
             throw SyncError.syncFailed(reason: "Failed to persist server asset upserts")
