@@ -389,22 +389,30 @@ final class SQLiteConnection {
     
     // MARK: - Transaction Management
     
-    func beginTransaction() {
-        sqlite3_exec(db, "BEGIN TRANSACTION;", nil, nil, nil)
+    @discardableResult
+    func beginTransaction() -> Bool {
+        sqlite3_exec(db, "BEGIN TRANSACTION;", nil, nil, nil) == SQLITE_OK
     }
-    
-    func commitTransaction() {
-        sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+
+    @discardableResult
+    func commitTransaction() -> Bool {
+        sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK
     }
-    
-    func rollbackTransaction() {
-        sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+
+    @discardableResult
+    func rollbackTransaction() -> Bool {
+        sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) == SQLITE_OK
     }
-    
-    func inTransaction(_ block: () -> Void) {
-        beginTransaction()
+
+    @discardableResult
+    func inTransaction(_ block: () -> Void) -> Bool {
+        guard beginTransaction() else { return false }
         block()
-        commitTransaction()
+        guard commitTransaction() else {
+            rollbackTransaction()
+            return false
+        }
+        return true
     }
 
     /// Flush WAL journal to the main database file so a file copy is complete.

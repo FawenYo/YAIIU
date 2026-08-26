@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 @testable import YAIIU
 
@@ -61,6 +62,29 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(repository.updateICloudIds(["missing": "cloud-1"]))
 
         XCTAssertEqual(repository.getServerAssetsCacheCount(), 0)
+    }
+
+    func testAssetSaveReturnsFalseWhenCommitFails() {
+        installDeferredCommitFailure(triggerEvent: "INSERT")
+
+        XCTAssertFalse(repository.saveServerAssets([record(checksum: "sum", iCloudId: "cloud-1")]))
+    }
+
+    private func installDeferredCommitFailure(triggerEvent: String) {
+        execute("PRAGMA foreign_keys = ON;")
+        execute("CREATE TABLE commit_failure_parent (id INTEGER PRIMARY KEY);")
+        execute("CREATE TABLE commit_failure_child (parent_id INTEGER REFERENCES commit_failure_parent(id) DEFERRABLE INITIALLY DEFERRED);")
+        execute("""
+        CREATE TRIGGER fail_server_asset_commit
+        AFTER \(triggerEvent) ON server_assets_cache
+        BEGIN
+            INSERT INTO commit_failure_child(parent_id) VALUES (1);
+        END;
+        """)
+    }
+
+    private func execute(_ sql: String) {
+        XCTAssertEqual(sqlite3_exec(connection.db, sql, nil, nil, nil), SQLITE_OK)
     }
 
     private func record(checksum: String, iCloudId: String?) -> ServerAssetRecord {

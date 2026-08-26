@@ -241,7 +241,8 @@ final class DatabaseManager {
         serverRepo.getServerAssetsCacheCount()
     }
     
-    func clearServerAssetsCache() {
+    @discardableResult
+    func clearServerAssetsCache() -> Bool {
         serverRepo.clearServerAssetsCache()
     }
     

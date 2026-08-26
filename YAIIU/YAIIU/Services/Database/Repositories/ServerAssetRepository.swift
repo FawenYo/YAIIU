@@ -17,7 +17,10 @@ final class ServerAssetRepository {
             
             logInfo("Saving \(assets.count) server assets to cache (sync type: \(syncType))", category: .database)
             
-            self.connection.beginTransaction()
+            guard self.connection.beginTransaction() else {
+                logError("Failed to begin server asset transaction: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
             var failed = false
             
             let sql = """
@@ -94,7 +97,11 @@ final class ServerAssetRepository {
                 return false
             }
 
-            self.connection.commitTransaction()
+            guard self.connection.commitTransaction() else {
+                logError("Failed to commit server asset upserts: \(self.connection.lastErrorMessage)", category: .database)
+                self.connection.rollbackTransaction()
+                return false
+            }
             logInfo("Server assets cache updated successfully", category: .database)
             return true
         }
@@ -107,7 +114,10 @@ final class ServerAssetRepository {
         return connection.dbQueue.sync { [weak self] in
             guard let self = self else { return false }
 
-            self.connection.beginTransaction()
+            guard self.connection.beginTransaction() else {
+                logError("Failed to begin iCloud ID update transaction: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
             let sql = "UPDATE server_assets_cache SET icloud_id = ? WHERE immich_id = ?;"
             var statement: OpaquePointer?
             var failed = false
@@ -136,7 +146,11 @@ final class ServerAssetRepository {
                 return false
             }
 
-            self.connection.commitTransaction()
+            guard self.connection.commitTransaction() else {
+                logError("Failed to commit iCloud ID updates: \(self.connection.lastErrorMessage)", category: .database)
+                self.connection.rollbackTransaction()
+                return false
+            }
             logInfo("Updated iCloud IDs for \(iCloudIdsByImmichId.count) cached assets", category: .database)
             return true
         }
@@ -149,7 +163,10 @@ final class ServerAssetRepository {
         return connection.dbQueue.sync { [weak self] in
             guard let self = self else { return false }
 
-            self.connection.beginTransaction()
+            guard self.connection.beginTransaction() else {
+                logError("Failed to begin iCloud ID delete transaction: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
             let sql = "UPDATE server_assets_cache SET icloud_id = NULL WHERE immich_id = ?;"
             var statement: OpaquePointer?
             var failed = false
@@ -177,7 +194,11 @@ final class ServerAssetRepository {
                 return false
             }
 
-            self.connection.commitTransaction()
+            guard self.connection.commitTransaction() else {
+                logError("Failed to commit iCloud ID deletes: \(self.connection.lastErrorMessage)", category: .database)
+                self.connection.rollbackTransaction()
+                return false
+            }
             logInfo("Cleared iCloud IDs for \(immichIds.count) cached assets", category: .database)
             return true
         }
@@ -193,7 +214,10 @@ final class ServerAssetRepository {
             
             logInfo("Deleting \(immichIds.count) assets from server cache", category: .database)
             
-            self.connection.beginTransaction()
+            guard self.connection.beginTransaction() else {
+                logError("Failed to begin server asset delete transaction: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
             
             let sql = "DELETE FROM server_assets_cache WHERE immich_id = ?;"
             var statement: OpaquePointer?
@@ -221,7 +245,11 @@ final class ServerAssetRepository {
                 return false
             }
 
-            self.connection.commitTransaction()
+            guard self.connection.commitTransaction() else {
+                logError("Failed to commit server asset deletes: \(self.connection.lastErrorMessage)", category: .database)
+                self.connection.rollbackTransaction()
+                return false
+            }
             return true
         }
     }
@@ -426,12 +454,29 @@ final class ServerAssetRepository {
     
     // MARK: - Clear Methods
     
-    func clearServerAssetsCache() {
+    @discardableResult
+    func clearServerAssetsCache() -> Bool {
         connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return false }
             logInfo("Clearing server assets cache", category: .database)
-            self.connection.executeStatement("DELETE FROM server_assets_cache;")
-            self.connection.executeStatement("DELETE FROM sync_metadata;")
+            guard self.connection.beginTransaction() else {
+                logError("Failed to begin server cache clear: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
+
+            let statements = ["DELETE FROM server_assets_cache;", "DELETE FROM sync_metadata;"]
+            for sql in statements where sqlite3_exec(self.connection.db, sql, nil, nil, nil) != SQLITE_OK {
+                logError("Failed to clear server cache: \(self.connection.lastErrorMessage)", category: .database)
+                self.connection.rollbackTransaction()
+                return false
+            }
+
+            guard self.connection.commitTransaction() else {
+                logError("Failed to commit server cache clear: \(self.connection.lastErrorMessage)", category: .database)
+                self.connection.rollbackTransaction()
+                return false
+            }
+            return true
         }
     }
     

@@ -41,6 +41,22 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
+    func testSyncDoesNotAcknowledgeWhenResetCacheClearFails() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations, resetAck: "SyncResetV1|reset-1")
+        let store = StoreStub(operations: operations)
+        store.shouldFailCacheClear = true
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+
+        let result = await sync(service)
+
+        guard case .failure = result else {
+            return XCTFail("Expected sync to fail")
+        }
+        XCTAssertEqual(operations.values, ["clear-cache"])
+        XCTAssertTrue(api.sentAcks.isEmpty)
+    }
+
     private func sync(_ service: ServerAssetSyncService) async -> Result<SyncResult, Error> {
         await withCheckedContinuation { continuation in
             service.syncServerAssets(serverURL: "https://immich.example", apiKey: "token") {
@@ -69,10 +85,12 @@ private final class OperationRecorder: @unchecked Sendable {
 
 private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
     private let operations: OperationRecorder
+    private let resetAck: String?
     private(set) var sentAcks: [String] = []
 
-    init(operations: OperationRecorder) {
+    init(operations: OperationRecorder, resetAck: String? = nil) {
         self.operations = operations
+        self.resetAck = resetAck
     }
 
     func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo {
@@ -81,10 +99,10 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
 
     func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> AssetMetadataStreamResult {
         AssetMetadataStreamResult(
-            iCloudIdUpserts: ["asset-1": "cloud-1"],
-            iCloudIdDeletes: ["asset-2"],
-            acksByType: ["AssetMetadataV1": "AssetMetadataV1|metadata-1"],
-            state: .data
+            iCloudIdUpserts: resetAck == nil ? ["asset-1": "cloud-1"] : [:],
+            iCloudIdDeletes: resetAck == nil ? ["asset-2"] : [],
+            acksByType: resetAck == nil ? ["AssetMetadataV1": "AssetMetadataV1|metadata-1"] : [:],
+            state: resetAck.map { .reset(ack: $0) } ?? .data
         )
     }
 
@@ -116,6 +134,7 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
 private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
     private let operations: OperationRecorder
     var shouldFailAssetSave = false
+    var shouldFailCacheClear = false
 
     init(operations: OperationRecorder) {
         self.operations = operations
@@ -123,7 +142,10 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
 
     func isAssetOnServer(checksum: String) -> Bool { false }
     func getSyncMetadata() -> SyncMetadata? { nil }
-    func clearServerAssetsCache() {}
+    func clearServerAssetsCache() -> Bool {
+        operations.append("clear-cache")
+        return !shouldFailCacheClear
+    }
 
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool {
         operations.append("save-assets")

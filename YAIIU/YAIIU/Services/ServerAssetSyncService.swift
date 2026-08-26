@@ -26,7 +26,7 @@ protocol ServerAssetSyncAPI {
 protocol ServerAssetSyncStore {
     func isAssetOnServer(checksum: String) -> Bool
     func getSyncMetadata() -> SyncMetadata?
-    func clearServerAssetsCache()
+    func clearServerAssetsCache() -> Bool
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
     func deleteServerAssets(_ immichIds: [String]) -> Bool
     func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
@@ -118,9 +118,15 @@ class ServerAssetSyncService {
         return dbManager.getSyncMetadata()
     }
 
-    func clearCache() {
-        dbManager.clearServerAssetsCache()
-        logInfo("Server assets cache cleared", category: .sync)
+    @discardableResult
+    func clearCache() -> Bool {
+        let cleared = dbManager.clearServerAssetsCache()
+        if cleared {
+            logInfo("Server assets cache cleared", category: .sync)
+        } else {
+            logError("Failed to clear server assets cache", category: .sync)
+        }
+        return cleared
     }
 
     // MARK: - Private Methods
@@ -137,7 +143,6 @@ class ServerAssetSyncService {
         resetRetryRemaining: Bool = true
     ) async throws -> SyncResult {
         logInfo("Starting server assets sync", category: .sync)
-
         reportProgress(SyncProgress(phase: .connecting, fetchedCount: 0, message: ""), handler: progressHandler)
         reportProgress(SyncProgress(phase: .fetchingUserInfo, fetchedCount: 0, message: ""), handler: progressHandler)
 
@@ -164,7 +169,9 @@ class ServerAssetSyncService {
                 throw SyncError.repeatedServerReset
             }
 
-            clearCache()
+            guard clearCache() else {
+                throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
+            }
             try await apiService.sendSyncAck(
                 acks: Array(Set(resetAcks)).sorted(),
                 serverURL: serverURL,
