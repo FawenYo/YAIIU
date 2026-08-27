@@ -13,17 +13,28 @@ final class SQLiteConnection {
     
     private static let schemaVersion = 5
     
-    private init() {
+    private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
-            self?.openDatabase()
-            self?.createTables()
-            self?.migrateIfNeeded()
-            self?.initLock.lock()
-            self?.isInitialized = true
-            self?.initLock.unlock()
+            guard let self else { return }
+            if let databasePath {
+                self.openDatabaseAtPath(databasePath)
+            } else {
+                self.openDatabase()
+            }
+            self.createTables()
+            self.migrateIfNeeded()
+            self.initLock.lock()
+            self.isInitialized = true
+            self.initLock.unlock()
             logInfo("SQLiteConnection initialized", category: .database)
         }
     }
+
+#if DEBUG
+    static func testing(databasePath: String) -> SQLiteConnection {
+        SQLiteConnection(databasePath: databasePath)
+    }
+#endif
     
     deinit {
         sqlite3_close(db)
@@ -378,22 +389,30 @@ final class SQLiteConnection {
     
     // MARK: - Transaction Management
     
-    func beginTransaction() {
-        sqlite3_exec(db, "BEGIN TRANSACTION;", nil, nil, nil)
+    @discardableResult
+    func beginTransaction() -> Bool {
+        sqlite3_exec(db, "BEGIN TRANSACTION;", nil, nil, nil) == SQLITE_OK
     }
-    
-    func commitTransaction() {
-        sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+
+    @discardableResult
+    func commitTransaction() -> Bool {
+        sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK
     }
-    
-    func rollbackTransaction() {
-        sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+
+    @discardableResult
+    func rollbackTransaction() -> Bool {
+        sqlite3_exec(db, "ROLLBACK;", nil, nil, nil) == SQLITE_OK
     }
-    
-    func inTransaction(_ block: () -> Void) {
-        beginTransaction()
+
+    @discardableResult
+    func inTransaction(_ block: () -> Void) -> Bool {
+        guard beginTransaction() else { return false }
         block()
-        commitTransaction()
+        guard commitTransaction() else {
+            rollbackTransaction()
+            return false
+        }
+        return true
     }
 
     /// Flush WAL journal to the main database file so a file copy is complete.

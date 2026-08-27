@@ -209,11 +209,23 @@ final class DatabaseManager {
     
     // MARK: - Server Assets Cache Management
     
-    func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String = "full") {
+    @discardableResult
+    func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String = "full") -> Bool {
         serverRepo.saveServerAssets(assets, syncType: syncType)
     }
+
+    @discardableResult
+    func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool {
+        serverRepo.updateICloudIds(iCloudIdsByImmichId)
+    }
+
+    @discardableResult
+    func clearICloudIds(for immichIds: Set<String>) -> Bool {
+        serverRepo.clearICloudIds(for: immichIds)
+    }
     
-    func deleteServerAssets(_ immichIds: [String]) {
+    @discardableResult
+    func deleteServerAssets(_ immichIds: [String]) -> Bool {
         serverRepo.deleteServerAssets(immichIds)
     }
     
@@ -229,11 +241,13 @@ final class DatabaseManager {
         serverRepo.getServerAssetsCacheCount()
     }
     
-    func clearServerAssetsCache() {
+    @discardableResult
+    func clearServerAssetsCache() -> Bool {
         serverRepo.clearServerAssetsCache()
     }
     
-    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) {
+    @discardableResult
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) -> Bool {
         serverRepo.saveSyncMetadata(lastSyncTime: lastSyncTime, syncType: syncType, userId: userId, totalAssets: totalAssets, lastAck: lastAck)
     }
     

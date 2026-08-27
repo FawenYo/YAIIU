@@ -16,6 +16,29 @@ struct SyncProgress {
     }
 }
 
+protocol ServerAssetSyncAPI {
+    func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo
+    func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> AssetMetadataStreamResult
+    func fetchAssetStream(serverURL: String, apiKey: String) async throws -> AssetStreamResult
+    func sendSyncAck(acks: [String], serverURL: String, apiKey: String) async throws
+}
+
+protocol ServerAssetSyncStore {
+    func isAssetOnServer(checksum: String) -> Bool
+    func getSyncMetadata() -> SyncMetadata?
+    func clearServerAssetsCache() -> Bool
+    func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
+    func deleteServerAssets(_ immichIds: [String]) -> Bool
+    func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
+    func clearICloudIds(for immichIds: Set<String>) -> Bool
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String?) -> Bool
+    func getServerAssetsCacheCount() -> Int
+    func backfillImmichIdsFromServerCache() -> Int
+}
+
+extension ImmichAPIService: ServerAssetSyncAPI {}
+extension DatabaseManager: ServerAssetSyncStore {}
+
 class ServerAssetSyncService {
 
     // MARK: - Checksum Conversion
@@ -29,13 +52,19 @@ class ServerAssetSyncService {
 
     static let shared = ServerAssetSyncService()
 
-    private let apiService = ImmichAPIService.shared
-    private let dbManager = DatabaseManager.shared
+    private let apiService: ServerAssetSyncAPI
+    private let dbManager: ServerAssetSyncStore
 
     private var isSyncing = false
     private let syncQueue = DispatchQueue(label: "com.yaiiu.serverassetsync", qos: .userInitiated)
 
-    private init() {}
+    init(
+        apiService: ServerAssetSyncAPI = ImmichAPIService.shared,
+        dbManager: ServerAssetSyncStore = DatabaseManager.shared
+    ) {
+        self.apiService = apiService
+        self.dbManager = dbManager
+    }
 
     // MARK: - Public Methods
 
@@ -89,9 +118,15 @@ class ServerAssetSyncService {
         return dbManager.getSyncMetadata()
     }
 
-    func clearCache() {
-        dbManager.clearServerAssetsCache()
-        logInfo("Server assets cache cleared", category: .sync)
+    @discardableResult
+    func clearCache() -> Bool {
+        let cleared = dbManager.clearServerAssetsCache()
+        if cleared {
+            logInfo("Server assets cache cleared", category: .sync)
+        } else {
+            logError("Failed to clear server assets cache", category: .sync)
+        }
+        return cleared
     }
 
     // MARK: - Private Methods
@@ -104,10 +139,10 @@ class ServerAssetSyncService {
     private func performSync(
         serverURL: String,
         apiKey: String,
-        progressHandler: ((SyncProgress) -> Void)?
+        progressHandler: ((SyncProgress) -> Void)?,
+        resetRetryRemaining: Bool = true
     ) async throws -> SyncResult {
         logInfo("Starting server assets sync", category: .sync)
-
         reportProgress(SyncProgress(phase: .connecting, fetchedCount: 0, message: ""), handler: progressHandler)
         reportProgress(SyncProgress(phase: .fetchingUserInfo, fetchedCount: 0, message: ""), handler: progressHandler)
 
@@ -119,20 +154,43 @@ class ServerAssetSyncService {
 
         reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
 
-        // Fetch iCloudId map first (independent stream call)
-        let iCloudIdMap = await fetchICloudIdMap(serverURL: serverURL, apiKey: apiKey)
-        logDebug("Fetched \(iCloudIdMap.count) iCloudId mappings from metadata stream", category: .sync)
-
-        // Fetch assets via stream (acks the server once the stream completes)
+        let metadataResult = try await apiService.fetchAssetMetadataStream(
+            serverURL: serverURL,
+            apiKey: apiKey
+        )
         let streamResult = try await apiService.fetchAssetStream(
             serverURL: serverURL,
             apiKey: apiKey
         )
 
-        let allAssets = streamResult.assets
-        let newAck = streamResult.lastAck
+        let resetAcks = [metadataResult.resetAck, streamResult.resetAck].compactMap { $0 }
+        if !resetAcks.isEmpty {
+            guard resetRetryRemaining else {
+                throw SyncError.repeatedServerReset
+            }
 
-        logInfo("Stream returned \(allAssets.count) assets, lastAck=\(newAck ?? "nil")", category: .sync)
+            guard clearCache() else {
+                throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
+            }
+            try await apiService.sendSyncAck(
+                acks: Array(Set(resetAcks)).sorted(),
+                serverURL: serverURL,
+                apiKey: apiKey
+            )
+            return try await performSync(
+                serverURL: serverURL,
+                apiKey: apiKey,
+                progressHandler: progressHandler,
+                resetRetryRemaining: false
+            )
+        }
+
+        let allAssets = streamResult.assets
+        logInfo(
+            "Streams returned assets=\(allAssets.count), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
+                + "metadataDeletes=\(metadataResult.iCloudIdDeletes.count)",
+            category: .sync
+        )
 
         reportProgress(
             SyncProgress(phase: .processingAssets, fetchedCount: allAssets.count, message: ""),
@@ -153,7 +211,7 @@ class ServerAssetSyncService {
                 originalFilename: asset.originalFileName,
                 assetType: asset.type,
                 updatedAt: asset.fileCreatedAt,
-                iCloudId: iCloudIdMap[asset.id],
+                iCloudId: metadataResult.iCloudIdUpserts[asset.id],
                 ownerId: asset.ownerId
             )
         }
@@ -163,36 +221,54 @@ class ServerAssetSyncService {
             handler: progressHandler
         )
 
-        let syncType: String
-        if lastAck == nil {
-            // Full stream — replace entire cache
-            dbManager.clearServerAssetsCache()
-            syncType = "full"
-        } else {
-            syncType = "delta"
+        let syncType = lastAck == nil ? "full" : "delta"
+
+        if syncType == "full", !clearCache() {
+            throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
         }
 
-        if !serverAssetRecords.isEmpty {
-            dbManager.saveServerAssets(serverAssetRecords, syncType: syncType)
+        if !serverAssetRecords.isEmpty,
+           !dbManager.saveServerAssets(serverAssetRecords, syncType: syncType) {
+            throw SyncError.syncFailed(reason: "Failed to persist server asset upserts")
         }
 
-        if !deletedIds.isEmpty {
-            dbManager.deleteServerAssets(deletedIds)
-            logInfo("Deleted \(deletedIds.count) assets from cache", category: .sync)
+        if !deletedIds.isEmpty,
+           !dbManager.deleteServerAssets(deletedIds) {
+            throw SyncError.syncFailed(reason: "Failed to persist server asset deletions")
         }
 
-        dbManager.saveSyncMetadata(
+        guard dbManager.updateICloudIds(metadataResult.iCloudIdUpserts) else {
+            throw SyncError.syncFailed(reason: "Failed to persist iCloud ID updates")
+        }
+        guard dbManager.clearICloudIds(for: metadataResult.iCloudIdDeletes) else {
+            throw SyncError.syncFailed(reason: "Failed to persist iCloud ID deletions")
+        }
+
+        let acks = Array(Set(streamResult.acks + metadataResult.acks)).sorted()
+        let newAck = acks.last
+        guard dbManager.saveSyncMetadata(
             lastSyncTime: Date(),
             syncType: syncType,
             userId: userId,
             totalAssets: dbManager.getServerAssetsCacheCount(),
             lastAck: newAck ?? lastAck
-        )
+        ) else {
+            throw SyncError.syncFailed(reason: "Failed to persist sync metadata")
+        }
+
+        if !acks.isEmpty {
+            try await apiService.sendSyncAck(acks: acks, serverURL: serverURL, apiKey: apiKey)
+        }
 
         dbManager.backfillImmichIdsFromServerCache()
 
         let total = dbManager.getServerAssetsCacheCount()
-        logInfo("Sync completed: type=\(syncType), total=\(total), upserted=\(serverAssetRecords.count), deleted=\(deletedIds.count)", category: .sync)
+        logInfo(
+            "Sync completed: type=\(syncType), total=\(total), assetUpserts=\(serverAssetRecords.count), "
+                + "assetDeletes=\(deletedIds.count), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
+                + "metadataDeletes=\(metadataResult.iCloudIdDeletes.count), acks=\(acks.count)",
+            category: .sync
+        )
 
         return SyncResult(
             syncType: syncType,
@@ -203,14 +279,6 @@ class ServerAssetSyncService {
         )
     }
 
-    private func fetchICloudIdMap(serverURL: String, apiKey: String) async -> [String: String] {
-        do {
-            return try await apiService.fetchAssetMetadataStream(serverURL: serverURL, apiKey: apiKey)
-        } catch {
-            logWarning("Failed to fetch iCloudId map from metadata stream: \(error.localizedDescription)", category: .sync)
-            return [:]
-        }
-    }
 }
 
 // MARK: - Data Models
@@ -226,6 +294,7 @@ struct SyncResult {
 enum SyncError: LocalizedError {
     case syncInProgress
     case syncFailed(reason: String)
+    case repeatedServerReset
 
     var errorDescription: String? {
         switch self {
@@ -233,6 +302,8 @@ enum SyncError: LocalizedError {
             return "Sync already in progress"
         case .syncFailed(let reason):
             return "Sync failed: \(reason)"
+        case .repeatedServerReset:
+            return "Sync failed: Server requested another reset after rebuilding the sync checkpoint"
         }
     }
 }

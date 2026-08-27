@@ -179,14 +179,27 @@ class HashService {
             let sha1 = StreamingSHA1()
             let options = PHAssetResourceRequestOptions()
             options.isNetworkAccessAllowed = true
+            let requestStartedAt = Date()
+            logInfo(
+                "Resource data request started: type=\(String(describing: resource.type)), networkAllowed=true",
+                category: .hash
+            )
             
             PHAssetResourceManager.default().requestData(for: resource, options: options) { chunk in
                 sha1.update(data: chunk)
             } completionHandler: { error in
                 if let error = error {
+                    logError(
+                        "Resource data request failed: type=\(String(describing: resource.type)), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(requestStartedAt)))s, error=\(error.localizedDescription)",
+                        category: .hash
+                    )
                     continuation.resume(throwing: error)
                 } else {
                     let hash = sha1.finalize()
+                    logInfo(
+                        "Resource data request finished: type=\(String(describing: resource.type)), bytes=\(sha1.totalSize), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(requestStartedAt)))s",
+                        category: .hash
+                    )
                     continuation.resume(returning: (hash, sha1.totalSize))
                 }
             }
