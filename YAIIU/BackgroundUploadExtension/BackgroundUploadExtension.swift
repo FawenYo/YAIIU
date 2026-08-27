@@ -1,5 +1,6 @@
 import CoreLocation
 import ExtensionFoundation
+import Network
 import Photos
 import UniformTypeIdentifiers
 import os.lock
@@ -10,6 +11,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private let cancelledState = OSAllocatedUnfairLock(initialState: false)
     private let settings = SharedSettings.shared
     private let database = BackgroundUploadDatabase.shared
+    private let networkMonitor = NWPathMonitor()
+    private let networkQueue = DispatchQueue(label: "com.yaiiu.background-upload.network")
+    private let pathLock = NSLock()
+    private var currentPath: NWPath?
     private let appGroupID = "group.com.fawenyo.yaiiu"
 
     private var isCancelled: Bool {
@@ -17,7 +22,27 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     }
 
     required init() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.pathLock.lock()
+            self.currentPath = path
+            self.pathLock.unlock()
+        }
+        networkMonitor.start(queue: networkQueue)
         log("Initialized")
+    }
+
+    deinit {
+        networkMonitor.cancel()
+    }
+
+    private func currentNetworkInterface() -> BackgroundUploadNetworkInterface {
+        pathLock.lock()
+        defer { pathLock.unlock() }
+        guard let path = currentPath, path.status == .satisfied else { return .unavailable }
+        if path.usesInterfaceType(.wifi) { return .wifi }
+        if path.usesInterfaceType(.cellular) { return .cellular }
+        return .other
     }
 
     // MARK: - PHBackgroundResourceUploadExtension
@@ -134,6 +159,14 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     }
 
     private func createNewUploadJobs() throws {
+        guard BackgroundUploadPolicy.canCreateNewJobs(
+            allowCellular: settings.allowCellularBackgroundUpload,
+            interface: currentNetworkInterface()
+        ) else {
+            logDebug("Skipping new background upload jobs because network policy disallows them")
+            return
+        }
+
         let library = PHPhotoLibrary.shared()
         let resources = fetchPendingResources()
         logDebug("Found \(resources.count) pending resources for upload")
@@ -148,15 +181,9 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 self.logDebug("Creating upload job for resource: \(resolvedFilename)")
 
                 if #available(iOS 26.4, *) {
-                    PHAssetResourceUploadJobChangeRequest.creationRequestForJob(
-                        destination: dest,
-                        resource: resource
-                    )
+                    PHAssetResourceUploadJobChangeRequest.creationRequestForJob(destination: dest, resource: resource)
                 } else {
-                    PHAssetResourceUploadJobChangeRequest.createJob(
-                        destination: dest,
-                        resource: resource
-                    )
+                    PHAssetResourceUploadJobChangeRequest.createJob(destination: dest, resource: resource)
                 }
                 self.database.createOrUpdateJob(
                     assetId: resource.assetLocalIdentifier,

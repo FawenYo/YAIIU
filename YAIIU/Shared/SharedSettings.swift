@@ -3,6 +3,7 @@ import Security
 
 /// SharedSettings uses App Group to share settings between the main App and Extension
 /// App Group: group.com.fawenyo.yaiiu
+
 class SharedSettings {
     static let shared = SharedSettings()
     
@@ -15,6 +16,7 @@ class SharedSettings {
     private let internalNetworkSSIDKey = "immich_internal_network_ssid"
     private let isLoggedInKey = "immich_is_logged_in"
     private let backgroundUploadEnabledKey = "immich_background_upload_enabled"
+    private let allowCellularBackgroundUploadKey = "immich_allow_cellular_background_upload"
     private let lastProcessedChangeTokenKey = "immich_last_processed_change_token"
     private let uploadedAssetIdentifiersKey = "immich_uploaded_asset_identifiers"
     private let lastAppVersionKey = "yaiiu_last_app_version"
@@ -92,6 +94,15 @@ class SharedSettings {
             userDefaults?.set(newValue, forKey: backgroundUploadEnabledKey)
         }
     }
+
+    var allowCellularBackgroundUpload: Bool {
+        get {
+            return userDefaults?.object(forKey: allowCellularBackgroundUploadKey) as? Bool ?? true
+        }
+        set {
+            userDefaults?.set(newValue, forKey: allowCellularBackgroundUploadKey)
+        }
+    }
     
     /// Timestamp of the most recent successful background upload, set by BackgroundUploadExtension.
     var lastBackgroundUploadAt: Date? {
@@ -163,12 +174,13 @@ class SharedSettings {
     
     // MARK: - Sync Settings from Main App
 
-    func syncFromMainApp(serverURL: String, apiKey: String, isLoggedIn: Bool, internalServerURL: String? = nil, ssid: String? = nil) {
+    func syncFromMainApp(serverURL: String, apiKey: String, isLoggedIn: Bool, internalServerURL: String? = nil, ssid: String? = nil, allowCellular: Bool = true) {
         self.serverURL = serverURL
         self.internalServerURL = internalServerURL ?? ""
         self.internalNetworkSSID = ssid ?? ""
         self.apiKey = apiKey
         self.isLoggedIn = isLoggedIn
+        self.allowCellularBackgroundUpload = allowCellular
     }
     
     func clearAll() {
@@ -178,6 +190,7 @@ class SharedSettings {
         apiKey = ""
         isLoggedIn = false
         backgroundUploadEnabled = false
+        allowCellularBackgroundUpload = true
         lastProcessedChangeToken = nil
     }
     

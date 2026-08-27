@@ -211,6 +211,7 @@
 "backgroundUpload.logsTitle" = "Journaux de téléversement en arrière-plan";
 "backgroundUpload.noLogs" = "Aucun journal disponible";
 "backgroundUpload.notSupported" = "Fonctionnalité non supportée";
+"backgroundUpload.allowCellular" = "Autoriser les données mobiles";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "L'accès complet à la bibliothèque de photos est requis pour activer le téléversement en arrière-plan";
 "backgroundUpload.error.notLoggedIn" = "Veuillez d'abord vous connecter au serveur Immich";
 "backgroundUpload.error.notUsingImmichProxy" = "Le téléversement en arrière-plan nécessite que l’URL du serveur pointe vers immich-proxy. Veuillez configurer YAIIU sur immich-proxy plutôt que sur le serveur Immich officiel.";

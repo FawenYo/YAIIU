@@ -212,6 +212,7 @@
 "backgroundUpload.logsTitle" = "背景上傳日誌";
 "backgroundUpload.noLogs" = "沒有日誌";
 "backgroundUpload.notSupported" = "不支援此功能";
+"backgroundUpload.allowCellular" = "允許使用行動數據";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "需要完整的照片庫存取權限才能啟用背景上傳";
 "backgroundUpload.error.notLoggedIn" = "請先登入 Immich 伺服器";
 "backgroundUpload.error.notUsingImmichProxy" = "背景上傳需要將伺服器 URL 設為 immich-proxy，請將 YAIIU 指向 immich-proxy，而不是官方 Immich 伺服器。";

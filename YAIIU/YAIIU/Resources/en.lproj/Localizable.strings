@@ -212,6 +212,7 @@
 "backgroundUpload.logsTitle" = "Background Upload Logs";
 "backgroundUpload.noLogs" = "No logs available";
 "backgroundUpload.notSupported" = "Feature not supported";
+"backgroundUpload.allowCellular" = "Allow Cellular Data";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "Full photo library access is required to enable background upload";
 "backgroundUpload.error.notLoggedIn" = "Please login to Immich server first";
 "backgroundUpload.error.notUsingImmichProxy" = "Background upload requires immich-proxy as the server URL. Please point YAIIU to immich-proxy instead of the official Immich server.";

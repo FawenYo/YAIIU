@@ -171,6 +171,10 @@ struct SettingsView: View {
                         .onChange(of: backgroundUploadEnabled) { _, newValue in
                             toggleBackgroundUpload(enabled: newValue)
                         }
+                        Toggle(L10n.BackgroundUpload.allowCellular, isOn: Binding(
+                            get: { settingsManager.allowCellularBackgroundUpload },
+                            set: { settingsManager.updateAllowCellularBackgroundUpload($0) }
+                        ))
                         
                         if let error = backgroundUploadError {
                             HStack {
