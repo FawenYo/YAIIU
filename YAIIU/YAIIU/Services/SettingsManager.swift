@@ -52,6 +52,7 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(internalNetworkSSID, forKey: internalNetworkSSIDKey)
         UserDefaults.standard.set(isLoggedIn, forKey: isLoggedInKey)
         UserDefaults.standard.set(hasCompletedOnboarding, forKey: hasCompletedOnboardingKey)
+        UserDefaults.standard.set(hasCompletedInitialSetup, forKey: hasCompletedInitialSetupKey)
         UserDefaults.standard.set(hasCompletedPhotoPermission, forKey: hasCompletedPhotoPermissionKey)
         saveAPIKeyToKeychain(apiKey)
         UserDefaults.standard.set(allowCellularBackgroundUpload, forKey: allowCellularBackgroundUploadKey)
