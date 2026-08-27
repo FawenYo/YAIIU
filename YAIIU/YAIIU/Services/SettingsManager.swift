@@ -148,11 +148,13 @@ class SettingsManager: ObservableObject {
         self.internalNetworkSSID = ""
         self.apiKey = ""
         self.isLoggedIn = false
+        self.allowCellularBackgroundUpload = true
         
         UserDefaults.standard.removeObject(forKey: serverURLKey)
         UserDefaults.standard.removeObject(forKey: internalServerURLKey)
         UserDefaults.standard.removeObject(forKey: internalNetworkSSIDKey)
         UserDefaults.standard.removeObject(forKey: isLoggedInKey)
+        UserDefaults.standard.removeObject(forKey: allowCellularBackgroundUploadKey)
         deleteAPIKeyFromKeychain()
         
         // Clear SharedSettings and disable background upload
