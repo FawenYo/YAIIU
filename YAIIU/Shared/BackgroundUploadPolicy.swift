@@ -23,4 +23,7 @@ public enum BackgroundUploadPolicy {
             return false
         }
     }
+    public static func allowsCellularAccess(allowCellular: Bool) -> Bool {
+        allowCellular
+    }
 }

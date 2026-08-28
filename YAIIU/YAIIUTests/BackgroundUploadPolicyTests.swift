@@ -15,4 +15,8 @@ final class BackgroundUploadPolicyTests: XCTestCase {
         XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: true, interface: .other))
         XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: true, interface: .unavailable))
     }
+    func testRequestCellularAccessMatchesPreference() {
+        XCTAssertFalse(BackgroundUploadPolicy.allowsCellularAccess(allowCellular: false))
+        XCTAssertTrue(BackgroundUploadPolicy.allowsCellularAccess(allowCellular: true))
+    }
 }

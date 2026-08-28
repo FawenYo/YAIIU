@@ -280,6 +280,9 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         fmt.timeZone = timezone
 
         var req = URLRequest(url: url)
+        req.allowsCellularAccess = BackgroundUploadPolicy.allowsCellularAccess(
+            allowCellular: settings.allowCellularBackgroundUpload
+        )
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(settings.apiKey)", forHTTPHeaderField: "Authorization")
