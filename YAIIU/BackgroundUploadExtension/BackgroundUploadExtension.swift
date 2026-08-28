@@ -283,7 +283,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
         fmt.timeZone = timezone
-        
+
         var req = URLRequest(url: url)
         req.allowsCellularAccess = BackgroundUploadPolicy.allowsCellularAccess(
             for: purpose,
