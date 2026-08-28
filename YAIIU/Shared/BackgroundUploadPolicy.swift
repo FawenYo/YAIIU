@@ -6,6 +6,7 @@ public enum BackgroundUploadNetworkInterface: Equatable {
     case cellular
     case other
     case unavailable
+    case unknown
 }
 
 public enum BackgroundUploadPolicy {
@@ -19,7 +20,7 @@ public enum BackgroundUploadPolicy {
             return true
         case .cellular:
             return allowCellular
-        case .other, .unavailable:
+        case .other, .unavailable, .unknown:
             return false
         }
     }

@@ -20,7 +20,12 @@ final class BackgroundUploadPolicyTests: XCTestCase {
         XCTAssertTrue(BackgroundUploadPolicy.allowsCellularAccess(for: .newJob, allowCellular: true))
     }
 
-    func testRetryRequestRemainsAllowedOnCellular() {
-        XCTAssertTrue(BackgroundUploadPolicy.allowsCellularAccess(for: .retry, allowCellular: false))
+    func testUnknownNetworkDoesNotCreateJobs() {
+        XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: false, interface: .unknown))
+        XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: true, interface: .unknown))
+    }
+
+    func testUnavailableNetworkDoesNotCreateJobs() {
+        XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: true, interface: .unavailable))
     }
 }

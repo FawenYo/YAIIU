@@ -15,6 +15,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private let networkQueue = DispatchQueue(label: "com.yaiiu.background-upload.network")
     private let pathLock = NSLock()
     private var currentPath: NWPath?
+    private var hasReceivedInitialPath = false
     private let appGroupID = "group.com.fawenyo.yaiiu"
 
     private var isCancelled: Bool {
@@ -30,6 +31,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             }
             self.pathLock.lock()
             self.currentPath = path
+            self.hasReceivedInitialPath = true
             self.pathLock.unlock()
             pathReady.signal()
         }
@@ -45,6 +47,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private func currentNetworkInterface() -> BackgroundUploadNetworkInterface {
         pathLock.lock()
         defer { pathLock.unlock() }
+        guard hasReceivedInitialPath else { return .unknown }
         guard let path = currentPath, path.status == .satisfied else { return .unavailable }
         if path.usesInterfaceType(.wifi) { return .wifi }
         if path.usesInterfaceType(.cellular) { return .cellular }
@@ -68,8 +71,9 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             try acknowledgeCompletedJobs()
             guard !isCancelled else { return .processing }
 
-            try createNewUploadJobs()
-            return .completed
+            let networkInterface = currentNetworkInterface()
+            let result = try createNewUploadJobs(interface: networkInterface)
+            return result == .unknown ? .processing : .completed
 
         } catch let error as NSError
             where error.domain == PHPhotosErrorDomain
@@ -164,19 +168,25 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         }
     }
 
-    private func createNewUploadJobs() throws {
+    private func createNewUploadJobs(
+        interface: BackgroundUploadNetworkInterface
+    ) throws -> BackgroundUploadNetworkInterface {
+        guard interface != .unknown else {
+            logDebug("Skipping new background upload jobs because network path is unknown")
+            return interface
+        }
         guard BackgroundUploadPolicy.canCreateNewJobs(
             allowCellular: settings.allowCellularBackgroundUpload,
-            interface: currentNetworkInterface()
+            interface: interface
         ) else {
             logDebug("Skipping new background upload jobs because network policy disallows them")
-            return
+            return interface
         }
 
         let library = PHPhotoLibrary.shared()
         let resources = fetchPendingResources()
         logDebug("Found \(resources.count) pending resources for upload")
-        guard !resources.isEmpty else { return }
+        guard !resources.isEmpty else { return interface }
 
         try library.performChangesAndWait {
             for resource in resources where !self.isCancelled {
@@ -202,6 +212,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 )
             }
         }
+        return interface
     }
 
     // MARK: - Resource Discovery
