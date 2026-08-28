@@ -22,13 +22,19 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     }
 
     required init() {
+        let pathReady = DispatchSemaphore(value: 0)
         networkMonitor.pathUpdateHandler = { [weak self] path in
-            guard let self else { return }
+            guard let self else {
+                pathReady.signal()
+                return
+            }
             self.pathLock.lock()
             self.currentPath = path
             self.pathLock.unlock()
+            pathReady.signal()
         }
         networkMonitor.start(queue: networkQueue)
+        _ = pathReady.wait(timeout: DispatchTime.now() + 1.0)
         log("Initialized")
     }
 
