@@ -174,13 +174,15 @@ class SharedSettings {
     
     // MARK: - Sync Settings from Main App
 
-    func syncFromMainApp(serverURL: String, apiKey: String, isLoggedIn: Bool, internalServerURL: String? = nil, ssid: String? = nil, allowCellular: Bool = true) {
+    func syncFromMainApp(serverURL: String, apiKey: String, isLoggedIn: Bool, internalServerURL: String? = nil, ssid: String? = nil, allowCellular: Bool? = nil) {
         self.serverURL = serverURL
         self.internalServerURL = internalServerURL ?? ""
         self.internalNetworkSSID = ssid ?? ""
         self.apiKey = apiKey
         self.isLoggedIn = isLoggedIn
-        self.allowCellularBackgroundUpload = allowCellular
+        if let allowCellular {
+            self.allowCellularBackgroundUpload = allowCellular
+        }
     }
     
     func clearAll() {
