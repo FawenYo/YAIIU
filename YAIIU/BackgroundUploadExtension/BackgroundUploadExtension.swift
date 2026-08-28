@@ -187,14 +187,14 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             logDebug("Deferring new background upload jobs because cellular data is disabled")
             return .deferred
         case .unavailable:
-            logDebug("Skipping new background upload jobs because network is unavailable")
-            return .completed
+            logDebug("Deferring new background upload jobs because network is unavailable")
+            return .deferred
         default:
             guard BackgroundUploadPolicy.canCreateNewJobs(
                 allowCellular: settings.allowCellularBackgroundUpload,
                 interface: interface
             ) else {
-                return .completed
+                return .deferred
             }
         }
 
