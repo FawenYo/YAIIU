@@ -72,7 +72,12 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             guard !isCancelled else { return .processing }
 
             let result = try createNewUploadJobs(interface: currentNetworkInterface())
-            return result == .deferred ? .processing : .completed
+            switch result {
+            case .deferred:
+                return .processing
+            case .completed:
+                return .completed
+            }
 
         } catch let error as NSError
             where error.domain == PHPhotosErrorDomain
