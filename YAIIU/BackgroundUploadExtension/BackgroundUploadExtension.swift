@@ -71,9 +71,8 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             try acknowledgeCompletedJobs()
             guard !isCancelled else { return .processing }
 
-            let networkInterface = currentNetworkInterface()
-            let result = try createNewUploadJobs(interface: networkInterface)
-            return result == .unknown ? .processing : .completed
+            let result = try createNewUploadJobs(interface: currentNetworkInterface())
+            return result == .deferred ? .processing : .completed
 
         } catch let error as NSError
             where error.domain == PHPhotosErrorDomain
@@ -168,25 +167,38 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         }
     }
 
+    private enum NewUploadJobsResult {
+        case completed
+        case deferred
+    }
+
     private func createNewUploadJobs(
         interface: BackgroundUploadNetworkInterface
-    ) throws -> BackgroundUploadNetworkInterface {
-        guard interface != .unknown else {
-            logDebug("Skipping new background upload jobs because network path is unknown")
-            return interface
-        }
-        guard BackgroundUploadPolicy.canCreateNewJobs(
-            allowCellular: settings.allowCellularBackgroundUpload,
-            interface: interface
-        ) else {
-            logDebug("Skipping new background upload jobs because network policy disallows them")
-            return interface
+    ) throws -> NewUploadJobsResult {
+        let resources = fetchPendingResources()
+        logDebug("Found \(resources.count) pending resources for upload")
+        guard !resources.isEmpty else { return .completed }
+
+        switch interface {
+        case .unknown:
+            logDebug("Deferring new background upload jobs because network path is unknown")
+            return .deferred
+        case .cellular where !settings.allowCellularBackgroundUpload:
+            logDebug("Deferring new background upload jobs because cellular data is disabled")
+            return .deferred
+        case .unavailable:
+            logDebug("Skipping new background upload jobs because network is unavailable")
+            return .completed
+        default:
+            guard BackgroundUploadPolicy.canCreateNewJobs(
+                allowCellular: settings.allowCellularBackgroundUpload,
+                interface: interface
+            ) else {
+                return .completed
+            }
         }
 
         let library = PHPhotoLibrary.shared()
-        let resources = fetchPendingResources()
-        logDebug("Found \(resources.count) pending resources for upload")
-        guard !resources.isEmpty else { return interface }
 
         try library.performChangesAndWait {
             for resource in resources where !self.isCancelled {
@@ -212,7 +224,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 )
             }
         }
-        return interface
+        return .completed
     }
 
     // MARK: - Resource Discovery

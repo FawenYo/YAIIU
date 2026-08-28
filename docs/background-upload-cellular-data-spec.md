@@ -13,7 +13,7 @@ YAIIU background uploads may create new PhotoKit upload jobs only when the curre
 The Settings toggle uses `backgroundUpload.allowCellular`, translated in all supported locales: English, Traditional Chinese, Simplified Chinese, Japanese, Korean, Spanish, German, and French.
 
 ## Limits
-The extension network monitor starts when the extension is initialized. Until the initial path callback arrives, new jobs are conservatively withheld and `process()` returns `.processing` so Photos can invoke the extension again. A confirmed unsatisfied path is treated as unavailable and leaves new jobs withheld without requesting processing. Already-created jobs continue through retry/acknowledgement. The setting does not disable foreground uploads or PhotoKit jobs already scheduled by the system.
+The extension network monitor starts when the extension is initialized. Until the initial path callback arrives, new jobs are conservatively withheld and `process()` returns `.processing` so Photos can invoke the extension again. When cellular uploads are disabled and pending resources remain, new jobs are deferred and `process()` also returns `.processing`; this preserves the work for a later Photos invocation, although the extension cannot independently guarantee a callback exactly when the device changes to Wi-Fi. A confirmed unsatisfied path is treated as unavailable and leaves new jobs withheld without requesting processing. Already-created jobs continue through retry/acknowledgement. The setting does not disable foreground uploads or PhotoKit jobs already scheduled by the system.
 
 ## Testing
 `YAIIUTests/BackgroundUploadPolicyTests.swift` covers allowed Wi-Fi/cellular interfaces and rejected other, unavailable, and unknown states. Run the focused test with:
