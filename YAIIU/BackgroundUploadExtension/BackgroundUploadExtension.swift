@@ -180,7 +180,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
 
         try library.performChangesAndWait {
             for resource in resources where !self.isCancelled {
-                guard let dest = self.buildDestination(for: resource) else {
+                guard let dest = self.buildDestination(
+                    for: resource,
+                    purpose: .newJob
+                ) else {
                     continue
                 }
                 let resolvedFilename = resource.resolvedFilename()
@@ -253,9 +256,12 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         return pending
     }
 
-    // MARK: - Server Communication
 
-    private func buildDestination(for resource: PHAssetResource) -> URLRequest?
+    // MARK: - Server Communication
+    private func buildDestination(
+        for resource: PHAssetResource,
+        purpose: BackgroundUploadPolicy.RequestPurpose = .retry
+    ) -> URLRequest?
     {
         guard !settings.serverURL.isEmpty, !settings.apiKey.isEmpty,
             let url = URL(string: "\(settings.serverURL)/api/assets/background")
@@ -274,13 +280,13 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         let isFavorite = asset.isFavorite
         
         let timezone = TimeZone.current
-        
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
         fmt.timeZone = timezone
-
+        
         var req = URLRequest(url: url)
         req.allowsCellularAccess = BackgroundUploadPolicy.allowsCellularAccess(
+            for: purpose,
             allowCellular: settings.allowCellularBackgroundUpload
         )
         req.httpMethod = "POST"

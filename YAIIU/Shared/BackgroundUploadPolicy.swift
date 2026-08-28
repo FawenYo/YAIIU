@@ -23,7 +23,20 @@ public enum BackgroundUploadPolicy {
             return false
         }
     }
-    public static func allowsCellularAccess(allowCellular: Bool) -> Bool {
-        allowCellular
+    public enum RequestPurpose {
+        case newJob
+        case retry
+    }
+
+    public static func allowsCellularAccess(
+        for purpose: RequestPurpose,
+        allowCellular: Bool
+    ) -> Bool {
+        switch purpose {
+        case .newJob:
+            return allowCellular
+        case .retry:
+            return true
+        }
     }
 }
