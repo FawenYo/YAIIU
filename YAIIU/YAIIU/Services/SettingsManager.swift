@@ -7,6 +7,7 @@ class SettingsManager: ObservableObject {
     @Published var internalNetworkSSID: String = ""
     @Published var apiKey: String = ""
     @Published var isLoggedIn: Bool = false
+    @Published var allowCellularBackgroundUpload: Bool = true
     @Published var hasCompletedOnboarding: Bool = false
     @Published var hasCompletedInitialSetup: Bool = false
     @Published var hasCompletedPhotoPermission: Bool = false
@@ -19,7 +20,7 @@ class SettingsManager: ObservableObject {
     private let hasCompletedOnboardingKey = "immich_has_completed_onboarding"
     private let hasCompletedInitialSetupKey = "immich_has_completed_initial_setup"
     private let hasCompletedPhotoPermissionKey = "immich_has_completed_photo_permission"
-    
+    private let allowCellularBackgroundUploadKey = "immich_allow_cellular_background_upload"
     init() {
         loadSettings()
     }
@@ -33,6 +34,7 @@ class SettingsManager: ObservableObject {
         hasCompletedOnboarding = UserDefaults.standard.bool(forKey: hasCompletedOnboardingKey)
         hasCompletedInitialSetup = UserDefaults.standard.bool(forKey: hasCompletedInitialSetupKey)
         hasCompletedPhotoPermission = UserDefaults.standard.bool(forKey: hasCompletedPhotoPermissionKey)
+        allowCellularBackgroundUpload = UserDefaults.standard.object(forKey: allowCellularBackgroundUploadKey) as? Bool ?? true
 
         if isLoggedIn && (serverURL.isEmpty || apiKey.isEmpty) {
             isLoggedIn = false
@@ -53,6 +55,7 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(hasCompletedInitialSetup, forKey: hasCompletedInitialSetupKey)
         UserDefaults.standard.set(hasCompletedPhotoPermission, forKey: hasCompletedPhotoPermissionKey)
         saveAPIKeyToKeychain(apiKey)
+        UserDefaults.standard.set(allowCellularBackgroundUpload, forKey: allowCellularBackgroundUploadKey)
     }
     
     var activeServerURL: String {
@@ -98,6 +101,11 @@ class SettingsManager: ObservableObject {
         
         syncToSharedSettings()
     }
+    func updateAllowCellularBackgroundUpload(_ allowed: Bool) {
+        allowCellularBackgroundUpload = allowed
+        UserDefaults.standard.set(allowed, forKey: allowCellularBackgroundUploadKey)
+        syncToSharedSettings()
+    }
     
     private func syncToSharedSettings() {
         if #available(iOS 26.1, *) {
@@ -105,7 +113,8 @@ class SettingsManager: ObservableObject {
                 serverURL: serverURL,
                 apiKey: apiKey,
                 internalServerURL: internalServerURL.isEmpty ? nil : internalServerURL,
-                ssid: internalNetworkSSID.isEmpty ? nil : internalNetworkSSID
+                ssid: internalNetworkSSID.isEmpty ? nil : internalNetworkSSID,
+                allowCellular: allowCellularBackgroundUpload
             )
         } else {
             SharedSettings.shared.syncFromMainApp(
@@ -113,7 +122,8 @@ class SettingsManager: ObservableObject {
                 apiKey: apiKey,
                 isLoggedIn: true,
                 internalServerURL: internalServerURL.isEmpty ? nil : internalServerURL,
-                ssid: internalNetworkSSID.isEmpty ? nil : internalNetworkSSID
+                ssid: internalNetworkSSID.isEmpty ? nil : internalNetworkSSID,
+                allowCellular: allowCellularBackgroundUpload
             )
         }
     }
@@ -139,11 +149,13 @@ class SettingsManager: ObservableObject {
         self.internalNetworkSSID = ""
         self.apiKey = ""
         self.isLoggedIn = false
+        self.allowCellularBackgroundUpload = true
         
         UserDefaults.standard.removeObject(forKey: serverURLKey)
         UserDefaults.standard.removeObject(forKey: internalServerURLKey)
         UserDefaults.standard.removeObject(forKey: internalNetworkSSIDKey)
         UserDefaults.standard.removeObject(forKey: isLoggedInKey)
+        UserDefaults.standard.removeObject(forKey: allowCellularBackgroundUploadKey)
         deleteAPIKeyFromKeychain()
         
         // Clear SharedSettings and disable background upload

@@ -1,5 +1,6 @@
 import CoreLocation
 import ExtensionFoundation
+import Network
 import Photos
 import UniformTypeIdentifiers
 import os.lock
@@ -10,14 +11,40 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private let cancelledState = OSAllocatedUnfairLock(initialState: false)
     private let settings = SharedSettings.shared
     private let database = BackgroundUploadDatabase.shared
+    private let networkMonitor = NWPathMonitor()
+    private let networkQueue = DispatchQueue(label: "com.yaiiu.background-upload.network")
+    private let pathLock = NSLock()
+    private var currentPath: NWPath?
+    private var hasReceivedInitialPath = false
     private let appGroupID = "group.com.fawenyo.yaiiu"
 
     private var isCancelled: Bool {
         cancelledState.withLock { $0 }
     }
-
     required init() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.pathLock.lock()
+            self.currentPath = path
+            self.hasReceivedInitialPath = true
+            self.pathLock.unlock()
+        }
+        networkMonitor.start(queue: networkQueue)
         log("Initialized")
+    }
+
+    deinit {
+        networkMonitor.cancel()
+    }
+
+    private func currentNetworkInterface() -> BackgroundUploadNetworkInterface {
+        pathLock.lock()
+        defer { pathLock.unlock() }
+        guard hasReceivedInitialPath else { return .unknown }
+        guard let path = currentPath, path.status == .satisfied else { return .unavailable }
+        if path.usesInterfaceType(.wifi) { return .wifi }
+        if path.usesInterfaceType(.cellular) { return .cellular }
+        return .other
     }
 
     // MARK: - PHBackgroundResourceUploadExtension
@@ -37,8 +64,13 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             try acknowledgeCompletedJobs()
             guard !isCancelled else { return .processing }
 
-            try createNewUploadJobs()
-            return .completed
+            let result = try createNewUploadJobs(interface: currentNetworkInterface())
+            switch result {
+            case .deferred:
+                return .processing
+            case .completed:
+                return .completed
+            }
 
         } catch let error as NSError
             where error.domain == PHPhotosErrorDomain
@@ -133,30 +165,54 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         }
     }
 
-    private func createNewUploadJobs() throws {
-        let library = PHPhotoLibrary.shared()
+    private enum NewUploadJobsResult {
+        case completed
+        case deferred
+    }
+
+    private func createNewUploadJobs(
+        interface: BackgroundUploadNetworkInterface
+    ) throws -> NewUploadJobsResult {
         let resources = fetchPendingResources()
         logDebug("Found \(resources.count) pending resources for upload")
-        guard !resources.isEmpty else { return }
+        guard !resources.isEmpty else { return .completed }
+
+        switch interface {
+        case .unknown:
+            logDebug("Deferring new background upload jobs because network path is unknown")
+            return .deferred
+        case .cellular where !settings.allowCellularBackgroundUpload:
+            logDebug("Deferring new background upload jobs because cellular data is disabled")
+            return .deferred
+        case .unavailable:
+            logDebug("Deferring new background upload jobs because network is unavailable")
+            return .deferred
+        default:
+            guard BackgroundUploadPolicy.canCreateNewJobs(
+                allowCellular: settings.allowCellularBackgroundUpload,
+                interface: interface
+            ) else {
+                return .deferred
+            }
+        }
+
+        let library = PHPhotoLibrary.shared()
 
         try library.performChangesAndWait {
             for resource in resources where !self.isCancelled {
-                guard let dest = self.buildDestination(for: resource) else {
+                guard let dest = self.buildDestination(
+                    for: resource,
+                    purpose: .newJob
+                ) else {
                     continue
                 }
                 let resolvedFilename = resource.resolvedFilename()
                 self.logDebug("Creating upload job for resource: \(resolvedFilename)")
 
                 if #available(iOS 26.4, *) {
-                    PHAssetResourceUploadJobChangeRequest.creationRequestForJob(
-                        destination: dest,
-                        resource: resource
-                    )
+                    PHAssetResourceUploadJobChangeRequest.creationRequestForJob(destination: dest, resource: resource)
                 } else {
-                    PHAssetResourceUploadJobChangeRequest.createJob(
-                        destination: dest,
-                        resource: resource
-                    )
+                    PHAssetResourceUploadJobChangeRequest.createJob(destination: dest, resource: resource)
                 }
                 self.database.createOrUpdateJob(
                     assetId: resource.assetLocalIdentifier,
@@ -166,6 +222,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 )
             }
         }
+        return .completed
     }
 
     // MARK: - Resource Discovery
@@ -220,9 +277,12 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         return pending
     }
 
-    // MARK: - Server Communication
 
-    private func buildDestination(for resource: PHAssetResource) -> URLRequest?
+    // MARK: - Server Communication
+    private func buildDestination(
+        for resource: PHAssetResource,
+        purpose: BackgroundUploadPolicy.RequestPurpose = .retry
+    ) -> URLRequest?
     {
         guard !settings.serverURL.isEmpty, !settings.apiKey.isEmpty,
             let url = URL(string: "\(settings.serverURL)/api/assets/background")
@@ -241,12 +301,15 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         let isFavorite = asset.isFavorite
         
         let timezone = TimeZone.current
-        
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
         fmt.timeZone = timezone
 
         var req = URLRequest(url: url)
+        req.allowsCellularAccess = BackgroundUploadPolicy.allowsCellularAccess(
+            for: purpose,
+            allowCellular: settings.allowCellularBackgroundUpload
+        )
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(settings.apiKey)", forHTTPHeaderField: "Authorization")

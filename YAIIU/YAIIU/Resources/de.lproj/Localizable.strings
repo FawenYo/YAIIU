@@ -211,6 +211,7 @@
 "backgroundUpload.logsTitle" = "Hintergrund-Upload-Protokolle";
 "backgroundUpload.noLogs" = "Keine Protokolle verfügbar";
 "backgroundUpload.notSupported" = "Funktion nicht unterstützt";
+"backgroundUpload.allowCellular" = "Mobilfunkdaten erlauben";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "Vollständiger Zugriff auf die Fotobibliothek ist erforderlich, um den Hintergrund-Upload zu aktivieren";
 "backgroundUpload.error.notLoggedIn" = "Bitte melden Sie sich zuerst beim Immich-Server an";
 "backgroundUpload.error.notUsingImmichProxy" = "Für Hintergrund-Uploads muss die Server-URL auf immich-proxy zeigen. Bitte YAIIU auf immich-proxy statt auf den offiziellen Immich-Server setzen.";

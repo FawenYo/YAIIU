@@ -211,6 +211,7 @@
 "backgroundUpload.logsTitle" = "バックグラウンドアップロードログ";
 "backgroundUpload.noLogs" = "ログがありません";
 "backgroundUpload.notSupported" = "機能がサポートされていません";
+"backgroundUpload.allowCellular" = "モバイルデータ通信を許可";
 "backgroundUpload.error.photoLibraryNotAuthorized" = "バックグラウンドアップロードを有効にするには、写真ライブラリへのフルアクセス権限が必要です";
 "backgroundUpload.error.notLoggedIn" = "まずImmichサーバーにログインしてください";
 "backgroundUpload.error.notUsingImmichProxy" = "バックグラウンドアップロードを利用するには、サーバーURLにimmich-proxyを指定する必要があります。YAIIUの接続先を公式Immichサーバーではなくimmich-proxyに設定してください。";
