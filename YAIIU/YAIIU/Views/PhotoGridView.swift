@@ -492,6 +492,7 @@ struct PhotoGridView: View {
             HStack(spacing: 6) {
                 ProgressView()
                     .scaleEffect(0.7)
+                    .padding(.vertical, 2)
                 
                 Text(getProcessingStatusText())
                     .font(.system(size: 12))
