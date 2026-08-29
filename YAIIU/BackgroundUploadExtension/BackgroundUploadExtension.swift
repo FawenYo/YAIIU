@@ -21,22 +21,15 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private var isCancelled: Bool {
         cancelledState.withLock { $0 }
     }
-
     required init() {
-        let pathReady = DispatchSemaphore(value: 0)
         networkMonitor.pathUpdateHandler = { [weak self] path in
-            guard let self else {
-                pathReady.signal()
-                return
-            }
+            guard let self else { return }
             self.pathLock.lock()
             self.currentPath = path
             self.hasReceivedInitialPath = true
             self.pathLock.unlock()
-            pathReady.signal()
         }
         networkMonitor.start(queue: networkQueue)
-        _ = pathReady.wait(timeout: DispatchTime.now() + 1.0)
         log("Initialized")
     }
 
