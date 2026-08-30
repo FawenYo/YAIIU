@@ -45,6 +45,7 @@
 		BC7F352A2EFED8F200747537 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35252EFED8F200747537 /* SharedSettings.swift */; };
         BU0000010000000000000001 /* BackgroundUploadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BU0000020000000000000001 /* BackgroundUploadPolicy.swift */; };
         TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */; };
+		TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000170000000000000001 /* HashPipelinePolicyTests.swift */; };
         BU0000030000000000000001 /* BackgroundUploadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BU0000020000000000000001 /* BackgroundUploadPolicy.swift */; };
 		BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
 		BC7F352D2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
@@ -137,6 +138,7 @@
 		BC7F35252EFED8F200747537 /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
         BU0000020000000000000001 /* BackgroundUploadPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadPolicy.swift; sourceTree = "<group>"; };
         TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadPolicyTests.swift; sourceTree = "<group>"; };
+		TS0000170000000000000001 /* HashPipelinePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashPipelinePolicyTests.swift; sourceTree = "<group>"; };
 		BC7F352C2EFED90000747537 /* SharedLogTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedLogTypes.swift; sourceTree = "<group>"; };
 		RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PHAssetResource+ResolvedFilename.swift"; sourceTree = "<group>"; };
 		DB0000020000000000000001 /* SQLiteConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteConnection.swift; sourceTree = "<group>"; };
@@ -385,6 +387,7 @@
 				TS0000110000000000000001 /* ServerAssetRepositoryTests.swift */,
 				TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */,
                 TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */,
+				TS0000170000000000000001 /* HashPipelinePolicyTests.swift */,
 			);
 			path = YAIIUTests;
 			sourceTree = "<group>";
@@ -590,6 +593,7 @@
 				TS0000100000000000000001 /* ServerAssetRepositoryTests.swift in Sources */,
 				TS0000120000000000000001 /* ServerAssetSyncPersistenceTests.swift in Sources */,
                 TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */,
+				TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
