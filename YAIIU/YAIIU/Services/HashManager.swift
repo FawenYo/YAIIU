@@ -52,6 +52,7 @@ class HashManager: ObservableObject {
     private var processingQueue: [String] = []
     private var isHashingActive = false
     private var isCheckingActive = false
+    private var isStopping = false
     
     private let checkQueue = DispatchQueue(label: "com.fawenyo.yaiiu.check", qos: .utility)
     
@@ -107,7 +108,7 @@ class HashManager: ObservableObject {
     }
 
     func startBackgroundProcessing(identifiers: [String]) {
-        guard !isHashingActive && !isCheckingActive else { return }
+        guard !isStopping && !isHashingActive && !isCheckingActive else { return }
 
         let runID = runState.begin()
         shouldStop = false
@@ -606,6 +607,7 @@ class HashManager: ObservableObject {
         isProcessing = false
         isHashingActive = false
         isCheckingActive = false
+        isStopping = false
         statusMessage = ""
         processingProgress = 1.0
 
@@ -613,15 +615,28 @@ class HashManager: ObservableObject {
     }
     
     func stopProcessing() {
+        guard !isStopping else { return }
+
         runState.invalidate()
         shouldStop = true
+        isStopping = true
         isProcessing = false
-        isHashingActive = false
-        isCheckingActive = false
         statusMessage = ""
-        hashTask?.cancel()
-        checkTask?.cancel()
-        matchingTask?.cancel()
+
+        let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
+        tasks.forEach { $0.cancel() }
+
+        Task { @MainActor [weak self] in
+            for task in tasks {
+                await task.value
+            }
+
+            guard let self, self.isStopping else { return }
+            await self.refreshStatusCacheAsync()
+            self.isHashingActive = false
+            self.isCheckingActive = false
+            self.isStopping = false
+        }
     }
 
     private func isCurrentRun(_ runID: UUID) -> Bool {

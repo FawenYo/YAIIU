@@ -68,4 +68,61 @@ final class HashPipelinePolicyTests: XCTestCase {
 
         XCTAssertFalse(state.owns(runID))
     }
+
+    func testCancellationCancelsRequestAndWaitsForCompletion() async {
+        let requestStarted = expectation(description: "request starts")
+        let cancellationForwarded = expectation(description: "cancellation reaches request")
+        let taskFinished = expectation(description: "task finishes")
+        taskFinished.isInverted = true
+        let completion = RequestCompletionBox<Int>()
+
+        let task = Task {
+            defer { taskFinished.fulfill() }
+            return try await withCancellableRequest(
+                start: { handler in
+                    completion.store(handler)
+                    requestStarted.fulfill()
+                    return 42
+                },
+                cancel: { requestID in
+                    XCTAssertEqual(requestID, 42)
+                    cancellationForwarded.fulfill()
+                }
+            )
+        }
+
+        await fulfillment(of: [requestStarted], timeout: 1.0)
+        task.cancel()
+        await fulfillment(of: [cancellationForwarded], timeout: 1.0)
+        await fulfillment(of: [taskFinished], timeout: 0.1)
+
+        completion.finish(.success(1))
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected after the underlying request reports completion.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+}
+
+private final class RequestCompletionBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: ((Result<Value, Error>) -> Void)?
+
+    func store(_ handler: @escaping (Result<Value, Error>) -> Void) {
+        lock.lock()
+        self.handler = handler
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<Value, Error>) {
+        lock.lock()
+        let handler = self.handler
+        lock.unlock()
+        handler?(result)
+    }
 }
