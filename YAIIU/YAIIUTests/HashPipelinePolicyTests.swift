@@ -69,6 +69,27 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.owns(runID))
     }
 
+    func testRunStateIsSafeAcrossConcurrentAccess() async {
+        let state = HashPipelinePolicy.RunState()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<100 {
+                group.addTask {
+                    let runID = state.begin()
+                    _ = state.owns(runID)
+                }
+                group.addTask {
+                    state.invalidate()
+                }
+            }
+        }
+
+        let finalRunID = state.begin()
+        XCTAssertTrue(state.owns(finalRunID))
+        state.invalidate()
+        XCTAssertFalse(state.owns(finalRunID))
+    }
+
     func testCancellationCancelsRequestAndWaitsForCompletion() async {
         let requestStarted = expectation(description: "request starts")
         let cancellationForwarded = expectation(description: "cancellation reaches request")

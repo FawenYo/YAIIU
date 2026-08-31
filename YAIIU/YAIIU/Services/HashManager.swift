@@ -13,21 +13,28 @@ enum HashPipelinePolicy {
         }
     }
 
-    struct RunState {
-        private(set) var currentRunID: UUID?
+    final class RunState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var currentRunID: UUID?
 
-        mutating func begin() -> UUID {
+        func begin() -> UUID {
             let runID = UUID()
+            lock.lock()
             currentRunID = runID
+            lock.unlock()
             return runID
         }
 
-        mutating func invalidate() {
+        func invalidate() {
+            lock.lock()
             currentRunID = nil
+            lock.unlock()
         }
 
         func owns(_ runID: UUID) -> Bool {
-            currentRunID == runID
+            lock.lock()
+            defer { lock.unlock() }
+            return currentRunID == runID
         }
     }
 }
@@ -67,7 +74,7 @@ class HashManager: ObservableObject {
     private var hashTask: Task<Void, Never>?
     private var checkTask: Task<Void, Never>?
     private var matchingTask: Task<Void, Never>?
-    private var runState = HashPipelinePolicy.RunState()
+    private let runState = HashPipelinePolicy.RunState()
     
     private init() {
         loadCachedStatus()
@@ -620,8 +627,7 @@ class HashManager: ObservableObject {
         runState.invalidate()
         shouldStop = true
         isStopping = true
-        isProcessing = false
-        statusMessage = ""
+        statusMessage = "Stopping..."
 
         let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
         tasks.forEach { $0.cancel() }
@@ -633,9 +639,11 @@ class HashManager: ObservableObject {
 
             guard let self, self.isStopping else { return }
             await self.refreshStatusCacheAsync()
+            self.isProcessing = false
             self.isHashingActive = false
             self.isCheckingActive = false
             self.isStopping = false
+            self.statusMessage = ""
         }
     }
 
