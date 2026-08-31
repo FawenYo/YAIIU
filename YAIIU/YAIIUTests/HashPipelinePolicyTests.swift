@@ -69,6 +69,44 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.owns(runID))
     }
 
+    func testRunStateRejectsOverlappingRunUntilInvalidated() {
+        let state = HashPipelinePolicy.RunState()
+
+        let firstRunID = state.beginIfIdle()
+        let overlappingRunID = state.beginIfIdle()
+
+        XCTAssertNotNil(firstRunID)
+        XCTAssertNil(overlappingRunID)
+
+        state.invalidate()
+
+        XCTAssertNotNil(state.beginIfIdle())
+    }
+
+    func testRunStateAllowsExactlyOneConcurrentStart() async {
+        let state = HashPipelinePolicy.RunState()
+        let winners = await withTaskGroup(of: UUID?.self, returning: [UUID].self) { group in
+            for _ in 0..<100 {
+                group.addTask {
+                    state.beginIfIdle()
+                }
+            }
+
+            var runIDs: [UUID] = []
+            for await runID in group {
+                if let runID {
+                    runIDs.append(runID)
+                }
+            }
+            return runIDs
+        }
+
+        guard let winner = winners.only else {
+            return XCTFail("Expected exactly one run to start, got \(winners.count)")
+        }
+        XCTAssertTrue(state.owns(winner))
+    }
+
     func testRunStateIsSafeAcrossConcurrentAccess() async {
         let state = HashPipelinePolicy.RunState()
 
@@ -145,5 +183,11 @@ private final class RequestCompletionBox<Value>: @unchecked Sendable {
         let handler = self.handler
         lock.unlock()
         handler?(result)
+    }
+}
+
+private extension Collection {
+    var only: Element? {
+        count == 1 ? first : nil
     }
 }

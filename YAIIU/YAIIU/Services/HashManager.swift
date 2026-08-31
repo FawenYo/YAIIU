@@ -25,6 +25,15 @@ enum HashPipelinePolicy {
             return runID
         }
 
+        func beginIfIdle() -> UUID? {
+            let runID = UUID()
+            lock.lock()
+            defer { lock.unlock() }
+            guard currentRunID == nil else { return nil }
+            currentRunID = runID
+            return runID
+        }
+
         func invalidate() {
             lock.lock()
             currentRunID = nil
@@ -109,15 +118,22 @@ class HashManager: ObservableObject {
     }
     
     func startBackgroundProcessing(assets: [PHAsset]) {
-        // Invalidate modified assets before the normal refresh pipeline
-        DatabaseManager.shared.resetCacheForModifiedAssets(assets: assets)
-        startBackgroundProcessing(identifiers: assets.map { $0.localIdentifier })
+        startBackgroundProcessing(
+            identifiers: assets.map { $0.localIdentifier },
+            assetsToInvalidate: assets
+        )
     }
 
     func startBackgroundProcessing(identifiers: [String]) {
-        guard !isStopping && !isHashingActive && !isCheckingActive else { return }
+        startBackgroundProcessing(identifiers: identifiers, assetsToInvalidate: nil)
+    }
 
-        let runID = runState.begin()
+    private func startBackgroundProcessing(identifiers: [String], assetsToInvalidate: [PHAsset]?) {
+        guard !isStopping && !isHashingActive && !isCheckingActive else { return }
+        guard let runID = runState.beginIfIdle() else { return }
+        if let assetsToInvalidate {
+            DatabaseManager.shared.resetCacheForModifiedAssets(assets: assetsToInvalidate)
+        }
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
