@@ -13,37 +13,65 @@ enum HashPipelinePolicy {
         }
     }
 
-    final class RunState: @unchecked Sendable {
-        private let lock = NSLock()
-        private var currentRunID: UUID?
+    static func admitIfIdle(
+        using state: RunState,
+        performSideEffects: (UUID) -> Void
+    ) -> UUID? {
+        guard let runID = state.beginIfIdle() else { return nil }
+        performSideEffects(runID)
+        return runID
+    }
 
-        func begin() -> UUID {
-            let runID = UUID()
-            lock.lock()
-            currentRunID = runID
-            lock.unlock()
-            return runID
+    final class RunState: @unchecked Sendable {
+        private enum Phase {
+            case idle
+            case running(UUID)
+            case stopping
         }
+
+        private let lock = NSLock()
+        private var phase = Phase.idle
 
         func beginIfIdle() -> UUID? {
             let runID = UUID()
             lock.lock()
             defer { lock.unlock() }
-            guard currentRunID == nil else { return nil }
-            currentRunID = runID
+            guard case .idle = phase else { return nil }
+            phase = .running(runID)
             return runID
         }
 
-        func invalidate() {
+        func finish(_ runID: UUID) -> Bool {
             lock.lock()
-            currentRunID = nil
+            defer { lock.unlock() }
+            guard case .running(runID) = phase else { return false }
+            phase = .idle
+            return true
+        }
+
+        func beginStopping() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard case .stopping = phase else {
+                phase = .stopping
+                return true
+            }
+            return false
+        }
+
+        func finishStopping() {
+            lock.lock()
+            if case .stopping = phase {
+                phase = .idle
+            }
             lock.unlock()
         }
 
         func owns(_ runID: UUID) -> Bool {
             lock.lock()
             defer { lock.unlock() }
-            return currentRunID == runID
+            guard case .running(runID) = phase else { return false }
+            return true
         }
     }
 }
@@ -117,6 +145,7 @@ class HashManager: ObservableObject {
         }
     }
     
+    @MainActor
     func startBackgroundProcessing(assets: [PHAsset]) {
         startBackgroundProcessing(
             identifiers: assets.map { $0.localIdentifier },
@@ -124,16 +153,27 @@ class HashManager: ObservableObject {
         )
     }
 
+    @MainActor
     func startBackgroundProcessing(identifiers: [String]) {
         startBackgroundProcessing(identifiers: identifiers, assetsToInvalidate: nil)
     }
 
-    private func startBackgroundProcessing(identifiers: [String], assetsToInvalidate: [PHAsset]?) {
+    @MainActor
+    private func startBackgroundProcessing(
+        identifiers: [String],
+        assetsToInvalidate: [PHAsset]?,
+        shouldClearCache: Bool = false
+    ) {
         guard !isStopping && !isHashingActive && !isCheckingActive else { return }
-        guard let runID = runState.beginIfIdle() else { return }
-        if let assetsToInvalidate {
-            DatabaseManager.shared.resetCacheForModifiedAssets(assets: assetsToInvalidate)
-        }
+        guard let runID = HashPipelinePolicy.admitIfIdle(using: runState, performSideEffects: { _ in
+            if shouldClearCache {
+                DatabaseManager.shared.clearHashCache()
+                syncStatusCache.removeAll()
+            }
+            if let assetsToInvalidate {
+                DatabaseManager.shared.resetCacheForModifiedAssets(assets: assetsToInvalidate)
+            }
+        }) else { return }
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
@@ -625,8 +665,7 @@ class HashManager: ObservableObject {
     }
     
     private func finishProcessing(runID: UUID) {
-        guard isCurrentRun(runID) else { return }
-        runState.invalidate()
+        guard runState.finish(runID) else { return }
         isProcessing = false
         isHashingActive = false
         isCheckingActive = false
@@ -637,10 +676,10 @@ class HashManager: ObservableObject {
         loadCachedStatus()
     }
     
+    @MainActor
     func stopProcessing() {
-        guard !isStopping else { return }
+        guard runState.beginStopping() else { return }
 
-        runState.invalidate()
         shouldStop = true
         isStopping = true
         statusMessage = "Stopping..."
@@ -659,6 +698,7 @@ class HashManager: ObservableObject {
             self.isHashingActive = false
             self.isCheckingActive = false
             self.isStopping = false
+            self.runState.finishStopping()
             self.statusMessage = ""
         }
     }
@@ -689,10 +729,12 @@ class HashManager: ObservableObject {
         }
     }
     
+    @MainActor
     func forceReprocess(assets: [PHAsset]) {
-        DatabaseManager.shared.clearHashCache()
-        syncStatusCache.removeAll()
-        
-        startBackgroundProcessing(assets: assets)
+        startBackgroundProcessing(
+            identifiers: assets.map { $0.localIdentifier },
+            assetsToInvalidate: assets,
+            shouldClearCache: true
+        )
     }
 }

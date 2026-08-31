@@ -51,22 +51,107 @@ final class HashPipelinePolicyTests: XCTestCase {
         await fulfillment(of: [startedSecondOperation], timeout: 0.1)
     }
 
-    func testOldRunCannotOwnStateAfterRestart() {
-        var state = HashPipelinePolicy.RunState()
-        let oldRunID = state.begin()
-        let newRunID = state.begin()
+    func testFinishedRunCannotOwnStateAfterRestart() {
+        let state = HashPipelinePolicy.RunState()
+        let oldRunID = state.beginIfIdle()
 
+        guard let oldRunID else {
+            return XCTFail("Expected the first run to start")
+        }
+        XCTAssertTrue(state.finish(oldRunID))
+
+        let newRunID = state.beginIfIdle()
+
+        guard let newRunID else {
+            return XCTFail("Expected the second run to start")
+        }
         XCTAssertFalse(state.owns(oldRunID))
         XCTAssertTrue(state.owns(newRunID))
     }
 
-    func testInvalidationPreventsStoppedRunFromOwningState() {
-        var state = HashPipelinePolicy.RunState()
-        let runID = state.begin()
+    func testFinishingRunPreventsItFromOwningState() {
+        let state = HashPipelinePolicy.RunState()
+        let runID = state.beginIfIdle()
 
-        state.invalidate()
+        guard let runID else {
+            return XCTFail("Expected the run to start")
+        }
+        XCTAssertTrue(state.finish(runID))
 
         XCTAssertFalse(state.owns(runID))
+    }
+
+    func testStaleFinishCannotReleaseCurrentRun() {
+        let state = HashPipelinePolicy.RunState()
+        guard let oldRunID = state.beginIfIdle() else {
+            return XCTFail("Expected the old run to start")
+        }
+        XCTAssertTrue(state.finish(oldRunID))
+        guard let currentRunID = state.beginIfIdle() else {
+            return XCTFail("Expected the current run to start")
+        }
+
+        XCTAssertFalse(state.finish(oldRunID))
+        XCTAssertTrue(state.owns(currentRunID))
+    }
+
+    func testStaleFinishCannotReleaseStoppingPhase() {
+        let state = HashPipelinePolicy.RunState()
+        guard let runID = state.beginIfIdle() else {
+            return XCTFail("Expected the run to start")
+        }
+        XCTAssertTrue(state.beginStopping())
+
+        XCTAssertFalse(state.finish(runID))
+        XCTAssertNil(state.beginIfIdle())
+
+        state.finishStopping()
+        XCTAssertNotNil(state.beginIfIdle())
+    }
+
+    func testRejectedAdmissionDoesNotRunSideEffects() {
+        let state = HashPipelinePolicy.RunState()
+        XCTAssertNotNil(state.beginIfIdle())
+        var sideEffectCount = 0
+
+        let rejectedRunID = HashPipelinePolicy.admitIfIdle(using: state) { _ in
+            sideEffectCount += 1
+        }
+
+        XCTAssertNil(rejectedRunID)
+        XCTAssertEqual(sideEffectCount, 0)
+    }
+
+    func testSuccessfulAdmissionRunsSideEffectsOnce() {
+        let state = HashPipelinePolicy.RunState()
+        var sideEffectCount = 0
+
+        let runID = HashPipelinePolicy.admitIfIdle(using: state) { admittedRunID in
+            XCTAssertTrue(state.owns(admittedRunID))
+            sideEffectCount += 1
+        }
+
+        XCTAssertNotNil(runID)
+        XCTAssertEqual(sideEffectCount, 1)
+    }
+
+    func testStoppingAdmissionRejectsStartWithoutSideEffects() {
+        let state = HashPipelinePolicy.RunState()
+        XCTAssertTrue(state.beginStopping())
+        var sideEffectCount = 0
+
+        let rejectedRunID = HashPipelinePolicy.admitIfIdle(using: state) { _ in
+            sideEffectCount += 1
+        }
+
+        XCTAssertNil(rejectedRunID)
+        XCTAssertEqual(sideEffectCount, 0)
+
+        state.finishStopping()
+        XCTAssertNotNil(HashPipelinePolicy.admitIfIdle(using: state) { _ in
+            sideEffectCount += 1
+        })
+        XCTAssertEqual(sideEffectCount, 1)
     }
 
     func testRunStateRejectsOverlappingRunUntilInvalidated() {
@@ -78,7 +163,20 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertNotNil(firstRunID)
         XCTAssertNil(overlappingRunID)
 
-        state.invalidate()
+        XCTAssertTrue(state.finish(firstRunID!))
+
+        XCTAssertNotNil(state.beginIfIdle())
+    }
+
+    func testRunStateRejectsStartsWhileStopping() {
+        let state = HashPipelinePolicy.RunState()
+        let runID = state.beginIfIdle()
+
+        XCTAssertNotNil(runID)
+        XCTAssertTrue(state.beginStopping())
+        XCTAssertNil(state.beginIfIdle())
+
+        state.finishStopping()
 
         XCTAssertNotNil(state.beginIfIdle())
     }
@@ -113,18 +211,25 @@ final class HashPipelinePolicyTests: XCTestCase {
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<100 {
                 group.addTask {
-                    let runID = state.begin()
-                    _ = state.owns(runID)
+                    if let runID = state.beginIfIdle() {
+                        _ = state.owns(runID)
+                        _ = state.finish(runID)
+                    }
                 }
                 group.addTask {
-                    state.invalidate()
+                    if state.beginStopping() {
+                        state.finishStopping()
+                    }
                 }
             }
         }
 
-        let finalRunID = state.begin()
+        let finalRunID = state.beginIfIdle()
+        guard let finalRunID else {
+            return XCTFail("Expected a run after concurrent access")
+        }
         XCTAssertTrue(state.owns(finalRunID))
-        state.invalidate()
+        XCTAssertTrue(state.finish(finalRunID))
         XCTAssertFalse(state.owns(finalRunID))
     }
 
