@@ -2,6 +2,80 @@ import Foundation
 import Photos
 import Combine
 
+enum HashPipelinePolicy {
+    static func processSerially<Element>(
+        _ elements: [Element],
+        operation: (Element) async -> Void
+    ) async {
+        for element in elements {
+            guard !Task.isCancelled else { break }
+            await operation(element)
+        }
+    }
+
+    static func admitIfIdle(
+        using state: RunState,
+        performSideEffects: (UUID) -> Void
+    ) -> UUID? {
+        guard let runID = state.beginIfIdle() else { return nil }
+        performSideEffects(runID)
+        return runID
+    }
+
+    final class RunState: @unchecked Sendable {
+        private enum Phase {
+            case idle
+            case running(UUID)
+            case stopping
+        }
+
+        private let lock = NSLock()
+        private var phase = Phase.idle
+
+        func beginIfIdle() -> UUID? {
+            let runID = UUID()
+            lock.lock()
+            defer { lock.unlock() }
+            guard case .idle = phase else { return nil }
+            phase = .running(runID)
+            return runID
+        }
+
+        func finish(_ runID: UUID) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard case .running(runID) = phase else { return false }
+            phase = .idle
+            return true
+        }
+
+        func beginStopping() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard case .stopping = phase else {
+                phase = .stopping
+                return true
+            }
+            return false
+        }
+
+        func finishStopping() {
+            lock.lock()
+            if case .stopping = phase {
+                phase = .idle
+            }
+            lock.unlock()
+        }
+
+        func owns(_ runID: UUID) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard case .running(runID) = phase else { return false }
+            return true
+        }
+    }
+}
+
 class HashManager: ObservableObject {
     static let shared = HashManager()
     
@@ -22,12 +96,10 @@ class HashManager: ObservableObject {
     private var processingQueue: [String] = []
     private var isHashingActive = false
     private var isCheckingActive = false
+    private var isStopping = false
     
-    private let hashQueue = DispatchQueue(label: "com.fawenyo.yaiiu.hash", qos: .utility)
     private let checkQueue = DispatchQueue(label: "com.fawenyo.yaiiu.check", qos: .utility)
     
-    /// Number of concurrent hash calculations (adjust based on device capability)
-    private let hashConcurrency = 3
     /// Number of concurrent server checks
     private let checkConcurrency = 5
     /// Batch size for server checks
@@ -38,6 +110,8 @@ class HashManager: ObservableObject {
     private var shouldStop = false
     private var hashTask: Task<Void, Never>?
     private var checkTask: Task<Void, Never>?
+    private var matchingTask: Task<Void, Never>?
+    private let runState = HashPipelinePolicy.RunState()
     
     private init() {
         loadCachedStatus()
@@ -65,20 +139,41 @@ class HashManager: ObservableObject {
     private func loadCachedStatus() {
         DatabaseManager.shared.getAllSyncStatusAsync { [weak self] statusMap in
             DispatchQueue.main.async {
-                self?.syncStatusCache = statusMap
+                guard let self, !self.isProcessing else { return }
+                self.syncStatusCache = statusMap
             }
         }
     }
     
+    @MainActor
     func startBackgroundProcessing(assets: [PHAsset]) {
-        // Invalidate modified assets before the normal refresh pipeline
-        DatabaseManager.shared.resetCacheForModifiedAssets(assets: assets)
-        startBackgroundProcessing(identifiers: assets.map { $0.localIdentifier })
+        startBackgroundProcessing(
+            identifiers: assets.map { $0.localIdentifier },
+            assetsToInvalidate: assets
+        )
     }
 
+    @MainActor
     func startBackgroundProcessing(identifiers: [String]) {
-        guard !isHashingActive && !isCheckingActive else { return }
+        startBackgroundProcessing(identifiers: identifiers, assetsToInvalidate: nil)
+    }
 
+    @MainActor
+    private func startBackgroundProcessing(
+        identifiers: [String],
+        assetsToInvalidate: [PHAsset]?,
+        shouldClearCache: Bool = false
+    ) {
+        guard !isStopping && !isHashingActive && !isCheckingActive else { return }
+        guard let runID = HashPipelinePolicy.admitIfIdle(using: runState, performSideEffects: { _ in
+            if shouldClearCache {
+                DatabaseManager.shared.clearHashCache()
+                syncStatusCache.removeAll()
+            }
+            if let assetsToInvalidate {
+                DatabaseManager.shared.resetCacheForModifiedAssets(assets: assetsToInvalidate)
+            }
+        }) else { return }
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
@@ -92,14 +187,22 @@ class HashManager: ObservableObject {
             logInfo("Hash cache lookup complete: total=\(identifiers.count), needingHash=\(needingHash.count)", category: .hash)
 
             Task { @MainActor in
+                guard self.isCurrentRun(runID), !self.shouldStop else {
+                    self.finishProcessing(runID: runID)
+                    return
+                }
                 if needingHash.isEmpty {
                     self.statusMessage = "Checking cloud status..."
-                    self.startServerCheck()
+                    self.startServerCheck(runID: runID)
                 } else {
-                    self.tryICloudIdMatching(identifiers: needingHash) { remainingNeedingHash in
+                    self.tryICloudIdMatching(identifiers: needingHash, runID: runID) { remainingNeedingHash in
+                        guard self.isCurrentRun(runID), !self.shouldStop else {
+                            self.finishProcessing(runID: runID)
+                            return
+                        }
                         if remainingNeedingHash.isEmpty {
                             self.statusMessage = "Checking cloud status..."
-                            self.startServerCheck()
+                            self.startServerCheck(runID: runID)
                         } else {
                             self.processingQueue = remainingNeedingHash
                             self.totalAssetsToProcess = remainingNeedingHash.count
@@ -107,7 +210,7 @@ class HashManager: ObservableObject {
                             self.processingProgress = 0
                             self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
 
-                            self.processHashItemsParallel()
+                            self.processHashItemsSerially(runID: runID)
                         }
                     }
                 }
@@ -115,8 +218,9 @@ class HashManager: ObservableObject {
         }
     }
     
-    private func tryICloudIdMatching(identifiers: [String], completion: @escaping ([String]) -> Void) {
+    private func tryICloudIdMatching(identifiers: [String], runID: UUID, completion: @escaping ([String]) -> Void) {
         guard #available(iOS 16, *) else {
+            guard isCurrentRun(runID), !shouldStop else { return }
             completion(identifiers)
             return
         }
@@ -124,6 +228,7 @@ class HashManager: ObservableObject {
         let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
         guard hasServerCache else {
             logInfo("iCloud ID matching skipped: server cache empty, candidates=\(identifiers.count)", category: .hash)
+            guard isCurrentRun(runID), !shouldStop else { return }
             completion(identifiers)
             return
         }
@@ -132,12 +237,17 @@ class HashManager: ObservableObject {
         let matchingStartedAt = Date()
         logInfo("iCloud ID matching started: candidates=\(identifiers.count)", category: .hash)
         
-        Task {
+        matchingTask?.cancel()
+        matchingTask = Task {
             var remainingIdentifiers: [String] = []
             var matchCount = 0
             var identifierToICloudId: [String: String] = [:]
             let totalBatches = (identifiers.count + iCloudIdBatchSize - 1) / iCloudIdBatchSize
             for batchIndex in 0..<totalBatches {
+                guard !Task.isCancelled, self.isCurrentRun(runID) else {
+                    await MainActor.run { self.finishProcessing(runID: runID) }
+                    return
+                }
                 let start = batchIndex * iCloudIdBatchSize
                 let end = min(start + iCloudIdBatchSize, identifiers.count)
                 let batch = Array(identifiers[start..<end])
@@ -155,13 +265,26 @@ class HashManager: ObservableObject {
                 category: .hash
             )
             
+            guard !Task.isCancelled, self.isCurrentRun(runID) else {
+                await MainActor.run { self.finishProcessing(runID: runID) }
+                return
+            }
+
             if identifierToICloudId.isEmpty {
                 await MainActor.run {
+                    guard !Task.isCancelled, self.isCurrentRun(runID), !self.shouldStop else {
+                        self.finishProcessing(runID: runID)
+                        return
+                    }
                     completion(identifiers)
                 }
                 return
             }
             
+            guard !Task.isCancelled, self.isCurrentRun(runID) else {
+                await MainActor.run { self.finishProcessing(runID: runID) }
+                return
+            }
             let iCloudIds = Array(identifierToICloudId.values)
             let checksumMap = DatabaseManager.shared.getChecksumsByICloudIds(iCloudIds)
             logInfo(
@@ -170,14 +293,20 @@ class HashManager: ObservableObject {
             )
             
             for identifier in identifiers {
+                guard !Task.isCancelled, self.isCurrentRun(runID) else {
+                    await MainActor.run { self.finishProcessing(runID: runID) }
+                    return
+                }
                 if let iCloudId = identifierToICloudId[identifier],
                    let checksum = checksumMap[iCloudId] {
+                    guard !Task.isCancelled, self.isCurrentRun(runID) else { return }
                     DatabaseManager.shared.saveMultiResourceHashCache(
                         localIdentifier: identifier,
                         primaryHash: checksum,
                         rawHash: nil,
                         hasRAW: false
                     )
+                    guard !Task.isCancelled, self.isCurrentRun(runID) else { return }
                     
                     DatabaseManager.shared.updateMultiResourceHashCacheServerStatus(
                         localIdentifier: identifier,
@@ -196,6 +325,10 @@ class HashManager: ObservableObject {
             }
             
             await MainActor.run {
+                guard !Task.isCancelled, self.isCurrentRun(runID), !self.shouldStop else {
+                    self.finishProcessing(runID: runID)
+                    return
+                }
                 self.iCloudIdMatchCount = matchCount
                 logInfo("iCloud ID matching finished: matched=\(matchCount), remaining=\(remainingIdentifiers.count), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(matchingStartedAt)))s", category: .hash)
                 completion(remainingIdentifiers)
@@ -203,97 +336,71 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Process hash calculations in parallel with controlled concurrency
-    private func processHashItemsParallel() {
-        guard !shouldStop else {
-            finishProcessing()
+    /// Processes one PhotoKit resource request at a time. PhotoKit controls chunk
+    /// delivery and may retain buffers until completion, so overlapping requests
+    /// can multiply peak memory for large photos, RAW files, and videos.
+    private func processHashItemsSerially(runID: UUID) {
+        guard isCurrentRun(runID), !shouldStop else {
+            finishProcessing(runID: runID)
             return
         }
-        
+
         guard !processingQueue.isEmpty else {
             statusMessage = "Checking cloud status..."
-            startServerCheck()
+            startServerCheck(runID: runID)
             return
         }
-        
+
         isHashingActive = true
-        
-        // Cancel any existing task
         hashTask?.cancel()
-        
+
         hashTask = Task { [weak self] in
             guard let self = self else { return }
-            
-            // Create a copy of the queue
+
             let identifiersToProcess = self.processingQueue
-            
             await MainActor.run {
-                self.processingQueue.removeAll()
+                self.processingQueue.removeAll(keepingCapacity: false)
             }
-            
-            // Process in parallel with controlled concurrency using TaskGroup
-            await withTaskGroup(of: (String, Bool).self) { group in
-                var activeCount = 0
-                var index = 0
-                
-                while index < identifiersToProcess.count || activeCount > 0 {
-                    // Add tasks up to concurrency limit
-                    while activeCount < self.hashConcurrency && index < identifiersToProcess.count {
-                        guard !self.shouldStop else { break }
-                        
-                        let identifier = identifiersToProcess[index]
-                        index += 1
-                        activeCount += 1
-                        
-                        // Update status to processing
-                        await MainActor.run {
-                            self.syncStatusCache[identifier] = .processing
-                            self.objectWillChange.send()
-                        }
-                        
-                        group.addTask {
-                            await self.processHashForAsset(identifier: identifier)
-                            return (identifier, true)
-                        }
-                    }
-                    
-                    // Wait for one task to complete
-                    if let _ = await group.next() {
-                        activeCount -= 1
-                        
-                        await MainActor.run {
-                            self.processedAssetsCount += 1
-                            self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
-                            self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
-                        }
-                    }
-                    
-                    if self.shouldStop {
-                        group.cancelAll()
-                        break
-                    }
+
+            await HashPipelinePolicy.processSerially(identifiersToProcess) { identifier in
+                guard self.isCurrentRun(runID), !self.shouldStop else { return }
+
+                await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
+                    self.syncStatusCache[identifier] = .processing
+                    self.objectWillChange.send()
+                }
+
+                await self.processHashForAsset(identifier: identifier, runID: runID)
+
+                await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
+                    self.processedAssetsCount += 1
+                    self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
+                    self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
                 }
             }
-            
-            // Continue to server check after hashing
+
             await MainActor.run {
-                if !self.shouldStop {
+                if self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled {
                     self.statusMessage = "Checking cloud status..."
-                    self.startServerCheck()
+                    self.startServerCheck(runID: runID)
                 } else {
-                    self.finishProcessing()
+                    self.finishProcessing(runID: runID)
                 }
             }
         }
     }
     
-    private func processHashForAsset(identifier: String) async {
+    private func processHashForAsset(identifier: String, runID: UUID) async {
         let hashStartedAt = Date()
         logInfo("Hash started: asset=\(identifier)", category: .hash)
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        guard isCurrentRun(runID), !shouldStop else { return }
         
         guard let asset = fetchResult.firstObject else {
             await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
                 self.syncStatusCache[identifier] = .error
                 self.objectWillChange.send()
             }
@@ -303,6 +410,7 @@ class HashManager: ObservableObject {
         do {
             // Use multi-resource hash to capture both JPEG and RAW hashes
             let result = try await HashService.shared.calculateMultiResourceHash(for: asset)
+            guard isCurrentRun(runID), !shouldStop else { return }
             logInfo(
                 "Hash finished: asset=\(identifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s",
                 category: .hash
@@ -315,8 +423,10 @@ class HashManager: ObservableObject {
                 hasRAW: result.hasRAW,
                 modificationDate: asset.modificationDate
             )
+            guard isCurrentRun(runID) else { return }
             
             await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
                 self.syncStatusCache[identifier] = .pending
                 self.objectWillChange.send()
             }
@@ -324,15 +434,16 @@ class HashManager: ObservableObject {
         } catch {
             logError("Hash failed: asset=\(identifier), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s, error=\(error.localizedDescription)", category: .hash)
             await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
                 self.syncStatusCache[identifier] = .error
                 self.objectWillChange.send()
             }
         }
     }
     
-    private func startServerCheck() {
-        guard !shouldStop else {
-            finishProcessing()
+    private func startServerCheck(runID: UUID) {
+        guard isCurrentRun(runID), !shouldStop else {
+            finishProcessing(runID: runID)
             return
         }
         
@@ -345,28 +456,29 @@ class HashManager: ObservableObject {
             
             // Ensure UI updates happen on main thread
             Task { @MainActor in
+                guard self.isCurrentRun(runID) else { return }
                 if records.isEmpty {
-                    self.finishProcessing()
+                    self.finishProcessing(runID: runID)
                     return
                 }
-                
+
                 self.totalAssetsToProcess = records.count
                 self.processedAssetsCount = 0
                 self.statusMessage = "Checking cloud status (0/\(records.count))..."
-                
-                self.checkMultiResourceHashesAgainstCache(records: records)
+
+                self.checkMultiResourceHashesAgainstCache(records: records, runID: runID)
             }
         }
     }
     
-    private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord]) {
-        guard !shouldStop else {
-            finishProcessing()
+    private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord], runID: UUID) {
+        guard isCurrentRun(runID), !shouldStop else {
+            finishProcessing(runID: runID)
             return
         }
         
         guard !records.isEmpty else {
-            finishProcessing()
+            finishProcessing(runID: runID)
             return
         }
         
@@ -375,6 +487,7 @@ class HashManager: ObservableObject {
         
         checkTask = Task { [weak self] in
             guard let self = self else { return }
+            guard self.isCurrentRun(runID), !Task.isCancelled else { return }
             
             // First, filter out deleted photos and collect orphan identifiers
             let allIdentifiers = records.map { $0.assetId }
@@ -398,28 +511,33 @@ class HashManager: ObservableObject {
             }
             
             // Clean up orphan records from database
+            guard self.isCurrentRun(runID), !Task.isCancelled else { return }
+
             if !orphanIdentifiers.isEmpty {
                 logInfo("Cleaning up \(orphanIdentifiers.count) orphan hash cache records for deleted photos", category: .hash)
                 DatabaseManager.shared.batchDeleteHashCacheRecords(localIdentifiers: orphanIdentifiers)
                 
                 // Also remove from memory cache
                 await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
                     for identifier in orphanIdentifiers {
                         self.syncStatusCache.removeValue(forKey: identifier)
                     }
                     self.objectWillChange.send()
                 }
+                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
             }
             
             // Update count to only include valid records
             if validRecords.isEmpty {
                 await MainActor.run {
-                    self.finishProcessing()
+                    self.finishProcessing(runID: runID)
                 }
                 return
             }
             
             await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
                 self.totalAssetsToProcess = validRecords.count
                 self.processedAssetsCount = 0
                 self.statusMessage = "Checking cloud status (0/\(validRecords.count))..."
@@ -445,14 +563,17 @@ class HashManager: ObservableObject {
                         localToCloudId[localId] = cloudId.stringValue
                     }
                 }
+                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
             }
             
             for record in validRecords {
-                guard !self.shouldStop else { break }
+                guard self.isCurrentRun(runID), !self.shouldStop else { break }
                 
                 let localIdentifier = record.assetId
                 
+                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
                     self.syncStatusCache[localIdentifier] = .checking
                     self.objectWillChange.send()
                 }
@@ -477,20 +598,19 @@ class HashManager: ObservableObject {
                 if primaryOnServer {
                     if let iCloudId = localToCloudId[localIdentifier] {
                         if let immichId = localToImmichId[localIdentifier] {
-                            // From upload records — queue regardless of server cache state
                             await MainActor.run {
+                                guard self.isCurrentRun(runID) else { return }
                                 self.pendingICloudIdUpdates.append((immichId: immichId, iCloudId: iCloudId))
                             }
                         } else if let serverAsset = DatabaseManager.shared.getServerAssetByChecksum(record.primaryHash),
                                   serverAsset.iCloudId != iCloudId,
                                   currentUserId == nil || serverAsset.ownerId == currentUserId {
-                            // From server cache (checksum match) — queue if iCloudId missing or stale, skip partner assets
                             await MainActor.run {
+                                guard self.isCurrentRun(runID) else { return }
                                 self.pendingICloudIdUpdates.append((immichId: serverAsset.immichId, iCloudId: iCloudId))
                             }
                         }
                     } else {
-                        // Asset is on server but iCloud ID is incomplete or unavailable — log for diagnosis
                         logInfo("Asset \(localIdentifier) on server but no valid iCloud ID (iCloud sync incomplete?)", category: .hash)
                     }
                 }
@@ -503,6 +623,7 @@ class HashManager: ObservableObject {
                         rawOnServer = DatabaseManager.shared.isAssetOnServer(checksum: rawHash)
                     }
                 }
+                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
                 
                 // Update database with multi-resource status
                 DatabaseManager.shared.updateMultiResourceHashCacheServerStatus(
@@ -520,16 +641,17 @@ class HashManager: ObservableObject {
                 } else {
                     isFullyUploaded = primaryOnServer
                 }
+                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
                 
                 await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
                     self.processedAssetsCount += 1
                     self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
                     self.statusMessage = "Checking cloud status (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
-                    
+
                     if isFullyUploaded {
                         self.syncStatusCache[localIdentifier] = .uploaded
                     } else {
-                        // Not uploaded - show as not uploaded regardless of server cache
                         self.syncStatusCache[localIdentifier] = .notUploaded
                     }
                     self.objectWillChange.send()
@@ -537,26 +659,52 @@ class HashManager: ObservableObject {
             }
             
             await MainActor.run {
-                self.finishProcessing()
+                self.finishProcessing(runID: runID)
             }
         }
     }
     
-    private func finishProcessing() {
+    private func finishProcessing(runID: UUID) {
+        guard runState.finish(runID) else { return }
         isProcessing = false
         isHashingActive = false
         isCheckingActive = false
+        isStopping = false
         statusMessage = ""
         processingProgress = 1.0
-        
+
         loadCachedStatus()
     }
     
+    @MainActor
     func stopProcessing() {
+        guard runState.beginStopping() else { return }
+
         shouldStop = true
+        isStopping = true
         statusMessage = "Stopping..."
-        hashTask?.cancel()
-        checkTask?.cancel()
+
+        let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
+        tasks.forEach { $0.cancel() }
+
+        Task { @MainActor [weak self] in
+            for task in tasks {
+                await task.value
+            }
+
+            guard let self, self.isStopping else { return }
+            await self.refreshStatusCacheAsync()
+            self.isProcessing = false
+            self.isHashingActive = false
+            self.isCheckingActive = false
+            self.isStopping = false
+            self.runState.finishStopping()
+            self.statusMessage = ""
+        }
+    }
+
+    private func isCurrentRun(_ runID: UUID) -> Bool {
+        runState.owns(runID)
     }
     
     func getSyncStatus(for localIdentifier: String) -> PhotoSyncStatus {
@@ -581,10 +729,12 @@ class HashManager: ObservableObject {
         }
     }
     
+    @MainActor
     func forceReprocess(assets: [PHAsset]) {
-        DatabaseManager.shared.clearHashCache()
-        syncStatusCache.removeAll()
-        
-        startBackgroundProcessing(assets: assets)
+        startBackgroundProcessing(
+            identifiers: assets.map { $0.localIdentifier },
+            assetsToInvalidate: assets,
+            shouldClearCache: true
+        )
     }
 }
