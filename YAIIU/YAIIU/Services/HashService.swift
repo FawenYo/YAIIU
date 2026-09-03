@@ -11,13 +11,6 @@ enum PhotoSyncStatus: String {
     case error = "error"
 }
 
-struct HashResult {
-    let localIdentifier: String
-    let sha1Hash: String
-    let fileSize: Int64
-    let calculatedAt: Date
-}
-
 /// Result containing hashes for all resources of an asset (JPEG and RAW if present)
 struct MultiResourceHashResult {
     let localIdentifier: String
@@ -32,18 +25,18 @@ struct MultiResourceHashResult {
 class StreamingSHA1 {
     private var context = CC_SHA1_CTX()
     private(set) var totalSize: Int = 0
-    
+
     init() {
         CC_SHA1_Init(&context)
     }
-    
+
     func update(data: Data) {
         totalSize += data.count
         data.withUnsafeBytes { buffer in
             _ = CC_SHA1_Update(&context, buffer.baseAddress, CC_LONG(data.count))
         }
     }
-    
+
     func finalize() -> String {
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
         CC_SHA1_Final(&digest, &context)
@@ -51,61 +44,39 @@ class StreamingSHA1 {
     }
 }
 
+/// Sendable descriptor of an asset's hashing plan: which logical resources to
+/// hash and how much disk they are expected to need. Selection itself happens
+/// once in `AssetResourceSelector.select(for:)`; the descriptor then crosses
+/// task boundaries between the download and hash stages.
+struct AssetResourcePlan: Sendable {
+    let localIdentifier: String
+    /// RAW-only libraries hash the RAW as the primary, with no separate RAW slot.
+    let isRAWOnly: Bool
+    let modificationDate: Date?
+    /// KVC size estimate; may be 0 for iCloud-optimised assets (caller floors it).
+    let estimatedBytes: Int64
+}
 
-class HashService {
-    static let shared = HashService()
-    
-    private static let rawIdentifiers: Set<String> = [
-        "raw-image", "dng", "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2"
-    ]
-    
-    private init() {}
-    
-    func calculateHash(for asset: PHAsset) async throws -> HashResult {
+/// Resources selected for an asset: the primary (JPEG/video) and optional RAW.
+/// `PHAssetResource` is not Sendable, so this stays on the selecting thread;
+/// only `plan` is handed between stages.
+struct AssetResources {
+    let plan: AssetResourcePlan
+    /// For RAW-only assets the RAW itself is the primary.
+    let primaryResource: PHAssetResource
+    let rawResource: PHAssetResource?
+}
+
+enum AssetResourceSelector {
+    static func select(for asset: PHAsset) -> AssetResources? {
         let resources = PHAssetResource.assetResources(for: asset)
-        
-        var primaryResource: PHAssetResource?
-        
-        for resource in resources {
-            let resourceType = resource.type
-            
-            if resourceType == .fullSizePhoto || resourceType == .fullSizeVideo {
-                primaryResource = resource
-                break
-            }
-            
-            if resourceType == .photo || resourceType == .video {
-                if primaryResource == nil {
-                    primaryResource = resource
-                }
-            }
-        }
-        
-        guard let resource = primaryResource ?? resources.first else {
-            throw HashError.noResourceFound
-        }
-        
-        let (hash, size) = try await calculateSHA1Streaming(for: resource)
-        
-        return HashResult(
-            localIdentifier: asset.localIdentifier,
-            sha1Hash: hash,
-            fileSize: Int64(size),
-            calculatedAt: Date()
-        )
-    }
-    
-    /// Calculate hashes for both primary (JPEG/HEIC) and RAW resources if present.
-    /// For JPEG+RAW assets, both hashes need to be verified against server.
-    func calculateMultiResourceHash(for asset: PHAsset) async throws -> MultiResourceHashResult {
-        let resources = PHAssetResource.assetResources(for: asset)
-        
+
         var primaryResource: PHAssetResource?
         var rawResource: PHAssetResource?
-        
+
         for resource in resources {
-            let isRAW = Self.isRAWResource(resource)
-            
+            let isRAW = HashService.isRAWResource(resource)
+
             if isRAW {
                 if rawResource == nil || resource.type == .alternatePhoto {
                     rawResource = resource
@@ -121,80 +92,191 @@ class HashService {
                 }
             }
         }
-        
+
         let isRAWOnly = primaryResource == nil
-            && resources.first(where: { !Self.isRAWResource($0) }) == nil
+            && resources.first(where: { !HashService.isRAWResource($0) }) == nil
             && rawResource != nil
 
         if isRAWOnly, let raw = rawResource {
-            let (hash, size) = try await calculateSHA1Streaming(for: raw)
-            return MultiResourceHashResult(
+            let plan = AssetResourcePlan(
                 localIdentifier: asset.localIdentifier,
-                primaryHash: hash,
-                primaryFileSize: Int64(size),
-                rawHash: nil,
-                rawFileSize: nil,
-                hasRAW: false,
-                calculatedAt: Date()
+                isRAWOnly: true,
+                modificationDate: asset.modificationDate,
+                estimatedBytes: estimatedSize(of: [raw])
             )
+            return AssetResources(plan: plan, primaryResource: raw, rawResource: nil)
         }
 
-        guard let primary = primaryResource ?? resources.first(where: { !Self.isRAWResource($0) }) else {
-            throw HashError.noResourceFound
+        guard let primary = primaryResource ?? resources.first(where: { !HashService.isRAWResource($0) }) else {
+            return nil
         }
-        
-        let (primaryHash, primarySize) = try await calculateSHA1Streaming(for: primary)
-        
-        var rawHash: String?
-        var rawSize: Int64?
-        
-        if let raw = rawResource {
-            let (hash, size) = try await calculateSHA1Streaming(for: raw)
-            rawHash = hash
-            rawSize = Int64(size)
-        }
-        
-        return MultiResourceHashResult(
+
+        let plan = AssetResourcePlan(
             localIdentifier: asset.localIdentifier,
-            primaryHash: primaryHash,
-            primaryFileSize: Int64(primarySize),
-            rawHash: rawHash,
-            rawFileSize: rawSize,
-            hasRAW: rawResource != nil,
-            calculatedAt: Date()
+            isRAWOnly: false,
+            modificationDate: asset.modificationDate,
+            estimatedBytes: estimatedSize(of: [primary] + (rawResource.map { [$0] } ?? []))
         )
+        return AssetResources(plan: plan, primaryResource: primary, rawResource: rawResource)
     }
-    
-    /// Check if the given resource is a RAW format
-    private static func isRAWResource(_ resource: PHAssetResource) -> Bool {
-        if resource.type == .alternatePhoto {
-            return true
-        }
-        
-        let uti = resource.uniformTypeIdentifier.lowercased()
-        return rawIdentifiers.contains { uti.contains($0) }
-    }
-    
-    private func calculateSHA1Streaming(for resource: PHAssetResource) async throws -> (String, Int) {
-        let fileURL = try await ResourceFileAccess.tempFile(for: resource)
-        defer { try? FileManager.default.removeItem(at: fileURL) }
 
-        return try await Task.detached(priority: .utility) {
-            try FileHasher.sha1Hex(ofFileAt: fileURL)
-        }.value
+    private static func estimatedSize(of resources: [PHAssetResource]) -> Int64 {
+        resources.reduce(0) { partial, resource in
+            partial + ((resource.value(forKey: "fileSize") as? CLong).map(Int64.init) ?? 0)
+        }
     }
 }
 
-enum HashError: LocalizedError {
-    case noResourceFound
-    case calculationFailed(reason: String)
-    
-    var errorDescription: String? {
-        switch self {
-        case .noResourceFound:
-            return "No available photo resource found"
-        case .calculationFailed(let reason):
-            return "Hash calculation failed: \(reason)"
+/// Pre-downloaded temp files for one asset's planned resources.
+struct AssetTempFiles: Sendable {
+    let plan: AssetResourcePlan
+    let primaryFileURL: URL
+
+    let rawFileURL: URL?
+
+    var actualBytes: Int64 {
+        ResourceFileAccess.size(of: primaryFileURL) + (rawFileURL.map { ResourceFileAccess.size(of: $0) } ?? 0)
+    }
+
+    func removeAll() {
+        try? FileManager.default.removeItem(at: primaryFileURL)
+        if let rawFileURL {
+            try? FileManager.default.removeItem(at: rawFileURL)
+        }
+    }
+}
+
+/// One prepared asset handed from the download stage to the hash consumer.
+/// Its `reservedBytes` stay charged to the disk budget until `complete()`
+/// deletes the temp files and releases the reservation. Completion is
+/// exactly-once: whichever path reaches it first (hash, discard, run sweep)
+/// wins; the rest are no-ops.
+final class PreparedHashWork: @unchecked Sendable {
+    let files: AssetTempFiles
+    let reservedBytes: Int64
+    private let budget: ResourceBudget
+    private let lock = NSLock()
+    private var isCompleted = false
+
+    init(files: AssetTempFiles, reservedBytes: Int64, budget: ResourceBudget) {
+        self.files = files
+        self.reservedBytes = reservedBytes
+        self.budget = budget
+    }
+
+    func complete() {
+        lock.lock()
+        if isCompleted {
+            lock.unlock()
+            return
+        }
+        isCompleted = true
+        lock.unlock()
+        files.removeAll()
+        budget.release(reservedBytes)
+    }
+}
+
+/// Tracks works handed to the stream. A cancelled `AsyncStream` iterator with
+/// an unbounded policy terminates immediately and discards buffered elements,
+/// so the run sweeps this registry when it ends to guarantee every temp file
+/// is deleted and every reservation released. `complete()` is exactly-once.
+final class PreparedWorkRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var works: [PreparedHashWork] = []
+
+    func record(_ work: PreparedHashWork) {
+        lock.lock()
+        works.append(work)
+        lock.unlock()
+    }
+
+    func sweep() {
+        lock.lock()
+        let pending = works
+        works = []
+        lock.unlock()
+        for work in pending {
+            work.complete()
+        }
+    }
+}
+
+
+class HashService {
+    static let shared = HashService()
+
+    private static let rawIdentifiers: Set<String> = [
+        "raw-image", "dng", "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2"
+    ]
+
+    private init() {}
+
+    static func isRAWResource(_ resource: PHAssetResource) -> Bool {
+        if resource.type == .alternatePhoto {
+            return true
+        }
+
+        let uti = resource.uniformTypeIdentifier.lowercased()
+        return rawIdentifiers.contains { uti.contains($0) }
+    }
+
+    /// Downloads both planned resources to temp files (bounded by the caller's
+    /// byte budget). The caller owns the files and must delete them.
+    func prepare(_ resources: AssetResources) async throws -> AssetTempFiles {
+        let primaryFileURL = try await ResourceFileAccess.tempFile(for: resources.primaryResource)
+        do {
+            let rawFileURL: URL?
+            if let rawResource = resources.rawResource {
+                rawFileURL = try await ResourceFileAccess.tempFile(for: rawResource)
+            } else {
+                rawFileURL = nil
+            }
+            return AssetTempFiles(plan: resources.plan, primaryFileURL: primaryFileURL, rawFileURL: rawFileURL)
+        } catch {
+            try? FileManager.default.removeItem(at: primaryFileURL)
+            throw error
+        }
+    }
+
+    /// Hashes prepared temp files with a bounded read buffer and deletes them.
+    /// File reads run off the cooperative pool so large originals never block it.
+    func hash(_ files: AssetTempFiles) async throws -> MultiResourceHashResult {
+        defer { files.removeAll() }
+
+        let plan = files.plan
+        let (primaryHash, primarySize) = try await Self.readFileHash(files.primaryFileURL)
+
+        var rawHash: String?
+        var rawSize: Int64?
+
+        if !plan.isRAWOnly, let rawFileURL = files.rawFileURL {
+            let (hash, size) = try await Self.readFileHash(rawFileURL)
+            rawHash = hash
+            rawSize = Int64(size)
+        }
+
+        return MultiResourceHashResult(
+            localIdentifier: plan.localIdentifier,
+            primaryHash: primaryHash,
+            primaryFileSize: Int64(primarySize),
+            rawHash: plan.isRAWOnly ? nil : rawHash,
+            rawFileSize: plan.isRAWOnly ? nil : rawSize,
+            hasRAW: !plan.isRAWOnly && files.rawFileURL != nil,
+            calculatedAt: Date()
+        )
+    }
+
+    /// File hashing on a utility-priority thread, with cancellation forwarded
+    /// so a stopped run abandons large files between chunks.
+    private static func readFileHash(_ url: URL) async throws -> (hash: String, size: Int) {
+        let task = Task.detached(priority: .utility) {
+            try FileHasher.sha1Hex(ofFileAt: url)
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
         }
     }
 }

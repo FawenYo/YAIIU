@@ -55,6 +55,11 @@ enum ResourceFileAccess {
         }
     }
 
+    /// Byte size of a delivered temp file; 0 if it no longer exists.
+    static func size(of fileURL: URL) -> Int64 {
+        Int64(((try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0)
+    }
+
     /// Final state of a `writeData` request: exactly one resume; file cleanup on
     /// every terminal path (error, cancellation-after-completion).
     private final class WriteState: @unchecked Sendable {
@@ -137,12 +142,15 @@ enum ResourceFileAccess {
 enum FileHasher {
     static let chunkSize = 512 * 1024
 
+    /// Throws `CancellationError` between chunks so a stopped run releases
+    /// large-file hashing promptly.
     static func sha1Hex(ofFileAt fileURL: URL) throws -> (hash: String, size: Int) {
         let sha1 = StreamingSHA1()
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
 
         while autoreleasepool(invoking: {
+            guard !Task.isCancelled else { return false }
             guard let chunk = try? handle.read(upToCount: chunkSize), !chunk.isEmpty else {
                 return false
             }
@@ -150,6 +158,9 @@ enum FileHasher {
             return true
         }) {}
 
+        if Task.isCancelled {
+            throw CancellationError()
+        }
         return (sha1.finalize(), sha1.totalSize)
     }
 }

@@ -252,6 +252,96 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertTrue(state.finish(finalRunID))
         XCTAssertFalse(state.owns(finalRunID))
     }
+
+    func testBudgetBlocksWhenExhaustedThenAdmitsOnRelease() async {
+        let budget = ResourceBudget(limit: 10)
+        let first = await budget.acquire(6)
+        XCTAssertTrue(first)
+
+        let probe = ConcurrencyProbe()
+        let second = Task {
+            if await budget.acquire(6) {
+                await probe.bump()
+            }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let markedEarly = await probe.totalCount
+        XCTAssertEqual(markedEarly, 0, "second acquire must block while the budget is exhausted")
+
+        budget.release(6)
+        await second.value
+        let markedAfter = await probe.totalCount
+        XCTAssertEqual(markedAfter, 1)
+    }
+
+    func testOversizedRequestAdmittedAloneButNeverOverlapping() async {
+        let budget = ResourceBudget(limit: 10)
+        // Larger than the whole limit: admitted alone while idle.
+        let big = await budget.acquire(25)
+        XCTAssertTrue(big)
+
+        let probe = ConcurrencyProbe()
+        let smallFirst = Task {
+            if await budget.acquire(1) { await probe.bump() }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let oversized = Task {
+            if await budget.acquire(20) { await probe.bump() }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let markedEarly = await probe.totalCount
+        XCTAssertEqual(markedEarly, 0, "no admission may overlap an oversized reservation")
+
+        budget.release(25)
+        await smallFirst.value
+        // Strict FIFO: the small waiter got in; the oversized one must still
+        // wait for a fully idle budget even though headroom exists.
+        let markedPartial = await probe.totalCount
+        XCTAssertEqual(markedPartial, 1)
+
+        budget.release(1)
+        await oversized.value
+        let markedFinal = await probe.totalCount
+        XCTAssertEqual(markedFinal, 2)
+    }
+
+    func testCancelledWaiterIsNotAdmittedAndHoldsNothing() async {
+        let budget = ResourceBudget(limit: 5)
+        let held = await budget.acquire(5)
+        XCTAssertTrue(held)
+
+        let waiter = Task { await budget.acquire(4) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        waiter.cancel()
+        let acquired = await waiter.value
+        XCTAssertFalse(acquired)
+
+        // Cancellation must not consume or corrupt the budget.
+        budget.release(5)
+        let next = await budget.acquire(5)
+        XCTAssertTrue(next)
+    }
+
+    func testAdjustReconcilesReservation() async {
+        let budget = ResourceBudget(limit: 10)
+        let held = await budget.acquire(2)
+        XCTAssertTrue(held)
+        // Actual usage larger than reserved: availability may go negative and
+        // the surplus is charged against later releases.
+        budget.adjust(from: 2, to: 9)
+        let probe = ConcurrencyProbe()
+        let waiter = Task {
+            if await budget.acquire(3) { await probe.bump() }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let markedEarly = await probe.totalCount
+        XCTAssertEqual(markedEarly, 0)
+
+        budget.release(9)
+        await waiter.value
+        let markedFinal = await probe.totalCount
+        XCTAssertEqual(markedFinal, 1)
+    }
 }
 
 private extension Collection {
