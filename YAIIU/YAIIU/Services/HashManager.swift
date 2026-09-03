@@ -653,18 +653,16 @@ class HashManager: ObservableObject {
             return
         }
 
-        // Unknown PhotoKit sizes reserve the whole budget so concurrent
-        // downloads cannot bypass the disk cap before actual sizes are known.
-        let estimate = resources.plan.estimatedBytes > 0
-            ? resources.plan.estimatedBytes
-            : Self.diskBudgetBytes
-        guard await budget.acquire(estimate) else { return }
+        // PhotoKit's KVC fileSize is only an estimate. Since writeData offers
+        // no byte-progress callback, reserve the full budget until delivery.
+        let reservation = Self.diskBudgetBytes
+        guard await budget.acquire(reservation) else { return }
 
         let files: AssetTempFiles
         do {
             files = try await HashService.shared.prepare(resources)
         } catch {
-            budget.release(estimate)
+            budget.release(reservation)
             if !Task.isCancelled {
                 logError("Resource download failed: asset=\(identifier), error=\(error.localizedDescription)", category: .hash)
                 await MainActor.run {
@@ -678,8 +676,8 @@ class HashManager: ObservableObject {
         }
 
         let actual = files.actualBytes
-        let charged = max(estimate, actual)
-        budget.adjust(from: estimate, to: charged)
+        let charged = max(reservation, actual)
+        budget.adjust(from: reservation, to: charged)
 
         // Hand the files to the consumer; the registry entry lets the run sweep
         // them if the cancelled stream discards the buffered handoff. The
@@ -708,9 +706,12 @@ class HashManager: ObservableObject {
                     break
                 }
                 group.addTask { [weak self] in
-                    guard let self else { work.complete(); return }
+                    defer { gate.release(1) }
+                    guard let self else {
+                        work.complete()
+                        return
+                    }
                     await self.hashPreparedAsset(work, runID: runID)
-                    await gate.release(1)
                 }
             }
             await group.waitForAll()
@@ -1017,9 +1018,7 @@ class HashManager: ObservableObject {
         isStopping = false
         runState.finishStopping()
         statusMessage = ""
-        Task { @MainActor [weak self] in
-            await self?.refreshStatusCacheAsync()
-        }
+        loadCachedStatus()
     }
 
     private func isCurrentRun(_ runID: UUID) -> Bool {
