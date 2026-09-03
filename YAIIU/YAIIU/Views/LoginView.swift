@@ -353,7 +353,12 @@ struct LoginView: View {
                                     .foregroundColor(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 Button(action: {
-                                    NetworkReachability.shared.requestLocationPermission()
+                                    // System prompt only appears for .notDetermined; denied/restricted must go through Settings
+                                    if networkReachability.locationAuthorizationStatus == .notDetermined {
+                                        networkReachability.requestLocationPermission()
+                                    } else {
+                                        openLocationSettings()
+                                    }
                                 }) {
                                     HStack(spacing: 6) {
                                         Image(systemName: "location.fill")
