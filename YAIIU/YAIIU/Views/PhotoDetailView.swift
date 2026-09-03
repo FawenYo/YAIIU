@@ -1535,21 +1535,12 @@ struct PhotoDetailView: View {
                 self.fileName = resourceFilename
             }
             
-            var size: Int64 = 0
-            PHAssetResourceManager.default().requestData(
-                for: primaryResource,
-                options: nil,
-                dataReceivedHandler: { data in
-                    size += Int64(data.count)
-                },
-                completionHandler: { error in
-                    if error == nil {
-                        Task { @MainActor in
-                            self.fileSize = size
-                        }
-                    }
-                }
-            )
+            // KVC fileSize avoids materializing the original just to show a
+            // size badge; requestData streaming here retained the whole file.
+            let fileSizeValue = (primaryResource.value(forKey: "fileSize") as? CLong).map(Int64.init)
+            await MainActor.run {
+                self.fileSize = fileSizeValue
+            }
         }
         
         if let loc = location {

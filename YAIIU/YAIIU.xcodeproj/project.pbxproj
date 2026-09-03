@@ -22,6 +22,7 @@
 		2A0000170000000000000001 /* PhotoAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000180000000000000001 /* PhotoAsset.swift */; };
 		2A0000190000000000000001 /* UploadProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00001A0000000000000001 /* UploadProgressView.swift */; };
 		2A00002E0000000000000001 /* HashService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00002F0000000000000001 /* HashService.swift */; };
+		2A0000A10000000000000001 /* ResourceFileAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000A20000000000000001 /* ResourceFileAccess.swift */; };
 		2A0000300000000000000001 /* HashManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000310000000000000001 /* HashManager.swift */; };
 		2A0000320000000000000001 /* ImmichSQLiteImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000330000000000000001 /* ImmichSQLiteImporter.swift */; };
 		2A0000340000000000000001 /* ImportDatabaseView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000350000000000000001 /* ImportDatabaseView.swift */; };
@@ -114,6 +115,7 @@
 		2A00001B0000000000000001 /* YAIIU.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YAIIU.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2A00001C0000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		2A00002F0000000000000001 /* HashService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashService.swift; sourceTree = "<group>"; };
+		2A0000A20000000000000001 /* ResourceFileAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceFileAccess.swift; sourceTree = "<group>"; };
 		2A0000310000000000000001 /* HashManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashManager.swift; sourceTree = "<group>"; };
 		2A0000330000000000000001 /* ImmichSQLiteImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmichSQLiteImporter.swift; sourceTree = "<group>"; };
 		2A0000350000000000000001 /* ImportDatabaseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportDatabaseView.swift; sourceTree = "<group>"; };
@@ -281,6 +283,7 @@
 				2A0000140000000000000001 /* SettingsManager.swift */,
 				2A0000160000000000000001 /* UploadManager.swift */,
 				2A00002F0000000000000001 /* HashService.swift */,
+				2A0000A20000000000000001 /* ResourceFileAccess.swift */,
 				2A0000310000000000000001 /* HashManager.swift */,
 				2A0000430000000000000001 /* LogService.swift */,
 				2A0000450000000000000001 /* ThumbnailCache.swift */,
@@ -549,6 +552,7 @@
 				2A0000190000000000000001 /* UploadProgressView.swift in Sources */,
 				2A00002E0000000000000001 /* HashService.swift in Sources */,
 				2A0000300000000000000001 /* HashManager.swift in Sources */,
+				2A0000A10000000000000001 /* ResourceFileAccess.swift in Sources */,
 				BC7F35272EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */,
 				BC7F35282EFED8F200747537 /* SharedSettings.swift in Sources */,
                 BU0000010000000000000001 /* BackgroundUploadPolicy.swift in Sources */,

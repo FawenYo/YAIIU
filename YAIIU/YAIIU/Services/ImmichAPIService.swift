@@ -198,7 +198,7 @@ class ImmichAPIService: NSObject {
     ) {
         let pumpQueue = DispatchQueue(label: "com.yaiiu.upload.pump.\(filename)", qos: .userInitiated)
         pumpQueue.async {
-            outputStream.open()
+            defer { outputStream.close() }
 
             func writeAll(_ data: Data) -> Bool {
                 var offset = 0
@@ -217,46 +217,75 @@ class ImmichAPIService: NSObject {
                 return true
             }
 
-            guard writeAll(preamble) else {
-                outputStream.close()
+            guard writeAll(preamble) else { return }
+
+            // Stream the resource from a temp file rather than requestData
+            // chunks: PhotoKit retains every delivered chunk in-process, which
+            // OOM-kills long upload sessions.
+            let fileURL: URL
+            do {
+                fileURL = try self.awaitResourceFile(resource)
+            } catch {
+                logError("Resource file request failed for \(filename): \(error.localizedDescription)", category: .api)
                 return
             }
+            defer { try? FileManager.default.removeItem(at: fileURL) }
 
-            let chunkQueue = DispatchQueue(label: "com.yaiiu.upload.chunk.\(filename)")
-            let options = PHAssetResourceRequestOptions()
-            options.isNetworkAccessAllowed = true
-
-            let semaphore = DispatchSemaphore(value: 0)
-            var streamError: Error?
-
-            PHAssetResourceManager.default().requestData(
-                for: resource,
-                options: options
-            ) { chunk in
-                chunkQueue.sync {
-                    guard streamError == nil else { return }
-                    if !writeAll(chunk) {
-                        streamError = outputStream.streamError ?? ImmichAPIError.uploadFailed(reason: "Stream write failed")
-                    }
-                }
-            } completionHandler: { error in
-                if let error = error {
-                    chunkQueue.sync {
-                        streamError = error
-                    }
-                    logError("PHAssetResourceManager requestData failed for \(filename): \(error.localizedDescription)", category: .api)
-                }
-                semaphore.signal()
-            }
-
-            semaphore.wait()
-
-            if streamError == nil {
-                _ = writeAll(epilogue)
-            }
-
-            outputStream.close()
+            guard self.writeAllFile(fileURL, to: outputStream) else { return }
+            _ = writeAll(epilogue)
         }
+    }
+
+    /// Blocks the pump queue until the resource is written to a temp file.
+    /// `pumpAssetData` runs on its own serial queue, so blocking is by design;
+    /// the semaphore simply bridges the async PhotoKit completion.
+    private func awaitResourceFile(_ resource: PHAssetResource) throws -> URL {
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("upload-\(UUID().uuidString)")
+            .appendingPathExtension("bin")
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var requestError: Error?
+        PHAssetResourceManager.default().writeData(for: resource, toFile: fileURL, options: options) { error in
+            requestError = error
+            semaphore.signal()
+        }
+        semaphore.wait()
+
+        if let requestError {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw requestError
+        }
+        return fileURL
+    }
+
+    private func writeAllFile(_ fileURL: URL, to outputStream: OutputStream) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            logError("Failed to open temp resource file \(fileURL.lastPathComponent)", category: .api)
+            return false
+        }
+        defer { try? handle.close() }
+
+        while true {
+            guard let chunk = try? handle.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
+            var offset = 0
+            while offset < chunk.count {
+                let written = chunk.withUnsafeBytes { rawBuffer -> Int in
+                    guard let base = rawBuffer.baseAddress else { return -1 }
+                    let ptr = base.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+                    return outputStream.write(ptr, maxLength: chunk.count - offset)
+                }
+                if written <= 0 {
+                    logError("OutputStream write failed: \(outputStream.streamError?.localizedDescription ?? "unknown")", category: .api)
+                    return false
+                }
+                offset += written
+            }
+        }
+        return true
     }
 
     private static func buildMultipartPreamble(
