@@ -5,28 +5,48 @@ final class HashPipelinePolicyTests: XCTestCase {
     actor ConcurrencyProbe {
         private(set) var activeCount = 0
         private(set) var maximumActiveCount = 0
+        private(set) var totalCount = 0
 
         func begin() {
             activeCount += 1
+            totalCount += 1
             maximumActiveCount = max(maximumActiveCount, activeCount)
         }
 
         func end() {
             activeCount -= 1
         }
+
+        func bump() {
+            totalCount += 1
+        }
     }
 
-    func testProcessesHashOperationsSerially() async {
+    func testProcessesHashOperationsWithBoundedConcurrency() async {
         let probe = ConcurrencyProbe()
+        let limit = 3
 
-        await HashPipelinePolicy.processSerially([1, 2, 3]) { _ in
+        await HashPipelinePolicy.processConcurrently(Array(1...10), limit: limit) { _ in
             await probe.begin()
             try? await Task.sleep(nanoseconds: 10_000_000)
             await probe.end()
         }
 
         let maximumActiveCount = await probe.maximumActiveCount
-        XCTAssertEqual(maximumActiveCount, 1)
+        let total = await probe.totalCount
+        XCTAssertEqual(total, 10)
+        XCTAssertLessThanOrEqual(maximumActiveCount, limit)
+    }
+
+    func testProcessConcurrentlyRunsEveryElementOnce() async {
+        let counter = ConcurrencyProbe()
+
+        await HashPipelinePolicy.processConcurrently(Array(1...25), limit: 4) { _ in
+            await counter.bump()
+        }
+
+        let total = await counter.totalCount
+        XCTAssertEqual(total, 25)
     }
 
     func testCancellationStopsBeforeNextOperation() async {
@@ -35,7 +55,7 @@ final class HashPipelinePolicyTests: XCTestCase {
         startedSecondOperation.isInverted = true
 
         let task = Task {
-            await HashPipelinePolicy.processSerially([1, 2]) { value in
+            await HashPipelinePolicy.processConcurrently([1, 2], limit: 1) { value in
                 if value == 1 {
                     firstOperationStarted.fulfill()
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -233,61 +253,129 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.owns(finalRunID))
     }
 
-    func testCancellationCancelsRequestAndWaitsForCompletion() async {
-        let requestStarted = expectation(description: "request starts")
-        let cancellationForwarded = expectation(description: "cancellation reaches request")
-        let taskFinished = expectation(description: "task finishes")
-        taskFinished.isInverted = true
-        let completion = RequestCompletionBox<Int>()
+    func testBudgetBlocksWhenExhaustedThenAdmitsOnRelease() async {
+        let budget = ResourceBudget(limit: 10)
+        let first = await budget.acquire(6)
+        XCTAssertTrue(first)
 
-        let task = Task {
-            defer { taskFinished.fulfill() }
-            return try await withCancellableRequest(
-                start: { handler in
-                    completion.store(handler)
-                    requestStarted.fulfill()
-                    return 42
-                },
-                cancel: { requestID in
-                    XCTAssertEqual(requestID, 42)
-                    cancellationForwarded.fulfill()
-                }
-            )
+        let probe = ConcurrencyProbe()
+        let second = Task {
+            if await budget.acquire(6) {
+                await probe.bump()
+            }
         }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let markedEarly = await probe.totalCount
+        XCTAssertEqual(markedEarly, 0, "second acquire must block while the budget is exhausted")
 
-        await fulfillment(of: [requestStarted], timeout: 1.0)
-        task.cancel()
-        await fulfillment(of: [cancellationForwarded], timeout: 1.0)
-        await fulfillment(of: [taskFinished], timeout: 0.1)
-
-        completion.finish(.success(1))
-
-        do {
-            _ = try await task.value
-            XCTFail("Expected cancellation")
-        } catch is CancellationError {
-            // Expected after the underlying request reports completion.
-        } catch {
-            XCTFail("Unexpected error: \(error)")
-        }
-    }
-}
-
-private final class RequestCompletionBox<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var handler: ((Result<Value, Error>) -> Void)?
-
-    func store(_ handler: @escaping (Result<Value, Error>) -> Void) {
-        lock.lock()
-        self.handler = handler
-        lock.unlock()
+        budget.release(6)
+        await second.value
+        let markedAfter = await probe.totalCount
+        XCTAssertEqual(markedAfter, 1)
     }
 
-    func finish(_ result: Result<Value, Error>) {
-        lock.lock()
-        let handler = self.handler
-        lock.unlock()
-        handler?(result)
+    func testOversizedRequestAdmittedAloneButNeverOverlapping() async {
+        let budget = ResourceBudget(limit: 10)
+        // Larger than the whole limit: admitted alone while idle.
+        let big = await budget.acquire(25)
+        XCTAssertTrue(big)
+
+        let probe = ConcurrencyProbe()
+        let smallFirst = Task {
+            if await budget.acquire(1) { await probe.bump() }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let oversized = Task {
+            if await budget.acquire(20) { await probe.bump() }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let markedEarly = await probe.totalCount
+        XCTAssertEqual(markedEarly, 0, "no admission may overlap an oversized reservation")
+
+        budget.release(25)
+        await smallFirst.value
+        // Strict FIFO: the small waiter got in; the oversized one must still
+        // wait for a fully idle budget even though headroom exists.
+        let markedPartial = await probe.totalCount
+        XCTAssertEqual(markedPartial, 1)
+
+        budget.release(1)
+        await oversized.value
+        let markedFinal = await probe.totalCount
+        XCTAssertEqual(markedFinal, 2)
+    }
+
+    func testOversizedQueueHeadAdmitsWhenBudgetBecomesIdleWithFollowers() async {
+        let budget = ResourceBudget(limit: 10)
+        let held = await budget.acquire(10)
+        XCTAssertTrue(held)
+
+        let oversized = Task { await budget.acquire(20) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let follower = Task { await budget.acquire(1) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        budget.release(10)
+        let oversizedAcquired = await oversized.value
+        XCTAssertTrue(oversizedAcquired)
+
+        follower.cancel()
+        let followerAcquired = await follower.value
+        XCTAssertFalse(followerAcquired)
+        budget.release(20)
+    }
+
+    func testAlreadyCancelledBudgetAcquireReturnsFalse() async {
+        let budget = ResourceBudget(limit: 1)
+        let held = await budget.acquire(1)
+        XCTAssertTrue(held)
+
+        let waiter = Task { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await budget.acquire(1)
+        }
+
+        let acquired = await waiter.value
+        XCTAssertFalse(acquired)
+        budget.release(1)
+    }
+
+    func testCancelledWaiterIsNotAdmittedAndHoldsNothing() async {
+        let budget = ResourceBudget(limit: 5)
+        let held = await budget.acquire(5)
+        XCTAssertTrue(held)
+
+        let waiter = Task { await budget.acquire(4) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        waiter.cancel()
+        let acquired = await waiter.value
+        XCTAssertFalse(acquired)
+
+        // Cancellation must not consume or corrupt the budget.
+        budget.release(5)
+        let next = await budget.acquire(5)
+        XCTAssertTrue(next)
+    }
+
+    func testAdjustReconcilesReservation() async {
+        let budget = ResourceBudget(limit: 10)
+        let held = await budget.acquire(2)
+        XCTAssertTrue(held)
+        // Actual usage larger than reserved: availability may go negative and
+        // the surplus is charged against later releases.
+        budget.adjust(from: 2, to: 9)
+        let probe = ConcurrencyProbe()
+        let waiter = Task {
+            if await budget.acquire(3) { await probe.bump() }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let markedEarly = await probe.totalCount
+        XCTAssertEqual(markedEarly, 0)
+
+        budget.release(9)
+        await waiter.value
+        let markedFinal = await probe.totalCount
+        XCTAssertEqual(markedFinal, 1)
     }
 }
 

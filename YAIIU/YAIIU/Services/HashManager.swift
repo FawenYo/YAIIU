@@ -2,14 +2,170 @@ import Foundation
 import Photos
 import Combine
 
+/// FIFO admission to a shared resource budget (bytes or slots) with
+/// cancellation-safe async acquisition. Acquisition returns false when the
+/// waiting task is cancelled before admission, so callers never release a
+/// reservation they do not hold. An amount larger than the whole limit is
+/// admitted alone while idle, so oversized items cannot starve.
+final class ResourceBudget: @unchecked Sendable {
+    private final class Waiter: @unchecked Sendable {
+        let amount: Int64
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Bool, Never>?
+        private var isAdmitted = false
+
+        init(amount: Int64) { self.amount = amount }
+
+        /// Returns true when already admitted and the caller must resume itself.
+        func install(_ continuation: CheckedContinuation<Bool, Never>) -> Bool {
+            lock.lock()
+            if isAdmitted {
+                lock.unlock()
+                return true
+            }
+            if isCancelledFlag {
+                lock.unlock()
+                continuation.resume(returning: false)
+                return false
+            }
+            self.continuation = continuation
+            lock.unlock()
+            return false
+        }
+
+        /// Returns the continuation to resume with success, if not cancelled.
+        func admit() -> CheckedContinuation<Bool, Never>? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !isCancelledFlag else { return nil }
+            isAdmitted = true
+            let continuation = self.continuation
+            self.continuation = nil
+            return continuation
+        }
+
+        private var isCancelledFlag = false
+
+        /// Marks cancellation; resumes with false unless already admitted.
+        /// Returns false when admission already happened.
+        func cancelWaiting() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if isAdmitted { return false }
+            isCancelledFlag = true
+            let continuation = self.continuation
+            self.continuation = nil
+            continuation?.resume(returning: false)
+            return true
+        }
+    }
+
+    private let lock = NSLock()
+    private let limit: Int64
+    private var available: Int64
+    private var waiters: [Waiter] = []
+
+    init(limit: Int64) {
+        self.limit = limit
+        self.available = limit
+    }
+
+    /// true = reserved (caller MUST release); false = cancelled before admission.
+    func acquire(_ amount: Int64) async -> Bool {
+        let waiter = Waiter(amount: amount)
+        lock.lock()
+        if waiters.isEmpty, amount <= available || available == limit {
+            available -= amount
+            lock.unlock()
+            return true
+        }
+        waiters.append(waiter)
+        drainLocked()
+        lock.unlock()
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if waiter.install(continuation) {
+                    continuation.resume(returning: true)
+                }
+            }
+        } onCancel: {
+            lock.lock()
+            if let index = waiters.firstIndex(where: { $0 === waiter }) {
+                waiters.remove(at: index)
+            }
+            _ = waiter.cancelWaiting()
+            drainLocked()
+            lock.unlock()
+        }
+    }
+
+    func release(_ amount: Int64) {
+        lock.lock()
+        available += amount
+        drainLocked()
+        lock.unlock()
+    }
+
+    /// Reconciles a held reservation with the actual amount consumed. Never
+    /// blocks: temp files are already on disk, so overdrawn availability just
+    /// delays the next admission until the extra is released.
+    func adjust(from old: Int64, to new: Int64) {
+        lock.lock()
+        available += old - new
+        drainLocked()
+        lock.unlock()
+    }
+
+    /// Caller holds the lock. Admits the queue head only (strict FIFO).
+    private func drainLocked() {
+        while let first = waiters.first {
+            if first.amount <= available || available == limit {
+                waiters.removeFirst()
+                available -= first.amount
+                first.admit()?.resume(returning: true)
+            } else {
+                break
+            }
+        }
+    }
+}
+
 enum HashPipelinePolicy {
-    static func processSerially<Element>(
+    /// Runs operations with at most `limit` in flight (FIFO order, bounded
+    /// window: one completion admits the next element).
+    static func processConcurrently<Element: Sendable>(
         _ elements: [Element],
-        operation: (Element) async -> Void
+        limit: Int,
+        operation: @escaping @Sendable (Element) async -> Void
     ) async {
-        for element in elements {
-            guard !Task.isCancelled else { break }
-            await operation(element)
+        await withTaskGroup(of: Void.self) { group in
+            let limit = max(1, Swift.min(limit, elements.count))
+            var index = 0
+            var inFlight = 0
+
+            func addNext() {
+                guard index < elements.count, inFlight < limit else { return }
+                let element = elements[index]
+                index += 1
+                inFlight += 1
+                group.addTask {
+                    guard !Task.isCancelled else { return }
+                    await operation(element)
+                }
+            }
+
+            while inFlight < limit, index < elements.count { addNext() }
+
+            while inFlight > 0 {
+                _ = await group.next()
+                inFlight -= 1
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    continue
+                }
+                addNext()
+            }
         }
     }
 
@@ -102,6 +258,17 @@ class HashManager: ObservableObject {
     
     /// Number of concurrent server checks
     private let checkConcurrency = 5
+    /// Assets downloading to temp files at once. Larger than the hash gate so
+    /// iCloud downloads always run ahead of hashing.
+    private static let downloadWindow = 6
+    /// Total bytes allowed in temp files at once. Bounds on-disk footprint
+    /// independently of how many downloads are in flight; a resource larger
+    /// than the whole budget is admitted alone (see ResourceBudget).
+    private static let diskBudgetBytes: Int64 = 1_500 * 1024 * 1024
+    private static let hashDiskBudget = ResourceBudget(limit: diskBudgetBytes)
+    /// Assets hashed concurrently. Hashing reads with a fixed buffer, so this
+    /// only caps CPU/IO overlap, not memory.
+    private static let hashConcurrency = 3
     /// Batch size for server checks
     private let checkBatchSize = 10
     /// Batch size for iCloud ID lookups
@@ -210,7 +377,7 @@ class HashManager: ObservableObject {
                             self.processingProgress = 0
                             self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
 
-                            self.processHashItemsSerially(runID: runID)
+                            self.processHashItems(runID: runID)
                         }
                     }
                 }
@@ -336,10 +503,12 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Processes one PhotoKit resource request at a time. PhotoKit controls chunk
-    /// delivery and may retain buffers until completion, so overlapping requests
-    /// can multiply peak memory for large photos, RAW files, and videos.
-    private func processHashItemsSerially(runID: UUID) {
+    /// Producer-consumer hashing: a download window streams originals to temp
+    /// files (admitted by a shared byte budget so the on-disk footprint stays
+    /// bounded), while a smaller hash gate consumes finished files and deletes
+    /// them right after hashing. Downloads pipeline ahead of hashing instead of
+    /// being serialized behind it.
+    private func processHashItems(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
             return
@@ -362,24 +531,41 @@ class HashManager: ObservableObject {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            await HashPipelinePolicy.processSerially(identifiersToProcess) { identifier in
-                guard self.isCurrentRun(runID), !self.shouldStop else { return }
-
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    self.syncStatusCache[identifier] = .processing
-                    self.objectWillChange.send()
-                }
-
-                await self.processHashForAsset(identifier: identifier, runID: runID)
-
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    self.processedAssetsCount += 1
-                    self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
-                    self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
-                }
+            let budget = Self.hashDiskBudget
+            let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
+            let registry = PreparedWorkRegistry()
+            var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
+            // Unbounded is safe: the producer window plus the byte budget cap
+            // how many prepared works can ever be queued; a dropping policy
+            // would lose handoffs and leak budget reservations.
+            let pending = AsyncStream<PreparedHashWork>(bufferingPolicy: .unbounded) { continuation in
+                streamContinuation = continuation
             }
+
+            // Producer and consumer are both children of hashTask so cancelling
+            // the run propagates to in-flight downloads, not just hashing.
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else {
+                        streamContinuation.finish()
+                        return
+                    }
+                    await self.downloadHashItems(
+                        identifiers: identifiersToProcess,
+                        budget: budget,
+                        registry: registry,
+                        runID: runID,
+                        continuation: streamContinuation
+                    )
+                }
+                group.addTask { [weak self] in
+                    await self?.consumeHashStream(pending, gate: hashGate, runID: runID)
+                }
+                await group.waitForAll()
+            }
+            // A cancelled iterator discards buffered elements; guarantee their
+            // temp files and reservations are released.
+            registry.sweep()
 
             await MainActor.run {
                 if self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled {
@@ -391,55 +577,193 @@ class HashManager: ObservableObject {
             }
         }
     }
-    
-    private func processHashForAsset(identifier: String, runID: UUID) async {
-        let hashStartedAt = Date()
-        logInfo("Hash started: asset=\(identifier)", category: .hash)
+
+    /// Downloads planned resources within the budget and publishes prepared
+    /// temp files to `continuation`; also owns per-asset status UI.
+    private func downloadHashItems(
+        identifiers: [String],
+        budget: ResourceBudget,
+        registry: PreparedWorkRegistry,
+        runID: UUID,
+        continuation: AsyncStream<PreparedHashWork>.Continuation
+    ) async {
+        await withTaskGroup(of: Void.self) { group in
+            let limit = Self.downloadWindow
+            var index = 0
+            var inFlight = 0
+
+            func addNext() {
+                guard index < identifiers.count, inFlight < limit else { return }
+                let identifier = identifiers[index]
+                index += 1
+                inFlight += 1
+                group.addTask { [weak self] in
+                    guard let self else { return }
+                    await self.downloadHashItem(
+                        identifier: identifier,
+                        budget: budget,
+                        registry: registry,
+                        runID: runID,
+                        continuation: continuation
+                    )
+                }
+            }
+
+            while inFlight < limit, index < identifiers.count { addNext() }
+
+            while inFlight > 0 {
+                _ = await group.next()
+                inFlight -= 1
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    continue
+                }
+                addNext()
+            }
+        }
+        continuation.finish()
+    }
+
+    private func downloadHashItem(
+        identifier: String,
+        budget: ResourceBudget,
+        registry: PreparedWorkRegistry,
+        runID: UUID,
+        continuation: AsyncStream<PreparedHashWork>.Continuation
+    ) async {
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+
+        await MainActor.run {
+            guard self.isCurrentRun(runID) else { return }
+            self.syncStatusCache[identifier] = .processing
+            self.objectWillChange.send()
+        }
+
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-        guard isCurrentRun(runID), !shouldStop else { return }
-        
-        guard let asset = fetchResult.firstObject else {
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+
+        guard let asset = fetchResult.firstObject,
+              let resources = AssetResourceSelector.select(for: asset) else {
             await MainActor.run {
                 guard self.isCurrentRun(runID) else { return }
                 self.syncStatusCache[identifier] = .error
+                self.processedAssetsCount += 1
                 self.objectWillChange.send()
             }
             return
         }
-        
+
+        // PhotoKit's KVC fileSize is only an estimate. Since writeData offers
+        // no byte-progress callback, reserve the full budget until delivery.
+        let reservation = Self.diskBudgetBytes
+        guard await budget.acquire(reservation) else { return }
+
+        let files: AssetTempFiles
         do {
-            // Use multi-resource hash to capture both JPEG and RAW hashes
-            let result = try await HashService.shared.calculateMultiResourceHash(for: asset)
+            files = try await HashService.shared.prepare(resources)
+        } catch {
+            budget.release(reservation)
+            if !Task.isCancelled {
+                logError("Resource download failed: asset=\(identifier), error=\(error.localizedDescription)", category: .hash)
+                await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
+                    self.syncStatusCache[identifier] = .error
+                    self.processedAssetsCount += 1
+                    self.objectWillChange.send()
+                }
+            }
+            return
+        }
+
+        let actual = files.actualBytes
+        let charged = max(reservation, actual)
+        budget.adjust(from: reservation, to: charged)
+
+        // Hand the files to the consumer; the registry entry lets the run sweep
+        // them if the cancelled stream discards the buffered handoff. The
+        // reservation stays charged until the consumer completes the work.
+        let work = PreparedHashWork(files: files, reservedBytes: charged, budget: budget)
+        registry.record(work)
+        work.onCompletion { [weak registry, weak work] in
+            guard let work else { return }
+            registry?.remove(work)
+        }
+        continuation.yield(work)
+    }
+
+    /// Consumer: keeps `hashConcurrency` assets hashing at a time; each item's
+    /// disk reservation is released after its files are deleted.
+    private func consumeHashStream(
+        _ stream: AsyncStream<PreparedHashWork>,
+        gate: ResourceBudget,
+        runID: UUID
+    ) async {
+        await withTaskGroup(of: Void.self) { group in
+            for await work in stream {
+                guard await gate.acquire(1) else {
+                    work.complete()
+                    for await orphan in stream { orphan.complete() }
+                    break
+                }
+                group.addTask { [weak self] in
+                    defer { gate.release(1) }
+                    guard let self else {
+                        work.complete()
+                        return
+                    }
+                    await self.hashPreparedAsset(work, runID: runID)
+                }
+            }
+            await group.waitForAll()
+        }
+    }
+
+    /// Hashes one prepared asset, records status/progress, and releases its
+    /// disk reservation once the temp files are gone.
+    private func hashPreparedAsset(_ work: PreparedHashWork, runID: UUID) async {
+        let files = work.files
+        defer { work.complete() }
+        let identifier = files.plan.localIdentifier
+        let hashStartedAt = Date()
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+
+        do {
+            let result = try await HashService.shared.hash(files)
             guard isCurrentRun(runID), !shouldStop else { return }
             logInfo(
                 "Hash finished: asset=\(identifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s",
                 category: .hash
             )
-            
+
             DatabaseManager.shared.saveMultiResourceHashCache(
                 localIdentifier: result.localIdentifier,
                 primaryHash: result.primaryHash,
                 rawHash: result.rawHash,
                 hasRAW: result.hasRAW,
-                modificationDate: asset.modificationDate
+                modificationDate: files.plan.modificationDate
             )
             guard isCurrentRun(runID) else { return }
-            
+
             await MainActor.run {
                 guard self.isCurrentRun(runID) else { return }
+                self.processedAssetsCount += 1
+                self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
+                self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
                 self.syncStatusCache[identifier] = .pending
                 self.objectWillChange.send()
             }
-            
         } catch {
+            guard !Task.isCancelled else { return }
             logError("Hash failed: asset=\(identifier), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s, error=\(error.localizedDescription)", category: .hash)
             await MainActor.run {
                 guard self.isCurrentRun(runID) else { return }
+                self.processedAssetsCount += 1
                 self.syncStatusCache[identifier] = .error
                 self.objectWillChange.send()
             }
         }
     }
+
     
     private func startServerCheck(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
@@ -682,25 +1006,19 @@ class HashManager: ObservableObject {
 
         shouldStop = true
         isStopping = true
-        statusMessage = "Stopping..."
-
         let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
         tasks.forEach { $0.cancel() }
 
-        Task { @MainActor [weak self] in
-            for task in tasks {
-                await task.value
-            }
-
-            guard let self, self.isStopping else { return }
-            await self.refreshStatusCacheAsync()
-            self.isProcessing = false
-            self.isHashingActive = false
-            self.isCheckingActive = false
-            self.isStopping = false
-            self.runState.finishStopping()
-            self.statusMessage = ""
-        }
+        // PhotoKit writes cannot be cancelled. Let their detached run cleanup
+        // finish later while immediately retiring this run from the UI. The
+        // shared disk budget keeps a replacement run behind those writes.
+        isProcessing = false
+        isHashingActive = false
+        isCheckingActive = false
+        isStopping = false
+        runState.finishStopping()
+        statusMessage = ""
+        loadCachedStatus()
     }
 
     private func isCurrentRun(_ runID: UUID) -> Bool {
