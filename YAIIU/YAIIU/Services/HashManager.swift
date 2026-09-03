@@ -3,13 +3,37 @@ import Photos
 import Combine
 
 enum HashPipelinePolicy {
-    static func processSerially<Element>(
+    /// Runs operations with at most `limit` in flight. PhotoKit file requests
+    /// keep only a fixed read buffer in-process, so a small fan-out pipelines
+    /// iCloud downloads and hashing without meaningful memory growth.
+    static func processConcurrently<Element: Sendable>(
         _ elements: [Element],
-        operation: (Element) async -> Void
+        limit: Int,
+        operation: @escaping @Sendable (Element) async -> Void
     ) async {
-        for element in elements {
-            guard !Task.isCancelled else { break }
-            await operation(element)
+        await withTaskGroup(of: Void.self) { group in
+            let limit = max(1, Swift.min(limit, elements.count))
+            var index = 0
+            var inFlight = 0
+
+            func addNext() {
+                guard index < elements.count, inFlight < limit else { return }
+                let element = elements[index]
+                index += 1
+                inFlight += 1
+                group.addTask {
+                    guard !Task.isCancelled else { return }
+                    await operation(element)
+                }
+            }
+
+            while inFlight < limit, index < elements.count { addNext() }
+
+            while inFlight > 0 {
+                _ = await group.next()
+                inFlight -= 1
+                addNext()
+            }
         }
     }
 
@@ -102,6 +126,8 @@ class HashManager: ObservableObject {
     
     /// Number of concurrent server checks
     private let checkConcurrency = 5
+    /// Number of concurrent asset hashes
+    private static let hashConcurrency = 3
     /// Batch size for server checks
     private let checkBatchSize = 10
     /// Batch size for iCloud ID lookups
@@ -210,7 +236,7 @@ class HashManager: ObservableObject {
                             self.processingProgress = 0
                             self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
 
-                            self.processHashItemsSerially(runID: runID)
+                            self.processHashItems(runID: runID)
                         }
                     }
                 }
@@ -336,10 +362,10 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Processes one PhotoKit resource request at a time. PhotoKit controls chunk
-    /// delivery and may retain buffers until completion, so overlapping requests
-    /// can multiply peak memory for large photos, RAW files, and videos.
-    private func processHashItemsSerially(runID: UUID) {
+    /// Processes hashes with a small fan-out. File-based resource access keeps
+    /// only a fixed read buffer per request in-process, so bounded concurrency
+    /// pipelines iCloud downloads and hashing without memory growth.
+    private func processHashItems(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
             return
@@ -362,8 +388,8 @@ class HashManager: ObservableObject {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            await HashPipelinePolicy.processSerially(identifiersToProcess) { identifier in
-                guard self.isCurrentRun(runID), !self.shouldStop else { return }
+            await HashPipelinePolicy.processConcurrently(identifiersToProcess, limit: Self.hashConcurrency) { [weak self] identifier in
+                guard let self, self.isCurrentRun(runID), !self.shouldStop else { return }
 
                 await MainActor.run {
                     guard self.isCurrentRun(runID) else { return }

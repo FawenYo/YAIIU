@@ -5,28 +5,48 @@ final class HashPipelinePolicyTests: XCTestCase {
     actor ConcurrencyProbe {
         private(set) var activeCount = 0
         private(set) var maximumActiveCount = 0
+        private(set) var totalCount = 0
 
         func begin() {
             activeCount += 1
+            totalCount += 1
             maximumActiveCount = max(maximumActiveCount, activeCount)
         }
 
         func end() {
             activeCount -= 1
         }
+
+        func bump() {
+            totalCount += 1
+        }
     }
 
-    func testProcessesHashOperationsSerially() async {
+    func testProcessesHashOperationsWithBoundedConcurrency() async {
         let probe = ConcurrencyProbe()
+        let limit = 3
 
-        await HashPipelinePolicy.processSerially([1, 2, 3]) { _ in
+        await HashPipelinePolicy.processConcurrently(Array(1...10), limit: limit) { _ in
             await probe.begin()
             try? await Task.sleep(nanoseconds: 10_000_000)
             await probe.end()
         }
 
         let maximumActiveCount = await probe.maximumActiveCount
-        XCTAssertEqual(maximumActiveCount, 1)
+        let total = await probe.totalCount
+        XCTAssertEqual(total, 10)
+        XCTAssertLessThanOrEqual(maximumActiveCount, limit)
+    }
+
+    func testProcessConcurrentlyRunsEveryElementOnce() async {
+        let counter = ConcurrencyProbe()
+
+        await HashPipelinePolicy.processConcurrently(Array(1...25), limit: 4) { _ in
+            await counter.bump()
+        }
+
+        let total = await counter.totalCount
+        XCTAssertEqual(total, 25)
     }
 
     func testCancellationStopsBeforeNextOperation() async {
@@ -35,7 +55,7 @@ final class HashPipelinePolicyTests: XCTestCase {
         startedSecondOperation.isInverted = true
 
         let task = Task {
-            await HashPipelinePolicy.processSerially([1, 2]) { value in
+            await HashPipelinePolicy.processConcurrently([1, 2], limit: 1) { value in
                 if value == 1 {
                     firstOperationStarted.fulfill()
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
