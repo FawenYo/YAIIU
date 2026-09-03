@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 // MARK: - Custom Text Field Style for better UI/UX
@@ -30,6 +31,9 @@ struct LoginView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var migrationManager: MigrationManager
 
+    // Live WiFi SSID detection shared with NetworkSettingsView
+    @ObservedObject private var networkReachability = NetworkReachability.shared
+
     @State private var serverURL: String = ""
     @State private var internalServerURL: String = ""
     @State private var wifiSSID: String = ""
@@ -39,7 +43,6 @@ struct LoginView: View {
     @State private var showError: Bool = false
     @State private var errorMessage: String = ""
     @State private var showAdvancedSettings: Bool = false
-    @State private var currentSSID: String?
 
     // Use FocusState for better keyboard management and visual feedback
     @FocusState private var focusedField: Field?
@@ -59,6 +62,24 @@ struct LoginView: View {
 
     private var trimmedInternalServerURL: String {
         internalServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // WiFi detection mirrors the permission gating in NetworkSettingsView
+    private var needsLocationPermission: Bool {
+        let status = networkReachability.locationAuthorizationStatus
+        return status == .notDetermined || status == .denied || status == .restricted
+    }
+
+    private var needsPreciseLocation: Bool {
+        let status = networkReachability.locationAuthorizationStatus
+        let hasPermission = status == .authorizedWhenInUse || status == .authorizedAlways
+        return hasPermission && !networkReachability.isPreciseLocationEnabled
+    }
+
+    private func openLocationSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
     }
 
     private var trimmedEmail: String {
@@ -308,23 +329,69 @@ struct LoginView: View {
                             }
                             .enhancedTextFieldStyle(isFocused: focusedField == .wifiSSID)
                         
-                        // Use current WiFi button
-                        if let currentSSID = currentSSID, !currentSSID.isEmpty {
+                        // Live WiFi detection (same design as NetworkSettingsView)
+                        if let detectedSSID = networkReachability.currentSSID, !detectedSSID.isEmpty {
                             Button(action: {
-                                wifiSSID = currentSSID
+                                wifiSSID = detectedSSID
                             }) {
                                 HStack(spacing: 6) {
                                     Image(systemName: "wifi")
                                         .font(.caption)
                                     Text(L10n.Settings.useCurrentWiFi)
                                         .font(.caption)
-                                    Text("(\(currentSSID))")
+                                    Text("(\(detectedSSID))")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
                             }
                             .buttonStyle(.plain)
                             .foregroundColor(.blue)
+                        } else if needsLocationPermission {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(L10n.Settings.locationPermissionHint)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Button(action: {
+                                    NetworkReachability.shared.requestLocationPermission()
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "location.fill")
+                                            .font(.caption)
+                                        Text(L10n.Settings.grantLocationPermission)
+                                            .font(.caption)
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                        } else if needsPreciseLocation {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(L10n.Settings.preciseLocationHint)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Button(action: {
+                                    openLocationSettings()
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "gear")
+                                            .font(.caption)
+                                        Text(L10n.Settings.openSettings)
+                                            .font(.caption)
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            }
+                        } else {
+                            HStack(spacing: 6) {
+                                Image(systemName: "wifi.slash")
+                                    .font(.caption)
+                                Text(L10n.Settings.wifiNotDetected)
+                                    .font(.caption)
+                            }
+                            .foregroundColor(.secondary)
                         }
                         
                         Text(L10n.Settings.wifiSSIDHint)
@@ -338,7 +405,7 @@ struct LoginView: View {
                     removal: .opacity
                 ))
                 .onAppear {
-                    currentSSID = NetworkReachability.shared.getCurrentWiFiSSID()
+                    NetworkReachability.shared.refresh()
                 }
             }
         }
