@@ -271,7 +271,14 @@ class ImmichAPIService: NSObject {
         defer { try? handle.close() }
 
         while true {
-            guard let chunk = try? handle.read(upToCount: 512 * 1024), !chunk.isEmpty else { break }
+            let chunk: Data
+            do {
+                guard let data = try handle.read(upToCount: 512 * 1024), !data.isEmpty else { break }
+                chunk = data
+            } catch {
+                logError("Failed to read temp resource \(fileURL.lastPathComponent): \(error.localizedDescription)", category: .api)
+                return false
+            }
             var offset = 0
             while offset < chunk.count {
                 let written = chunk.withUnsafeBytes { rawBuffer -> Int in
