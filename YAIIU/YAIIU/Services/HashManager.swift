@@ -19,9 +19,17 @@ final class ResourceBudget: @unchecked Sendable {
         /// Returns true when already admitted and the caller must resume itself.
         func install(_ continuation: CheckedContinuation<Bool, Never>) -> Bool {
             lock.lock()
-            defer { lock.unlock() }
-            if isAdmitted { return true }
+            if isAdmitted {
+                lock.unlock()
+                return true
+            }
+            if isCancelledFlag {
+                lock.unlock()
+                continuation.resume(returning: false)
+                return false
+            }
             self.continuation = continuation
+            lock.unlock()
             return false
         }
 
@@ -112,7 +120,7 @@ final class ResourceBudget: @unchecked Sendable {
     /// Caller holds the lock. Admits the queue head only (strict FIFO).
     private func drainLocked() {
         while let first = waiters.first {
-            if first.amount <= available || (available == limit && waiters.count == 1) {
+            if first.amount <= available || available == limit {
                 waiters.removeFirst()
                 available -= first.amount
                 first.admit()?.resume(returning: true)
@@ -152,6 +160,10 @@ enum HashPipelinePolicy {
             while inFlight > 0 {
                 _ = await group.next()
                 inFlight -= 1
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    continue
+                }
                 addNext()
             }
         }
@@ -601,6 +613,10 @@ class HashManager: ObservableObject {
             while inFlight > 0 {
                 _ = await group.next()
                 inFlight -= 1
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    continue
+                }
                 addNext()
             }
         }
@@ -636,10 +652,11 @@ class HashManager: ObservableObject {
             return
         }
 
-        // Reserve on the size estimate (may be 0 for iCloud-optimised assets;
-        // floor of 1 keeps the FIFO honest). Corrected to the actual on-disk
-        // size once delivered.
-        let estimate = max(resources.plan.estimatedBytes, 1)
+        // Unknown PhotoKit sizes reserve the whole budget so concurrent
+        // downloads cannot bypass the disk cap before actual sizes are known.
+        let estimate = resources.plan.estimatedBytes > 0
+            ? resources.plan.estimatedBytes
+            : Self.diskBudgetBytes
         guard await budget.acquire(estimate) else { return }
 
         let files: AssetTempFiles
@@ -667,6 +684,10 @@ class HashManager: ObservableObject {
         // reservation stays charged until the consumer completes the work.
         let work = PreparedHashWork(files: files, reservedBytes: actual, budget: budget)
         registry.record(work)
+        work.onCompletion { [weak registry, weak work] in
+            guard let work else { return }
+            registry?.remove(work)
+        }
         continuation.yield(work)
     }
 

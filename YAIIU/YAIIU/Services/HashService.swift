@@ -157,11 +157,23 @@ final class PreparedHashWork: @unchecked Sendable {
     private let budget: ResourceBudget
     private let lock = NSLock()
     private var isCompleted = false
+    private var completionHandler: (@Sendable () -> Void)?
 
     init(files: AssetTempFiles, reservedBytes: Int64, budget: ResourceBudget) {
         self.files = files
         self.reservedBytes = reservedBytes
         self.budget = budget
+    }
+
+    func onCompletion(_ handler: @escaping @Sendable () -> Void) {
+        lock.lock()
+        if isCompleted {
+            lock.unlock()
+            handler()
+            return
+        }
+        completionHandler = handler
+        lock.unlock()
     }
 
     func complete() {
@@ -171,9 +183,12 @@ final class PreparedHashWork: @unchecked Sendable {
             return
         }
         isCompleted = true
+        let handler = completionHandler
+        completionHandler = nil
         lock.unlock()
         files.removeAll()
         budget.release(reservedBytes)
+        handler?()
     }
 }
 
@@ -188,6 +203,12 @@ final class PreparedWorkRegistry: @unchecked Sendable {
     func record(_ work: PreparedHashWork) {
         lock.lock()
         works.append(work)
+        lock.unlock()
+    }
+
+    func remove(_ work: PreparedHashWork) {
+        lock.lock()
+        works.removeAll { $0 === work }
         lock.unlock()
     }
 

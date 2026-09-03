@@ -305,6 +305,41 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertEqual(markedFinal, 2)
     }
 
+    func testOversizedQueueHeadAdmitsWhenBudgetBecomesIdleWithFollowers() async {
+        let budget = ResourceBudget(limit: 10)
+        let held = await budget.acquire(10)
+        XCTAssertTrue(held)
+
+        let oversized = Task { await budget.acquire(20) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let follower = Task { await budget.acquire(1) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        budget.release(10)
+        let oversizedAcquired = await oversized.value
+        XCTAssertTrue(oversizedAcquired)
+
+        follower.cancel()
+        let followerAcquired = await follower.value
+        XCTAssertFalse(followerAcquired)
+        budget.release(20)
+    }
+
+    func testAlreadyCancelledBudgetAcquireReturnsFalse() async {
+        let budget = ResourceBudget(limit: 1)
+        let held = await budget.acquire(1)
+        XCTAssertTrue(held)
+
+        let waiter = Task { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await budget.acquire(1)
+        }
+
+        let acquired = await waiter.value
+        XCTAssertFalse(acquired)
+        budget.release(1)
+    }
+
     func testCancelledWaiterIsNotAdmittedAndHoldsNothing() async {
         let budget = ResourceBudget(limit: 5)
         let held = await budget.acquire(5)

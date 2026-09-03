@@ -16,8 +16,8 @@ enum ResourceFileAccess {
     /// Writes the resource's original data to a fresh temp file and returns its
     /// URL. The caller owns the file and must delete it when done.
     ///
-    /// `writeData` has no public cancellation API; on task cancellation the
-    /// partial file is deleted and the eventual (ignored) completion is dropped.
+    /// `writeData` has no public cancellation API; cancellation is reported
+    /// after PhotoKit finishes so callers keep disk reservations charged.
     static func tempFile(for resource: PHAssetResource) async throws -> URL {
         let manager = PHAssetResourceManager.default()
         let options = PHAssetResourceRequestOptions()
@@ -36,7 +36,7 @@ enum ResourceFileAccess {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
-                state.install(continuation)
+                guard state.install(continuation) else { return }
                 manager.writeData(for: resource, toFile: fileURL, options: options) { error in
                     if state.complete(error: error) {
                         let size = state.fileSize(at: fileURL)
@@ -45,9 +45,8 @@ enum ResourceFileAccess {
                             category: .hash
                         )
                     }
-                    // Abandoned (cancelled/failed) requests delete the partial file;
-                    // a cancelled write still runs to completion inside PhotoKit but
-                    // its bytes land in an unlinked file, so deletion is cooperative.
+                    // Cancellation cannot stop PhotoKit; cleanup and caller
+                    // resumption happen only after the write actually finishes.
                 }
             }
         } onCancel: {
@@ -72,18 +71,18 @@ enum ResourceFileAccess {
             self.fileURL = fileURL
         }
 
-        func install(_ continuation: CheckedContinuation<URL, Error>) {
+        func install(_ continuation: CheckedContinuation<URL, Error>) -> Bool {
             lock.lock()
             if isCancelled {
                 lock.unlock()
                 removeFile()
                 continuation.resume(throwing: CancellationError())
-                return
+                return false
             }
             self.continuation = continuation
             lock.unlock()
+            return true
         }
-
         /// Returns true if the continuation was resumed here with success.
         func complete(error: Error?) -> Bool {
             lock.lock()
@@ -110,21 +109,12 @@ enum ResourceFileAccess {
             return true
         }
 
-        /// Cancellation cannot stop the in-flight write; mark the state so the
-        /// eventual completion is dropped, and delete the partial file.
+        /// Cancellation cannot stop the in-flight write. Keep the continuation
+        /// pending until PhotoKit completes so callers retain disk accounting.
         func cancel() {
             lock.lock()
-            guard !isCancelled else {
-                lock.unlock()
-                return
-            }
             isCancelled = true
-            let continuation = self.continuation
-            self.continuation = nil
             lock.unlock()
-
-            removeFile()
-            continuation?.resume(throwing: CancellationError())
         }
 
         private func removeFile() {
@@ -149,14 +139,14 @@ enum FileHasher {
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
 
-        while autoreleasepool(invoking: {
-            guard !Task.isCancelled else { return false }
-            guard let chunk = try? handle.read(upToCount: chunkSize), !chunk.isEmpty else {
-                return false
-            }
+        while true {
+            let chunk = try autoreleasepool(invoking: { () throws -> Data? in
+                guard !Task.isCancelled else { return nil }
+                return try handle.read(upToCount: chunkSize)
+            })
+            guard let chunk, !chunk.isEmpty else { break }
             sha1.update(data: chunk)
-            return true
-        }) {}
+        }
 
         if Task.isCancelled {
             throw CancellationError()

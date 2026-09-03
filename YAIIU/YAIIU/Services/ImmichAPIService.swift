@@ -198,6 +198,7 @@ class ImmichAPIService: NSObject {
     ) {
         let pumpQueue = DispatchQueue(label: "com.yaiiu.upload.pump.\(filename)", qos: .userInitiated)
         pumpQueue.async {
+            outputStream.open()
             defer { outputStream.close() }
 
             func writeAll(_ data: Data) -> Bool {
