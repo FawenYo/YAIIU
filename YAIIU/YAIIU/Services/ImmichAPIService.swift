@@ -50,6 +50,7 @@ class ImmichAPIService: NSObject {
     private var uploadSession: URLSession!
     private var uploadDelegates: [Int: UploadTaskDelegate] = [:]
     private let delegateQueue = DispatchQueue(label: "com.yaiiu.upload.delegate", attributes: .concurrent)
+    private static let uploadFileGate = ResourceBudget(limit: 1)
     
     override private init() {
         super.init()
@@ -87,6 +88,24 @@ class ImmichAPIService: NSObject {
             throw ImmichAPIError.invalidURL
         }
 
+
+        guard await Self.uploadFileGate.acquire(1) else {
+            throw CancellationError()
+        }
+        var ownsPreparedFile = true
+        let fileURL: URL
+        do {
+            fileURL = try await ResourceFileAccess.tempFile(for: resource)
+        } catch {
+            Self.uploadFileGate.release(1)
+            throw error
+        }
+        defer {
+            if ownsPreparedFile {
+                try? FileManager.default.removeItem(at: fileURL)
+                Self.uploadFileGate.release(1)
+            }
+        }
         let boundary = UUID().uuidString
 
         let dateFormatter = ISO8601DateFormatter()
@@ -108,7 +127,7 @@ class ImmichAPIService: NSObject {
         )
         let epilogueData = "\r\n--\(boundary)--\r\n".data(using: .utf8)!
 
-        let assetFileSize: Int64 = (resource.value(forKey: "fileSize") as? CLong).map(Int64.init) ?? 0
+        let assetFileSize = ResourceFileAccess.size(of: fileURL)
         let totalContentLength = Int64(preambleData.count) + assetFileSize + Int64(epilogueData.count)
 
         let fileSizeMB = Double(assetFileSize) / 1024.0 / 1024.0
@@ -177,12 +196,19 @@ class ImmichAPIService: NSObject {
 
             task.resume()
 
+            // Transfer cleanup ownership before the asynchronous pump can
+            // finish, avoiding a double release if bytes are sent immediately.
+            ownsPreparedFile = false
             self.pumpAssetData(
-                resource: resource,
+                fileURL: fileURL,
                 preamble: preambleData,
                 epilogue: epilogueData,
                 into: outputStream,
-                filename: filename
+                filename: filename,
+                completion: {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    Self.uploadFileGate.release(1)
+                }
             )
         }
 
@@ -190,16 +216,20 @@ class ImmichAPIService: NSObject {
     }
 
     private func pumpAssetData(
-        resource: PHAssetResource,
+        fileURL: URL,
         preamble: Data,
         epilogue: Data,
         into outputStream: OutputStream,
-        filename: String
+        filename: String,
+        completion: @escaping @Sendable () -> Void
     ) {
         let pumpQueue = DispatchQueue(label: "com.yaiiu.upload.pump.\(filename)", qos: .userInitiated)
         pumpQueue.async {
             outputStream.open()
-            defer { outputStream.close() }
+            defer {
+                outputStream.close()
+                completion()
+            }
 
             func writeAll(_ data: Data) -> Bool {
                 var offset = 0
@@ -219,49 +249,11 @@ class ImmichAPIService: NSObject {
             }
 
             guard writeAll(preamble) else { return }
-
-            // Stream the resource from a temp file rather than requestData
-            // chunks: PhotoKit retains every delivered chunk in-process, which
-            // OOM-kills long upload sessions.
-            let fileURL: URL
-            do {
-                fileURL = try self.awaitResourceFile(resource)
-            } catch {
-                logError("Resource file request failed for \(filename): \(error.localizedDescription)", category: .api)
-                return
-            }
-            defer { try? FileManager.default.removeItem(at: fileURL) }
-
             guard self.writeAllFile(fileURL, to: outputStream) else { return }
             _ = writeAll(epilogue)
         }
     }
 
-    /// Blocks the pump queue until the resource is written to a temp file.
-    /// `pumpAssetData` runs on its own serial queue, so blocking is by design;
-    /// the semaphore simply bridges the async PhotoKit completion.
-    private func awaitResourceFile(_ resource: PHAssetResource) throws -> URL {
-        let options = PHAssetResourceRequestOptions()
-        options.isNetworkAccessAllowed = true
-
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("upload-\(UUID().uuidString)")
-            .appendingPathExtension("bin")
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var requestError: Error?
-        PHAssetResourceManager.default().writeData(for: resource, toFile: fileURL, options: options) { error in
-            requestError = error
-            semaphore.signal()
-        }
-        semaphore.wait()
-
-        if let requestError {
-            try? FileManager.default.removeItem(at: fileURL)
-            throw requestError
-        }
-        return fileURL
-    }
 
     private func writeAllFile(_ fileURL: URL, to outputStream: OutputStream) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
@@ -273,7 +265,9 @@ class ImmichAPIService: NSObject {
         while true {
             let chunk: Data
             do {
-                guard let data = try handle.read(upToCount: 512 * 1024), !data.isEmpty else { break }
+                guard let data = try autoreleasepool(invoking: {
+                    try handle.read(upToCount: 512 * 1024)
+                }), !data.isEmpty else { break }
                 chunk = data
             } catch {
                 logError("Failed to read temp resource \(fileURL.lastPathComponent): \(error.localizedDescription)", category: .api)

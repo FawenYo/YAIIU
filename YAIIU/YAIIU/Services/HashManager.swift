@@ -265,6 +265,7 @@ class HashManager: ObservableObject {
     /// independently of how many downloads are in flight; a resource larger
     /// than the whole budget is admitted alone (see ResourceBudget).
     private static let diskBudgetBytes: Int64 = 1_500 * 1024 * 1024
+    private static let hashDiskBudget = ResourceBudget(limit: diskBudgetBytes)
     /// Assets hashed concurrently. Hashing reads with a fixed buffer, so this
     /// only caps CPU/IO overlap, not memory.
     private static let hashConcurrency = 3
@@ -530,7 +531,7 @@ class HashManager: ObservableObject {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            let budget = ResourceBudget(limit: Self.diskBudgetBytes)
+            let budget = Self.hashDiskBudget
             let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
             let registry = PreparedWorkRegistry()
             var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
@@ -677,12 +678,13 @@ class HashManager: ObservableObject {
         }
 
         let actual = files.actualBytes
-        budget.adjust(from: estimate, to: actual)
+        let charged = max(estimate, actual)
+        budget.adjust(from: estimate, to: charged)
 
         // Hand the files to the consumer; the registry entry lets the run sweep
         // them if the cancelled stream discards the buffered handoff. The
         // reservation stays charged until the consumer completes the work.
-        let work = PreparedHashWork(files: files, reservedBytes: actual, budget: budget)
+        let work = PreparedHashWork(files: files, reservedBytes: charged, budget: budget)
         registry.record(work)
         work.onCompletion { [weak registry, weak work] in
             guard let work else { return }
@@ -722,6 +724,7 @@ class HashManager: ObservableObject {
         defer { work.complete() }
         let identifier = files.plan.localIdentifier
         let hashStartedAt = Date()
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
 
         do {
             let result = try await HashService.shared.hash(files)
@@ -1002,24 +1005,20 @@ class HashManager: ObservableObject {
 
         shouldStop = true
         isStopping = true
-        statusMessage = "Stopping..."
-
         let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
         tasks.forEach { $0.cancel() }
 
+        // PhotoKit writes cannot be cancelled. Let their detached run cleanup
+        // finish later while immediately retiring this run from the UI. The
+        // shared disk budget keeps a replacement run behind those writes.
+        isProcessing = false
+        isHashingActive = false
+        isCheckingActive = false
+        isStopping = false
+        runState.finishStopping()
+        statusMessage = ""
         Task { @MainActor [weak self] in
-            for task in tasks {
-                await task.value
-            }
-
-            guard let self, self.isStopping else { return }
-            await self.refreshStatusCacheAsync()
-            self.isProcessing = false
-            self.isHashingActive = false
-            self.isCheckingActive = false
-            self.isStopping = false
-            self.runState.finishStopping()
-            self.statusMessage = ""
+            await self?.refreshStatusCacheAsync()
         }
     }
 
