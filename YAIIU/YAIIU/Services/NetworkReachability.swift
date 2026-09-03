@@ -66,14 +66,6 @@ final class NetworkReachability: NSObject, ObservableObject {
         }
     }
     
-    func getCurrentWiFiSSID() -> String? {
-        #if targetEnvironment(simulator)
-        return nil
-        #else
-        return fetchSSIDViaCNCopy()
-        #endif
-    }
-    
     // MARK: - Private Methods
     
     private func startMonitoring() {
