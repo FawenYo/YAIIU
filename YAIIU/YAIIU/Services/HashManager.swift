@@ -990,6 +990,7 @@ class HashManager: ObservableObject {
     
     private func finishProcessing(runID: UUID) {
         guard runState.finish(runID) else { return }
+        Task { await AlbumSyncService.shared.syncIfEnabled() }
         isProcessing = false
         isHashingActive = false
         isCheckingActive = false

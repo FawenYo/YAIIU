@@ -398,6 +398,7 @@ class UploadManager: ObservableObject {
                                         )
                                         logDebug("Resource \(filename) processed by server: \(response.id)", category: .upload)
                                         responseTracker.markCompleted()
+                                        Task { await AlbumSyncService.shared.syncIfEnabled() }
                                     case .failure(let error):
                                         logWarning("Server response error for \(filename): \(error.localizedDescription)", category: .upload)
                                         responseTracker.markFailed(error: error)
