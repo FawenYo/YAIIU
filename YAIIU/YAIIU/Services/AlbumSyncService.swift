@@ -8,6 +8,8 @@ actor AlbumSyncService {
     static let albumMappingsKey = "immich_apple_photos_album_mappings"
 
     private let batchSize = 500
+    private var isSyncing = false
+    private var needsSync = false
 
     private init() {}
 
@@ -28,6 +30,17 @@ actor AlbumSyncService {
         }
     }
     func sync(serverURL: String, apiKey: String) async throws {
+        needsSync = true
+        guard !isSyncing else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+        repeat {
+            needsSync = false
+            try await performSync(serverURL: serverURL, apiKey: apiKey)
+        } while needsSync
+    }
+
+    private func performSync(serverURL: String, apiKey: String) async throws {
         guard !serverURL.isEmpty, !apiKey.isEmpty else { return }
 
         let localAlbums = fetchLocalAlbums()
