@@ -97,7 +97,10 @@ actor AlbumSyncService {
                 )
                 try checkSession()
                 mappings[localAlbum.localIdentifier] = remoteAlbum.id
-                saveMappings(mappings)
+                try await MainActor.run {
+                    try checkSession()
+                    UserDefaults.standard.set(mappings, forKey: Self.albumMappingsKey)
+                }
                 createdCount += 1
             }
 
@@ -150,7 +153,4 @@ actor AlbumSyncService {
         UserDefaults.standard.dictionary(forKey: Self.albumMappingsKey) as? [String: String] ?? [:]
     }
 
-    private func saveMappings(_ mappings: [String: String]) {
-        UserDefaults.standard.set(mappings, forKey: Self.albumMappingsKey)
-    }
 }
