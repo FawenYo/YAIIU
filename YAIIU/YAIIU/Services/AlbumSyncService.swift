@@ -16,6 +16,7 @@ actor AlbumSyncService {
         let serverURL: String
         let apiKey: String
         let generation: String?
+        let externalURL: String
     }
 
     private init() {}
@@ -46,7 +47,7 @@ actor AlbumSyncService {
             let current = await MainActor.run { () -> Session in
                 let settings = SettingsManager()
                 return Session(serverURL: settings.activeServerURL, apiKey: settings.apiKey,
-                               generation: UserDefaults.standard.string(forKey: Self.sessionKey))
+                               generation: UserDefaults.standard.string(forKey: Self.sessionKey), externalURL: settings.serverURL)
             }
             try await performSync(current)
         } while needsSync
@@ -66,6 +67,9 @@ actor AlbumSyncService {
             }
         }
         try checkSession()
+        let user = try await ImmichAPIService.shared.getCurrentUser(serverURL: serverURL, apiKey: apiKey)
+        try checkSession()
+        let mappingKey = Self.albumMappingsKey + "." + Data((snapshot.externalURL + "|" + user.id).utf8).base64EncodedString()
 
         let localAlbums = fetchLocalAlbums()
         guard !localAlbums.isEmpty else { return }
@@ -75,7 +79,7 @@ actor AlbumSyncService {
             apiKey: apiKey
         )
         try checkSession()
-        var mappings = loadMappings()
+        var mappings = UserDefaults.standard.dictionary(forKey: mappingKey) as? [String: String] ?? [:]
         let remoteById = Dictionary(uniqueKeysWithValues: remoteAlbums.map { ($0.id, $0) })
 
         var createdCount = 0
@@ -99,7 +103,7 @@ actor AlbumSyncService {
                 mappings[localAlbum.localIdentifier] = remoteAlbum.id
                 try await MainActor.run {
                     try checkSession()
-                    UserDefaults.standard.set(mappings, forKey: Self.albumMappingsKey)
+                    UserDefaults.standard.set(mappings, forKey: mappingKey)
                 }
                 createdCount += 1
             }
@@ -149,8 +153,5 @@ actor AlbumSyncService {
     }
 
 
-    private func loadMappings() -> [String: String] {
-        UserDefaults.standard.dictionary(forKey: Self.albumMappingsKey) as? [String: String] ?? [:]
-    }
 
 }
