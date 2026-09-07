@@ -12,6 +12,11 @@ actor AlbumSyncService {
     private var isSyncing = false
     private var recentBatches: [String: Date] = [:]
     private var needsSync = false
+    private struct Session {
+        let serverURL: String
+        let apiKey: String
+        let generation: String?
+    }
 
     private init() {}
 
@@ -26,29 +31,32 @@ actor AlbumSyncService {
         }
 
         do {
-            try await sync(serverURL: settings.activeServerURL, apiKey: settings.apiKey)
+            try await sync()
         } catch {
             logError("Album sync failed: \(error.localizedDescription)", category: .sync)
         }
     }
-    func sync(serverURL: String, apiKey: String) async throws {
+    private func sync() async throws {
         needsSync = true
         guard !isSyncing else { return }
         isSyncing = true
         defer { isSyncing = false }
         repeat {
             needsSync = false
-            let current = await MainActor.run { () -> (String, String) in
+            let current = await MainActor.run { () -> Session in
                 let settings = SettingsManager()
-                return (settings.activeServerURL, settings.apiKey)
+                return Session(serverURL: settings.activeServerURL, apiKey: settings.apiKey,
+                               generation: UserDefaults.standard.string(forKey: Self.sessionKey))
             }
-            try await performSync(serverURL: current.0, apiKey: current.1)
+            try await performSync(current)
         } while needsSync
     }
 
-    private func performSync(serverURL: String, apiKey: String) async throws {
+    private func performSync(_ snapshot: Session) async throws {
+        let serverURL = snapshot.serverURL
+        let apiKey = snapshot.apiKey
         guard !serverURL.isEmpty, !apiKey.isEmpty else { return }
-        let session = UserDefaults.standard.string(forKey: Self.sessionKey)
+        let session = snapshot.generation
         func checkSession() throws {
             try Task.checkCancellation()
             guard UserDefaults.standard.bool(forKey: "immich_sync_apple_photos_albums"),
