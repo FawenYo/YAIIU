@@ -63,7 +63,7 @@ actor AlbumSyncService {
         let apiKey = snapshot.apiKey
         guard !serverURL.isEmpty, !apiKey.isEmpty else { return }
         let session = snapshot.generation
-        func checkSession() throws {
+        @Sendable func checkSession() throws {
             try Task.checkCancellation()
             guard UserDefaults.standard.bool(forKey: "immich_sync_apple_photos_albums"),
                   UserDefaults.standard.bool(forKey: "immich_is_logged_in"),
@@ -106,9 +106,10 @@ actor AlbumSyncService {
                 )
                 try checkSession()
                 mappings[localAlbum.localIdentifier] = remoteAlbum.id
+                let updatedMappings = mappings
                 try await MainActor.run {
                     try checkSession()
-                    UserDefaults.standard.set(mappings, forKey: mappingKey)
+                    UserDefaults.standard.set(updatedMappings, forKey: mappingKey)
                 }
                 createdCount += 1
             }
@@ -116,11 +117,11 @@ actor AlbumSyncService {
             let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
             for start in stride(from: 0, to: assets.count, by: batchSize) {
                 try checkSession()
-                let batch = autoreleasepool {
+                let batch = try autoreleasepool {
                     var ids = Set<String>()
                     let repository = UploadRecordRepository()
                     for index in start..<min(start + batchSize, assets.count) {
-                        ids.formUnion(repository.albumAssetIds(for: assets.object(at: index).localIdentifier))
+                        ids.formUnion(try repository.albumAssetIds(for: assets.object(at: index).localIdentifier))
                     }
                     return ids.sorted()
                 }

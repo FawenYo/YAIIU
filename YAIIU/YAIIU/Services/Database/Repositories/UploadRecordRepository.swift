@@ -309,9 +309,9 @@ final class UploadRecordRepository {
         }
     }
     
-    func albumAssetIds(for localIdentifier: String) -> [String] {
+    func albumAssetIds(for localIdentifier: String) throws -> [String] {
         connection.ensureInitialized()
-        return connection.dbQueue.sync {
+        return try connection.dbQueue.sync {
             let sql = """
             SELECT immich_id FROM uploaded_assets WHERE asset_id = ?
             UNION
@@ -321,16 +321,24 @@ final class UploadRecordRepository {
             """
             var statement: OpaquePointer?
             defer { sqlite3_finalize(statement) }
-            guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            func databaseError() -> NSError {
+                NSError(domain: "AlbumAssetResolver", code: Int(sqlite3_errcode(connection.db)),
+                        userInfo: [NSLocalizedDescriptionKey: connection.lastErrorMessage])
+            }
+            guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { throw databaseError() }
             let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             sqlite3_bind_text(statement, 1, localIdentifier, -1, transient)
             sqlite3_bind_text(statement, 2, localIdentifier, -1, transient)
             var ids: [String] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
-                guard let text = sqlite3_column_text(statement, 0) else { continue }
-                let id = String(cString: text)
-                if UUID(uuidString: id) != nil { ids.append(id) }
+            var result = sqlite3_step(statement)
+            while result == SQLITE_ROW {
+                if let text = sqlite3_column_text(statement, 0) {
+                    let id = String(cString: text)
+                    if UUID(uuidString: id) != nil { ids.append(id) }
+                }
+                result = sqlite3_step(statement)
             }
+            guard result == SQLITE_DONE else { throw databaseError() }
             return ids
         }
     }
