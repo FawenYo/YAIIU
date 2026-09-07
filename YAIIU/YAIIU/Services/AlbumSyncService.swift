@@ -6,6 +6,7 @@ import Photos
 actor AlbumSyncService {
     static let shared = AlbumSyncService()
     static let albumMappingsKey = "immich_apple_photos_album_mappings"
+    static let sessionKey = "immich_album_sync_session"
 
     private let batchSize = 500
     private var isSyncing = false
@@ -36,12 +37,26 @@ actor AlbumSyncService {
         defer { isSyncing = false }
         repeat {
             needsSync = false
-            try await performSync(serverURL: serverURL, apiKey: apiKey)
+            let current = await MainActor.run { () -> (String, String) in
+                let settings = SettingsManager()
+                return (settings.activeServerURL, settings.apiKey)
+            }
+            try await performSync(serverURL: current.0, apiKey: current.1)
         } while needsSync
     }
 
     private func performSync(serverURL: String, apiKey: String) async throws {
         guard !serverURL.isEmpty, !apiKey.isEmpty else { return }
+        let session = UserDefaults.standard.string(forKey: Self.sessionKey)
+        func checkSession() throws {
+            try Task.checkCancellation()
+            guard UserDefaults.standard.bool(forKey: "immich_sync_apple_photos_albums"),
+                  UserDefaults.standard.bool(forKey: "immich_is_logged_in"),
+                  UserDefaults.standard.string(forKey: Self.sessionKey) == session else {
+                throw CancellationError()
+            }
+        }
+        try checkSession()
 
         let localAlbums = fetchLocalAlbums()
         guard !localAlbums.isEmpty else { return }
@@ -50,6 +65,7 @@ actor AlbumSyncService {
             serverURL: serverURL,
             apiKey: apiKey
         )
+        try checkSession()
         var mappings = loadMappings()
         let remoteById = Dictionary(uniqueKeysWithValues: remoteAlbums.map { ($0.id, $0) })
         let remoteByName = Dictionary(grouping: remoteAlbums, by: \ImmichAlbum.albumName)
@@ -62,7 +78,7 @@ actor AlbumSyncService {
         var addedCount = 0
 
         for localAlbum in localAlbums {
-            if Task.isCancelled { throw CancellationError() }
+            try checkSession()
 
             let remoteAlbum: ImmichAlbum
             if let mappedId = mappings[localAlbum.localIdentifier],
@@ -80,6 +96,7 @@ actor AlbumSyncService {
                     serverURL: serverURL,
                     apiKey: apiKey
                 )
+                try checkSession()
                 mappings[localAlbum.localIdentifier] = remoteAlbum.id
                 saveMappings(mappings)
                 createdCount += 1
@@ -87,6 +104,7 @@ actor AlbumSyncService {
 
             let assetIds = uploadedImmichIds(in: localAlbum, uploadedMappings: uploadedMappings)
             for start in stride(from: 0, to: assetIds.count, by: batchSize) {
+                try checkSession()
                 let batch = Array(assetIds[start..<min(start + batchSize, assetIds.count)])
                 try await ImmichAPIService.shared.addAssets(
                     batch,

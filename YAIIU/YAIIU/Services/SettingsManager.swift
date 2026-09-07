@@ -71,6 +71,7 @@ class SettingsManager: ObservableObject {
     }
     
     func login(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) {
+        invalidateAlbumSync(clearMappings: true)
         self.serverURL = serverURL
         self.internalServerURL = internalServerURL ?? ""
         self.internalNetworkSSID = ssid ?? ""
@@ -89,6 +90,7 @@ class SettingsManager: ObservableObject {
     }
     
     func updateServerURL(_ url: String) {
+        invalidateAlbumSync(clearMappings: true)
         self.serverURL = url
         UserDefaults.standard.set(url, forKey: serverURLKey)
         syncToSharedSettings()
@@ -110,7 +112,15 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(allowed, forKey: allowCellularBackgroundUploadKey)
         syncToSharedSettings()
     }
+    private func invalidateAlbumSync(clearMappings: Bool) {
+        UserDefaults.standard.set(UUID().uuidString, forKey: AlbumSyncService.sessionKey)
+        if clearMappings {
+            UserDefaults.standard.removeObject(forKey: AlbumSyncService.albumMappingsKey)
+        }
+    }
+
     func updateSyncApplePhotosAlbums(_ enabled: Bool) {
+        invalidateAlbumSync(clearMappings: false)
         syncApplePhotosAlbums = enabled
         UserDefaults.standard.set(enabled, forKey: syncApplePhotosAlbumsKey)
     }
@@ -153,6 +163,7 @@ class SettingsManager: ObservableObject {
     }
 
     func logout() {
+        invalidateAlbumSync(clearMappings: true)
         self.serverURL = ""
         self.internalServerURL = ""
         self.internalNetworkSSID = ""
