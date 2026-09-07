@@ -27,7 +27,6 @@ actor AlbumSyncService {
             logError("Album sync failed: \(error.localizedDescription)", category: .sync)
         }
     }
-    @MainActor
     func sync(serverURL: String, apiKey: String) async throws {
         guard !serverURL.isEmpty, !apiKey.isEmpty else { return }
 
