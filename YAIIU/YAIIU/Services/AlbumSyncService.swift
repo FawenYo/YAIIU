@@ -68,7 +68,6 @@ actor AlbumSyncService {
         try checkSession()
         var mappings = loadMappings()
         let remoteById = Dictionary(uniqueKeysWithValues: remoteAlbums.map { ($0.id, $0) })
-        let remoteByName = Dictionary(grouping: remoteAlbums, by: \ImmichAlbum.albumName)
         let uploadedMappings = Dictionary(
             DatabaseManager.shared.getAllUploadedAssetMappings().map { ($0.localIdentifier, $0.immichId) },
             uniquingKeysWith: { first, _ in first }
@@ -84,11 +83,6 @@ actor AlbumSyncService {
             if let mappedId = mappings[localAlbum.localIdentifier],
                let mappedAlbum = remoteById[mappedId] {
                 remoteAlbum = mappedAlbum
-            } else if let matches = remoteByName[localAlbum.localizedTitle ?? ""], matches.count == 1,
-                      let match = matches.first {
-                remoteAlbum = match
-                mappings[localAlbum.localIdentifier] = match.id
-                saveMappings(mappings)
             } else {
                 let title = localAlbum.localizedTitle ?? "Untitled Album"
                 remoteAlbum = try await ImmichAPIService.shared.createAlbum(
