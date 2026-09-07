@@ -49,7 +49,12 @@ actor AlbumSyncService {
                 return Session(serverURL: settings.activeServerURL, apiKey: settings.apiKey,
                                generation: UserDefaults.standard.string(forKey: Self.sessionKey), externalURL: settings.serverURL)
             }
-            try await performSync(current)
+            do {
+                try await performSync(current)
+            } catch {
+                if !needsSync { throw error }
+                logDebug("Album sync interrupted; processing pending request", category: .sync)
+            }
         } while needsSync
     }
 
