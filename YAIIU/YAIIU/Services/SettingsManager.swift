@@ -71,7 +71,7 @@ class SettingsManager: ObservableObject {
     }
     
     func login(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) {
-        invalidateAlbumSync(clearMappings: true)
+        invalidateAlbumSync()
         self.serverURL = serverURL
         self.internalServerURL = internalServerURL ?? ""
         self.internalNetworkSSID = ssid ?? ""
@@ -90,7 +90,7 @@ class SettingsManager: ObservableObject {
     }
     
     func updateServerURL(_ url: String) {
-        invalidateAlbumSync(clearMappings: true)
+        invalidateAlbumSync()
         self.serverURL = url
         UserDefaults.standard.set(url, forKey: serverURLKey)
         syncToSharedSettings()
@@ -112,15 +112,14 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(allowed, forKey: allowCellularBackgroundUploadKey)
         syncToSharedSettings()
     }
-    private func invalidateAlbumSync(clearMappings: Bool) {
+    private func invalidateAlbumSync() {
+        // Account-scoped mappings survive; the new session token invalidates
+        // any run still in flight.
         UserDefaults.standard.set(UUID().uuidString, forKey: AlbumSyncService.sessionKey)
-        if clearMappings {
-            UserDefaults.standard.removeObject(forKey: AlbumSyncService.albumMappingsKey)
-        }
     }
 
     func updateSyncApplePhotosAlbums(_ enabled: Bool) {
-        invalidateAlbumSync(clearMappings: false)
+        invalidateAlbumSync()
         syncApplePhotosAlbums = enabled
         UserDefaults.standard.set(enabled, forKey: syncApplePhotosAlbumsKey)
     }
@@ -163,7 +162,7 @@ class SettingsManager: ObservableObject {
     }
 
     func logout() {
-        invalidateAlbumSync(clearMappings: true)
+        invalidateAlbumSync()
         self.serverURL = ""
         self.internalServerURL = ""
         self.internalNetworkSSID = ""
@@ -178,7 +177,6 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.removeObject(forKey: isLoggedInKey)
         UserDefaults.standard.removeObject(forKey: allowCellularBackgroundUploadKey)
         UserDefaults.standard.removeObject(forKey: syncApplePhotosAlbumsKey)
-        UserDefaults.standard.removeObject(forKey: AlbumSyncService.albumMappingsKey)
         deleteAPIKeyFromKeychain()
         
         // Clear SharedSettings and disable background upload
