@@ -756,6 +756,16 @@ class ImmichAPIService: NSObject {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try validateAlbumResponse(response, data: data, expectedStatusCodes: [200])
+        struct MembershipResult: Decodable {
+            let id: String
+            let success: Bool
+            let error: String?
+        }
+        let results = try JSONDecoder().decode([MembershipResult].self, from: data)
+        let accepted = Set(results.filter { $0.success || $0.error == "duplicate" }.map(\.id))
+        guard Set(assetIds).isSubset(of: accepted) else {
+            throw ImmichAPIError.serverError(statusCode: 200, message: "Some album memberships were rejected or missing from the response")
+        }
     }
 
     private func validateAlbumResponse(_ response: URLResponse, data: Data, expectedStatusCodes: Set<Int>) throws {
