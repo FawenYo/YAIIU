@@ -10,6 +10,7 @@ actor AlbumSyncService {
 
     private let batchSize = 500
     private var isSyncing = false
+    private var recentBatches: [String: Date] = [:]
     private var needsSync = false
 
     private init() {}
@@ -92,10 +93,20 @@ actor AlbumSyncService {
                 createdCount += 1
             }
 
-            let assetIds = uploadedImmichIds(in: localAlbum)
-            for start in stride(from: 0, to: assetIds.count, by: batchSize) {
+            let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
+            for start in stride(from: 0, to: assets.count, by: batchSize) {
                 try checkSession()
-                let batch = Array(assetIds[start..<min(start + batchSize, assetIds.count)])
+                let batch = autoreleasepool {
+                    var ids = Set<String>()
+                    let repository = UploadRecordRepository()
+                    for index in start..<min(start + batchSize, assets.count) {
+                        ids.formUnion(repository.albumAssetIds(for: assets.object(at: index).localIdentifier))
+                    }
+                    return ids.sorted()
+                }
+                guard !batch.isEmpty else { continue }
+                let cacheKey = (session ?? "") + remoteAlbum.id + batch.joined(separator: ",")
+                if let date = recentBatches[cacheKey], Date().timeIntervalSince(date) < 60 { continue }
                 try await ImmichAPIService.shared.addAssets(
                     batch,
                     toAlbum: remoteAlbum.id,
@@ -103,6 +114,9 @@ actor AlbumSyncService {
                     apiKey: apiKey
                 )
                 addedCount += batch.count
+                try checkSession()
+                if recentBatches.count >= 128 { recentBatches.removeAll(keepingCapacity: true) }
+                recentBatches[cacheKey] = Date()
             }
         }
 
@@ -123,15 +137,6 @@ actor AlbumSyncService {
         return albums
     }
 
-    private func uploadedImmichIds(in album: PHAssetCollection) -> [String] {
-        let result = PHAsset.fetchAssets(in: album, options: nil)
-        let repository = UploadRecordRepository()
-        var ids = Set<String>()
-        result.enumerateObjects { asset, _, _ in
-            ids.formUnion(repository.albumAssetIds(for: asset.localIdentifier))
-        }
-        return Array(ids)
-    }
 
     private func loadMappings() -> [String: String] {
         UserDefaults.standard.dictionary(forKey: Self.albumMappingsKey) as? [String: String] ?? [:]
