@@ -704,6 +704,70 @@ class ImmichAPIService: NSObject {
         }
     }
     
+    func fetchOwnedAlbums(serverURL: String, apiKey: String) async throws -> [ImmichAlbum] {
+        guard var components = URLComponents(string: "\(serverURL)/api/albums") else {
+            throw ImmichAPIError.invalidURL
+        }
+        components.queryItems = [URLQueryItem(name: "isOwned", value: "true")]
+        guard let url = components.url else { throw ImmichAPIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateAlbumResponse(response, data: data, expectedStatusCodes: [200])
+        return try JSONDecoder().decode([ImmichAlbum].self, from: data)
+    }
+
+    func createAlbum(name: String, serverURL: String, apiKey: String) async throws -> ImmichAlbum {
+        guard let url = URL(string: "\(serverURL)/api/albums") else {
+            throw ImmichAPIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["albumName": name])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateAlbumResponse(response, data: data, expectedStatusCodes: [201])
+        return try JSONDecoder().decode(ImmichAlbum.self, from: data)
+    }
+
+    func addAssets(_ assetIds: [String], toAlbum albumId: String, serverURL: String, apiKey: String) async throws {
+        guard !assetIds.isEmpty else { return }
+        guard let url = URL(string: "\(serverURL)/api/albums/\(albumId)/assets") else {
+            throw ImmichAPIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 60
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["ids": assetIds])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateAlbumResponse(response, data: data, expectedStatusCodes: [200])
+    }
+
+    private func validateAlbumResponse(_ response: URLResponse, data: Data, expectedStatusCodes: Set<Int>) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ImmichAPIError.invalidResponse
+        }
+        guard expectedStatusCodes.contains(httpResponse.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: message)
+        }
+    }
+
     /// Fetches all assets via sync stream (AssetsV2) without acknowledging checkpoints.
     func fetchAssetStream(serverURL: String, apiKey: String) async throws -> AssetStreamResult {
         logInfo("Fetching assets via sync stream", category: .api)
@@ -990,6 +1054,7 @@ class ImmichAPIService: NSObject {
     }
 
 
+
     func updateBulkAssetMetadata(items: [MetadataUpdateItem], serverURL: String, apiKey: String) async throws {
         guard !items.isEmpty else {
             logDebug("No metadata items to update", category: .api)
@@ -1037,6 +1102,10 @@ class ImmichAPIService: NSObject {
             throw error
         }
     }
+}
+struct ImmichAlbum: Decodable {
+    let id: String
+    let albumName: String
 }
 
 struct MetadataUpdateItem {

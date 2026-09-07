@@ -200,6 +200,23 @@ struct SettingsView: View {
                     }
                 }
                 
+                Section(
+                    header: Text(L10n.Settings.albumSyncSection),
+                    footer: Text(L10n.Settings.albumSyncDescription).font(.caption)
+                ) {
+                    Toggle(isOn: Binding(
+                        get: { settingsManager.syncApplePhotosAlbums },
+                        set: { enabled in
+                            settingsManager.updateSyncApplePhotosAlbums(enabled)
+                            if enabled {
+                                Task { await AlbumSyncService.shared.syncIfEnabled() }
+                            }
+                        }
+                    )) {
+                        Label(L10n.Settings.albumSyncTitle, systemImage: "rectangle.stack.badge.plus")
+                    }
+                }
+
                 Section(header: Text(L10n.Settings.dataManagement)) {
                     Button(action: {
                         showingImportView = true

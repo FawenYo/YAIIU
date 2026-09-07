@@ -8,6 +8,7 @@ class SettingsManager: ObservableObject {
     @Published var apiKey: String = ""
     @Published var isLoggedIn: Bool = false
     @Published var allowCellularBackgroundUpload: Bool = true
+    @Published var syncApplePhotosAlbums: Bool = false
     @Published var hasCompletedOnboarding: Bool = false
     @Published var hasCompletedInitialSetup: Bool = false
     @Published var hasCompletedPhotoPermission: Bool = false
@@ -21,6 +22,7 @@ class SettingsManager: ObservableObject {
     private let hasCompletedInitialSetupKey = "immich_has_completed_initial_setup"
     private let hasCompletedPhotoPermissionKey = "immich_has_completed_photo_permission"
     private let allowCellularBackgroundUploadKey = "immich_allow_cellular_background_upload"
+    private let syncApplePhotosAlbumsKey = "immich_sync_apple_photos_albums"
     init() {
         loadSettings()
     }
@@ -35,6 +37,7 @@ class SettingsManager: ObservableObject {
         hasCompletedInitialSetup = UserDefaults.standard.bool(forKey: hasCompletedInitialSetupKey)
         hasCompletedPhotoPermission = UserDefaults.standard.bool(forKey: hasCompletedPhotoPermissionKey)
         allowCellularBackgroundUpload = UserDefaults.standard.object(forKey: allowCellularBackgroundUploadKey) as? Bool ?? true
+        syncApplePhotosAlbums = UserDefaults.standard.bool(forKey: syncApplePhotosAlbumsKey)
 
         if isLoggedIn && (serverURL.isEmpty || apiKey.isEmpty) {
             isLoggedIn = false
@@ -56,6 +59,7 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(hasCompletedPhotoPermission, forKey: hasCompletedPhotoPermissionKey)
         saveAPIKeyToKeychain(apiKey)
         UserDefaults.standard.set(allowCellularBackgroundUpload, forKey: allowCellularBackgroundUploadKey)
+        UserDefaults.standard.set(syncApplePhotosAlbums, forKey: syncApplePhotosAlbumsKey)
     }
     
     var activeServerURL: String {
@@ -106,6 +110,11 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(allowed, forKey: allowCellularBackgroundUploadKey)
         syncToSharedSettings()
     }
+    func updateSyncApplePhotosAlbums(_ enabled: Bool) {
+        syncApplePhotosAlbums = enabled
+        UserDefaults.standard.set(enabled, forKey: syncApplePhotosAlbumsKey)
+    }
+
     
     private func syncToSharedSettings() {
         if #available(iOS 26.1, *) {
@@ -150,12 +159,15 @@ class SettingsManager: ObservableObject {
         self.apiKey = ""
         self.isLoggedIn = false
         self.allowCellularBackgroundUpload = true
+        self.syncApplePhotosAlbums = false
         
         UserDefaults.standard.removeObject(forKey: serverURLKey)
         UserDefaults.standard.removeObject(forKey: internalServerURLKey)
         UserDefaults.standard.removeObject(forKey: internalNetworkSSIDKey)
         UserDefaults.standard.removeObject(forKey: isLoggedInKey)
         UserDefaults.standard.removeObject(forKey: allowCellularBackgroundUploadKey)
+        UserDefaults.standard.removeObject(forKey: syncApplePhotosAlbumsKey)
+        UserDefaults.standard.removeObject(forKey: AlbumSyncService.albumMappingsKey)
         deleteAPIKeyFromKeychain()
         
         // Clear SharedSettings and disable background upload

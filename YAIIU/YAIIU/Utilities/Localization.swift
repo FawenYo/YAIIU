@@ -215,6 +215,9 @@ enum L10n {
         static var uploadedCount: String { "settings.uploadedCount".localized }
         static var cachedHashCount: String { "settings.cachedHashCount".localized }
         static var confirmedOnCloud: String { "settings.confirmedOnCloud".localized }
+        static var albumSyncSection: String { "settings.albumSync.section".localized }
+        static var albumSyncTitle: String { "settings.albumSync.title".localized }
+        static var albumSyncDescription: String { "settings.albumSync.description".localized }
         static var dataManagement: String { "settings.dataManagement".localized }
         static var importImmichData: String { "settings.importImmichData".localized }
         static var exportDatabase: String { "settings.exportDatabase".localized }

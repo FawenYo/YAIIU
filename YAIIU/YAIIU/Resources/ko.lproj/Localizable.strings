@@ -72,6 +72,9 @@
 "settings.uploadedCount" = "업로드된 사진";
 "settings.cachedHashCount" = "캐시된 해시 수";
 "settings.confirmedOnCloud" = "클라우드에서 확인됨";
+"settings.albumSync.section" = "앨범";
+"settings.albumSync.title" = "Apple Photos 앨범 동기화";
+"settings.albumSync.description" = "일치하는 Immich 앨범을 만들고 서버에 있는 사진을 추가합니다. 동기화는 추가만 하며 Immich 앨범이나 사진을 삭제하지 않습니다.";
 "settings.dataManagement" = "데이터 관리";
 "settings.importImmichData" = "Immich 앱 데이터 가져오기";
 "settings.exportDatabase" = "데이터베이스 내보내기";

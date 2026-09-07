@@ -454,6 +454,7 @@ struct PhotoGridView: View {
                         // recomputeCounts(), so no direct call is needed here.
                         hashManager.refreshStatusCache()
                     }
+                    await AlbumSyncService.shared.syncIfEnabled()
                 }
             }
         }

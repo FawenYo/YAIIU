@@ -73,6 +73,9 @@
 "settings.uploadedCount" = "已上傳照片數";
 "settings.cachedHashCount" = "已快取 Hash 數";
 "settings.confirmedOnCloud" = "已確認在雲端";
+"settings.albumSync.section" = "相簿";
+"settings.albumSync.title" = "同步 Apple Photos 相簿";
+"settings.albumSync.description" = "在 Immich 建立對應相簿，並於照片已存在伺服器後加入相簿。同步只會新增，不會移除 Immich 相簿或照片。";
 "settings.dataManagement" = "資料管理";
 "settings.importImmichData" = "匯入 Immich App 資料";
 "settings.exportDatabase" = "匯出資料庫";

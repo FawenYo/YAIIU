@@ -39,6 +39,7 @@
 		2A0000550000000000000001 /* InitialSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000560000000000000001 /* InitialSetupView.swift */; };
 		BC4F08F22F04C74C009E5C3E /* ServerAssetSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */; };
 		BC4F08F42F04C75D009E5C3E /* FavoriteSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */; };
+		AS0000010000000000000001 /* AlbumSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AS0000020000000000000001 /* AlbumSyncService.swift */; };
 		BC7F351D2EFED85E00747537 /* BackgroundUploadExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = BC7F35162EFED85E00747537 /* BackgroundUploadExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		BC7F35272EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */; };
 		BC7F35282EFED8F200747537 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35252EFED8F200747537 /* SharedSettings.swift */; };
@@ -134,6 +135,7 @@
 		2A0000560000000000000001 /* InitialSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InitialSetupView.swift; sourceTree = "<group>"; };
 		BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetSyncService.swift; sourceTree = "<group>"; };
 		BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteSyncService.swift; sourceTree = "<group>"; };
+		AS0000020000000000000001 /* AlbumSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumSyncService.swift; sourceTree = "<group>"; };
 		BC7F35162EFED85E00747537 /* BackgroundUploadExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = BackgroundUploadExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BC7F35232EFED87C00747537 /* YAIIU.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = YAIIU.entitlements; sourceTree = "<group>"; };
 		BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadDatabase.swift; sourceTree = "<group>"; };
@@ -276,6 +278,7 @@
 				DB0000510000000000000001 /* Import */,
 				BC4F08F12F04C74C009E5C3E /* ServerAssetSyncService.swift */,
 				BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */,
+				AS0000020000000000000001 /* AlbumSyncService.swift */,
 				CI0000020000000000000001 /* CloudIdSyncService.swift */,
 				2A00000E0000000000000001 /* ImmichAPIService.swift */,
 				NR0000020000000000000001 /* NetworkReachability.swift */,
@@ -564,6 +567,7 @@
 				2A0000420000000000000001 /* LogService.swift in Sources */,
 				BC4F08F22F04C74C009E5C3E /* ServerAssetSyncService.swift in Sources */,
 				BC4F08F42F04C75D009E5C3E /* FavoriteSyncService.swift in Sources */,
+				AS0000010000000000000001 /* AlbumSyncService.swift in Sources */,
 				2A0000440000000000000001 /* ThumbnailCache.swift in Sources */,
 				2A0000460000000000000001 /* OnboardingImportView.swift in Sources */,
 				2A0000900000000000000001 /* PhotoPermissionView.swift in Sources */,

@@ -73,6 +73,9 @@
 "settings.uploadedCount" = "Uploaded Photos";
 "settings.cachedHashCount" = "Cached Hash Count";
 "settings.confirmedOnCloud" = "Confirmed on Cloud";
+"settings.albumSync.section" = "Albums";
+"settings.albumSync.title" = "Sync Apple Photos Albums";
+"settings.albumSync.description" = "Creates matching Immich albums and adds photos after they are available on the server. Sync is additive and does not remove Immich albums or photos.";
 "settings.dataManagement" = "Data Management";
 "settings.importImmichData" = "Import Immich App Data";
 "settings.exportDatabase" = "Export Database";

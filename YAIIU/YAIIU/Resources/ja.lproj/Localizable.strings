@@ -72,6 +72,9 @@
 "settings.uploadedCount" = "アップロード済み写真";
 "settings.cachedHashCount" = "キャッシュ済みハッシュ数";
 "settings.confirmedOnCloud" = "クラウドで確認済み";
+"settings.albumSync.section" = "アルバム";
+"settings.albumSync.title" = "Apple Photos のアルバムを同期";
+"settings.albumSync.description" = "対応する Immich アルバムを作成し、サーバー上にある写真を追加します。同期は追加のみで、Immich のアルバムや写真は削除しません。";
 "settings.dataManagement" = "データ管理";
 "settings.importImmichData" = "Immichアプリデータをインポート";
 "settings.exportDatabase" = "データベースをエクスポート";
