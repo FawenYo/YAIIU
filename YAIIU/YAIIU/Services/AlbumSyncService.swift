@@ -122,16 +122,19 @@ actor AlbumSyncService {
                 guard !batch.isEmpty else { continue }
                 let cacheKey = (session ?? "") + remoteAlbum.id + batch.joined(separator: ",")
                 if let date = recentBatches[cacheKey], Date().timeIntervalSince(date) < 60 { continue }
-                try await ImmichAPIService.shared.addAssets(
+                let rejected = try await ImmichAPIService.shared.addAssets(
                     batch,
                     toAlbum: remoteAlbum.id,
                     serverURL: serverURL,
                     apiKey: apiKey
                 )
-                addedCount += batch.count
+                addedCount += batch.count - rejected.count
+                if !rejected.isEmpty {
+                    logWarning("Album \(remoteAlbum.id): \(rejected.count) memberships rejected; continuing remaining albums", category: .sync)
+                }
                 try checkSession()
                 if recentBatches.count >= 128 { recentBatches.removeAll(keepingCapacity: true) }
-                recentBatches[cacheKey] = Date()
+                if rejected.isEmpty { recentBatches[cacheKey] = Date() }
             }
         }
 

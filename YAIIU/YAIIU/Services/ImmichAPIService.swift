@@ -740,8 +740,8 @@ class ImmichAPIService: NSObject {
         return try JSONDecoder().decode(ImmichAlbum.self, from: data)
     }
 
-    func addAssets(_ assetIds: [String], toAlbum albumId: String, serverURL: String, apiKey: String) async throws {
-        guard !assetIds.isEmpty else { return }
+    func addAssets(_ assetIds: [String], toAlbum albumId: String, serverURL: String, apiKey: String) async throws -> Set<String> {
+        guard !assetIds.isEmpty else { return [] }
         guard let url = URL(string: "\(serverURL)/api/albums/\(albumId)/assets") else {
             throw ImmichAPIError.invalidURL
         }
@@ -763,9 +763,7 @@ class ImmichAPIService: NSObject {
         }
         let results = try JSONDecoder().decode([MembershipResult].self, from: data)
         let accepted = Set(results.filter { $0.success || $0.error == "duplicate" }.map(\.id))
-        guard Set(assetIds).isSubset(of: accepted) else {
-            throw ImmichAPIError.serverError(statusCode: 200, message: "Some album memberships were rejected or missing from the response")
-        }
+        return Set(assetIds).subtracting(accepted)
     }
 
     private func validateAlbumResponse(_ response: URLResponse, data: Data, expectedStatusCodes: Set<Int>) throws {
