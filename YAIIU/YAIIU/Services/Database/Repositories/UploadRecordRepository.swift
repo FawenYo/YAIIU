@@ -309,6 +309,32 @@ final class UploadRecordRepository {
         }
     }
     
+    func albumAssetIds(for localIdentifier: String) -> [String] {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            let sql = """
+            SELECT immich_id FROM uploaded_assets WHERE asset_id = ?
+            UNION
+            SELECT s.immich_id FROM hash_cache h JOIN server_assets_cache s
+              ON s.checksum = h.sha1_hash OR s.checksum = h.raw_hash
+            WHERE h.asset_id = ?;
+            """
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return [] }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, transient)
+            sqlite3_bind_text(statement, 2, localIdentifier, -1, transient)
+            var ids: [String] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let text = sqlite3_column_text(statement, 0) else { continue }
+                let id = String(cString: text)
+                if UUID(uuidString: id) != nil { ids.append(id) }
+            }
+            return ids
+        }
+    }
+
     private func getAllUploadedAssetMappingsInternal() -> [(localIdentifier: String, immichId: String)] {
         let sql = """
         SELECT DISTINCT asset_id, immich_id FROM uploaded_assets

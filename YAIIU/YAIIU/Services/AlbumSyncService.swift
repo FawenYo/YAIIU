@@ -68,10 +68,6 @@ actor AlbumSyncService {
         try checkSession()
         var mappings = loadMappings()
         let remoteById = Dictionary(uniqueKeysWithValues: remoteAlbums.map { ($0.id, $0) })
-        let uploadedMappings = Dictionary(
-            DatabaseManager.shared.getAllUploadedAssetMappings().map { ($0.localIdentifier, $0.immichId) },
-            uniquingKeysWith: { first, _ in first }
-        )
 
         var createdCount = 0
         var addedCount = 0
@@ -96,7 +92,7 @@ actor AlbumSyncService {
                 createdCount += 1
             }
 
-            let assetIds = uploadedImmichIds(in: localAlbum, uploadedMappings: uploadedMappings)
+            let assetIds = uploadedImmichIds(in: localAlbum)
             for start in stride(from: 0, to: assetIds.count, by: batchSize) {
                 try checkSession()
                 let batch = Array(assetIds[start..<min(start + batchSize, assetIds.count)])
@@ -127,16 +123,12 @@ actor AlbumSyncService {
         return albums
     }
 
-    private func uploadedImmichIds(
-        in album: PHAssetCollection,
-        uploadedMappings: [String: String]
-    ) -> [String] {
+    private func uploadedImmichIds(in album: PHAssetCollection) -> [String] {
         let result = PHAsset.fetchAssets(in: album, options: nil)
+        let repository = UploadRecordRepository()
         var ids = Set<String>()
         result.enumerateObjects { asset, _, _ in
-            if let immichId = uploadedMappings[asset.localIdentifier] {
-                ids.insert(immichId)
-            }
+            ids.formUnion(repository.albumAssetIds(for: asset.localIdentifier))
         }
         return Array(ids)
     }
