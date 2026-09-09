@@ -60,9 +60,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// change details avoids swapping the fetch result out from under the grid, which
     /// would blank all thumbnails while they reload.
     func photoLibraryDidChange(_ changeInstance: PHChange) {
-        DispatchQueue.main.async {
-            Task { await AlbumSyncService.shared.syncIfEnabled() }
-        }
 
         guard let currentResult = fetchResult,
               let changes = changeInstance.changeDetails(for: currentResult) else {
@@ -82,6 +79,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 return
             }
         }
+        Task { await AlbumSyncService.shared.syncIfEnabled() }
 
         let updatedResult = changes.fetchResultAfterChanges
         let count = updatedResult.count

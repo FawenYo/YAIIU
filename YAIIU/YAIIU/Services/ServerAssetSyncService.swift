@@ -103,7 +103,9 @@ class ServerAssetSyncService {
                     progressHandler: progressHandler
                 )
                 await MainActor.run { completion(.success(result)) }
-                Task { await AlbumSyncService.shared.syncIfEnabled() }
+                if result.upsertedCount > 0 {
+                    Task { await AlbumSyncService.shared.syncIfEnabled() }
+                }
             } catch {
                 logError("Sync failed: \(error.localizedDescription)", category: .sync)
                 await MainActor.run { completion(.failure(error)) }

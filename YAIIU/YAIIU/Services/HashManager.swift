@@ -983,14 +983,16 @@ class HashManager: ObservableObject {
             }
             
             await MainActor.run {
-                self.finishProcessing(runID: runID)
+                self.finishProcessing(runID: runID, shouldSyncAlbums: true)
             }
         }
     }
     
-    private func finishProcessing(runID: UUID) {
+    private func finishProcessing(runID: UUID, shouldSyncAlbums: Bool = false) {
         guard runState.finish(runID) else { return }
-        Task { await AlbumSyncService.shared.syncIfEnabled() }
+        if shouldSyncAlbums {
+            Task { await AlbumSyncService.shared.syncIfEnabled() }
+        }
         isProcessing = false
         isHashingActive = false
         isCheckingActive = false

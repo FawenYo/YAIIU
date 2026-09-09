@@ -12,6 +12,8 @@ actor AlbumSyncService {
     private var isSyncing = false
     private var recentBatches: [String: Date] = [:]
     private var needsSync = false
+    private var scheduledSyncTask: Task<Void, Never>?
+    private let debounceDuration: Duration = .seconds(2)
     private struct Session {
         let serverURL: String
         let apiKey: String
@@ -21,9 +23,20 @@ actor AlbumSyncService {
 
     private init() {}
 
-    @MainActor
-    func syncIfEnabled() async {
-        let settings = SettingsManager()
+    func syncIfEnabled() {
+        scheduledSyncTask?.cancel()
+        scheduledSyncTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: self?.debounceDuration ?? .seconds(2))
+            } catch {
+                return
+            }
+            await self?.runIfEnabled()
+        }
+    }
+
+    private func runIfEnabled() async {
+        let settings = await MainActor.run { SettingsManager() }
         guard settings.syncApplePhotosAlbums, settings.isLoggedIn else { return }
         let authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard authorizationStatus == .authorized || authorizationStatus == .limited else {

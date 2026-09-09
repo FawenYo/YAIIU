@@ -309,6 +309,9 @@ class UploadManager: ObservableObject {
         }
         
         logInfo("Upload queue processing complete: \(successCount) succeeded, \(failCount) failed", category: .upload)
+        if successCount > 0 {
+            Task { await AlbumSyncService.shared.syncIfEnabled() }
+        }
         
         await MainActor.run {
             isUploading = false
@@ -398,7 +401,6 @@ class UploadManager: ObservableObject {
                                         )
                                         logDebug("Resource \(filename) processed by server: \(response.id)", category: .upload)
                                         responseTracker.markCompleted()
-                                        Task { await AlbumSyncService.shared.syncIfEnabled() }
                                     case .failure(let error):
                                         logWarning("Server response error for \(filename): \(error.localizedDescription)", category: .upload)
                                         responseTracker.markFailed(error: error)
