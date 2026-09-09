@@ -78,8 +78,8 @@ actor AlbumSyncService {
         let session = snapshot.generation
         @Sendable func checkSession() throws {
             try Task.checkCancellation()
-            guard UserDefaults.standard.bool(forKey: "immich_sync_apple_photos_albums"),
-                  UserDefaults.standard.bool(forKey: "immich_is_logged_in"),
+            guard UserDefaults.standard.bool(forKey: SettingsManager.syncApplePhotosAlbumsKey),
+                  UserDefaults.standard.bool(forKey: SettingsManager.isLoggedInKey),
                   UserDefaults.standard.string(forKey: Self.sessionKey) == session else {
                 throw CancellationError()
             }

@@ -17,12 +17,12 @@ class SettingsManager: ObservableObject {
     private let internalServerURLKey = "immich_internal_server_url"
     private let internalNetworkSSIDKey = "immich_internal_network_ssid"
     private let apiKeyKey = "immich_api_key"
-    private let isLoggedInKey = "immich_is_logged_in"
+    static let isLoggedInKey = "immich_is_logged_in"
     private let hasCompletedOnboardingKey = "immich_has_completed_onboarding"
     private let hasCompletedInitialSetupKey = "immich_has_completed_initial_setup"
     private let hasCompletedPhotoPermissionKey = "immich_has_completed_photo_permission"
     private let allowCellularBackgroundUploadKey = "immich_allow_cellular_background_upload"
-    private let syncApplePhotosAlbumsKey = "immich_sync_apple_photos_albums"
+    static let syncApplePhotosAlbumsKey = "immich_sync_apple_photos_albums"
     init() {
         loadSettings()
     }
@@ -32,16 +32,16 @@ class SettingsManager: ObservableObject {
         internalServerURL = UserDefaults.standard.string(forKey: internalServerURLKey) ?? ""
         internalNetworkSSID = UserDefaults.standard.string(forKey: internalNetworkSSIDKey) ?? ""
         apiKey = loadAPIKeyFromKeychain() ?? ""
-        isLoggedIn = UserDefaults.standard.bool(forKey: isLoggedInKey)
+        isLoggedIn = UserDefaults.standard.bool(forKey: Self.isLoggedInKey)
         hasCompletedOnboarding = UserDefaults.standard.bool(forKey: hasCompletedOnboardingKey)
         hasCompletedInitialSetup = UserDefaults.standard.bool(forKey: hasCompletedInitialSetupKey)
         hasCompletedPhotoPermission = UserDefaults.standard.bool(forKey: hasCompletedPhotoPermissionKey)
         allowCellularBackgroundUpload = UserDefaults.standard.object(forKey: allowCellularBackgroundUploadKey) as? Bool ?? true
-        syncApplePhotosAlbums = UserDefaults.standard.bool(forKey: syncApplePhotosAlbumsKey)
+        syncApplePhotosAlbums = UserDefaults.standard.bool(forKey: Self.syncApplePhotosAlbumsKey)
 
         if isLoggedIn && (serverURL.isEmpty || apiKey.isEmpty) {
             isLoggedIn = false
-            UserDefaults.standard.set(false, forKey: isLoggedInKey)
+            UserDefaults.standard.set(false, forKey: Self.isLoggedInKey)
         }
         
         if !internalNetworkSSID.isEmpty {
@@ -53,13 +53,13 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.set(serverURL, forKey: serverURLKey)
         UserDefaults.standard.set(internalServerURL, forKey: internalServerURLKey)
         UserDefaults.standard.set(internalNetworkSSID, forKey: internalNetworkSSIDKey)
-        UserDefaults.standard.set(isLoggedIn, forKey: isLoggedInKey)
+        UserDefaults.standard.set(isLoggedIn, forKey: Self.isLoggedInKey)
         UserDefaults.standard.set(hasCompletedOnboarding, forKey: hasCompletedOnboardingKey)
         UserDefaults.standard.set(hasCompletedInitialSetup, forKey: hasCompletedInitialSetupKey)
         UserDefaults.standard.set(hasCompletedPhotoPermission, forKey: hasCompletedPhotoPermissionKey)
         saveAPIKeyToKeychain(apiKey)
         UserDefaults.standard.set(allowCellularBackgroundUpload, forKey: allowCellularBackgroundUploadKey)
-        UserDefaults.standard.set(syncApplePhotosAlbums, forKey: syncApplePhotosAlbumsKey)
+        UserDefaults.standard.set(syncApplePhotosAlbums, forKey: Self.syncApplePhotosAlbumsKey)
     }
     
     var activeServerURL: String {
@@ -119,9 +119,10 @@ class SettingsManager: ObservableObject {
     }
 
     func updateSyncApplePhotosAlbums(_ enabled: Bool) {
+        guard syncApplePhotosAlbums != enabled else { return }
         invalidateAlbumSync()
         syncApplePhotosAlbums = enabled
-        UserDefaults.standard.set(enabled, forKey: syncApplePhotosAlbumsKey)
+        UserDefaults.standard.set(enabled, forKey: Self.syncApplePhotosAlbumsKey)
     }
 
     
@@ -174,9 +175,9 @@ class SettingsManager: ObservableObject {
         UserDefaults.standard.removeObject(forKey: serverURLKey)
         UserDefaults.standard.removeObject(forKey: internalServerURLKey)
         UserDefaults.standard.removeObject(forKey: internalNetworkSSIDKey)
-        UserDefaults.standard.removeObject(forKey: isLoggedInKey)
+        UserDefaults.standard.removeObject(forKey: Self.isLoggedInKey)
         UserDefaults.standard.removeObject(forKey: allowCellularBackgroundUploadKey)
-        UserDefaults.standard.removeObject(forKey: syncApplePhotosAlbumsKey)
+        UserDefaults.standard.removeObject(forKey: Self.syncApplePhotosAlbumsKey)
         deleteAPIKeyFromKeychain()
         
         // Clear SharedSettings and disable background upload
