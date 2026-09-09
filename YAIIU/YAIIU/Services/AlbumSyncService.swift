@@ -133,14 +133,14 @@ actor AlbumSyncService {
                 let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
                 for start in stride(from: 0, to: assets.count, by: batchSize) {
                     try checkSession()
-                    let batch = try autoreleasepool {
-                        var ids = Set<String>()
-                        let repository = UploadRecordRepository()
-                        for index in start..<min(start + batchSize, assets.count) {
-                            ids.formUnion(try repository.albumAssetIds(for: assets.object(at: index).localIdentifier))
+                    let localIdentifiers = autoreleasepool {
+                        (start..<min(start + batchSize, assets.count)).map {
+                            assets.object(at: $0).localIdentifier
                         }
-                        return ids.sorted()
                     }
+                    let batch = try UploadRecordRepository()
+                        .albumAssetIds(for: localIdentifiers, ownerId: user.id)
+                        .sorted()
                     guard !batch.isEmpty else { continue }
                     let cacheKey = (session ?? "") + remoteAlbum.id + batch.joined(separator: ",")
                     if let date = recentBatches[cacheKey], Date().timeIntervalSince(date) < 60 { continue }

@@ -309,15 +309,23 @@ final class UploadRecordRepository {
         }
     }
     
-    func albumAssetIds(for localIdentifier: String) throws -> [String] {
+    func albumAssetIds(for localIdentifiers: [String], ownerId: String) throws -> [String] {
+        guard !localIdentifiers.isEmpty else { return [] }
         connection.ensureInitialized()
         return try connection.dbQueue.sync {
+            let values = Array(repeating: "(?)", count: localIdentifiers.count).joined(separator: ",")
             let sql = """
-            SELECT immich_id FROM uploaded_assets WHERE asset_id = ?
+            WITH requested(asset_id) AS (VALUES \(values))
+            SELECT u.immich_id
+            FROM requested r
+            JOIN uploaded_assets u ON u.asset_id = r.asset_id
             UNION
-            SELECT s.immich_id FROM hash_cache h JOIN server_assets_cache s
+            SELECT s.immich_id
+            FROM requested r
+            JOIN hash_cache h ON h.asset_id = r.asset_id
+            JOIN server_assets_cache s
               ON s.checksum = h.sha1_hash OR s.checksum = h.raw_hash
-            WHERE h.asset_id = ?;
+            WHERE s.owner_id = ?;
             """
             var statement: OpaquePointer?
             defer { sqlite3_finalize(statement) }
@@ -327,8 +335,10 @@ final class UploadRecordRepository {
             }
             guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { throw databaseError() }
             let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, transient)
-            sqlite3_bind_text(statement, 2, localIdentifier, -1, transient)
+            for (index, localIdentifier) in localIdentifiers.enumerated() {
+                sqlite3_bind_text(statement, Int32(index + 1), localIdentifier, -1, transient)
+            }
+            sqlite3_bind_text(statement, Int32(localIdentifiers.count + 1), ownerId, -1, transient)
             var ids: [String] = []
             var result = sqlite3_step(statement)
             while result == SQLITE_ROW {
