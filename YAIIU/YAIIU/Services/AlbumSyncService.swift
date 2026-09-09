@@ -87,7 +87,8 @@ actor AlbumSyncService {
         try checkSession()
         let user = try await ImmichAPIService.shared.getCurrentUser(serverURL: serverURL, apiKey: apiKey)
         try checkSession()
-        let mappingKey = Self.albumMappingsKey + "." + Data((snapshot.externalURL + "|" + user.id).utf8).base64EncodedString()
+        let mappingKey = Self.albumMappingsKey + "." + user.id
+        let legacyMappingKey = Self.albumMappingsKey + "." + Data((snapshot.externalURL + "|" + user.id).utf8).base64EncodedString()
 
         let localAlbums = fetchLocalAlbums()
         guard !localAlbums.isEmpty else { return }
@@ -97,63 +98,70 @@ actor AlbumSyncService {
             apiKey: apiKey
         )
         try checkSession()
-        var mappings = UserDefaults.standard.dictionary(forKey: mappingKey) as? [String: String] ?? [:]
-        let remoteById = Dictionary(uniqueKeysWithValues: remoteAlbums.map { ($0.id, $0) })
+        var mappings = UserDefaults.standard.dictionary(forKey: mappingKey) as? [String: String]
+            ?? UserDefaults.standard.dictionary(forKey: legacyMappingKey) as? [String: String]
+            ?? [:]
+        if UserDefaults.standard.dictionary(forKey: mappingKey) == nil, !mappings.isEmpty {
+            UserDefaults.standard.set(mappings, forKey: mappingKey)
+        }
+        let remoteById = Dictionary(remoteAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         var createdCount = 0
         var addedCount = 0
 
         for localAlbum in localAlbums {
-            try checkSession()
-
-            let remoteAlbum: ImmichAlbum
-            if let mappedId = mappings[localAlbum.localIdentifier],
-               let mappedAlbum = remoteById[mappedId] {
-                remoteAlbum = mappedAlbum
-            } else {
-                let title = localAlbum.localizedTitle ?? "Untitled Album"
-                remoteAlbum = try await ImmichAPIService.shared.createAlbum(
-                    name: title,
-                    serverURL: serverURL,
-                    apiKey: apiKey
-                )
+            do {
                 try checkSession()
-                mappings[localAlbum.localIdentifier] = remoteAlbum.id
-                let updatedMappings = mappings
-                try await MainActor.run {
+
+                let remoteAlbum: ImmichAlbum
+                if let mappedId = mappings[localAlbum.localIdentifier],
+                   let mappedAlbum = remoteById[mappedId] {
+                    remoteAlbum = mappedAlbum
+                } else {
+                    let title = localAlbum.localizedTitle ?? "Untitled Album"
+                    remoteAlbum = try await ImmichAPIService.shared.createAlbum(
+                        name: title,
+                        serverURL: serverURL,
+                        apiKey: apiKey
+                    )
+                    mappings[localAlbum.localIdentifier] = remoteAlbum.id
+                    UserDefaults.standard.set(mappings, forKey: mappingKey)
+                    createdCount += 1
                     try checkSession()
-                    UserDefaults.standard.set(updatedMappings, forKey: mappingKey)
                 }
-                createdCount += 1
-            }
 
-            let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
-            for start in stride(from: 0, to: assets.count, by: batchSize) {
-                try checkSession()
-                let batch = try autoreleasepool {
-                    var ids = Set<String>()
-                    let repository = UploadRecordRepository()
-                    for index in start..<min(start + batchSize, assets.count) {
-                        ids.formUnion(try repository.albumAssetIds(for: assets.object(at: index).localIdentifier))
+                let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
+                for start in stride(from: 0, to: assets.count, by: batchSize) {
+                    try checkSession()
+                    let batch = try autoreleasepool {
+                        var ids = Set<String>()
+                        let repository = UploadRecordRepository()
+                        for index in start..<min(start + batchSize, assets.count) {
+                            ids.formUnion(try repository.albumAssetIds(for: assets.object(at: index).localIdentifier))
+                        }
+                        return ids.sorted()
                     }
-                    return ids.sorted()
+                    guard !batch.isEmpty else { continue }
+                    let cacheKey = (session ?? "") + remoteAlbum.id + batch.joined(separator: ",")
+                    if let date = recentBatches[cacheKey], Date().timeIntervalSince(date) < 60 { continue }
+                    let rejected = try await ImmichAPIService.shared.addAssets(
+                        batch,
+                        toAlbum: remoteAlbum.id,
+                        serverURL: serverURL,
+                        apiKey: apiKey
+                    )
+                    addedCount += batch.count - rejected.count
+                    if !rejected.isEmpty {
+                        logWarning("Album \(remoteAlbum.id): \(rejected.count) memberships rejected; continuing remaining albums", category: .sync)
+                    }
+                    try checkSession()
+                    if recentBatches.count >= 128 { recentBatches.removeAll(keepingCapacity: true) }
+                    if rejected.isEmpty { recentBatches[cacheKey] = Date() }
                 }
-                guard !batch.isEmpty else { continue }
-                let cacheKey = (session ?? "") + remoteAlbum.id + batch.joined(separator: ",")
-                if let date = recentBatches[cacheKey], Date().timeIntervalSince(date) < 60 { continue }
-                let rejected = try await ImmichAPIService.shared.addAssets(
-                    batch,
-                    toAlbum: remoteAlbum.id,
-                    serverURL: serverURL,
-                    apiKey: apiKey
-                )
-                addedCount += batch.count - rejected.count
-                if !rejected.isEmpty {
-                    logWarning("Album \(remoteAlbum.id): \(rejected.count) memberships rejected; continuing remaining albums", category: .sync)
-                }
-                try checkSession()
-                if recentBatches.count >= 128 { recentBatches.removeAll(keepingCapacity: true) }
-                if rejected.isEmpty { recentBatches[cacheKey] = Date() }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                logError("Album sync skipped \(localAlbum.localIdentifier): \(error.localizedDescription)", category: .sync)
             }
         }
 
