@@ -17,6 +17,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     
     private var _fetchResult: PHFetchResult<PHAsset>?
     private let fetchResultLock = NSLock()
+    private var albumFetchResult: PHFetchResult<PHAssetCollection>?
 
     /// Whether this instance is currently registered as a library change observer.
     /// Registration is deferred until access is granted so that constructing this
@@ -35,6 +36,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         super.init()
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if authorizationStatus == .authorized || authorizationStatus == .limited {
+            albumFetchResult = Self.fetchUserAlbums()
             fetchAssets()
             startObservingLibrary()
         }
@@ -60,6 +62,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// change details avoids swapping the fetch result out from under the grid, which
     /// would blank all thumbnails while they reload.
     func photoLibraryDidChange(_ changeInstance: PHChange) {
+        if let albums = albumFetchResult,
+           let albumChanges = changeInstance.changeDetails(for: albums) {
+            albumFetchResult = albumChanges.fetchResultAfterChanges
+            Task { await AlbumSyncService.shared.syncIfEnabled() }
+        }
 
         guard let currentResult = fetchResult,
               let changes = changeInstance.changeDetails(for: currentResult) else {
@@ -79,7 +86,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 return
             }
         }
-        Task { await AlbumSyncService.shared.syncIfEnabled() }
 
         let updatedResult = changes.fetchResultAfterChanges
         let count = updatedResult.count
@@ -112,6 +118,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
         }
     }
+    private static func fetchUserAlbums() -> PHFetchResult<PHAssetCollection> {
+        PHAssetCollection.fetchAssetCollections(
+            with: .album,
+            subtype: .albumRegular,
+            options: nil
+        )
+    }
     
     func requestAuthorization() {
         let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -119,6 +132,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             DispatchQueue.main.async {
                 self.authorizationStatus = currentStatus
             }
+            albumFetchResult = Self.fetchUserAlbums()
             if _fetchResult == nil {
                 fetchAssets()
             }
@@ -131,6 +145,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 self?.authorizationStatus = status
             }
             if status == .authorized || status == .limited {
+                self?.albumFetchResult = Self.fetchUserAlbums()
                 self?.fetchAssets()
                 self?.startObservingLibrary()
             }

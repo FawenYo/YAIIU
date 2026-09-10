@@ -12,7 +12,7 @@ actor AlbumSyncService {
     private var isSyncing = false
     private var recentBatches: [String: Date] = [:]
     private var needsSync = false
-    private var scheduledSyncTask: Task<Void, Never>?
+    private var debounceTask: Task<Void, Never>?
     private let debounceDuration: Duration = .seconds(2)
     private struct Session {
         let serverURL: String
@@ -24,20 +24,28 @@ actor AlbumSyncService {
     private init() {}
 
     func syncIfEnabled() {
-        scheduledSyncTask?.cancel()
-        scheduledSyncTask = Task { [weak self] in
+        if isSyncing {
+            needsSync = true
+            return
+        }
+        debounceTask?.cancel()
+        debounceTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: self?.debounceDuration ?? .seconds(2))
             } catch {
                 return
             }
+            guard !Task.isCancelled else { return }
             await self?.runIfEnabled()
         }
     }
 
     private func runIfEnabled() async {
-        let settings = await MainActor.run { SettingsManager() }
-        guard settings.syncApplePhotosAlbums, settings.isLoggedIn else { return }
+        let eligibility = await MainActor.run { () -> (enabled: Bool, loggedIn: Bool) in
+            let settings = SettingsManager()
+            return (settings.syncApplePhotosAlbums, settings.isLoggedIn)
+        }
+        guard eligibility.enabled, eligibility.loggedIn else { return }
         let authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard authorizationStatus == .authorized || authorizationStatus == .limited else {
             logDebug("Album sync requires photo library access", category: .sync)
@@ -113,23 +121,7 @@ actor AlbumSyncService {
             do {
                 try checkSession()
 
-                let remoteAlbum: ImmichAlbum
-                if let mappedId = mappings[localAlbum.localIdentifier],
-                   let mappedAlbum = remoteById[mappedId] {
-                    remoteAlbum = mappedAlbum
-                } else {
-                    let title = localAlbum.localizedTitle ?? "Untitled Album"
-                    remoteAlbum = try await ImmichAPIService.shared.createAlbum(
-                        name: title,
-                        serverURL: serverURL,
-                        apiKey: apiKey
-                    )
-                    mappings[localAlbum.localIdentifier] = remoteAlbum.id
-                    UserDefaults.standard.set(mappings, forKey: mappingKey)
-                    createdCount += 1
-                    try checkSession()
-                }
-
+                var remoteAlbum = mappings[localAlbum.localIdentifier].flatMap { remoteById[$0] }
                 let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
                 for start in stride(from: 0, to: assets.count, by: batchSize) {
                     try checkSession()
@@ -142,6 +134,22 @@ actor AlbumSyncService {
                         .albumAssetIds(for: localIdentifiers, ownerId: user.id)
                         .sorted()
                     guard !batch.isEmpty else { continue }
+
+                    if remoteAlbum == nil {
+                        let title = localAlbum.localizedTitle ?? "Untitled Album"
+                        let createdAlbum = try await ImmichAPIService.shared.createAlbum(
+                            name: title,
+                            serverURL: serverURL,
+                            apiKey: apiKey
+                        )
+                        mappings[localAlbum.localIdentifier] = createdAlbum.id
+                        UserDefaults.standard.set(mappings, forKey: mappingKey)
+                        remoteAlbum = createdAlbum
+                        createdCount += 1
+                        try checkSession()
+                    }
+                    guard let remoteAlbum else { continue }
+
                     let cacheKey = (session ?? "") + remoteAlbum.id + batch.joined(separator: ",")
                     if let date = recentBatches[cacheKey], Date().timeIntervalSince(date) < 60 { continue }
                     let rejected = try await ImmichAPIService.shared.addAssets(

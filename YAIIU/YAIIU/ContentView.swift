@@ -1,4 +1,5 @@
 import CoreLocation
+import Photos
 import SwiftUI
 
 // MARK: - URL Identifiable Extension for sheet(item:) support
@@ -79,6 +80,7 @@ struct SettingsView: View {
     @State private var backgroundUploadEnabled = false
     @State private var backgroundUploadLoading = false
     @State private var backgroundUploadError: String?
+    @State private var albumSyncError: String?
     @State private var lastBackgroundUploadDate: Date?
     
     @ObservedObject private var networkReachability = NetworkReachability.shared
@@ -207,13 +209,43 @@ struct SettingsView: View {
                     Toggle(isOn: Binding(
                         get: { settingsManager.syncApplePhotosAlbums },
                         set: { enabled in
-                            settingsManager.updateSyncApplePhotosAlbums(enabled)
-                            if enabled {
-                                Task { await AlbumSyncService.shared.syncIfEnabled() }
+                            guard enabled else {
+                                albumSyncError = nil
+                                settingsManager.updateSyncApplePhotosAlbums(false)
+                                return
                             }
+
+                            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+                            guard status == .authorized || status == .limited else {
+                                albumSyncError = L10n.PhotoGrid.permissionDeniedMessage
+                                if status == .notDetermined {
+                                    PHPhotoLibrary.requestAuthorization(for: .readWrite) { newStatus in
+                                        guard newStatus == .authorized || newStatus == .limited else { return }
+                                        DispatchQueue.main.async {
+                                            albumSyncError = nil
+                                            settingsManager.updateSyncApplePhotosAlbums(true)
+                                            Task { await AlbumSyncService.shared.syncIfEnabled() }
+                                        }
+                                    }
+                                }
+                                return
+                            }
+
+                            albumSyncError = nil
+                            settingsManager.updateSyncApplePhotosAlbums(true)
+                            Task { await AlbumSyncService.shared.syncIfEnabled() }
                         }
                     )) {
                         Label(L10n.Settings.albumSyncTitle, systemImage: "rectangle.stack.badge.plus")
+                    }
+                    if let albumSyncError {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.red)
+                            Text(albumSyncError)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
                     }
                 }
 
