@@ -323,9 +323,14 @@ final class UploadRecordRepository {
             SELECT s.immich_id
             FROM requested r
             JOIN hash_cache h ON h.asset_id = r.asset_id
-            JOIN server_assets_cache s
-              ON s.checksum = h.sha1_hash OR s.checksum = h.raw_hash
-            WHERE s.owner_id = ?;
+            JOIN server_assets_cache s ON s.checksum = h.sha1_hash
+            WHERE s.owner_id = ?
+            UNION
+            SELECT s.immich_id
+            FROM requested r
+            JOIN hash_cache h ON h.asset_id = r.asset_id
+            JOIN server_assets_cache s ON s.checksum = h.raw_hash
+            WHERE s.owner_id = ? AND h.raw_hash IS NOT NULL;
             """
             var statement: OpaquePointer?
             defer { sqlite3_finalize(statement) }
@@ -339,6 +344,7 @@ final class UploadRecordRepository {
                 sqlite3_bind_text(statement, Int32(index + 1), localIdentifier, -1, transient)
             }
             sqlite3_bind_text(statement, Int32(localIdentifiers.count + 1), ownerId, -1, transient)
+            sqlite3_bind_text(statement, Int32(localIdentifiers.count + 2), ownerId, -1, transient)
             var ids: [String] = []
             var result = sqlite3_step(statement)
             while result == SQLITE_ROW {
