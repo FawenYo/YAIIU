@@ -184,11 +184,6 @@ class ServerAssetSyncService {
         let cacheMatchesSession = syncMetadata?.userId == userId
             && (syncMetadata?.serverURL == nil
                 || syncMetadata?.serverURL.map(Self.canonicalServerURL) == normalizedServerURL)
-        if syncMetadata != nil, !cacheMatchesSession {
-            guard clearCache() else {
-                throw SyncError.syncFailed(reason: "Failed to clear server cache after account or server change")
-            }
-        }
         let lastAck = cacheMatchesSession ? syncMetadata?.lastAck : nil
 
         reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)

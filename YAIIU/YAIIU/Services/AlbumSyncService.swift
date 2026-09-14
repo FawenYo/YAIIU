@@ -119,8 +119,16 @@ actor AlbumSyncService {
 
     private func loadSettingsSnapshot() async -> SettingsSnapshot {
         let generation = UserDefaults.standard.string(forKey: Self.sessionKey)
+        let activeServerURL = await MainActor.run { SettingsManager().activeServerURL }
         if let cachedSettings, cachedSettings.generation == generation {
-            return cachedSettings
+            return SettingsSnapshot(
+                generation: generation,
+                enabled: cachedSettings.enabled,
+                loggedIn: cachedSettings.loggedIn,
+                activeServerURL: activeServerURL,
+                serverURL: cachedSettings.serverURL,
+                apiKey: cachedSettings.apiKey
+            )
         }
         let snapshot = await MainActor.run { () -> SettingsSnapshot in
             let settings = SettingsManager()
@@ -136,7 +144,6 @@ actor AlbumSyncService {
         cachedSettings = snapshot
         return snapshot
     }
-
     private func sync() async throws {
         needsSync = true
         guard !isSyncing else { return }

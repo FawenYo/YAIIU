@@ -78,6 +78,7 @@ final class SQLiteConnection {
         
         logDebug("Database opened successfully", category: .database)
         enableWALMode()
+        sqlite3_busy_timeout(db, 5000)
     }
     
     private func enableWALMode() {
@@ -239,30 +240,20 @@ final class SQLiteConnection {
         
         if currentVersion < SQLiteConnection.schemaVersion {
             logInfo("Database migration needed: \(currentVersion) -> \(SQLiteConnection.schemaVersion)", category: .database)
-            
-            if currentVersion < 2 {
-                migrateToV2()
-            }
-            
+
+            if currentVersion < 2 { migrateToV2() }
             if currentVersion < 3 {
-                // Remediation for users affected by the v2 init ordering bug.
-                // Re-running the v2 migration ensures the column exists.
                 logInfo("Running v3 remediation by ensuring v2 migration logic is complete", category: .database)
                 migrateToV2()
             }
+            if currentVersion < 4 { migrateToV4() }
+            if currentVersion < 5 { migrateToV5() }
+            if currentVersion < 6 { migrateToV6() }
 
-            if currentVersion < 4 {
-                migrateToV4()
+            guard hasSchemaColumnsForCurrentVersion() else {
+                logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
+                return
             }
-
-            if currentVersion < 5 {
-                migrateToV5()
-            }
-
-            if currentVersion < 6 {
-                migrateToV6()
-            }
-
             setSchemaVersion(SQLiteConnection.schemaVersion)
             logInfo("Database migration completed to version \(SQLiteConnection.schemaVersion)", category: .database)
         }
@@ -394,8 +385,23 @@ final class SQLiteConnection {
                 logError("Failed to add server_url column: \(lastErrorMessage)", category: .database)
                 return
             }
-            logInfo("Added server_url column to sync_metadata", category: .database)
         }
+    }
+
+    private func hasSchemaColumnsForCurrentVersion() -> Bool {
+        let requiredColumns = ["last_ack", "server_url"]
+        var found = Set<String>()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(sync_metadata);", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = sqlite3_column_text(statement, 1) {
+                found.insert(String(cString: name))
+            }
+        }
+        sqlite3_finalize(statement)
+        return requiredColumns.allSatisfy(found.contains)
     }
 
     // MARK: - Statement Execution
