@@ -390,6 +390,7 @@ struct SettingsView: View {
                         .multilineTextAlignment(.center)
                 }
             }
+            .navigationTitle(L10n.Settings.title)
             .onAppear {
                 loadHashCacheStats()
                 loadLogStats()

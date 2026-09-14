@@ -206,9 +206,6 @@ actor AlbumSyncService {
         }
         var syncedMemberships = UserDefaults.standard.dictionary(forKey: membershipsKey) as? [String: [String]] ?? [:]
         let remoteById = Dictionary(remoteAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let remoteByName = Dictionary(grouping: remoteAlbums) {
-            $0.albumName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        }
 
         var createdCount = 0
         var addedCount = 0
@@ -240,27 +237,16 @@ actor AlbumSyncService {
                     if remoteAlbum == nil {
                         let title = (localAlbum.localizedTitle ?? "Untitled Album")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let titleKey = title.lowercased()
-                        let mappedIDs = Set(mappings.values)
-                        if let candidates = remoteByName[titleKey],
-                           candidates.count == 1,
-                           !mappedIDs.contains(candidates[0].id) {
-                            let existing = candidates[0]
-                            mappings[localAlbum.localIdentifier] = existing.id
-                            UserDefaults.standard.set(mappings, forKey: mappingKey)
-                            remoteAlbum = existing
-                        } else {
-                            let createdAlbum = try await ImmichAPIService.shared.createAlbum(
-                                name: title,
-                                serverURL: serverURL,
-                                apiKey: apiKey
-                            )
-                            try checkSession()
-                            mappings[localAlbum.localIdentifier] = createdAlbum.id
-                            UserDefaults.standard.set(mappings, forKey: mappingKey)
-                            remoteAlbum = createdAlbum
-                            createdCount += 1
-                        }
+                        let createdAlbum = try await ImmichAPIService.shared.createAlbum(
+                            name: title,
+                            serverURL: serverURL,
+                            apiKey: apiKey
+                        )
+                        try checkSession()
+                        mappings[localAlbum.localIdentifier] = createdAlbum.id
+                        UserDefaults.standard.set(mappings, forKey: mappingKey)
+                        remoteAlbum = createdAlbum
+                        createdCount += 1
                     }
                     guard let remoteAlbum else { continue }
 
@@ -284,15 +270,11 @@ actor AlbumSyncService {
             } catch is CancellationError {
                 throw CancellationError()
             } catch let error as ImmichAPIError {
-                if case .serverError(let statusCode, _) = error,
-                   statusCode == 401 || statusCode == 403 {
-                    throw error
-                }
-                logError("Album sync skipped \(localAlbum.localIdentifier): \(error.localizedDescription)", category: .sync)
+                throw error
             } catch let error as URLError {
                 throw error
             } catch {
-                logError("Album sync skipped \(localAlbum.localIdentifier): \(error.localizedDescription)", category: .sync)
+                throw error
             }
         }
 
