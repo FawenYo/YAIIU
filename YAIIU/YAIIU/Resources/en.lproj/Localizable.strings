@@ -76,6 +76,8 @@
 "settings.albumSync.section" = "Albums";
 "settings.albumSync.title" = "Sync Apple Photos Albums";
 "settings.albumSync.description" = "Creates matching Immich albums and adds photos after they are available on the server. Sync is additive and does not remove Immich albums or photos.";
+"settings.albumSync.permission.denied" = "Please allow photo library access for album sync in Settings";
+"settings.albumSync.permission.restricted" = "Album sync requires unrestricted photo library access";
 "settings.dataManagement" = "Data Management";
 "settings.importImmichData" = "Import Immich App Data";
 "settings.exportDatabase" = "Export Database";

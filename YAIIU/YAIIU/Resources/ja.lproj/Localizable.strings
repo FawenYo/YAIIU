@@ -75,6 +75,8 @@
 "settings.albumSync.section" = "アルバム";
 "settings.albumSync.title" = "Apple Photos のアルバムを同期";
 "settings.albumSync.description" = "対応する Immich アルバムを作成し、サーバー上にある写真を追加します。同期は追加のみで、Immich のアルバムや写真は削除しません。";
+"settings.albumSync.permission.denied" = "アルバム同期のために設定で写真ライブラリへのアクセスを許可してください";
+"settings.albumSync.permission.restricted" = "アルバム同期には制限のない写真ライブラリへのアクセスが必要です";
 "settings.dataManagement" = "データ管理";
 "settings.importImmichData" = "Immichアプリデータをインポート";
 "settings.exportDatabase" = "データベースをエクスポート";

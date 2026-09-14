@@ -75,6 +75,8 @@
 "settings.albumSync.section" = "앨범";
 "settings.albumSync.title" = "Apple Photos 앨범 동기화";
 "settings.albumSync.description" = "일치하는 Immich 앨범을 만들고 서버에 있는 사진을 추가합니다. 동기화는 추가만 하며 Immich 앨범이나 사진을 삭제하지 않습니다.";
+"settings.albumSync.permission.denied" = "앨범 동기화를 위해 설정에서 사진 라이브러리 접근을 허용하세요";
+"settings.albumSync.permission.restricted" = "앨범 동기화에는 제한 없는 사진 라이브러리 접근 권한이 필요합니다";
 "settings.dataManagement" = "데이터 관리";
 "settings.importImmichData" = "Immich 앱 데이터 가져오기";
 "settings.exportDatabase" = "데이터베이스 내보내기";

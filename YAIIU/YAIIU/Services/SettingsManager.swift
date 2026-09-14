@@ -71,7 +71,7 @@ class SettingsManager: ObservableObject {
     }
     
     func login(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) {
-        invalidateAlbumSync()
+        AlbumSyncService.invalidateInFlightSync()
         self.serverURL = serverURL
         self.internalServerURL = internalServerURL ?? ""
         self.internalNetworkSSID = ssid ?? ""
@@ -84,43 +84,50 @@ class SettingsManager: ObservableObject {
         if let ssid = ssid, !ssid.isEmpty {
             NetworkReachability.shared.configure(ssid: ssid)
         }
-        
+
         saveSettings()
         syncToSharedSettings()
+        scheduleAlbumSyncIfEnabled()
     }
-    
+
     func updateServerURL(_ url: String) {
-        invalidateAlbumSync()
+        guard url != self.serverURL else { return }
+        AlbumSyncService.invalidateInFlightSync()
         self.serverURL = url
         UserDefaults.standard.set(url, forKey: serverURLKey)
         syncToSharedSettings()
+        scheduleAlbumSyncIfEnabled()
     }
-    
+
     func updateInternalNetworkSettings(url: String, ssid: String) {
+        guard url != self.internalServerURL || ssid != self.internalNetworkSSID else { return }
+        AlbumSyncService.invalidateInFlightSync()
         self.internalServerURL = url
         self.internalNetworkSSID = ssid
-        
+
         UserDefaults.standard.set(url, forKey: internalServerURLKey)
         UserDefaults.standard.set(ssid, forKey: internalNetworkSSIDKey)
-        
+
         NetworkReachability.shared.configure(ssid: ssid.isEmpty ? nil : ssid)
-        
+
         syncToSharedSettings()
+        scheduleAlbumSyncIfEnabled()
     }
+
     func updateAllowCellularBackgroundUpload(_ allowed: Bool) {
         allowCellularBackgroundUpload = allowed
         UserDefaults.standard.set(allowed, forKey: allowCellularBackgroundUploadKey)
         syncToSharedSettings()
     }
-    private func invalidateAlbumSync() {
-        // Account-scoped mappings survive; the new session token invalidates
-        // any run still in flight.
-        UserDefaults.standard.set(UUID().uuidString, forKey: AlbumSyncService.sessionKey)
+
+    private func scheduleAlbumSyncIfEnabled() {
+        guard isLoggedIn, syncApplePhotosAlbums else { return }
+        Task { await AlbumSyncService.shared.syncIfEnabled() }
     }
 
     func updateSyncApplePhotosAlbums(_ enabled: Bool) {
         guard syncApplePhotosAlbums != enabled else { return }
-        invalidateAlbumSync()
+        AlbumSyncService.invalidateInFlightSync()
         syncApplePhotosAlbums = enabled
         UserDefaults.standard.set(enabled, forKey: Self.syncApplePhotosAlbumsKey)
     }
@@ -163,11 +170,11 @@ class SettingsManager: ObservableObject {
     }
 
     func logout() {
-        invalidateAlbumSync()
+        AlbumSyncService.invalidateInFlightSync()
+        AlbumSyncService.clearPersistedState()
         self.serverURL = ""
         self.internalServerURL = ""
         self.internalNetworkSSID = ""
-        self.apiKey = ""
         self.isLoggedIn = false
         self.allowCellularBackgroundUpload = true
         self.syncApplePhotosAlbums = false

@@ -148,13 +148,14 @@ class BackgroundUploadManager: ObservableObject {
     func checkExtensionStatus() {
         let library = PHPhotoLibrary.shared()
         let currentStatus = library.uploadJobExtensionEnabled
-        
+
         if currentStatus != isEnabled {
             isEnabled = currentStatus
             sharedSettings.backgroundUploadEnabled = currentStatus
         }
-        
+
         updateStatistics()
+        Task { await AlbumSyncService.shared.syncIfEnabled() }
     }
     
     func updateStatistics() {

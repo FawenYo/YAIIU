@@ -75,6 +75,8 @@
 "settings.albumSync.section" = "Alben";
 "settings.albumSync.title" = "Apple-Fotos-Alben synchronisieren";
 "settings.albumSync.description" = "Erstellt passende Immich-Alben und fügt Fotos hinzu, sobald sie auf dem Server vorhanden sind. Die Synchronisierung entfernt keine Immich-Alben oder Fotos.";
+"settings.albumSync.permission.denied" = "Bitte erlauben Sie in den Einstellungen den Fotomediathekzugriff für die Albumsynchronisierung";
+"settings.albumSync.permission.restricted" = "Die Albumsynchronisierung erfordert uneingeschränkten Zugriff auf die Fotomediathek";
 "settings.dataManagement" = "Datenverwaltung";
 "settings.importImmichData" = "Immich-App-Daten importieren";
 "settings.exportDatabase" = "Datenbank exportieren";

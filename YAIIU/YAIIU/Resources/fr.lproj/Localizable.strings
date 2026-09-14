@@ -75,6 +75,8 @@
 "settings.albumSync.section" = "Albums";
 "settings.albumSync.title" = "Synchroniser les albums Apple Photos";
 "settings.albumSync.description" = "Crée les albums correspondants dans Immich et ajoute les photos présentes sur le serveur. La synchronisation ajoute uniquement et ne supprime aucun album ni aucune photo Immich.";
+"settings.albumSync.permission.denied" = "Autorisez l’accès à la photothèque dans Réglages pour synchroniser les albums";
+"settings.albumSync.permission.restricted" = "La synchronisation des albums nécessite un accès sans restriction à la photothèque";
 "settings.dataManagement" = "Gestion des données";
 "settings.importImmichData" = "Importer les données de l'app Immich";
 "settings.exportDatabase" = "Exporter la base de données";

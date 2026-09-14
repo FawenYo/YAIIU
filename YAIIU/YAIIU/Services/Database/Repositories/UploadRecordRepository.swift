@@ -316,21 +316,18 @@ final class UploadRecordRepository {
             let values = Array(repeating: "(?)", count: localIdentifiers.count).joined(separator: ",")
             let sql = """
             WITH requested(asset_id) AS (VALUES \(values))
-            SELECT u.immich_id
+            SELECT MIN(u.immich_id)
             FROM requested r
             JOIN uploaded_assets u ON u.asset_id = r.asset_id
+            JOIN server_assets_cache s ON s.immich_id = u.immich_id
+            WHERE u.resource_type NOT IN ('raw', 'video') AND s.owner_id = ?
+            GROUP BY r.asset_id
             UNION
             SELECT s.immich_id
             FROM requested r
             JOIN hash_cache h ON h.asset_id = r.asset_id
             JOIN server_assets_cache s ON s.checksum = h.sha1_hash
-            WHERE s.owner_id = ?
-            UNION
-            SELECT s.immich_id
-            FROM requested r
-            JOIN hash_cache h ON h.asset_id = r.asset_id
-            JOIN server_assets_cache s ON s.checksum = h.raw_hash
-            WHERE s.owner_id = ? AND h.raw_hash IS NOT NULL;
+            WHERE s.owner_id = ?;
             """
             var statement: OpaquePointer?
             defer { sqlite3_finalize(statement) }
@@ -343,8 +340,9 @@ final class UploadRecordRepository {
             for (index, localIdentifier) in localIdentifiers.enumerated() {
                 sqlite3_bind_text(statement, Int32(index + 1), localIdentifier, -1, transient)
             }
-            sqlite3_bind_text(statement, Int32(localIdentifiers.count + 1), ownerId, -1, transient)
-            sqlite3_bind_text(statement, Int32(localIdentifiers.count + 2), ownerId, -1, transient)
+            let ownerBindingStart = localIdentifiers.count + 1
+            sqlite3_bind_text(statement, Int32(ownerBindingStart), ownerId, -1, transient)
+            sqlite3_bind_text(statement, Int32(ownerBindingStart + 1), ownerId, -1, transient)
             var ids: [String] = []
             var result = sqlite3_step(statement)
             while result == SQLITE_ROW {
@@ -401,7 +399,8 @@ final class UploadRecordRepository {
             FROM uploaded_assets ua
             JOIN hash_cache hc ON hc.asset_id = ua.asset_id
             JOIN server_assets_cache sac ON sac.checksum = hc.sha1_hash
-            WHERE ua.immich_id = 'unknown';
+            WHERE ua.immich_id = 'unknown'
+              AND ua.resource_type NOT IN ('raw', 'video');
             """
             var statement: OpaquePointer?
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -453,7 +452,8 @@ final class UploadRecordRepository {
             self.connection.inTransaction {
                 let sql = """
                 UPDATE uploaded_assets SET immich_id = ?
-                WHERE asset_id = ? AND immich_id = 'unknown';
+                WHERE asset_id = ? AND immich_id = 'unknown'
+                  AND resource_type NOT IN ('raw', 'video');
                 """
                 var statement: OpaquePointer?
                 guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {

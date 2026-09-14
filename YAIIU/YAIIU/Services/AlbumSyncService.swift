@@ -7,10 +7,11 @@ actor AlbumSyncService {
     static let shared = AlbumSyncService()
     static let albumMappingsKey = "immich_apple_photos_album_mappings"
     static let sessionKey = "immich_album_sync_session"
+    private static let syncedMembershipsKey = "immich_apple_photos_album_synced_memberships"
+    private static let mappingKeySeparator = "|"
 
     private let batchSize = 500
     private var isSyncing = false
-    private var recentBatches: [String: Date] = [:]
     private var needsSync = false
     private var debounceTask: Task<Void, Never>?
     private let debounceDuration: Duration = .seconds(2)
@@ -20,8 +21,68 @@ actor AlbumSyncService {
         let generation: String?
         let externalURL: String
     }
+    private struct SettingsSnapshot {
+        let generation: String?
+        let enabled: Bool
+        let loggedIn: Bool
+        let activeServerURL: String
+        let serverURL: String
+        let apiKey: String
+    }
+    private var cachedSettings: SettingsSnapshot?
 
     private init() {}
+    nonisolated static func invalidateInFlightSync() {
+        UserDefaults.standard.set(UUID().uuidString, forKey: sessionKey)
+        Task { await AlbumSyncService.shared.invalidateCachedSettings() }
+    }
+
+    nonisolated static func clearPersistedState() {
+        let defaults = UserDefaults.standard
+        let prefixes = [albumMappingsKey + ".", syncedMembershipsKey + "."]
+        for key in defaults.dictionaryRepresentation().keys
+            where prefixes.contains(where: { key.hasPrefix($0) }) {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.removeObject(forKey: sessionKey)
+        Task { await AlbumSyncService.shared.invalidateCachedSettings() }
+    }
+    nonisolated static var currentSessionGeneration: String? {
+        UserDefaults.standard.string(forKey: sessionKey)
+    }
+    private func invalidateCachedSettings() {
+        cachedSettings = nil
+    }
+    static func mappingKey(serverURL: String, userId: String) -> String {
+        scopedKey(prefix: albumMappingsKey, serverURL: serverURL, userId: userId)
+    }
+
+    private static func membershipKey(serverURL: String, userId: String) -> String {
+        scopedKey(prefix: syncedMembershipsKey, serverURL: serverURL, userId: userId)
+    }
+
+    private static func scopedKey(prefix: String, serverURL: String, userId: String) -> String {
+        let identity = canonicalServerIdentity(serverURL) + mappingKeySeparator + userId
+        return prefix + "." + Data(identity.utf8).base64EncodedString()
+    }
+
+    private static func canonicalServerIdentity(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed) else {
+            return trimmed.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        if (components.scheme == "https" && components.port == 443)
+            || (components.scheme == "http" && components.port == 80) {
+            components.port = nil
+        }
+        components.query = nil
+        components.fragment = nil
+        let path = components.path
+        components.path = path == "/" ? "" : path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return components.string ?? trimmed.lowercased()
+    }
 
     func syncIfEnabled() {
         if isSyncing {
@@ -41,11 +102,8 @@ actor AlbumSyncService {
     }
 
     private func runIfEnabled() async {
-        let eligibility = await MainActor.run { () -> (enabled: Bool, loggedIn: Bool) in
-            let settings = SettingsManager()
-            return (settings.syncApplePhotosAlbums, settings.isLoggedIn)
-        }
-        guard eligibility.enabled, eligibility.loggedIn else { return }
+        let settings = await loadSettingsSnapshot()
+        guard settings.enabled, settings.loggedIn else { return }
         let authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard authorizationStatus == .authorized || authorizationStatus == .limited else {
             logDebug("Album sync requires photo library access", category: .sync)
@@ -58,6 +116,27 @@ actor AlbumSyncService {
             logError("Album sync failed: \(error.localizedDescription)", category: .sync)
         }
     }
+
+    private func loadSettingsSnapshot() async -> SettingsSnapshot {
+        let generation = UserDefaults.standard.string(forKey: Self.sessionKey)
+        if let cachedSettings, cachedSettings.generation == generation {
+            return cachedSettings
+        }
+        let snapshot = await MainActor.run { () -> SettingsSnapshot in
+            let settings = SettingsManager()
+            return SettingsSnapshot(
+                generation: generation,
+                enabled: settings.syncApplePhotosAlbums,
+                loggedIn: settings.isLoggedIn,
+                activeServerURL: settings.activeServerURL,
+                serverURL: settings.serverURL,
+                apiKey: settings.apiKey
+            )
+        }
+        cachedSettings = snapshot
+        return snapshot
+    }
+
     private func sync() async throws {
         needsSync = true
         guard !isSyncing else { return }
@@ -65,11 +144,14 @@ actor AlbumSyncService {
         defer { isSyncing = false }
         repeat {
             needsSync = false
-            let current = await MainActor.run { () -> Session in
-                let settings = SettingsManager()
-                return Session(serverURL: settings.activeServerURL, apiKey: settings.apiKey,
-                               generation: UserDefaults.standard.string(forKey: Self.sessionKey), externalURL: settings.serverURL)
-            }
+            let settings = await loadSettingsSnapshot()
+            guard settings.enabled, settings.loggedIn else { return }
+            let current = Session(
+                serverURL: settings.activeServerURL,
+                apiKey: settings.apiKey,
+                generation: settings.generation,
+                externalURL: settings.serverURL
+            )
             do {
                 try await performSync(current)
             } catch {
@@ -95,8 +177,8 @@ actor AlbumSyncService {
         try checkSession()
         let user = try await ImmichAPIService.shared.getCurrentUser(serverURL: serverURL, apiKey: apiKey)
         try checkSession()
-        let mappingKey = Self.albumMappingsKey + "." + user.id
-        let legacyMappingKey = Self.albumMappingsKey + "." + Data((snapshot.externalURL + "|" + user.id).utf8).base64EncodedString()
+        let mappingKey = Self.mappingKey(serverURL: snapshot.externalURL, userId: user.id)
+        let membershipsKey = Self.membershipKey(serverURL: snapshot.externalURL, userId: user.id)
 
         let localAlbums = fetchLocalAlbums()
         guard !localAlbums.isEmpty else { return }
@@ -106,13 +188,19 @@ actor AlbumSyncService {
             apiKey: apiKey
         )
         try checkSession()
+        let legacyUserKey = Self.albumMappingsKey + "." + user.id
         var mappings = UserDefaults.standard.dictionary(forKey: mappingKey) as? [String: String]
-            ?? UserDefaults.standard.dictionary(forKey: legacyMappingKey) as? [String: String]
+            ?? UserDefaults.standard.dictionary(forKey: legacyUserKey) as? [String: String]
             ?? [:]
         if UserDefaults.standard.dictionary(forKey: mappingKey) == nil, !mappings.isEmpty {
             UserDefaults.standard.set(mappings, forKey: mappingKey)
         }
+        var syncedMemberships = UserDefaults.standard.dictionary(forKey: membershipsKey) as? [String: [String]] ?? [:]
         let remoteById = Dictionary(remoteAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let remoteByName = Dictionary(
+            remoteAlbums.map { ($0.albumName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         var createdCount = 0
         var addedCount = 0
@@ -122,6 +210,7 @@ actor AlbumSyncService {
                 try checkSession()
 
                 var remoteAlbum = mappings[localAlbum.localIdentifier].flatMap { remoteById[$0] }
+                var syncedIds = Set(syncedMemberships[localAlbum.localIdentifier] ?? [])
                 let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
                 for start in stride(from: 0, to: assets.count, by: batchSize) {
                     try checkSession()
@@ -130,44 +219,62 @@ actor AlbumSyncService {
                             assets.object(at: $0).localIdentifier
                         }
                     }
-                    let batch = try UploadRecordRepository()
+                    let resolvedIds = try UploadRecordRepository()
                         .albumAssetIds(for: localIdentifiers, ownerId: user.id)
-                        .sorted()
+                    let batch = resolvedIds.filter { !syncedIds.contains($0) }.sorted()
                     guard !batch.isEmpty else { continue }
 
                     if remoteAlbum == nil {
-                        let title = localAlbum.localizedTitle ?? "Untitled Album"
-                        let createdAlbum = try await ImmichAPIService.shared.createAlbum(
-                            name: title,
-                            serverURL: serverURL,
-                            apiKey: apiKey
-                        )
-                        mappings[localAlbum.localIdentifier] = createdAlbum.id
-                        UserDefaults.standard.set(mappings, forKey: mappingKey)
-                        remoteAlbum = createdAlbum
-                        createdCount += 1
-                        try checkSession()
+                        let title = (localAlbum.localizedTitle ?? "Untitled Album").trimmingCharacters(in: .whitespacesAndNewlines)
+                        // A lost or absent mapping (fresh install, restore, server-side
+                        // recreation) must adopt an existing owned album of the same name
+                        // instead of creating a duplicate the additive sync can never remove.
+                        if let existing = remoteByName[title.lowercased()] {
+                            mappings[localAlbum.localIdentifier] = existing.id
+                            UserDefaults.standard.set(mappings, forKey: mappingKey)
+                            remoteAlbum = existing
+                        } else {
+                            let createdAlbum = try await ImmichAPIService.shared.createAlbum(
+                                name: title,
+                                serverURL: serverURL,
+                                apiKey: apiKey
+                            )
+                            mappings[localAlbum.localIdentifier] = createdAlbum.id
+                            UserDefaults.standard.set(mappings, forKey: mappingKey)
+                            remoteAlbum = createdAlbum
+                            createdCount += 1
+                            try checkSession()
+                        }
                     }
                     guard let remoteAlbum else { continue }
 
-                    let cacheKey = (session ?? "") + remoteAlbum.id + batch.joined(separator: ",")
-                    if let date = recentBatches[cacheKey], Date().timeIntervalSince(date) < 60 { continue }
                     let rejected = try await ImmichAPIService.shared.addAssets(
                         batch,
                         toAlbum: remoteAlbum.id,
                         serverURL: serverURL,
                         apiKey: apiKey
                     )
-                    addedCount += batch.count - rejected.count
+                    let accepted = Set(batch).subtracting(rejected)
+                    addedCount += accepted.count
                     if !rejected.isEmpty {
                         logWarning("Album \(remoteAlbum.id): \(rejected.count) memberships rejected; continuing remaining albums", category: .sync)
                     }
                     try checkSession()
-                    if recentBatches.count >= 128 { recentBatches.removeAll(keepingCapacity: true) }
-                    if rejected.isEmpty { recentBatches[cacheKey] = Date() }
+                    guard !accepted.isEmpty else { continue }
+                    syncedIds.formUnion(accepted)
+                    syncedMemberships[localAlbum.localIdentifier] = syncedIds.sorted()
+                    UserDefaults.standard.set(syncedMemberships, forKey: membershipsKey)
                 }
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as ImmichAPIError {
+                if case .serverError(let statusCode, _) = error,
+                   statusCode == 401 || statusCode == 403 {
+                    throw error
+                }
+                logError("Album sync skipped \(localAlbum.localIdentifier): \(error.localizedDescription)", category: .sync)
+            } catch let error as URLError {
+                throw error
             } catch {
                 logError("Album sync skipped \(localAlbum.localIdentifier): \(error.localizedDescription)", category: .sync)
             }

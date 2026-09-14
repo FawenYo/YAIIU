@@ -81,6 +81,7 @@ struct SettingsView: View {
     @State private var backgroundUploadLoading = false
     @State private var backgroundUploadError: String?
     @State private var albumSyncError: String?
+    @State private var albumSyncAuthorizationGeneration = UUID()
     @State private var lastBackgroundUploadDate: Date?
     
     @ObservedObject private var networkReachability = NetworkReachability.shared
@@ -209,6 +210,9 @@ struct SettingsView: View {
                     Toggle(isOn: Binding(
                         get: { settingsManager.syncApplePhotosAlbums },
                         set: { enabled in
+                            let requestGeneration = UUID()
+                            albumSyncAuthorizationGeneration = requestGeneration
+                            let requestSessionGeneration = AlbumSyncService.currentSessionGeneration
                             guard enabled else {
                                 albumSyncError = nil
                                 settingsManager.updateSyncApplePhotosAlbums(false)
@@ -216,24 +220,35 @@ struct SettingsView: View {
                             }
 
                             let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-                            guard status == .authorized || status == .limited else {
-                                albumSyncError = L10n.PhotoGrid.permissionDeniedMessage
-                                if status == .notDetermined {
-                                    PHPhotoLibrary.requestAuthorization(for: .readWrite) { newStatus in
-                                        guard newStatus == .authorized || newStatus == .limited else { return }
-                                        DispatchQueue.main.async {
-                                            albumSyncError = nil
-                                            settingsManager.updateSyncApplePhotosAlbums(true)
-                                            Task { await AlbumSyncService.shared.syncIfEnabled() }
-                                        }
-                                    }
-                                }
+                            if status == .authorized || status == .limited {
+                                albumSyncError = nil
+                                settingsManager.updateSyncApplePhotosAlbums(true)
+                                Task { await AlbumSyncService.shared.syncIfEnabled() }
+                                return
+                            }
+                            guard status == .notDetermined else {
+                                albumSyncError = status == .restricted
+                                    ? L10n.Settings.albumSyncPermissionRestricted
+                                    : L10n.Settings.albumSyncPermissionDenied
                                 return
                             }
 
                             albumSyncError = nil
-                            settingsManager.updateSyncApplePhotosAlbums(true)
-                            Task { await AlbumSyncService.shared.syncIfEnabled() }
+                            PhotoLibraryManager.shared.requestAuthorization { newStatus in
+                                guard requestGeneration == albumSyncAuthorizationGeneration,
+                                      requestSessionGeneration == AlbumSyncService.currentSessionGeneration,
+                                      settingsManager.isLoggedIn,
+                                      settingsManager.syncApplePhotosAlbums == false else { return }
+                                guard newStatus == .authorized || newStatus == .limited else {
+                                    albumSyncError = newStatus == .restricted
+                                        ? L10n.Settings.albumSyncPermissionRestricted
+                                        : L10n.Settings.albumSyncPermissionDenied
+                                    return
+                                }
+                                albumSyncError = nil
+                                settingsManager.updateSyncApplePhotosAlbums(true)
+                                Task { await AlbumSyncService.shared.syncIfEnabled() }
+                            }
                         }
                     )) {
                         Label(L10n.Settings.albumSyncTitle, systemImage: "rectangle.stack.badge.plus")
@@ -246,6 +261,12 @@ struct SettingsView: View {
                                 .font(.caption)
                                 .foregroundColor(.red)
                         }
+                        Button(L10n.PhotoGrid.permissionOpenSettings) {
+                            if let settingsURL = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(settingsURL)
+                            }
+                        }
+                        .font(.caption)
                     }
                 }
 
@@ -369,11 +390,21 @@ struct SettingsView: View {
                         .multilineTextAlignment(.center)
                 }
             }
-            .navigationTitle(L10n.Settings.title)
             .onAppear {
                 loadHashCacheStats()
                 loadLogStats()
                 loadBackgroundUploadStatus()
+                reconcileAlbumSyncState()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+                if #available(iOS 26.1, *) {
+                    BackgroundUploadManager.shared.checkExtensionStatus()
+                }
+                PhotoLibraryManager.shared.requestAuthorization()
+                reconcileAlbumSyncState()
+                if settingsManager.syncApplePhotosAlbums {
+                    Task { await AlbumSyncService.shared.syncIfEnabled() }
+                }
             }
             .alert(L10n.Settings.logoutConfirmTitle, isPresented: $showingLogoutAlert) {
                 Button(L10n.Settings.logoutCancel, role: .cancel) { }
@@ -496,6 +527,17 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func reconcileAlbumSyncState() {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status == .authorized || status == .limited {
+            albumSyncError = nil
+        } else if settingsManager.syncApplePhotosAlbums {
+            albumSyncError = status == .restricted
+                ? L10n.Settings.albumSyncPermissionRestricted
+                : L10n.Settings.albumSyncPermissionDenied
         }
     }
 }

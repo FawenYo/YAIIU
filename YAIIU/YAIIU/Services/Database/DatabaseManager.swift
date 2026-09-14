@@ -247,8 +247,8 @@ final class DatabaseManager {
     }
     
     @discardableResult
-    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) -> Bool {
-        serverRepo.saveSyncMetadata(lastSyncTime: lastSyncTime, syncType: syncType, userId: userId, totalAssets: totalAssets, lastAck: lastAck)
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, serverURL: String, totalAssets: Int, lastAck: String? = nil) -> Bool {
+        serverRepo.saveSyncMetadata(lastSyncTime: lastSyncTime, syncType: syncType, userId: userId, serverURL: serverURL, totalAssets: totalAssets, lastAck: lastAck)
     }
     
     func getSyncMetadata() -> SyncMetadata? {

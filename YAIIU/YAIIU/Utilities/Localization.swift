@@ -218,6 +218,8 @@ enum L10n {
         static var albumSyncSection: String { "settings.albumSync.section".localized }
         static var albumSyncTitle: String { "settings.albumSync.title".localized }
         static var albumSyncDescription: String { "settings.albumSync.description".localized }
+        static var albumSyncPermissionDenied: String { "settings.albumSync.permission.denied".localized }
+        static var albumSyncPermissionRestricted: String { "settings.albumSync.permission.restricted".localized }
         static var dataManagement: String { "settings.dataManagement".localized }
         static var importImmichData: String { "settings.importImmichData".localized }
         static var exportDatabase: String { "settings.exportDatabase".localized }

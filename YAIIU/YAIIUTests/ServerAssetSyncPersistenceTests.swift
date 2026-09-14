@@ -202,6 +202,7 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
         lastSyncTime: Date,
         syncType: String,
         userId: String,
+        serverURL: String,
         totalAssets: Int,
         lastAck: String?
     ) -> Bool {

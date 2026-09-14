@@ -119,7 +119,7 @@ class UploadManager: ObservableObject {
     @Published var isUploading: Bool = false
     @Published var uploadedCount: Int = 0
     
-    private let photoLibraryManager = PhotoLibraryManager()
+    private let photoLibraryManager = PhotoLibraryManager.shared
     private var uploadTask: Task<Void, Never>?
     private var isPaused: Bool = false
     

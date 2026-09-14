@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 5
+    private static let schemaVersion = 6
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -257,6 +257,10 @@ final class SQLiteConnection {
                 migrateToV5()
             }
 
+            if currentVersion < 6 {
+                migrateToV6()
+            }
+
             setSchemaVersion(SQLiteConnection.schemaVersion)
             logInfo("Database migration completed to version \(SQLiteConnection.schemaVersion)", category: .database)
         }
@@ -364,6 +368,31 @@ final class SQLiteConnection {
             executeStatement("ALTER TABLE server_assets_cache ADD COLUMN owner_id TEXT;")
             executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_owner_id ON server_assets_cache(owner_id);")
             logInfo("Added owner_id column to server_assets_cache", category: .database)
+        }
+    }
+
+    private func migrateToV6() {
+        let checkSql = "PRAGMA table_info(sync_metadata);"
+        var statement: OpaquePointer?
+        var hasServerURL = false
+
+        if sqlite3_prepare_v2(db, checkSql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1),
+                   String(cString: columnName) == "server_url" {
+                    hasServerURL = true
+                    break
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        if !hasServerURL {
+            guard sqlite3_exec(db, "ALTER TABLE sync_metadata ADD COLUMN server_url TEXT;", nil, nil, nil) == SQLITE_OK else {
+                logError("Failed to add server_url column: \(lastErrorMessage)", category: .database)
+                return
+            }
+            logInfo("Added server_url column to sync_metadata", category: .database)
         }
     }
 

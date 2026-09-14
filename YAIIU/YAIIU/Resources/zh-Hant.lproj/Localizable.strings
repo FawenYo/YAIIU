@@ -76,6 +76,8 @@
 "settings.albumSync.section" = "相簿";
 "settings.albumSync.title" = "同步 Apple Photos 相簿";
 "settings.albumSync.description" = "在 Immich 建立對應相簿，並於照片已存在伺服器後加入相簿。同步只會新增，不會移除 Immich 相簿或照片。";
+"settings.albumSync.permission.denied" = "請在設定中允許相簿同步存取照片庫";
+"settings.albumSync.permission.restricted" = "相簿同步需要未受限制的照片庫存取權限";
 "settings.dataManagement" = "資料管理";
 "settings.importImmichData" = "匯入 Immich App 資料";
 "settings.exportDatabase" = "匯出資料庫";

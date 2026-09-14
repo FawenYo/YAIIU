@@ -98,7 +98,7 @@ final class SyncStreamParserTests: XCTestCase {
     func testParsersSkipMalformedLines() throws {
         let data = Data("""
         not-json
-        {"type":"AssetV2","ack":"AssetV2|ack-1","data":{"id":"asset-1","checksum":"checksum-1"}}
+        {"type":"AssetV2","ack":"AssetV2|ack-1","data":{"id":"asset-1","checksum":"checksum-1","ownerId":"owner-1"}}
         """.utf8)
 
         let result = ImmichAPIService.parseAssetStream(data)

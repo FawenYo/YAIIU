@@ -5,6 +5,10 @@ import UIKit
 /// Manages photo library access with lazy loading for optimal memory performance.
 /// Uses PHFetchResult directly instead of materializing all PHAsset objects into arrays.
 final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
+    /// Single shared instance so authorization grants from any entry point (grid,
+    /// settings toggle) propagate to every consumer.
+    static let shared = PhotoLibraryManager()
+
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var assetCount: Int = 0
@@ -32,11 +36,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         return _fetchResult
     }
     
-    override init() {
+    private override init() {
         super.init()
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if authorizationStatus == .authorized || authorizationStatus == .limited {
+            fetchResultLock.lock()
             albumFetchResult = Self.fetchUserAlbums()
+            fetchResultLock.unlock()
             fetchAssets()
             startObservingLibrary()
         }
@@ -58,13 +64,17 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     }
 
     /// Incrementally applies library changes so photos captured while the app was
-    /// backgrounded appear on foreground without a full re-fetch. Updating from the
-    /// change details avoids swapping the fetch result out from under the grid, which
-    /// would blank all thumbnails while they reload.
+    /// backgrounded appear on foreground without a full re-fetch.
     func photoLibraryDidChange(_ changeInstance: PHChange) {
-        if let albums = albumFetchResult,
+        fetchResultLock.lock()
+        let albums = albumFetchResult
+        fetchResultLock.unlock()
+
+        if let albums,
            let albumChanges = changeInstance.changeDetails(for: albums) {
+            fetchResultLock.lock()
             albumFetchResult = albumChanges.fetchResultAfterChanges
+            fetchResultLock.unlock()
             Task { await AlbumSyncService.shared.syncIfEnabled() }
         }
 
@@ -126,28 +136,36 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         )
     }
     
-    func requestAuthorization() {
+    func requestAuthorization(completion: ((PHAuthorizationStatus) -> Void)? = nil) {
         let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if currentStatus == .authorized || currentStatus == .limited {
             DispatchQueue.main.async {
                 self.authorizationStatus = currentStatus
+                self.fetchResultLock.lock()
+                let shouldFetchAssets = self._fetchResult == nil
+                self.albumFetchResult = Self.fetchUserAlbums()
+                self.fetchResultLock.unlock()
+                if shouldFetchAssets {
+                    self.fetchAssets()
+                }
+                self.startObservingLibrary()
+                completion?(currentStatus)
             }
-            albumFetchResult = Self.fetchUserAlbums()
-            if _fetchResult == nil {
-                fetchAssets()
-            }
-            startObservingLibrary()
             return
         }
 
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { [weak self] status in
             DispatchQueue.main.async {
-                self?.authorizationStatus = status
-            }
-            if status == .authorized || status == .limited {
-                self?.albumFetchResult = Self.fetchUserAlbums()
-                self?.fetchAssets()
-                self?.startObservingLibrary()
+                guard let self else { return }
+                self.authorizationStatus = status
+                if status == .authorized || status == .limited {
+                    self.fetchResultLock.lock()
+                    self.albumFetchResult = Self.fetchUserAlbums()
+                    self.fetchResultLock.unlock()
+                    self.fetchAssets()
+                    self.startObservingLibrary()
+                }
+                completion?(status)
             }
         }
     }

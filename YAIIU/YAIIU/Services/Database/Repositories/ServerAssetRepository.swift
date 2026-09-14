@@ -34,7 +34,7 @@ final class ServerAssetRepository {
                 updated_at = excluded.updated_at,
                 synced_at = excluded.synced_at,
                 icloud_id = COALESCE(excluded.icloud_id, server_assets_cache.icloud_id),
-                owner_id = excluded.owner_id;
+                owner_id = COALESCE(excluded.owner_id, server_assets_cache.owner_id);
             """
             
             var statement: OpaquePointer?
@@ -483,14 +483,21 @@ final class ServerAssetRepository {
     // MARK: - Sync Metadata
 
     @discardableResult
-    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String? = nil) -> Bool {
+    func saveSyncMetadata(
+        lastSyncTime: Date,
+        syncType: String,
+        userId: String,
+        serverURL: String,
+        totalAssets: Int,
+        lastAck: String? = nil
+    ) -> Bool {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return false }
 
             let sql = """
             INSERT OR REPLACE INTO sync_metadata
-            (id, last_sync_time, last_sync_type, user_id, total_assets, last_ack)
-            VALUES (1, ?, ?, ?, ?, ?);
+            (id, last_sync_time, last_sync_type, user_id, total_assets, last_ack, server_url)
+            VALUES (1, ?, ?, ?, ?, ?, ?);
             """
 
             var statement: OpaquePointer?
@@ -499,15 +506,17 @@ final class ServerAssetRepository {
                 return false
             }
 
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             sqlite3_bind_double(statement, 1, lastSyncTime.timeIntervalSince1970)
-            sqlite3_bind_text(statement, 2, (syncType as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(statement, 3, (userId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (syncType as NSString).utf8String, -1, transient)
+            sqlite3_bind_text(statement, 3, (userId as NSString).utf8String, -1, transient)
             sqlite3_bind_int(statement, 4, Int32(totalAssets))
             if let ack = lastAck {
-                sqlite3_bind_text(statement, 5, (ack as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 5, (ack as NSString).utf8String, -1, transient)
             } else {
                 sqlite3_bind_null(statement, 5)
             }
+            sqlite3_bind_text(statement, 6, (serverURL as NSString).utf8String, -1, transient)
 
             if sqlite3_step(statement) != SQLITE_DONE {
                 logError("Failed to save sync metadata: \(self.connection.lastErrorMessage)", category: .database)
@@ -525,7 +534,7 @@ final class ServerAssetRepository {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
 
-            let sql = "SELECT id, last_sync_time, last_sync_type, user_id, total_assets, last_ack FROM sync_metadata WHERE id = 1;"
+            let sql = "SELECT id, last_sync_time, last_sync_type, user_id, total_assets, last_ack, server_url FROM sync_metadata WHERE id = 1;"
             var statement: OpaquePointer?
 
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -537,11 +546,13 @@ final class ServerAssetRepository {
                     let userId = sqlite3_column_text(statement, 3).map { String(cString: $0) }
                     let totalAssets = Int(sqlite3_column_int(statement, 4))
                     let lastAck = sqlite3_column_text(statement, 5).map { String(cString: $0) }
+                    let serverURL = sqlite3_column_text(statement, 6).map { String(cString: $0) }
 
                     metadata = SyncMetadata(
                         lastSyncTime: lastSyncTime,
                         lastSyncType: lastSyncType,
                         userId: userId,
+                        serverURL: serverURL,
                         totalAssets: totalAssets,
                         lastAck: lastAck
                     )

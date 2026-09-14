@@ -31,7 +31,7 @@ protocol ServerAssetSyncStore {
     func deleteServerAssets(_ immichIds: [String]) -> Bool
     func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
     func clearICloudIds(for immichIds: Set<String>) -> Bool
-    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, totalAssets: Int, lastAck: String?) -> Bool
+    func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, serverURL: String, totalAssets: Int, lastAck: String?) -> Bool
     func getServerAssetsCacheCount() -> Int
     func backfillImmichIdsFromServerCache() -> Int
 }
@@ -64,6 +64,30 @@ class ServerAssetSyncService {
     ) {
         self.apiService = apiService
         self.dbManager = dbManager
+    }
+
+    private static func canonicalServerURL(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed) else {
+            return trimmed.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        if (components.scheme == "https" && components.port == 443)
+            || (components.scheme == "http" && components.port == 80) {
+            components.port = nil
+        }
+        components.query = nil
+        components.fragment = nil
+        let path = components.path
+        components.path = path == "/" ? "" : path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return components.string ?? trimmed.lowercased()
+    }
+
+    private func settingsServerURL(serverURL: String) -> String {
+        // The external URL identifies the configured server; the active URL may
+        // switch between internal and external hosts as Wi-Fi changes.
+        UserDefaults.standard.string(forKey: "immich_server_url") ?? serverURL
     }
 
     // MARK: - Public Methods
@@ -103,7 +127,7 @@ class ServerAssetSyncService {
                     progressHandler: progressHandler
                 )
                 await MainActor.run { completion(.success(result)) }
-                if result.upsertedCount > 0 {
+                if result.upsertedCount > 0 || result.backfilledCount > 0 {
                     Task { await AlbumSyncService.shared.syncIfEnabled() }
                 }
             } catch {
@@ -153,7 +177,15 @@ class ServerAssetSyncService {
         let userId = userInfo.id
 
         let syncMetadata = dbManager.getSyncMetadata()
-        let lastAck = syncMetadata?.lastAck
+        let normalizedServerURL = Self.canonicalServerURL(settingsServerURL(serverURL: serverURL))
+        let cacheMatchesSession = syncMetadata?.userId == userId
+            && syncMetadata?.serverURL.map(Self.canonicalServerURL) == normalizedServerURL
+        if syncMetadata != nil, !cacheMatchesSession {
+            guard clearCache() else {
+                throw SyncError.syncFailed(reason: "Failed to clear server cache after account or server change")
+            }
+        }
+        let lastAck = cacheMatchesSession ? syncMetadata?.lastAck : nil
 
         reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
 
@@ -204,6 +236,10 @@ class ServerAssetSyncService {
         let deletedIds = allAssets.filter { $0.isDeleted }.map { $0.id }
 
         let serverAssetRecords = activeAssets.compactMap { asset -> ServerAssetRecord? in
+            guard asset.ownerId == userId else {
+                logDebug("Skipping server asset \(asset.id) owned by another user", category: .sync)
+                return nil
+            }
             guard let hexChecksum = convertBase64ToHex(asset.checksum) else {
                 logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
                 return nil
@@ -215,7 +251,7 @@ class ServerAssetSyncService {
                 assetType: asset.type,
                 updatedAt: asset.fileCreatedAt,
                 iCloudId: metadataResult.iCloudIdUpserts[asset.id],
-                ownerId: asset.ownerId
+                ownerId: userId
             )
         }
 
@@ -253,6 +289,7 @@ class ServerAssetSyncService {
             lastSyncTime: Date(),
             syncType: syncType,
             userId: userId,
+            serverURL: normalizedServerURL,
             totalAssets: dbManager.getServerAssetsCacheCount(),
             lastAck: newAck ?? lastAck
         ) else {
@@ -263,12 +300,11 @@ class ServerAssetSyncService {
             try await apiService.sendSyncAck(acks: acks, serverURL: serverURL, apiKey: apiKey)
         }
 
-        dbManager.backfillImmichIdsFromServerCache()
-
+        let backfilledCount = dbManager.backfillImmichIdsFromServerCache()
         let total = dbManager.getServerAssetsCacheCount()
         logInfo(
             "Sync completed: type=\(syncType), total=\(total), assetUpserts=\(serverAssetRecords.count), "
-                + "assetDeletes=\(deletedIds.count), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
+                + "backfilled=\(backfilledCount), assetDeletes=\(deletedIds.count), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
                 + "metadataDeletes=\(metadataResult.iCloudIdDeletes.count), acks=\(acks.count)",
             category: .sync
         )
@@ -277,6 +313,7 @@ class ServerAssetSyncService {
             syncType: syncType,
             totalAssets: total,
             upsertedCount: serverAssetRecords.count,
+            backfilledCount: backfilledCount,
             deletedCount: deletedIds.count,
             needsFullSync: false
         )
@@ -290,9 +327,11 @@ struct SyncResult {
     let syncType: String
     let totalAssets: Int
     let upsertedCount: Int
+    let backfilledCount: Int
     let deletedCount: Int
     let needsFullSync: Bool
 }
+
 
 enum SyncError: LocalizedError {
     case syncInProgress

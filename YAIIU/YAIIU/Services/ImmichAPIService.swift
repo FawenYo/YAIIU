@@ -760,10 +760,37 @@ class ImmichAPIService: NSObject {
             let id: String
             let success: Bool
             let error: String?
+            let errorMessage: String?
         }
-        let results = try JSONDecoder().decode([MembershipResult].self, from: data)
+        struct MembershipResponse: Decodable {
+            let count: Int?
+            let results: [MembershipResult]?
+        }
+
+        let decoder = JSONDecoder()
+        let results: [MembershipResult]
+        if let array = try? decoder.decode([MembershipResult].self, from: data) {
+            results = array
+        } else if let wrapped = try? decoder.decode(MembershipResponse.self, from: data) {
+            guard let wrappedResults = wrapped.results else {
+                // Older Immich servers return only a count after a successful batch.
+                guard wrapped.count != nil else { throw ImmichAPIError.invalidResponse }
+                return []
+            }
+            results = wrappedResults
+        } else {
+            throw ImmichAPIError.invalidResponse
+        }
+
+        // "duplicate" means the membership already exists server-side: accepted.
         let accepted = Set(results.filter { $0.success || $0.error == "duplicate" }.map(\.id))
-        return Set(assetIds).subtracting(accepted)
+        let rejected = Set(assetIds).subtracting(accepted)
+        if !rejected.isEmpty {
+            let details = results.filter { rejected.contains($0.id) }
+                .map { "\($0.id): \($0.errorMessage ?? $0.error ?? "missing from response")" }
+            logWarning("Album \(albumId) rejected \(rejected.count) memberships: \(details.prefix(10).joined(separator: ", "))", category: .api)
+        }
+        return rejected
     }
 
     private func validateAlbumResponse(_ response: URLResponse, data: Data, expectedStatusCodes: Set<Int>) throws {
@@ -983,7 +1010,9 @@ class ImmichAPIService: NSObject {
             case "AssetV2":
                 guard let entityData = object["data"] as? [String: Any],
                       let id = entityData["id"] as? String,
-                      let checksum = entityData["checksum"] as? String
+                      let checksum = entityData["checksum"] as? String,
+                      let ownerId = entityData["ownerId"] as? String,
+                      !ownerId.isEmpty
                 else {
                     continue
                 }
@@ -993,7 +1022,7 @@ class ImmichAPIService: NSObject {
                     originalFileName: entityData["originalFileName"] as? String,
                     fileCreatedAt: entityData["fileCreatedAt"] as? String,
                     type: entityData["type"] as? String,
-                    ownerId: entityData["ownerId"] as? String,
+                    ownerId: ownerId,
                     deletedAt: entityData["deletedAt"] as? String
                 ))
                 collectLatestAck(from: object, into: &acksByType)

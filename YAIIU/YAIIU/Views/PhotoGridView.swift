@@ -258,7 +258,7 @@ struct PhotoGridView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var uploadManager: UploadManager
-    @StateObject private var photoLibraryManager = PhotoLibraryManager()
+    @ObservedObject private var photoLibraryManager = PhotoLibraryManager.shared
     @ObservedObject private var hashManager = HashManager.shared
 
     @State private var selectedAssets: Set<String> = []

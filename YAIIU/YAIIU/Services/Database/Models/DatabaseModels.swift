@@ -46,6 +46,7 @@ struct SyncMetadata {
     let lastSyncTime: Date?
     let lastSyncType: String?
     let userId: String?
+    let serverURL: String?
     let totalAssets: Int
     let lastAck: String?
 }
