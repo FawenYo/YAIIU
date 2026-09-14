@@ -220,7 +220,22 @@ actor AlbumSyncService {
                 if let remoteAlbumID = remoteAlbum?.id, remoteAlbumID == previousRemoteAlbumID {
                     syncedIds = Set(syncedMemberships[localAlbum.localIdentifier] ?? [])
                 }
+                if remoteAlbum == nil {
+                    let title = (localAlbum.localizedTitle ?? "Untitled Album")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let createdAlbum = try await ImmichAPIService.shared.createAlbum(
+                        name: title,
+                        serverURL: serverURL,
+                        apiKey: apiKey
+                    )
+                    try checkSession()
+                    mappings[localAlbum.localIdentifier] = createdAlbum.id
+                    UserDefaults.standard.set(mappings, forKey: mappingKey)
+                    remoteAlbum = createdAlbum
+                    createdCount += 1
+                }
 
+                guard let remoteAlbum else { continue }
                 let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
                 for start in stride(from: 0, to: assets.count, by: batchSize) {
                     try checkSession()
@@ -233,22 +248,6 @@ actor AlbumSyncService {
                         .albumAssetIds(for: localIdentifiers, ownerId: user.id)
                     let batch = resolvedIds.filter { !syncedIds.contains($0) }.sorted()
                     guard !batch.isEmpty else { continue }
-
-                    if remoteAlbum == nil {
-                        let title = (localAlbum.localizedTitle ?? "Untitled Album")
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        let createdAlbum = try await ImmichAPIService.shared.createAlbum(
-                            name: title,
-                            serverURL: serverURL,
-                            apiKey: apiKey
-                        )
-                        try checkSession()
-                        mappings[localAlbum.localIdentifier] = createdAlbum.id
-                        UserDefaults.standard.set(mappings, forKey: mappingKey)
-                        remoteAlbum = createdAlbum
-                        createdCount += 1
-                    }
-                    guard let remoteAlbum else { continue }
 
                     let rejected = try await ImmichAPIService.shared.addAssets(
                         batch,
