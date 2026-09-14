@@ -138,6 +138,24 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(resolved[livePhotoAssetId], livePhotoId)
     }
 
+    func testAlbumAssetIdsIncludesStandaloneVideoAndRawUploadRecords() throws {
+        let videoId = "77777777-7777-4777-8777-777777777777"
+        let rawId = "88888888-8888-4888-8888-888888888888"
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: videoId, checksum: "video-exact", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: rawId, checksum: "raw-exact", ownerId: "owner-1")
+        ]))
+        uploadRepository.recordUploadedAsset(localIdentifier: "standalone-video", resourceType: "video", filename: "clip.mov", immichId: videoId)
+        uploadRepository.recordUploadedAsset(localIdentifier: "raw-only", resourceType: "raw", filename: "photo.dng", immichId: rawId)
+
+        let ids = try uploadRepository.albumAssetIds(
+            for: ["standalone-video", "raw-only"],
+            ownerId: "owner-1"
+        )
+
+        XCTAssertEqual(Set(ids), [videoId, rawId])
+    }
+
     private func installDeferredCommitFailure(triggerEvent: String) {
         execute("PRAGMA foreign_keys = ON;")
         execute("CREATE TABLE commit_failure_parent (id INTEGER PRIMARY KEY);")

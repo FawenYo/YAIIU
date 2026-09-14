@@ -328,7 +328,14 @@ final class UploadRecordRepository {
                 WHERE u.id = (
                     SELECT MAX(u2.id) FROM uploaded_assets u2
                     WHERE u2.asset_id = u.asset_id
-                      AND u2.resource_type NOT IN ('raw', 'video')
+                      AND (
+                          u2.resource_type NOT IN ('raw', 'video')
+                          OR NOT EXISTS (
+                              SELECT 1 FROM uploaded_assets u3
+                              WHERE u3.asset_id = u.asset_id
+                                AND u3.resource_type NOT IN ('raw', 'video')
+                          )
+                      )
                 ) AND s.owner_id = ?
                 UNION
                 SELECT s.immich_id
@@ -346,11 +353,15 @@ final class UploadRecordRepository {
                 guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { throw databaseError() }
                 let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
                 for (index, localIdentifier) in chunk.enumerated() {
-                    sqlite3_bind_text(statement, Int32(index + 1), localIdentifier, -1, transient)
+                    _ = localIdentifier.withCString { value in
+                        sqlite3_bind_text(statement, Int32(index + 1), value, -1, transient)
+                    }
                 }
                 let ownerBindingStart = chunk.count + 1
-                sqlite3_bind_text(statement, Int32(ownerBindingStart), ownerId, -1, transient)
-                sqlite3_bind_text(statement, Int32(ownerBindingStart + 1), ownerId, -1, transient)
+                _ = ownerId.withCString { value in
+                    sqlite3_bind_text(statement, Int32(ownerBindingStart), value, -1, transient)
+                    sqlite3_bind_text(statement, Int32(ownerBindingStart + 1), value, -1, transient)
+                }
                 var ids: [String] = []
                 var result = sqlite3_step(statement)
                 while result == SQLITE_ROW {

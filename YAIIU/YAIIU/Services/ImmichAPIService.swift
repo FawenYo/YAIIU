@@ -346,10 +346,9 @@ class ImmichAPIService: NSObject {
         }
         return delegate
     }
-    
-    func removeUploadDelegate(for taskId: Int) {
-        delegateQueue.async(flags: .barrier) {
-            self.uploadDelegates.removeValue(forKey: taskId)
+    private func removeUploadDelegate(for taskId: Int) {
+        delegateQueue.sync(flags: .barrier) {
+            uploadDelegates.removeValue(forKey: taskId)
         }
     }
     
@@ -765,31 +764,35 @@ class ImmichAPIService: NSObject {
         struct MembershipResponse: Decodable {
             let count: Int?
             let results: [MembershipResult]?
+            let success: [String]?
+            let failed: [String]?
         }
 
         let decoder = JSONDecoder()
-        let results: [MembershipResult]
+        let accepted: Set<String>
+        var rejectionDetails: [String] = []
         if let array = try? decoder.decode([MembershipResult].self, from: data) {
-            results = array
-        } else if let wrapped = try? decoder.decode(MembershipResponse.self, from: data) {
-            guard let wrappedResults = wrapped.results else {
-                guard let count = wrapped.count, count == assetIds.count else {
-                    throw ImmichAPIError.invalidResponse
-                }
-                return []
-            }
-            results = wrappedResults
+            accepted = Set(array.filter { $0.success || $0.error == "duplicate" }.map(\.id))
+            rejectionDetails = array.filter { !$0.success && $0.error != "duplicate" }
+                .map { "\($0.id): \($0.errorMessage ?? $0.error ?? "missing from response")" }
+        } else if let wrapped = try? decoder.decode(MembershipResponse.self, from: data),
+                  let success = wrapped.success {
+            accepted = Set(success)
+        } else if let wrapped = try? decoder.decode(MembershipResponse.self, from: data),
+                  let failed = wrapped.failed {
+            accepted = Set(assetIds).subtracting(failed)
+        } else if let wrapped = try? decoder.decode(MembershipResponse.self, from: data),
+                  let results = wrapped.results {
+            accepted = Set(results.filter { $0.success || $0.error == "duplicate" }.map(\.id))
+            rejectionDetails = results.filter { !$0.success && $0.error != "duplicate" }
+                .map { "\($0.id): \($0.errorMessage ?? $0.error ?? "missing from response")" }
         } else {
             throw ImmichAPIError.invalidResponse
         }
 
-        // "duplicate" means the membership already exists server-side: accepted.
-        let accepted = Set(results.filter { $0.success || $0.error == "duplicate" }.map(\.id))
         let rejected = Set(assetIds).subtracting(accepted)
         if !rejected.isEmpty {
-            let details = results.filter { rejected.contains($0.id) }
-                .map { "\($0.id): \($0.errorMessage ?? $0.error ?? "missing from response")" }
-            logWarning("Album \(albumId) rejected \(rejected.count) memberships: \(details.prefix(10).joined(separator: ", "))", category: .api)
+            logWarning("Album \(albumId) rejected \(rejected.count) memberships: \(rejectionDetails.prefix(10).joined(separator: ", "))", category: .api)
         }
         return rejected
     }
