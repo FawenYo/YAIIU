@@ -235,10 +235,6 @@ class ServerAssetSyncService {
         let deletedIds = allAssets.filter { $0.isDeleted }.map { $0.id }
 
         let serverAssetRecords = activeAssets.compactMap { asset -> ServerAssetRecord? in
-            guard asset.ownerId == userId else {
-                logDebug("Skipping server asset \(asset.id) owned by another user", category: .sync)
-                return nil
-            }
             guard let hexChecksum = convertBase64ToHex(asset.checksum) else {
                 logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
                 return nil
@@ -250,7 +246,7 @@ class ServerAssetSyncService {
                 assetType: asset.type,
                 updatedAt: asset.fileCreatedAt,
                 iCloudId: metadataResult.iCloudIdUpserts[asset.id],
-                ownerId: userId
+                ownerId: asset.ownerId
             )
         }
 

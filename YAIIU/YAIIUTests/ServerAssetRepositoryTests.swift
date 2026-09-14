@@ -111,6 +111,33 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(try uploadRepository.albumAssetIds(for: [assetId], ownerId: "owner-1").isEmpty)
     }
 
+    func testBackfillResolvesStandaloneVideosAndExcludesSecondaryRawResources() {
+        let videoAssetId = "asset-video"
+        let rawAssetId = "asset-raw"
+        let livePhotoAssetId = "asset-live-photo"
+        let videoId = "44444444-4444-4444-8444-444444444444"
+        let rawId = "55555555-5555-4555-8555-555555555555"
+        let livePhotoId = "66666666-6666-4666-8666-666666666666"
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: videoId, checksum: "video-sum", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: rawId, checksum: "raw-sum", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: livePhotoId, checksum: "live-photo-sum", ownerId: "owner-1")
+        ]))
+        uploadRepository.recordUploadedAsset(localIdentifier: videoAssetId, resourceType: "video", filename: "clip.mov", immichId: "unknown")
+        uploadRepository.recordUploadedAsset(localIdentifier: rawAssetId, resourceType: "raw", filename: "photo.dng", immichId: "unknown")
+        uploadRepository.recordUploadedAsset(localIdentifier: livePhotoAssetId, resourceType: "jpeg", filename: "photo.jpg", immichId: "unknown")
+        uploadRepository.recordUploadedAsset(localIdentifier: livePhotoAssetId, resourceType: "raw", filename: "photo.dng", immichId: "unknown")
+        execute("INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at) VALUES ('asset-video', 'video-sum', 0);")
+        execute("INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at) VALUES ('asset-raw', 'raw-sum', 0);")
+        execute("INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at) VALUES ('asset-live-photo', 'live-photo-sum', 0);")
+
+        let resolved = uploadRepository.getResolvedImmichIdsFromServerCache()
+
+        XCTAssertEqual(resolved[videoAssetId], videoId)
+        XCTAssertEqual(resolved[rawAssetId], rawId)
+        XCTAssertEqual(resolved[livePhotoAssetId], livePhotoId)
+    }
+
     private func installDeferredCommitFailure(triggerEvent: String) {
         execute("PRAGMA foreign_keys = ON;")
         execute("CREATE TABLE commit_failure_parent (id INTEGER PRIMARY KEY);")

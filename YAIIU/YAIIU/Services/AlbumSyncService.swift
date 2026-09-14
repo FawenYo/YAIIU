@@ -79,8 +79,11 @@ actor AlbumSyncService {
         }
         components.query = nil
         components.fragment = nil
-        let path = components.path
-        components.path = path == "/" ? "" : path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var normalizedPath = components.path
+        while normalizedPath.count > 1 && normalizedPath.hasSuffix("/") {
+            normalizedPath.removeLast()
+        }
+        components.path = normalizedPath == "/" ? "" : normalizedPath
         return components.string ?? trimmed.lowercased()
     }
 

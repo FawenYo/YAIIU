@@ -130,6 +130,9 @@ class SettingsManager: ObservableObject {
         AlbumSyncService.invalidateInFlightSync()
         syncApplePhotosAlbums = enabled
         UserDefaults.standard.set(enabled, forKey: Self.syncApplePhotosAlbumsKey)
+        if enabled {
+            scheduleAlbumSyncIfEnabled()
+        }
     }
 
     
@@ -171,7 +174,6 @@ class SettingsManager: ObservableObject {
 
     func logout() {
         AlbumSyncService.invalidateInFlightSync()
-        AlbumSyncService.clearPersistedState()
         self.serverURL = ""
         self.internalServerURL = ""
         self.internalNetworkSSID = ""
