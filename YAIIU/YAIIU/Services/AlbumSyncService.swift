@@ -187,7 +187,6 @@ actor AlbumSyncService {
             serverURL: serverURL,
             apiKey: apiKey
         )
-        try checkSession()
         let legacyUserKey = Self.albumMappingsKey + "." + user.id
         var mappings = UserDefaults.standard.dictionary(forKey: mappingKey) as? [String: String]
             ?? UserDefaults.standard.dictionary(forKey: legacyUserKey) as? [String: String]
@@ -197,10 +196,9 @@ actor AlbumSyncService {
         }
         var syncedMemberships = UserDefaults.standard.dictionary(forKey: membershipsKey) as? [String: [String]] ?? [:]
         let remoteById = Dictionary(remoteAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let remoteByName = Dictionary(
-            remoteAlbums.map { ($0.albumName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        let remoteByName = Dictionary(grouping: remoteAlbums) {
+            $0.albumName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
 
         var createdCount = 0
         var addedCount = 0
@@ -209,8 +207,13 @@ actor AlbumSyncService {
             do {
                 try checkSession()
 
-                var remoteAlbum = mappings[localAlbum.localIdentifier].flatMap { remoteById[$0] }
-                var syncedIds = Set(syncedMemberships[localAlbum.localIdentifier] ?? [])
+                let previousRemoteAlbumID = mappings[localAlbum.localIdentifier]
+                var remoteAlbum = previousRemoteAlbumID.flatMap { remoteById[$0] }
+                var syncedIds: Set<String> = []
+                if let remoteAlbumID = remoteAlbum?.id, remoteAlbumID == previousRemoteAlbumID {
+                    syncedIds = Set(syncedMemberships[localAlbum.localIdentifier] ?? [])
+                }
+
                 let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
                 for start in stride(from: 0, to: assets.count, by: batchSize) {
                     try checkSession()
@@ -225,11 +228,14 @@ actor AlbumSyncService {
                     guard !batch.isEmpty else { continue }
 
                     if remoteAlbum == nil {
-                        let title = (localAlbum.localizedTitle ?? "Untitled Album").trimmingCharacters(in: .whitespacesAndNewlines)
-                        // A lost or absent mapping (fresh install, restore, server-side
-                        // recreation) must adopt an existing owned album of the same name
-                        // instead of creating a duplicate the additive sync can never remove.
-                        if let existing = remoteByName[title.lowercased()] {
+                        let title = (localAlbum.localizedTitle ?? "Untitled Album")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let titleKey = title.lowercased()
+                        let mappedIDs = Set(mappings.values)
+                        if let candidates = remoteByName[titleKey],
+                           candidates.count == 1,
+                           !mappedIDs.contains(candidates[0].id) {
+                            let existing = candidates[0]
                             mappings[localAlbum.localIdentifier] = existing.id
                             UserDefaults.standard.set(mappings, forKey: mappingKey)
                             remoteAlbum = existing
@@ -239,11 +245,11 @@ actor AlbumSyncService {
                                 serverURL: serverURL,
                                 apiKey: apiKey
                             )
+                            try checkSession()
                             mappings[localAlbum.localIdentifier] = createdAlbum.id
                             UserDefaults.standard.set(mappings, forKey: mappingKey)
                             remoteAlbum = createdAlbum
                             createdCount += 1
-                            try checkSession()
                         }
                     }
                     guard let remoteAlbum else { continue }
@@ -259,11 +265,11 @@ actor AlbumSyncService {
                     if !rejected.isEmpty {
                         logWarning("Album \(remoteAlbum.id): \(rejected.count) memberships rejected; continuing remaining albums", category: .sync)
                     }
-                    try checkSession()
                     guard !accepted.isEmpty else { continue }
                     syncedIds.formUnion(accepted)
                     syncedMemberships[localAlbum.localIdentifier] = syncedIds.sorted()
                     UserDefaults.standard.set(syncedMemberships, forKey: membershipsKey)
+                    try checkSession()
                 }
             } catch is CancellationError {
                 throw CancellationError()

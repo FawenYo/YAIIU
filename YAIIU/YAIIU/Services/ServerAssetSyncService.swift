@@ -79,8 +79,11 @@ class ServerAssetSyncService {
         }
         components.query = nil
         components.fragment = nil
-        let path = components.path
-        components.path = path == "/" ? "" : path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var normalizedPath = components.path
+        while normalizedPath.count > 1 && normalizedPath.hasSuffix("/") {
+            normalizedPath.removeLast()
+        }
+        components.path = normalizedPath == "/" ? "" : normalizedPath
         return components.string ?? trimmed.lowercased()
     }
 
@@ -179,7 +182,8 @@ class ServerAssetSyncService {
         let syncMetadata = dbManager.getSyncMetadata()
         let normalizedServerURL = Self.canonicalServerURL(settingsServerURL(serverURL: serverURL))
         let cacheMatchesSession = syncMetadata?.userId == userId
-            && syncMetadata?.serverURL.map(Self.canonicalServerURL) == normalizedServerURL
+            && (syncMetadata?.serverURL == nil
+                || syncMetadata?.serverURL.map(Self.canonicalServerURL) == normalizedServerURL)
         if syncMetadata != nil, !cacheMatchesSession {
             guard clearCache() else {
                 throw SyncError.syncFailed(reason: "Failed to clear server cache after account or server change")

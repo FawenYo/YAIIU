@@ -175,6 +175,7 @@ class SettingsManager: ObservableObject {
         self.serverURL = ""
         self.internalServerURL = ""
         self.internalNetworkSSID = ""
+        self.apiKey = ""
         self.isLoggedIn = false
         self.allowCellularBackgroundUpload = true
         self.syncApplePhotosAlbums = false

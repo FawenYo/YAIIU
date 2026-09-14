@@ -773,8 +773,9 @@ class ImmichAPIService: NSObject {
             results = array
         } else if let wrapped = try? decoder.decode(MembershipResponse.self, from: data) {
             guard let wrappedResults = wrapped.results else {
-                // Older Immich servers return only a count after a successful batch.
-                guard wrapped.count != nil else { throw ImmichAPIError.invalidResponse }
+                guard let count = wrapped.count, count == assetIds.count else {
+                    throw ImmichAPIError.invalidResponse
+                }
                 return []
             }
             results = wrappedResults

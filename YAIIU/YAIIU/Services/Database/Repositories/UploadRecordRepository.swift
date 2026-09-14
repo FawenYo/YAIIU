@@ -316,12 +316,15 @@ final class UploadRecordRepository {
             let values = Array(repeating: "(?)", count: localIdentifiers.count).joined(separator: ",")
             let sql = """
             WITH requested(asset_id) AS (VALUES \(values))
-            SELECT MIN(u.immich_id)
+            SELECT u.immich_id
             FROM requested r
             JOIN uploaded_assets u ON u.asset_id = r.asset_id
             JOIN server_assets_cache s ON s.immich_id = u.immich_id
-            WHERE u.resource_type NOT IN ('raw', 'video') AND s.owner_id = ?
-            GROUP BY r.asset_id
+            WHERE u.id = (
+                SELECT MAX(u2.id) FROM uploaded_assets u2
+                WHERE u2.asset_id = u.asset_id
+                  AND u2.resource_type NOT IN ('raw', 'video')
+            ) AND s.owner_id = ?
             UNION
             SELECT s.immich_id
             FROM requested r

@@ -180,7 +180,9 @@ final class SQLiteConnection {
             last_sync_time REAL,
             last_sync_type TEXT,
             user_id TEXT,
-            total_assets INTEGER DEFAULT 0
+            total_assets INTEGER DEFAULT 0,
+            last_ack TEXT,
+            server_url TEXT
         );
         """
         executeStatement(sql)
