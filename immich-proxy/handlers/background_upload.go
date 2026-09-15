@@ -89,7 +89,14 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		clientIP := GetClientIP(r)
 
-		if r.Method != http.MethodPost {
+		switch r.Method {
+		case http.MethodOptions:
+			// PhotoKit uses 501 to select its non-resumable upload path.
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		case http.MethodPost:
+		default:
+			w.Header().Set("Allow", "OPTIONS, POST")
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -304,12 +311,12 @@ func createMultipartRequest(metadata BackgroundUploadRequest, photoData []byte) 
 			},
 		}
 		metadataJSON, err := json.Marshal([]RemoteAssetMetadataItem{metadataItem})
-			if err != nil {
-				return nil, "", fmt.Errorf("failed to marshal metadata: %w", err)
-			}
-			if err := writer.WriteField("metadata", string(metadataJSON)); err != nil {
-				return nil, "", fmt.Errorf("failed to write metadata field: %w", err)
-			}
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to marshal metadata: %w", err)
+		}
+		if err := writer.WriteField("metadata", string(metadataJSON)); err != nil {
+			return nil, "", fmt.Errorf("failed to write metadata field: %w", err)
+		}
 	}
 
 	// Add the file with proper Content-Type

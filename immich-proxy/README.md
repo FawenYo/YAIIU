@@ -49,6 +49,10 @@ Configuration is done via environment variables:
 POST /api/assets/background
 ```
 
+On iOS 27, PhotoKit first sends an `OPTIONS` capability request. The proxy
+returns `501 Not Implemented` so PhotoKit uses its standard non-resumable upload
+path; resumable uploads are not currently supported.
+
 ### Headers
 
 | Header               | Required | Description                                        |

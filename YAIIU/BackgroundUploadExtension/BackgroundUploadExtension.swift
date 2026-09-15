@@ -65,7 +65,7 @@ final class BackgroundUploadExtensionCore {
 
         do {
             switch try processUploadJobs() {
-            case .deferred:
+            case .deferred, .remaining:
                 return .processing
             case .completed, .scheduled:
                 return .completed
@@ -94,14 +94,21 @@ final class BackgroundUploadExtensionCore {
             return .completed
         }
 
-        let retriedAny = try retryFailedJobs()
+        var madeProgress = try retryFailedJobs()
         guard !isCancelled else { return .deferred }
 
-        try acknowledgeCompletedJobs()
+        madeProgress = try acknowledgeCompletedJobs() || madeProgress
         guard !isCancelled else { return .deferred }
 
         let result = try createNewUploadJobs(interface: currentNetworkInterface())
-        return retriedAny && result == .completed ? .scheduled : result
+        guard result == .completed else { return result }
+
+        return madeProgress || hasJobsInFlight() ? .scheduled : .completed
+    }
+
+    private func hasJobsInFlight() -> Bool {
+        guard #available(iOS 26.5, *) else { return false }
+        return PHAssetResourceUploadJob.fetchJobs(action: .process, options: nil).count > 0
     }
 
 
@@ -135,7 +142,7 @@ final class BackgroundUploadExtensionCore {
         return retriedAny
     }
 
-    private func acknowledgeCompletedJobs() throws {
+    private func acknowledgeCompletedJobs() throws -> Bool {
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(
             action: .acknowledge,
@@ -156,6 +163,7 @@ final class BackgroundUploadExtensionCore {
             assetsById[asset.localIdentifier] = asset
         }
 
+        var acknowledgedAny = false
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
             let resource = job.resource
@@ -182,12 +190,15 @@ final class BackgroundUploadExtensionCore {
             try library.performChangesAndWait {
                 guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
                 request.acknowledge()
+                acknowledgedAny = true
             }
         }
+        return acknowledgedAny
     }
     private enum NewUploadJobsResult {
         case completed
         case deferred
+        case remaining
         case scheduled
     }
 
@@ -201,19 +212,19 @@ final class BackgroundUploadExtensionCore {
         switch interface {
         case .unknown:
             logDebug("Deferring new background upload jobs because network path is unknown")
-            return .deferred
+            return .remaining
         case .cellular where !settings.allowCellularBackgroundUpload:
             logDebug("Deferring new background upload jobs because cellular data is disabled")
-            return .deferred
+            return .remaining
         case .unavailable:
             logDebug("Deferring new background upload jobs because network is unavailable")
-            return .deferred
+            return .remaining
         default:
             guard BackgroundUploadPolicy.canCreateNewJobs(
                 allowCellular: settings.allowCellularBackgroundUpload,
                 interface: interface
             ) else {
-                return .deferred
+                return .remaining
             }
         }
 
@@ -244,7 +255,7 @@ final class BackgroundUploadExtensionCore {
                 )
             }
         }
-        return createdAny ? .scheduled : .completed
+        return createdAny ? .scheduled : .remaining
     }
 
     // MARK: - Resource Discovery
@@ -527,7 +538,7 @@ extension BackgroundUploadExtensionCore {
             switch try processUploadJobs() {
             case .completed:
                 return .completed
-            case .deferred, .scheduled:
+            case .deferred, .remaining, .scheduled:
                 return .processing
             }
         } catch let error as NSError
