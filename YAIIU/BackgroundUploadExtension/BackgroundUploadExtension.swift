@@ -6,16 +6,17 @@ import UniformTypeIdentifiers
 import os.lock
 
 @main
-final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
-    struct BackgroundUploadConfiguration: AppExtensionConfiguration {
-        nonisolated func accept(connection: NSXPCConnection) -> Bool {
-            true
+enum BackgroundUploadExtensionEntryPoint {
+    static func main() throws {
+        if #available(iOS 27.0, *) {
+            try BackgroundUploadExtension.main()
+        } else {
+            try LegacyBackgroundUploadExtension.main()
         }
     }
+}
 
-    var configuration: BackgroundUploadConfiguration {
-        BackgroundUploadConfiguration()
-    }
+final class BackgroundUploadExtensionCore {
     private let cancelledState = OSAllocatedUnfairLock(initialState: false)
     private let settings = SharedSettings.shared
     private let database = BackgroundUploadDatabase.shared
@@ -29,7 +30,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private var isCancelled: Bool {
         cancelledState.withLock { $0 }
     }
-    required init() {
+    init() {
         networkMonitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             self.pathLock.lock()
@@ -55,7 +56,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         return .other
     }
 
-    // MARK: - PHBackgroundResourceUploadExtension
+    // MARK: - Upload Processing
 
     func process() -> PHBackgroundResourceUploadProcessingResult {
         resetCancellation()
@@ -516,7 +517,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     }
 }
 @available(iOS 27.0, *)
-extension BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
+extension BackgroundUploadExtensionCore {
     func processJobs() async -> PHBackgroundResourceUploadProcessingResult {
         resetCancellation()
         log("Processing background upload jobs...")
@@ -539,8 +540,34 @@ extension BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
             return .failure
         }
     }
+}
+
+@available(iOS 27.0, *)
+final class BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
+    private let core = BackgroundUploadExtensionCore()
+
+    required init() {}
+
+    func processJobs() async -> PHBackgroundResourceUploadProcessingResult {
+        await core.processJobs()
+    }
 
     func willTerminate() async {
-        notifyTermination()
+        core.notifyTermination()
+    }
+}
+
+@available(iOS, introduced: 26.1, obsoleted: 27.0)
+final class LegacyBackgroundUploadExtension: PHBackgroundResourceUploadExtension {
+    private let core = BackgroundUploadExtensionCore()
+
+    required init() {}
+
+    func process() -> PHBackgroundResourceUploadProcessingResult {
+        core.process()
+    }
+
+    func notifyTermination() {
+        core.notifyTermination()
     }
 }
