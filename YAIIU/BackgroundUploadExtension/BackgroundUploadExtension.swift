@@ -66,7 +66,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             switch try processUploadJobs() {
             case .deferred:
                 return .processing
-            case .completed, .created:
+            case .completed, .scheduled:
                 return .completed
             }
         } catch let error as NSError
@@ -93,19 +93,21 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             return .completed
         }
 
-        try retryFailedJobs()
+        let retriedAny = try retryFailedJobs()
         guard !isCancelled else { return .deferred }
 
         try acknowledgeCompletedJobs()
         guard !isCancelled else { return .deferred }
 
-        return try createNewUploadJobs(interface: currentNetworkInterface())
+        let result = try createNewUploadJobs(interface: currentNetworkInterface())
+        return retriedAny && result == .completed ? .scheduled : result
     }
 
 
     // MARK: - Job Management
 
-    private func retryFailedJobs() throws {
+    private func retryFailedJobs() throws -> Bool {
+        var retriedAny = false
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(
             action: .retry,
@@ -126,8 +128,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 guard let req = PHAssetResourceUploadJobChangeRequest(for: job)
                 else { return }
                 req.retry(destination: destination)
+                retriedAny = true
             }
         }
+        return retriedAny
     }
 
     private func acknowledgeCompletedJobs() throws {
@@ -180,11 +184,10 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
             }
         }
     }
-
     private enum NewUploadJobsResult {
         case completed
         case deferred
-        case created
+        case scheduled
     }
 
     private func createNewUploadJobs(
@@ -240,7 +243,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 )
             }
         }
-        return createdAny ? .created : .completed
+        return createdAny ? .scheduled : .completed
     }
 
     // MARK: - Resource Discovery
@@ -523,7 +526,7 @@ extension BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
             switch try processUploadJobs() {
             case .completed:
                 return .completed
-            case .deferred, .created:
+            case .deferred, .scheduled:
                 return .processing
             }
         } catch let error as NSError
