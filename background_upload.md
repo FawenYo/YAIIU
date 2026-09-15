@@ -68,7 +68,7 @@ In the Info pane in Xcode, make the following changes:
 -   Add a new top-level key named `BackgroundUploadURLBase` of type `String`, and set its value to the base URL for your upload server, such as `https://api.example.com`. The system requires this key for network access validation.
     
 
-![A screenshot of the required Info pane entries the asset resource upload extension must provide.](https://docs-assets.developer.apple.com/published/4a96ece55519bdc74bff5f13f84687b9/upload-extension-plist.png)
+![A screenshot of the required Info pane entries the asset resource upload extension must provide.](/tutorials/images/com.apple.photokit/upload-extension-plist.png)
 
 ## [Enable the extension](/documentation/photokit/uploading-asset-resources-in-the-background#Enable-the-extension)
 
@@ -101,7 +101,7 @@ Check the [`uploadJobExtensionEnabled`](/documentation/photos/phphotolibrary/upl
 
 The system calls your extension’s [`processJobs()`](/documentation/photos/phbackgroundresourceuploadjobextension/processjobs\(\)) method when upload work is available. A typical implementation first retries failed uploads, then acknowledges completed or failed uploads to free resources, and finally creates new upload jobs for unprocessed assets.
 
-[`processJobs()`](/documentation/photos/phbackgroundresourceuploadjobextension/processjobs\(\)) is declared `async` but does not require asynchronous work. An extension with synchronous upload logic can return a value directly. When calling async helpers such as [`data(for:)`](/documentation/Foundation/URLSession/data\(for:\)), use `await` as usual.
+[`processJobs()`](/documentation/photos/phbackgroundresourceuploadjobextension/processjobs\(\)) is declared `async` but does not require asynchronous work. An extension with synchronous upload logic can return a value directly. When calling async helpers such as [`data(for:)`](/documentation/foundation/urlsession/data\(for:\)), use `await` as usual.
 
 ```
 func processJobs() async -> PHBackgroundResourceUploadProcessingResult {
@@ -188,7 +188,7 @@ private func retryFailedJobs() async throws {
 }
 ```
 
-Because [`PHFetchResult`](/documentation/photos/phfetchresult) doesn’t conform to [`Sequence`](/documentation/Swift/Sequence), use index-based enumeration instead. All job mutations must occur within a `Photos/PHPhotoLibrary/performChanges(_:)` or [`performChangesAndWait(_:)`](/documentation/photos/phphotolibrary/performchangesandwait\(_:\)) change block.
+Because [`PHFetchResult`](/documentation/photos/phfetchresult) doesn’t conform to [`Sequence`](/documentation/swift/sequence), use index-based enumeration instead. All job mutations must occur within a [`performChanges(_:completionHandler:)`](/documentation/photos/phphotolibrary/performchanges\(_:completionhandler:\)) or [`performChangesAndWait(_:)`](/documentation/photos/phphotolibrary/performchangesandwait\(_:\)) change block.
 
 Inspect the [`error`](/documentation/photos/phassetresourceuploadjob/error) property to distinguish transient network errors from permanent server errors. For transient errors such as timeouts or connection loss, retry the job. For permanent errors such as bad server responses or authentication failures, acknowledge the job instead.
 
@@ -233,7 +233,7 @@ After confirming each job’s upload status with your server or local tracking s
 
 The system copies any response headers returned by your server to the [`responseHeaderFields`](/documentation/photos/phassetresourceuploadjob/responseheaderfields) property for jobs in the [`PHAssetResourceUploadJob.State.succeeded`](/documentation/photos/phassetresourceuploadjob/state-swift.enum/succeeded) or [`PHAssetResourceUploadJob.State.failed`](/documentation/photos/phassetresourceuploadjob/state-swift.enum/failed) state. The system normalizes header field names to lowercase for consistent lookup.
 
-The system populates the [`error`](/documentation/photos/phassetresourceuploadjob/error) property for jobs in the [`PHAssetResourceUploadJob.State.failed`](/documentation/photos/phassetresourceuploadjob/state-swift.enum/failed) state. It provides detailed information about why the upload failed, including network, server, or system errors. The error uses standard [`NSURLErrorDomain`](/documentation/Foundation/NSURLErrorDomain) codes, letting you distinguish transient failures such as timeouts from permanent failures such as authentication errors.
+The system populates the [`error`](/documentation/photos/phassetresourceuploadjob/error) property for jobs in the [`PHAssetResourceUploadJob.State.failed`](/documentation/photos/phassetresourceuploadjob/state-swift.enum/failed) state. It provides detailed information about why the upload failed, including network, server, or system errors. The error uses standard [`NSURLErrorDomain`](/documentation/foundation/nsurlerrordomain) codes, letting you distinguish transient failures such as timeouts from permanent failures such as authentication errors.
 
 ## [Cancel inflight jobs](/documentation/photokit/uploading-asset-resources-in-the-background#Cancel-inflight-jobs)
 
@@ -311,9 +311,9 @@ private func createNewUploadJobs() async throws {
 }
 ```
 
-Job creation must occur within a change block. Each [`PHAssetResource`](/documentation/photos/phassetresource) you upload requires a separate job. The destination [`URLRequest`](/documentation/Foundation/URLRequest) contains your server endpoint, authentication headers, and any metadata needed for upload processing.
+Job creation must occur within a change block. Each [`PHAssetResource`](/documentation/photos/phassetresource) you upload requires a separate job. The destination [`URLRequest`](/documentation/foundation/urlrequest) contains your server endpoint, authentication headers, and any metadata needed for upload processing.
 
-The system enforces an inflight job limit. When you exceed that limit, `Photos/PHPhotoLibrary/performChanges(_:)` throws a [`limitExceeded`](/documentation/photos/phphotoserror-swift.struct/limitexceeded) exception. When job creation throws [`limitExceeded`](/documentation/photos/phphotoserror-swift.struct/limitexceeded), acknowledge completed jobs first, then retry creation.
+The system enforces an inflight job limit. When you exceed that limit, [`performChanges(_:completionHandler:)`](/documentation/photos/phphotolibrary/performchanges\(_:completionhandler:\)) throws a [`limitExceeded`](/documentation/photos/phphotoserror-swift.struct/limitexceeded) exception. When job creation throws [`limitExceeded`](/documentation/photos/phphotoserror-swift.struct/limitexceeded), acknowledge completed jobs first, then retry creation.
 
 Return `.processing` from the [`processJobs()`](/documentation/photos/phbackgroundresourceuploadjobextension/processjobs\(\)) method to have the system call your extension again once the upload jobs have completed.
 
@@ -421,17 +421,46 @@ Upload-Offset: 52428800
 
 The `104` informational response serves as the authoritative signal that the server supports resumable uploads. If an upload is interrupted after the client receives this response, the system automatically resumes the transfer from where it stopped.
 
+## [Test your extension with Developer Mode](/documentation/photokit/uploading-asset-resources-in-the-background#Test-your-extension-with-Developer-Mode)
+
+The system waits for ideal conditions before running your extension, which makes it hard to test. Developer Mode runs your extension promptly so you can exercise your upload logic without waiting. When you enable it, the system removes the extension runtime limit on each invocation, skips the backoff delays between scheduling attempts, and raises the scheduling priority of your extension. Developer Mode is available in iOS 27.0, macOS 27.0, and Mac Catalyst 27.0.
+
+Developer Mode takes effect only when both your host app and your extension are built and run from Xcode with a development provisioning profile and development signing. You can toggle Developer Mode at any point during a run session, but enabling it before you build and run ensures the first invocation of your extension runs with the elevated priorities.
+
+In iOS, open Settings, choose Developer, and enable Resource Upload Test Mode under the Photos section.
+
+![The Developer settings screen on iOS showing the Resource Upload Test Mode toggle under the Photos group.](/tutorials/images/com.apple.photokit/dev-mode-settings@2x.png)
+
+In macOS and Mac Catalyst, there’s no Settings toggle. Set the Developer Mode value from the terminal instead:
+
+```
+defaults write com.apple.photos.shareddefaults backgroundResourceUploadDeveloperMode -bool YES
+```
+
+To turn Developer Mode off again, remove the value:
+
+```
+defaults delete com.apple.photos.shareddefaults backgroundResourceUploadDeveloperMode
+```
+
+While testing, keep the following in mind to help your extension run reliably under the system’s normal constraints:
+
+-   Keep your extension’s memory footprint low. The system terminates extensions that use excessive memory.
+    
+-   Return [`PHBackgroundResourceUploadProcessingResult.processing`](/documentation/photos/phbackgroundresourceuploadprocessingresult/processing) only when your extension makes progress, such as acknowledging completed jobs or creating new ones.
+    
+-   Keep each invocation within the runtime limit. Design your extension to make incremental progress across invocations rather than looping to process your entire library in a single invocation.
+    
+
 ## [See Also](/documentation/photokit/uploading-asset-resources-in-the-background#see-also)
 
 ### [Related Documentation](/documentation/photokit/uploading-asset-resources-in-the-background#Related-Documentation)
 
-[`protocol PHBackgroundResourceUploadJobExtension`](/documentation/photos/phbackgroundresourceuploadjobextension)Beta
+[`protocol PHBackgroundResourceUploadJobExtension`](/documentation/photos/phbackgroundresourceuploadjobextension)
 
 [`class func assetResource(forUploadJob: PHAssetResourceUploadJob) -> PHAssetResource?`](/documentation/photos/phassetresource/assetresource\(foruploadjob:\))
 
 Returns the asset resource associated with the given upload job.
-
-Beta
 
 ### [Background resource upload extensions](/documentation/photokit/uploading-asset-resources-in-the-background#Background-resource-upload-extensions)
 
@@ -444,3 +473,21 @@ An object that represents a request to upload an asset resource.
 [`class PHAssetResourceUploadJobChangeRequest`](/documentation/photos/phassetresourceuploadjobchangerequest)
 
 Use within an application’s `com.apple.photos.background-upload` extension to create and change [`PHAssetResourceUploadJob`](/documentation/photos/phassetresourceuploadjob) records.
+
+-   [Uploading asset resources in the background](/documentation/photokit/uploading-asset-resources-in-the-background#app-top)
+-   [Overview](/documentation/photokit/uploading-asset-resources-in-the-background#Overview)
+-   [Create and configure the extension target](/documentation/photokit/uploading-asset-resources-in-the-background#Create-and-configure-the-extension-target)
+-   [Enable the extension](/documentation/photokit/uploading-asset-resources-in-the-background#Enable-the-extension)
+-   [Process upload jobs](/documentation/photokit/uploading-asset-resources-in-the-background#Process-upload-jobs)
+-   [Retry failed jobs](/documentation/photokit/uploading-asset-resources-in-the-background#Retry-failed-jobs)
+-   [Acknowledge completed jobs](/documentation/photokit/uploading-asset-resources-in-the-background#Acknowledge-completed-jobs)
+-   [Inspect response headers and errors](/documentation/photokit/uploading-asset-resources-in-the-background#Inspect-response-headers-and-errors)
+-   [Cancel inflight jobs](/documentation/photokit/uploading-asset-resources-in-the-background#Cancel-inflight-jobs)
+-   [Create upload jobs](/documentation/photokit/uploading-asset-resources-in-the-background#Create-upload-jobs)
+-   [Create download-only jobs](/documentation/photokit/uploading-asset-resources-in-the-background#Create-download-only-jobs)
+-   [Handle extension termination](/documentation/photokit/uploading-asset-resources-in-the-background#Handle-extension-termination)
+-   [Support resumable uploads](/documentation/photokit/uploading-asset-resources-in-the-background#Support-resumable-uploads)
+-   [Respond to preflight requests](/documentation/photokit/uploading-asset-resources-in-the-background#Respond-to-preflight-requests)
+-   [Issue an informational response during uploads](/documentation/photokit/uploading-asset-resources-in-the-background#Issue-an-informational-response-during-uploads)
+-   [Test your extension with Developer Mode](/documentation/photokit/uploading-asset-resources-in-the-background#Test-your-extension-with-Developer-Mode)
+-   [See Also](/documentation/photokit/uploading-asset-resources-in-the-background#see-also)
