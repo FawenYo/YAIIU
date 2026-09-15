@@ -92,7 +92,7 @@ go run .
 ```bash
 docker run -p 8080:8080 \
   -e IMMICH_SERVER_URL=http://your-immich-server:2283 \
-  fawenyo/immich-proxy:0.1.0
+  fawenyo/immich-proxy:latest
 ```
 
 Or build your own:
