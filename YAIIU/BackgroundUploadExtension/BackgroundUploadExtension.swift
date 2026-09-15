@@ -7,7 +7,15 @@ import os.lock
 
 @main
 final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
+    struct BackgroundUploadConfiguration: AppExtensionConfiguration {
+        nonisolated func accept(connection: NSXPCConnection) -> Bool {
+            true
+        }
+    }
 
+    var configuration: BackgroundUploadConfiguration {
+        BackgroundUploadConfiguration()
+    }
     private let cancelledState = OSAllocatedUnfairLock(initialState: false)
     private let settings = SharedSettings.shared
     private let database = BackgroundUploadDatabase.shared
@@ -50,28 +58,17 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     // MARK: - PHBackgroundResourceUploadExtension
 
     func process() -> PHBackgroundResourceUploadProcessingResult {
-        cancelledState.withLock { $0 = false } // Reset cancellation state at the start of processing
+        resetCancellation()
         log("Processing background upload jobs...")
         guard !isCancelled else { return .processing }
-        guard settings.isLoggedIn, settings.backgroundUploadEnabled else {
-            return .completed
-        }
 
         do {
-            try retryFailedJobs()
-            guard !isCancelled else { return .processing }
-
-            try acknowledgeCompletedJobs()
-            guard !isCancelled else { return .processing }
-
-            let result = try createNewUploadJobs(interface: currentNetworkInterface())
-            switch result {
+            switch try processUploadJobs() {
             case .deferred:
                 return .processing
-            case .completed:
+            case .completed, .created:
                 return .completed
             }
-
         } catch let error as NSError
             where error.domain == PHPhotosErrorDomain
             && error.code == PHPhotosError.limitExceeded.rawValue
@@ -86,6 +83,25 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     func notifyTermination() {
         cancelledState.withLock { $0 = true }
     }
+
+    private func resetCancellation() {
+        cancelledState.withLock { $0 = false }
+    }
+
+    private func processUploadJobs() throws -> NewUploadJobsResult {
+        guard settings.isLoggedIn, settings.backgroundUploadEnabled else {
+            return .completed
+        }
+
+        try retryFailedJobs()
+        guard !isCancelled else { return .deferred }
+
+        try acknowledgeCompletedJobs()
+        guard !isCancelled else { return .deferred }
+
+        return try createNewUploadJobs(interface: currentNetworkInterface())
+    }
+
 
     // MARK: - Job Management
 
@@ -168,6 +184,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     private enum NewUploadJobsResult {
         case completed
         case deferred
+        case created
     }
 
     private func createNewUploadJobs(
@@ -197,7 +214,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
         }
 
         let library = PHPhotoLibrary.shared()
-
+        var createdAny = false
         try library.performChangesAndWait {
             for resource in resources where !self.isCancelled {
                 guard let dest = self.buildDestination(
@@ -214,6 +231,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 } else {
                     PHAssetResourceUploadJobChangeRequest.createJob(destination: dest, resource: resource)
                 }
+                createdAny = true
                 self.database.createOrUpdateJob(
                     assetId: resource.assetLocalIdentifier,
                     resourceType: self.resourceTypeString(for: resource),
@@ -222,7 +240,7 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
                 )
             }
         }
-        return .completed
+        return createdAny ? .created : .completed
     }
 
     // MARK: - Resource Discovery
@@ -492,5 +510,34 @@ final class BackgroundUploadExtension: PHBackgroundResourceUploadExtension {
     
     private func logError(_ message: String) {
         log(message, level: .error)
+    }
+}
+@available(iOS 27.0, *)
+extension BackgroundUploadExtension: PHBackgroundResourceUploadJobExtension {
+    func processJobs() async -> PHBackgroundResourceUploadProcessingResult {
+        resetCancellation()
+        log("Processing background upload jobs...")
+        guard !isCancelled else { return .processing }
+
+        do {
+            switch try processUploadJobs() {
+            case .completed:
+                return .completed
+            case .deferred, .created:
+                return .processing
+            }
+        } catch let error as NSError
+            where error.domain == PHPhotosErrorDomain
+            && error.code == PHPhotosError.limitExceeded.rawValue
+        {
+            return .processing
+        } catch {
+            logError("Error: \(error.localizedDescription)")
+            return .failure
+        }
+    }
+
+    func willTerminate() async {
+        notifyTermination()
     }
 }
