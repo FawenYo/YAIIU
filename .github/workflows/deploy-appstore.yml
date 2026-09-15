@@ -15,16 +15,12 @@ concurrency:
 jobs:
   deploy:
     name: Upload to App Store Connect
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest
 
       - name: Show Xcode version
         run: xcodebuild -version
