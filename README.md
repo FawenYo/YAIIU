@@ -46,16 +46,18 @@ At the moment, this is **not yet supported** by the official Immich iOS app.
 
 - iOS 17.0 or later (iOS 26.1+ for background uploads)
 - An existing Immich server
-- Immich API key
 
 ## Current Features
 
-- 🔑 **Immich API Key authentication**
+- 🔑 **Immich Account/password authentication**
 - 📦 **Import Immich SQLite database**
   - Allows users to reuse SQLite database dumped from the official Immich app
   - Avoids re-hashing all photos and videos
 - 🖼 **JPEG + RAW upload support**
   - Correctly uploads both resources from Apple Photos
+- 🕐 **Capture timezone preservation**
+  - Adds missing EXIF timezone information during upload so Immich can determine the photo's original timezone
+  - Preserves any timezone metadata already present in the image
 - 🚀 **iOS 26.1+ Background Upload Support**
   - Utilizes Apple's new `PHBackgroundResourceUploadExtension` API
   - Enables true background photo uploads
