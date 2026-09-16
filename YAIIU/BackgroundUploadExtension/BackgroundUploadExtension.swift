@@ -379,12 +379,10 @@ final class BackgroundUploadExtensionCore {
             mimeType(for: resource),
             forHTTPHeaderField: "X-Content-Type"
         )
-        if let timezone = captureTimezone(for: asset) {
-            req.setValue(
-                ImageTimezoneOffsetFormatter.string(for: timezone.secondsFromGMT(for: created)),
-                forHTTPHeaderField: "X-Timezone-Offset"
-            )
-        }
+        req.setValue(
+            ImageTimezoneOffsetFormatter.string(for: timezone.secondsFromGMT(for: created)),
+            forHTTPHeaderField: "X-Timezone-Offset"
+        )
         
         if let iCloudId = getCloudIdentifier(for: asset) {
             req.setValue(iCloudId, forHTTPHeaderField: "X-iCloud-Id")
@@ -470,11 +468,11 @@ final class BackgroundUploadExtensionCore {
             ?? "application/octet-stream"
     }
 
-    private func captureTimezone(for asset: PHAsset) -> TimeZone? {
-        guard let location = asset.location else { return nil }
+    private func captureTimezone(for asset: PHAsset) -> TimeZone {
+        guard let location = asset.location else { return TimeZone.current }
 
         let semaphore = DispatchSemaphore(value: 0)
-        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
+        guard let request = MKReverseGeocodingRequest(location: location) else { return TimeZone.current }
         var resolved: TimeZone?
         request.getMapItems { mapItems, _ in
             resolved = mapItems?.first?.timeZone
@@ -483,9 +481,9 @@ final class BackgroundUploadExtensionCore {
 
         guard semaphore.wait(timeout: .now() + 3) == .success else {
             request.cancel()
-            return nil
+            return TimeZone.current
         }
-        return resolved
+        return resolved ?? TimeZone.current
     }
 
     private func fetchAsset(for resource: PHAssetResource) -> PHAsset? {
