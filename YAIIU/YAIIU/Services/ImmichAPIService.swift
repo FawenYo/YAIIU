@@ -106,11 +106,14 @@ class ImmichAPIService: NSObject {
 
         let fileURL: URL
         do {
-            fileURL = try ImageTimezoneMetadata.addingOffsetIfMissing(
-                to: originalFileURL,
-                timezone: timezone ?? TimeZone.current,
-                at: createdAt
-            )
+            let rewriteTimezone = timezone ?? TimeZone.current
+            fileURL = try await Task.detached(priority: .utility) {
+                try ImageTimezoneMetadata.addingOffsetIfMissing(
+                    to: originalFileURL,
+                    timezone: rewriteTimezone,
+                    at: createdAt
+                )
+            }.value
         } catch {
             try? FileManager.default.removeItem(at: originalFileURL)
             Self.uploadFileGate.release(1)
