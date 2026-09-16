@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 7
+    private static let schemaVersion = 8
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -210,6 +210,7 @@ final class SQLiteConnection {
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_icloud_id ON server_assets_cache(icloud_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_asset ON hash_cache(asset_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_on_server ON hash_cache(is_on_server)")
+        executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_source_checksum ON server_assets_cache(source_checksum)")
     }
     
     // MARK: - Schema Migration
@@ -251,6 +252,7 @@ final class SQLiteConnection {
             if currentVersion < 5 { migrateToV5() }
             if currentVersion < 6 { migrateToV6() }
             if currentVersion < 7 { migrateToV7() }
+            if currentVersion < 8 { migrateToV8() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -411,6 +413,13 @@ final class SQLiteConnection {
                 return
             }
         }
+    }
+
+    /// Migration to version 8: index source_checksum so album-asset resolution
+    /// avoids a full scan of server_assets_cache.
+    private func migrateToV8() {
+        logInfo("Migrating database to version 8: indexing source_checksum", category: .database)
+        executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_source_checksum ON server_assets_cache(source_checksum)")
     }
 
 

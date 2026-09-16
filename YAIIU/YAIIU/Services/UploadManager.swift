@@ -376,6 +376,7 @@ class UploadManager: ObservableObject {
     
     private func uploadItem(_ item: UploadItem, serverURL: String, apiKey: String) async throws {
         let asset = item.asset
+        let localIdentifier = item.localIdentifier
         let metadata = await Task.detached(priority: .userInitiated) {
             let resources = PhotoLibraryManager.shared.getUploadableResources(for: asset)
             let timezone = await Self.getTimezone(for: asset)
@@ -446,28 +447,21 @@ class UploadManager: ObservableObject {
                             Task { @MainActor in
                                 item.progress = baseProgress + resourceProgress
                             }
-                        } responseHandler: { [weak item] result, uploadedFileSize in
-                            Task { @MainActor in
-                                guard let item else {
-                                    enum UploadError: Error { case itemDeallocated }
-                                    responseTracker.markFailed(error: UploadError.itemDeallocated)
-                                    return
-                                }
-                                switch result {
-                                case .success(let response):
-                                    DatabaseManager.shared.recordUploadedAsset(
-                                        localIdentifier: item.localIdentifier,
-                                        resourceType: resourceType,
-                                        filename: filename,
-                                        immichId: response.id,
-                                        fileSize: uploadedFileSize,
-                                        isDuplicate: response.duplicate ?? false,
-                                        isFavorite: metadata.isFavorite
-                                    )
-                                    responseTracker.markCompleted()
-                                case .failure(let error):
-                                    responseTracker.markFailed(error: error)
-                                }
+                        } responseHandler: { result, uploadedFileSize in
+                            switch result {
+                            case .success(let response):
+                                DatabaseManager.shared.recordUploadedAsset(
+                                    localIdentifier: localIdentifier,
+                                    resourceType: resourceType,
+                                    filename: filename,
+                                    immichId: response.id,
+                                    fileSize: uploadedFileSize,
+                                    isDuplicate: response.duplicate ?? false,
+                                    isFavorite: metadata.isFavorite
+                                )
+                                responseTracker.markCompleted()
+                            case .failure(let error):
+                                responseTracker.markFailed(error: error)
                             }
                         }
                     } catch {
