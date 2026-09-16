@@ -25,6 +25,7 @@ protocol ServerAssetSyncAPI {
 
 protocol ServerAssetSyncStore {
     func isAssetOnServer(checksum: String) -> Bool
+    func getServerAssetByImmichId(_ immichId: String) -> ServerAssetRecord?
     func getSyncMetadata() -> SyncMetadata?
     func clearServerAssetsCache() -> Bool
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
@@ -233,20 +234,19 @@ class ServerAssetSyncService {
 
         let activeAssets = allAssets.filter { !$0.isDeleted }
         let deletedIds = allAssets.filter { $0.isDeleted }.map { $0.id }
+        let syncType = lastAck == nil ? "full" : "delta"
 
         let serverAssetRecords = activeAssets.compactMap { asset -> ServerAssetRecord? in
-            let checksum: String
-            if let sourceChecksum = metadataResult.sourceChecksumUpserts[asset.id] {
-                checksum = sourceChecksum
-            } else if let hexChecksum = convertBase64ToHex(asset.checksum) {
-                checksum = hexChecksum
-            } else {
+            guard let serverChecksum = convertBase64ToHex(asset.checksum) else {
                 logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
                 return nil
             }
+            let sourceChecksum = metadataResult.sourceChecksumUpserts[asset.id]
+                ?? (syncType == "delta" ? dbManager.getServerAssetByImmichId(asset.id)?.sourceChecksum : nil)
             return ServerAssetRecord(
                 immichId: asset.id,
-                checksum: checksum,
+                checksum: serverChecksum,
+                sourceChecksum: sourceChecksum,
                 originalFilename: asset.originalFileName,
                 assetType: asset.type,
                 updatedAt: asset.fileCreatedAt,
@@ -260,7 +260,6 @@ class ServerAssetSyncService {
             handler: progressHandler
         )
 
-        let syncType = lastAck == nil ? "full" : "delta"
 
         if syncType == "full", !clearCache() {
             throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")

@@ -43,6 +43,21 @@ final class ServerAssetRepositoryTests: XCTestCase {
 
         XCTAssertEqual(repository.getServerAssetByChecksum("new")?.iCloudId, "cloud-2")
     }
+    func testAssetDeltaPreservesSourceChecksumWhileUpdatingServerChecksum() {
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "server-old", sourceChecksum: "original", iCloudId: "cloud-1")
+        ]))
+
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "server-new", sourceChecksum: nil, iCloudId: nil)
+        ], syncType: "delta"))
+
+        let asset = repository.getServerAssetByImmichId("asset-1")
+        XCTAssertEqual(asset?.checksum, "server-new")
+        XCTAssertEqual(asset?.sourceChecksum, "original")
+        XCTAssertEqual(repository.getServerAssetByChecksum("original")?.immichId, "asset-1")
+    }
+
 
     func testMetadataOnlyUpsertUpdatesExistingAsset() {
         XCTAssertTrue(repository.saveServerAssets([record(checksum: "sum", iCloudId: nil)]))
@@ -173,10 +188,11 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(sqlite3_exec(connection.db, sql, nil, nil, nil), SQLITE_OK)
     }
 
-    private func record(checksum: String, iCloudId: String?) -> ServerAssetRecord {
+    private func record(checksum: String, sourceChecksum: String? = nil, iCloudId: String?) -> ServerAssetRecord {
         ServerAssetRecord(
             immichId: "asset-1",
             checksum: checksum,
+            sourceChecksum: sourceChecksum,
             originalFilename: "photo.jpg",
             assetType: "IMAGE",
             updatedAt: "2026-08-25T00:00:00Z",

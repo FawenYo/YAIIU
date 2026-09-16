@@ -126,18 +126,17 @@ final class BackgroundUploadExtensionCore {
 
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
-            // Build destination first; if PHAsset is temporarily unavailable (e.g.
-            // PHPhotosError 3300 during iCloud sync), skip this job rather than calling
-            // retry(destination: nil) which strips all custom headers and causes the
-            // proxy to fall back to "upload.jpg".
-            guard let destination = buildDestination(for: job.resource) else {
-                logWarning("Skipping retry for \(job.resource.originalFilename): PHAsset temporarily unavailable")
-                continue
-            }
+            let errorDescription = jobErrorDescription(job)
+            logWarning("Retrying failed upload job \(job.localIdentifier): \(errorDescription)")
+
+            var destination = job.destination
+            destination.allowsCellularAccess = BackgroundUploadPolicy.allowsCellularAccess(
+                for: .retry,
+                allowCellular: settings.allowCellularBackgroundUpload
+            )
             try library.performChangesAndWait {
-                guard let req = PHAssetResourceUploadJobChangeRequest(for: job)
-                else { return }
-                req.retry(destination: destination)
+                guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                request.retry(destination: destination)
                 retriedAny = true
             }
         }
@@ -151,10 +150,16 @@ final class BackgroundUploadExtensionCore {
             options: nil
         )
 
-        // Batch-fetch all assets to avoid per-item fetch in resolvedFilename()
+        var jobResources = [(job: PHAssetResourceUploadJob, resource: PHAssetResource)]()
         var identifiers = [String]()
         for i in 0..<jobs.count {
-            identifiers.append(jobs.object(at: i).resource.assetLocalIdentifier)
+            let job = jobs.object(at: i)
+            guard let resource = resource(for: job) else {
+                logWarning("Could not resolve resource for completed job \(job.localIdentifier); deferring acknowledgement")
+                continue
+            }
+            jobResources.append((job, resource))
+            identifiers.append(resource.assetLocalIdentifier)
         }
         let fetchResult = PHAsset.fetchAssets(
             withLocalIdentifiers: Array(Set(identifiers)),
@@ -166,9 +171,7 @@ final class BackgroundUploadExtensionCore {
         }
 
         var acknowledgedAny = false
-        for i in 0..<jobs.count where !isCancelled {
-            let job = jobs.object(at: i)
-            let resource = job.resource
+        for (job, resource) in jobResources where !isCancelled {
 
             let resolvedFilename: String
             if let asset = assetsById[resource.assetLocalIdentifier] {
@@ -239,12 +242,16 @@ final class BackgroundUploadExtensionCore {
             }
         }
 
+        let timezones = captureTimezones(for: resources)
+        guard !isCancelled else { return .deferred }
+
         let library = PHPhotoLibrary.shared()
         var createdAny = false
         try library.performChangesAndWait {
             for resource in resources where !self.isCancelled {
                 guard let dest = self.buildDestination(
                     for: resource,
+                    timezone: timezones[resource.assetLocalIdentifier] ?? TimeZone.current,
                     purpose: .newJob
                 ) else {
                     continue
@@ -325,9 +332,9 @@ final class BackgroundUploadExtensionCore {
     // MARK: - Server Communication
     private func buildDestination(
         for resource: PHAssetResource,
+        timezone: TimeZone,
         purpose: BackgroundUploadPolicy.RequestPurpose = .retry
-    ) -> URLRequest?
-    {
+    ) -> URLRequest? {
         guard !settings.serverURL.isEmpty, !settings.apiKey.isEmpty,
             let url = URL(string: "\(settings.serverURL)/api/assets/background")
         else {
@@ -344,7 +351,7 @@ final class BackgroundUploadExtensionCore {
         let modified = asset.modificationDate ?? Date()
         let isFavorite = asset.isFavorite
 
-        let timezone = TimeZone.current
+        let timezone = timezone
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
         fmt.timeZone = timezone
@@ -467,23 +474,57 @@ final class BackgroundUploadExtensionCore {
         return mapping.first { $0.check(uti) }?.mime
             ?? "application/octet-stream"
     }
+    private func resource(for job: PHAssetResourceUploadJob) -> PHAssetResource? {
+        if #available(iOS 27.0, *) {
+            return PHAssetResource.assetResource(forUploadJob: job)
+        }
+        return job.resource
+    }
 
-    private func captureTimezone(for asset: PHAsset) -> TimeZone {
-        guard let location = asset.location else { return TimeZone.current }
+    private func jobErrorDescription(_ job: PHAssetResourceUploadJob) -> String {
+        guard #available(iOS 26.4, *), let error = job.error else {
+            return "unknown error"
+        }
+        let nsError = error as NSError
+        return "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
+    }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        guard let request = MKReverseGeocodingRequest(location: location) else { return TimeZone.current }
-        var resolved: TimeZone?
-        request.getMapItems { mapItems, _ in
-            resolved = mapItems?.first?.timeZone
-            semaphore.signal()
+
+    private func captureTimezones(for resources: [PHAssetResource]) -> [String: TimeZone] {
+        let fallback = TimeZone.current
+        let identifiers = Array(Set(resources.map(\.assetLocalIdentifier)))
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var resolved = Dictionary(uniqueKeysWithValues: identifiers.map { ($0, fallback) })
+        var requests = [MKReverseGeocodingRequest]()
+
+        assets.enumerateObjects { asset, _, _ in
+            guard let location = asset.location,
+                  let request = MKReverseGeocodingRequest(location: location) else {
+                return
+            }
+            requests.append(request)
+            group.enter()
+            request.getMapItems { mapItems, _ in
+                if let timezone = mapItems?.first?.timeZone {
+                    lock.lock()
+                    resolved[asset.localIdentifier] = timezone
+                    lock.unlock()
+                }
+                group.leave()
+            }
         }
 
-        guard semaphore.wait(timeout: .now() + 3) == .success else {
-            request.cancel()
-            return TimeZone.current
+        if group.wait(timeout: .now() + 3) == .timedOut {
+            for request in requests {
+                request.cancel()
+            }
         }
-        return resolved ?? TimeZone.current
+        lock.lock()
+        let snapshot = resolved
+        lock.unlock()
+        return snapshot
     }
 
     private func fetchAsset(for resource: PHAssetResource) -> PHAsset? {

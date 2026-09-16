@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 6
+    private static let schemaVersion = 7
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -165,6 +165,7 @@ final class SQLiteConnection {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             immich_id TEXT NOT NULL UNIQUE,
             checksum TEXT NOT NULL,
+            source_checksum TEXT,
             original_filename TEXT,
             asset_type TEXT,
             updated_at TEXT,
@@ -249,6 +250,7 @@ final class SQLiteConnection {
             if currentVersion < 4 { migrateToV4() }
             if currentVersion < 5 { migrateToV5() }
             if currentVersion < 6 { migrateToV6() }
+            if currentVersion < 7 { migrateToV7() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -387,13 +389,43 @@ final class SQLiteConnection {
             }
         }
     }
+    private func migrateToV7() {
+        let checkSql = "PRAGMA table_info(server_assets_cache);"
+        var statement: OpaquePointer?
+        var hasSourceChecksum = false
+
+        if sqlite3_prepare_v2(db, checkSql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1),
+                   String(cString: columnName) == "source_checksum" {
+                    hasSourceChecksum = true
+                    break
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        if !hasSourceChecksum {
+            guard sqlite3_exec(db, "ALTER TABLE server_assets_cache ADD COLUMN source_checksum TEXT;", nil, nil, nil) == SQLITE_OK else {
+                logError("Failed to add source_checksum column: \(lastErrorMessage)", category: .database)
+                return
+            }
+        }
+    }
+
 
     private func hasSchemaColumnsForCurrentVersion() -> Bool {
-        let requiredColumns = ["last_ack", "server_url"]
+        let syncMetadataColumns = tableColumns("sync_metadata")
+        let serverAssetColumns = tableColumns("server_assets_cache")
+        return ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
+            && serverAssetColumns.contains("source_checksum")
+    }
+
+    private func tableColumns(_ table: String) -> Set<String> {
         var found = Set<String>()
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "PRAGMA table_info(sync_metadata);", -1, &statement, nil) == SQLITE_OK else {
-            return false
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table));", -1, &statement, nil) == SQLITE_OK else {
+            return found
         }
         while sqlite3_step(statement) == SQLITE_ROW {
             if let name = sqlite3_column_text(statement, 1) {
@@ -401,7 +433,7 @@ final class SQLiteConnection {
             }
         }
         sqlite3_finalize(statement)
-        return requiredColumns.allSatisfy(found.contains)
+        return found
     }
 
     // MARK: - Statement Execution

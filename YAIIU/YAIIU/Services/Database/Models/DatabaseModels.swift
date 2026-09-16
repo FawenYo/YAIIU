@@ -25,15 +25,17 @@ struct HashCacheRecord {
 struct ServerAssetRecord {
     let immichId: String
     let checksum: String
+    let sourceChecksum: String?
     let originalFilename: String?
     let assetType: String?
     let updatedAt: String?
     let iCloudId: String?
     let ownerId: String?
 
-    init(immichId: String, checksum: String, originalFilename: String? = nil, assetType: String? = nil, updatedAt: String? = nil, iCloudId: String? = nil, ownerId: String? = nil) {
+    init(immichId: String, checksum: String, sourceChecksum: String? = nil, originalFilename: String? = nil, assetType: String? = nil, updatedAt: String? = nil, iCloudId: String? = nil, ownerId: String? = nil) {
         self.immichId = immichId
         self.checksum = checksum
+        self.sourceChecksum = sourceChecksum
         self.originalFilename = originalFilename
         self.assetType = assetType
         self.updatedAt = updatedAt

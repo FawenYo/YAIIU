@@ -341,7 +341,7 @@ final class UploadRecordRepository {
                 SELECT s.immich_id
                 FROM requested r
                 JOIN hash_cache h ON h.asset_id = r.asset_id
-                JOIN server_assets_cache s ON s.checksum = h.sha1_hash
+                JOIN server_assets_cache s ON COALESCE(s.source_checksum, s.checksum) = h.sha1_hash
                 WHERE s.owner_id = ?;
                 """
                 var statement: OpaquePointer?
@@ -420,7 +420,7 @@ final class UploadRecordRepository {
             SELECT ua.asset_id, sac.immich_id
             FROM uploaded_assets ua
             JOIN hash_cache hc ON hc.asset_id = ua.asset_id
-            JOIN server_assets_cache sac ON sac.checksum = hc.sha1_hash
+            JOIN server_assets_cache sac ON COALESCE(sac.source_checksum, sac.checksum) = hc.sha1_hash
             WHERE ua.immich_id = 'unknown'
               AND NOT (
                   ua.resource_type IN ('raw', 'video')

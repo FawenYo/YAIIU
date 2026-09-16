@@ -99,7 +99,33 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         guard case .success = result else {
             return XCTFail("Expected sync to succeed")
         }
-        XCTAssertEqual(store.savedAssets.first?.checksum, "original-checksum")
+        XCTAssertEqual(store.savedAssets.first?.sourceChecksum, "original-checksum")
+    }
+    func testDeltaSyncPreservesExistingSourceChecksumWithoutMetadataEvent() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        store.syncMetadata = SyncMetadata(
+            lastSyncTime: Date(),
+            lastSyncType: "delta",
+            userId: "owner-1",
+            serverURL: "https://immich.example",
+            totalAssets: 1,
+            lastAck: "AssetV2|previous"
+        )
+        store.existingAsset = ServerAssetRecord(
+            immichId: "asset-1",
+            checksum: "server-checksum",
+            sourceChecksum: "original-checksum"
+        )
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+
+        let result = await sync(service)
+
+        guard case .success = result else {
+            return XCTFail("Expected sync to succeed")
+        }
+        XCTAssertEqual(store.savedAssets.first?.sourceChecksum, "original-checksum")
     }
 
     private func sync(_ service: ServerAssetSyncService) async -> Result<SyncResult, Error> {
@@ -184,13 +210,18 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
     var shouldFailAssetSave = false
     private(set) var savedAssets: [ServerAssetRecord] = []
     var shouldFailCacheClear = false
+    var syncMetadata: SyncMetadata?
+    var existingAsset: ServerAssetRecord?
 
     init(operations: OperationRecorder) {
         self.operations = operations
     }
 
     func isAssetOnServer(checksum: String) -> Bool { false }
-    func getSyncMetadata() -> SyncMetadata? { nil }
+    func getServerAssetByImmichId(_ immichId: String) -> ServerAssetRecord? {
+        existingAsset?.immichId == immichId ? existingAsset : nil
+    }
+    func getSyncMetadata() -> SyncMetadata? { syncMetadata }
     func clearServerAssetsCache() -> Bool {
         operations.append("clear-cache")
         return !shouldFailCacheClear

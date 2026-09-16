@@ -10,8 +10,9 @@ struct MobileAppMetadata: Encodable {
     let adjustmentTime: String?
     let latitude: String?
     let longitude: String?
-    
-    init(iCloudId: String?, createdAt: Date?, adjustmentTime: Date? = nil, latitude: Double? = nil, longitude: Double? = nil) {
+    let sourceChecksum: String?
+
+    init(iCloudId: String?, createdAt: Date?, adjustmentTime: Date? = nil, latitude: Double? = nil, longitude: Double? = nil, sourceChecksum: String? = nil) {
         self.iCloudId = iCloudId
         
         let formatter = ISO8601DateFormatter()
@@ -21,6 +22,7 @@ struct MobileAppMetadata: Encodable {
         self.adjustmentTime = adjustmentTime.map { formatter.string(from: $0) }
         self.latitude = latitude.map { String($0) }
         self.longitude = longitude.map { String($0) }
+        self.sourceChecksum = sourceChecksum
     }
     
     func encode(to encoder: Encoder) throws {
@@ -30,10 +32,11 @@ struct MobileAppMetadata: Encodable {
         if let adjustmentTime = adjustmentTime { try container.encode(adjustmentTime, forKey: .adjustmentTime) }
         if let latitude = latitude { try container.encode(latitude, forKey: .latitude) }
         if let longitude = longitude { try container.encode(longitude, forKey: .longitude) }
+        if let sourceChecksum = sourceChecksum { try container.encode(sourceChecksum, forKey: .sourceChecksum) }
     }
     
     private enum CodingKeys: String, CodingKey {
-        case iCloudId, createdAt, adjustmentTime, latitude, longitude
+        case iCloudId, createdAt, adjustmentTime, latitude, longitude, sourceChecksum
     }
 }
 
@@ -122,6 +125,14 @@ class ImmichAPIService: NSObject {
                 Self.uploadFileGate.release(1)
             }
         }
+        let sourceChecksum: String?
+        if fileURL != originalFileURL {
+            sourceChecksum = try await Task.detached(priority: .utility) {
+                try FileHasher.sha1Hex(ofFileAt: originalFileURL).hash
+            }.value
+        } else {
+            sourceChecksum = nil
+        }
         let boundary = UUID().uuidString
 
         let dateFormatter = ISO8601DateFormatter()
@@ -139,7 +150,8 @@ class ImmichAPIService: NSObject {
             dateFormatter: dateFormatter,
             iCloudId: iCloudId,
             latitude: latitude,
-            longitude: longitude
+            longitude: longitude,
+            sourceChecksum: sourceChecksum
         )
         let epilogueData = "\r\n--\(boundary)--\r\n".data(using: .utf8)!
 
@@ -320,7 +332,8 @@ class ImmichAPIService: NSObject {
         dateFormatter: ISO8601DateFormatter,
         iCloudId: String?,
         latitude: Double?,
-        longitude: Double?
+        longitude: Double?,
+        sourceChecksum: String?
     ) -> Data {
         var body = Data()
 
@@ -336,12 +349,13 @@ class ImmichAPIService: NSObject {
         appendField(name: "fileModifiedAt", value: dateFormatter.string(from: modifiedAt))
         appendField(name: "isFavorite", value: String(isFavorite))
 
-        if let iCloudId = iCloudId {
+        if iCloudId != nil || sourceChecksum != nil {
             let metadata = MobileAppMetadata(
                 iCloudId: iCloudId,
                 createdAt: createdAt,
                 latitude: latitude,
-                longitude: longitude
+                longitude: longitude,
+                sourceChecksum: sourceChecksum
             )
             let item = RemoteAssetMetadataItem(key: RemoteAssetMetadataItem.mobileAppKey, value: metadata)
             if let metadataJSON = try? JSONEncoder().encode([item]),
