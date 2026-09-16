@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,6 +62,7 @@ type BackgroundUploadRequest struct {
 	Latitude       string `json:"latitude,omitempty"`
 	Longitude      string `json:"longitude,omitempty"`
 	TimezoneOffset string `json:"timezoneOffset,omitempty"`
+	SourceChecksum string `json:"-"`
 }
 
 // MobileAppMetadata represents the metadata value for mobile-app key
@@ -69,6 +72,7 @@ type MobileAppMetadata struct {
 	AdjustmentTime string `json:"adjustmentTime,omitempty"`
 	Latitude       string `json:"latitude,omitempty"`
 	Longitude      string `json:"longitude,omitempty"`
+	SourceChecksum string `json:"sourceChecksum,omitempty"`
 }
 
 // RemoteAssetMetadataItem represents a metadata item to send to Immich
@@ -82,6 +86,8 @@ type BackgroundUploadResponse struct {
 	ID        string `json:"id"`
 	Duplicate bool   `json:"duplicate"`
 }
+
+const immichAssetIDHeader = "X-YAIIU-Immich-Asset-Id"
 
 // BackgroundUploadHandler handles the background upload endpoint
 // This endpoint receives raw photo/video data and converts it to
@@ -128,6 +134,10 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 			log.Printf("[%s] Failed to normalize image timezone metadata: %v", clientIP, err)
 			http.Error(w, "Failed to normalize image metadata", http.StatusInternalServerError)
 			return
+		}
+		if changed {
+			checksum := sha1.Sum(photoData)
+			metadata.SourceChecksum = hex.EncodeToString(checksum[:])
 		}
 		if changed {
 			photoData = normalizedData
@@ -202,6 +212,14 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 		}
 
 		log.Printf("[%s] Immich response status: %d, body: %s", clientIP, resp.StatusCode, string(responseBody))
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			var uploadResponse BackgroundUploadResponse
+			if err := json.Unmarshal(responseBody, &uploadResponse); err != nil {
+				log.Printf("[%s] Failed to parse Immich upload response: %v", clientIP, err)
+			} else if uploadResponse.ID != "" {
+				w.Header().Set(immichAssetIDHeader, uploadResponse.ID)
+			}
+		}
 
 		// Copy response headers
 		for key, values := range resp.Header {
@@ -319,15 +337,16 @@ func createMultipartRequest(metadata BackgroundUploadRequest, photoData []byte) 
 		}
 	}
 
-	// Include mobile-app metadata with iCloudId if available
-	if metadata.ICloudId != "" {
+	// Include reconciliation metadata when the upload supplies it.
+	if metadata.ICloudId != "" || metadata.SourceChecksum != "" {
 		metadataItem := RemoteAssetMetadataItem{
 			Key: "mobile-app",
 			Value: MobileAppMetadata{
-				ICloudId:  metadata.ICloudId,
-				CreatedAt: metadata.FileCreatedAt,
-				Latitude:  metadata.Latitude,
-				Longitude: metadata.Longitude,
+				ICloudId:       metadata.ICloudId,
+				CreatedAt:      metadata.FileCreatedAt,
+				Latitude:       metadata.Latitude,
+				Longitude:      metadata.Longitude,
+				SourceChecksum: metadata.SourceChecksum,
 			},
 		}
 		metadataJSON, err := json.Marshal([]RemoteAssetMetadataItem{metadataItem})

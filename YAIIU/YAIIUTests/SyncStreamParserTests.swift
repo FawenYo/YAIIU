@@ -10,6 +10,16 @@ final class SyncStreamParserTests: XCTestCase {
         XCTAssertEqual(result.iCloudIdUpserts, ["asset-1": "cloud-1"])
     }
 
+    func testMetadataParserReturnsSourceChecksum() {
+        let checksum = "0123456789abcdef0123456789abcdef01234567"
+        let data = Data(#"{"type":"AssetMetadataV1","ack":"AssetMetadataV1|ack-1","data":{"assetId":"asset-1","key":"mobile-app","value":{"sourceChecksum":"0123456789ABCDEF0123456789ABCDEF01234567"}}}"#.utf8)
+
+        let result = ImmichAPIService.parseAssetMetadataStream(data)
+
+        XCTAssertEqual(result.sourceChecksumUpserts, ["asset-1": checksum])
+        XCTAssertEqual(result.acksByType, ["AssetMetadataV1": "AssetMetadataV1|ack-1"])
+    }
+
     func testMetadataParserReturnsMobileAppDeletion() throws {
         let data = Data(#"{"type":"AssetMetadataDeleteV1","ack":"AssetMetadataDeleteV1|ack-1","data":{"assetId":"asset-1","key":"mobile-app"}}"#.utf8)
 

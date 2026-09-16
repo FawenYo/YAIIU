@@ -92,6 +92,17 @@ export IMMICH_SERVER_URL=http://your-immich-server:2283
 go run .
 ```
 
+Install ExifTool first when running the proxy directly; background image timezone normalization fails closed if it is unavailable.
+
+```bash
+# macOS
+brew install exiftool
+
+# Debian/Ubuntu
+sudo apt install libimage-exiftool-perl
+```
+
+
 ### Using Docker
 
 ```bash

@@ -43,12 +43,8 @@ enum ImageTimezoneMetadata {
             kCGImageDestinationMetadata: metadata,
             kCGImageDestinationMergeMetadata: true,
         ] as CFDictionary
-        var error: Unmanaged<CFError>?
-        guard CGImageDestinationCopyImageSource(destination, source, options, &error) else {
+        guard CGImageDestinationCopyImageSource(destination, source, options, nil) else {
             try? FileManager.default.removeItem(at: outputURL)
-            if let error {
-                throw error.takeRetainedValue()
-            }
             return fileURL
         }
 

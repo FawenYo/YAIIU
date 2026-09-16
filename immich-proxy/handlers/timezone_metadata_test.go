@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,6 +46,30 @@ func TestAddTimezoneOffsetSkipsNonImages(t *testing.T) {
 	}
 	if changed || string(output) != string(input) {
 		t.Fatal("expected non-image payload to pass through unchanged")
+	}
+}
+
+func TestCreateMultipartRequestIncludesSourceChecksumAfterRewrite(t *testing.T) {
+	metadata := BackgroundUploadRequest{
+		DeviceAssetID:  "asset-1-primary-photo.jpg",
+		DeviceID:       "device-1",
+		FileCreatedAt:  "2026-09-16T00:00:00Z",
+		FileModifiedAt: "2026-09-16T00:00:00Z",
+		IsFavorite:     "false",
+		Filename:       "photo.jpg",
+		ContentType:    "image/jpeg",
+		SourceChecksum: "0123456789abcdef0123456789abcdef01234567",
+	}
+
+	body, contentType, err := createMultipartRequest(metadata, []byte("image"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(contentType, "multipart/form-data") {
+		t.Fatalf("content type = %q", contentType)
+	}
+	if !strings.Contains(body.String(), `"sourceChecksum":"0123456789abcdef0123456789abcdef01234567"`) {
+		t.Fatal("expected source checksum in mobile-app metadata")
 	}
 }
 

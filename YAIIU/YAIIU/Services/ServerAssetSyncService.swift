@@ -235,13 +235,18 @@ class ServerAssetSyncService {
         let deletedIds = allAssets.filter { $0.isDeleted }.map { $0.id }
 
         let serverAssetRecords = activeAssets.compactMap { asset -> ServerAssetRecord? in
-            guard let hexChecksum = convertBase64ToHex(asset.checksum) else {
+            let checksum: String
+            if let sourceChecksum = metadataResult.sourceChecksumUpserts[asset.id] {
+                checksum = sourceChecksum
+            } else if let hexChecksum = convertBase64ToHex(asset.checksum) {
+                checksum = hexChecksum
+            } else {
                 logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
                 return nil
             }
             return ServerAssetRecord(
                 immichId: asset.id,
-                checksum: hexChecksum,
+                checksum: checksum,
                 originalFilename: asset.originalFileName,
                 assetType: asset.type,
                 updatedAt: asset.fileCreatedAt,

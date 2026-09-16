@@ -956,6 +956,7 @@ class ImmichAPIService: NSObject {
 
     static func parseAssetMetadataStream(_ data: Data) -> AssetMetadataStreamResult {
         var iCloudIdUpserts: [String: String] = [:]
+        var sourceChecksumUpserts: [String: String] = [:]
         var iCloudIdDeletes: Set<String> = []
         var acksByType: [String: String] = [:]
         var state: SyncStreamResultState = .data
@@ -978,13 +979,17 @@ class ImmichAPIService: NSObject {
                     collectLatestAck(from: object, into: &acksByType)
                     continue
                 }
-                guard let iCloudId = value["iCloudId"] as? String,
-                      !iCloudId.isEmpty
-                else {
+                if let iCloudId = value["iCloudId"] as? String, !iCloudId.isEmpty {
+                    iCloudIdUpserts[assetId] = iCloudId
+                    iCloudIdDeletes.remove(assetId)
+                }
+                if let sourceChecksum = value["sourceChecksum"] as? String,
+                   sourceChecksum.range(of: "^[0-9a-fA-F]{40}$", options: .regularExpression) != nil {
+                    sourceChecksumUpserts[assetId] = sourceChecksum.lowercased()
+                }
+                guard iCloudIdUpserts[assetId] != nil || sourceChecksumUpserts[assetId] != nil else {
                     continue
                 }
-                iCloudIdUpserts[assetId] = iCloudId
-                iCloudIdDeletes.remove(assetId)
                 collectLatestAck(from: object, into: &acksByType)
             case "AssetMetadataDeleteV1":
                 guard let eventData = object["data"] as? [String: Any],
@@ -1013,6 +1018,7 @@ class ImmichAPIService: NSObject {
 
         return AssetMetadataStreamResult(
             iCloudIdUpserts: iCloudIdUpserts,
+            sourceChecksumUpserts: sourceChecksumUpserts,
             iCloudIdDeletes: iCloudIdDeletes,
             acksByType: acksByType,
             state: state
@@ -1271,6 +1277,7 @@ enum SyncStreamResultState {
 
 struct AssetMetadataStreamResult {
     let iCloudIdUpserts: [String: String]
+    let sourceChecksumUpserts: [String: String]
     let iCloudIdDeletes: Set<String>
     let acksByType: [String: String]
     let state: SyncStreamResultState

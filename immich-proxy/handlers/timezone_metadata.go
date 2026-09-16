@@ -45,7 +45,7 @@ func addTimezoneOffsetIfMissing(photoData []byte, filename, offset string) ([]by
 	cmd := exec.Command(
 		"exiftool",
 		"-q", "-q",
-		"-if", "not defined $OffsetTimeOriginal",
+		"-if", "not defined $OffsetTimeOriginal or $OffsetTimeOriginal eq ''",
 		"-OffsetTimeOriginal="+offset,
 		"-o", outputPath,
 		inputPath,
@@ -53,8 +53,7 @@ func addTimezoneOffsetIfMissing(photoData []byte, filename, offset string) ([]by
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if _, statErr := os.Stat(outputPath); os.IsNotExist(statErr) {
-			// ExifTool exits non-zero when the condition is false.
+		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 2 && strings.TrimSpace(stderr.String()) == "" {
 			return photoData, false, nil
 		}
 		return nil, false, fmt.Errorf("write OffsetTimeOriginal: %w: %s", err, strings.TrimSpace(stderr.String()))
@@ -69,7 +68,7 @@ func addTimezoneOffsetIfMissing(photoData []byte, filename, offset string) ([]by
 
 func isImageFilename(filename string) bool {
 	lower := strings.ToLower(filename)
-	for _, extension := range []string{".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff", ".webp", ".dng"} {
+	for _, extension := range []string{".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff", ".webp", ".dng", ".arw", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2"} {
 		if strings.HasSuffix(lower, extension) {
 			return true
 		}

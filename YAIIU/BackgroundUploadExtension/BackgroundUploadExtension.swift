@@ -1,5 +1,6 @@
 import CoreLocation
 import ExtensionFoundation
+import MapKit
 import Network
 import Photos
 import UniformTypeIdentifiers
@@ -26,6 +27,7 @@ final class BackgroundUploadExtensionCore {
     private var currentPath: NWPath?
     private var hasReceivedInitialPath = false
     private let appGroupID = "group.com.fawenyo.yaiiu"
+    private let immichAssetIDHeader = "x-yaiiu-immich-asset-id"
 
     private var isCancelled: Bool {
         cancelledState.withLock { $0 }
@@ -177,11 +179,20 @@ final class BackgroundUploadExtensionCore {
 
             let resourceType = resourceTypeString(for: resource)
 
+            let immichId: String
+            if #available(iOS 26.4, *),
+               let value = job.responseHeaderFields?[immichAssetIDHeader],
+               UUID(uuidString: value) != nil {
+                immichId = value
+            } else {
+                immichId = "unknown"
+            }
+
             database.recordUploadedAsset(
                 assetId: resource.assetLocalIdentifier,
                 resourceType: resourceType,
                 filename: resolvedFilename,
-                immichId: "unknown",
+                immichId: immichId,
                 fileSize: 0,
                 isDuplicate: false
             )
@@ -328,11 +339,11 @@ final class BackgroundUploadExtensionCore {
             return nil
         }
         let resolvedFilename = resource.resolvedFilename(using: asset)
-        
+
         let created = asset.creationDate ?? Date()
         let modified = asset.modificationDate ?? Date()
         let isFavorite = asset.isFavorite
-        
+
         let timezone = TimeZone.current
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withTimeZone]
@@ -368,10 +379,12 @@ final class BackgroundUploadExtensionCore {
             mimeType(for: resource),
             forHTTPHeaderField: "X-Content-Type"
         )
-        req.setValue(
-            ImageTimezoneOffsetFormatter.string(for: timezone.secondsFromGMT(for: created)),
-            forHTTPHeaderField: "X-Timezone-Offset"
-        )
+        if let timezone = captureTimezone(for: asset) {
+            req.setValue(
+                ImageTimezoneOffsetFormatter.string(for: timezone.secondsFromGMT(for: created)),
+                forHTTPHeaderField: "X-Timezone-Offset"
+            )
+        }
         
         if let iCloudId = getCloudIdentifier(for: asset) {
             req.setValue(iCloudId, forHTTPHeaderField: "X-iCloud-Id")
@@ -455,6 +468,24 @@ final class BackgroundUploadExtensionCore {
 
         return mapping.first { $0.check(uti) }?.mime
             ?? "application/octet-stream"
+    }
+
+    private func captureTimezone(for asset: PHAsset) -> TimeZone? {
+        guard let location = asset.location else { return nil }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
+        var resolved: TimeZone?
+        request.getMapItems { mapItems, _ in
+            resolved = mapItems?.first?.timeZone
+            semaphore.signal()
+        }
+
+        guard semaphore.wait(timeout: .now() + 3) == .success else {
+            request.cancel()
+            return nil
+        }
+        return resolved
     }
 
     private func fetchAsset(for resource: PHAssetResource) -> PHAsset? {
