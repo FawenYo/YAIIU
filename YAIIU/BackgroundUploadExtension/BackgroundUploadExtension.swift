@@ -368,6 +368,10 @@ final class BackgroundUploadExtensionCore {
             mimeType(for: resource),
             forHTTPHeaderField: "X-Content-Type"
         )
+        req.setValue(
+            ImageTimezoneOffsetFormatter.string(for: timezone.secondsFromGMT(for: created)),
+            forHTTPHeaderField: "X-Timezone-Offset"
+        )
         
         if let iCloudId = getCloudIdentifier(for: asset) {
             req.setValue(iCloudId, forHTTPHeaderField: "X-iCloud-Id")
@@ -419,6 +423,7 @@ final class BackgroundUploadExtensionCore {
 
         return "primary"
     }
+
 
     private func mimeType(for resource: PHAssetResource) -> String {
         // Use the system UTI registry for accurate MIME type resolution.
@@ -580,5 +585,13 @@ final class LegacyBackgroundUploadExtension: PHBackgroundResourceUploadExtension
 
     func notifyTermination() {
         core.notifyTermination()
+    }
+}
+
+private enum ImageTimezoneOffsetFormatter {
+    static func string(for secondsFromGMT: Int) -> String {
+        let sign = secondsFromGMT < 0 ? "-" : "+"
+        let absoluteSeconds = abs(secondsFromGMT)
+        return String(format: "%@%02d:%02d", sign, absoluteSeconds / 3600, (absoluteSeconds % 3600) / 60)
     }
 }

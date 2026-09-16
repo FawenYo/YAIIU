@@ -20,8 +20,8 @@ FROM alpine:latest
 
 WORKDIR /app
 
-# Install ca-certificates for HTTPS
-RUN apk --no-cache add ca-certificates
+# Install runtime certificates and ExifTool for lossless image metadata updates
+RUN apk --no-cache add ca-certificates perl-image-exiftool
 
 # Copy the binary from builder
 COPY --from=builder /app/immich-proxy .

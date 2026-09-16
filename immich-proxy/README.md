@@ -65,6 +65,7 @@ path; resumable uploads are not currently supported.
 | `X-Is-Favorite`      | No       | Whether the asset is a favorite (default: `false`) |
 | `X-Filename`         | No       | Original filename of the asset                     |
 | `X-Content-Type`     | No       | MIME type of the asset                             |
+| `X-Timezone-Offset`  | No       | EXIF offset (`+08:00`) added only when an image lacks `OffsetTimeOriginal` |
 
 ### Request Body
 

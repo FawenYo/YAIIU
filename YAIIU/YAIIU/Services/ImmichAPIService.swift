@@ -93,16 +93,32 @@ class ImmichAPIService: NSObject {
             throw CancellationError()
         }
         var ownsPreparedFile = true
+        let originalFileURL: URL
+        do {
+            originalFileURL = try await ResourceFileAccess.tempFile(for: resource)
+        } catch {
+            Self.uploadFileGate.release(1)
+            throw error
+        }
+
         let fileURL: URL
         do {
-            fileURL = try await ResourceFileAccess.tempFile(for: resource)
+            fileURL = try ImageTimezoneMetadata.addingOffsetIfMissing(
+                to: originalFileURL,
+                timezone: timezone ?? TimeZone.current,
+                at: createdAt
+            )
         } catch {
+            try? FileManager.default.removeItem(at: originalFileURL)
             Self.uploadFileGate.release(1)
             throw error
         }
         defer {
             if ownsPreparedFile {
-                try? FileManager.default.removeItem(at: fileURL)
+                try? FileManager.default.removeItem(at: originalFileURL)
+                if fileURL != originalFileURL {
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
                 Self.uploadFileGate.release(1)
             }
         }
@@ -206,7 +222,10 @@ class ImmichAPIService: NSObject {
                 into: outputStream,
                 filename: filename,
                 completion: {
-                    try? FileManager.default.removeItem(at: fileURL)
+                    try? FileManager.default.removeItem(at: originalFileURL)
+                    if fileURL != originalFileURL {
+                        try? FileManager.default.removeItem(at: fileURL)
+                    }
                     Self.uploadFileGate.release(1)
                 }
             )

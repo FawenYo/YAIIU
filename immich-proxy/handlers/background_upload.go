@@ -59,6 +59,7 @@ type BackgroundUploadRequest struct {
 	ICloudId       string `json:"iCloudId,omitempty"`
 	Latitude       string `json:"latitude,omitempty"`
 	Longitude      string `json:"longitude,omitempty"`
+	TimezoneOffset string `json:"timezoneOffset,omitempty"`
 }
 
 // MobileAppMetadata represents the metadata value for mobile-app key
@@ -117,6 +118,21 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 		defer r.Body.Close()
 
 		log.Printf("[%s] Received %d bytes of photo data", clientIP, len(photoData))
+
+		normalizedData, changed, err := addTimezoneOffsetIfMissing(
+			photoData,
+			metadata.Filename,
+			metadata.TimezoneOffset,
+		)
+		if err != nil {
+			log.Printf("[%s] Failed to normalize image timezone metadata: %v", clientIP, err)
+			http.Error(w, "Failed to normalize image metadata", http.StatusInternalServerError)
+			return
+		}
+		if changed {
+			photoData = normalizedData
+			log.Printf("[%s] Added EXIF OffsetTimeOriginal=%s", clientIP, metadata.TimezoneOffset)
+		}
 
 		// Last-resort safety net: if headers are missing or wrong, use magic byte
 		// detection to prevent video payloads from reaching Immich as image/jpeg.
@@ -213,6 +229,7 @@ func extractMetadata(r *http.Request) BackgroundUploadRequest {
 		ICloudId:       r.Header.Get("X-iCloud-Id"),
 		Latitude:       r.Header.Get("X-Latitude"),
 		Longitude:      r.Header.Get("X-Longitude"),
+		TimezoneOffset: r.Header.Get("X-Timezone-Offset"),
 	}
 
 	// Fall back to query parameters if headers are not set
@@ -246,6 +263,9 @@ func extractMetadata(r *http.Request) BackgroundUploadRequest {
 	}
 	if metadata.Longitude == "" {
 		metadata.Longitude = query.Get("longitude")
+	}
+	if metadata.TimezoneOffset == "" {
+		metadata.TimezoneOffset = query.Get("timezoneOffset")
 	}
 
 	// Set defaults
