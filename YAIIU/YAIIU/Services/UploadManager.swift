@@ -16,8 +16,8 @@ enum UploadStatus: String {
     }
 }
 
+@MainActor
 class UploadItem: Identifiable, ObservableObject {
-    let id = UUID()
     let asset: PHAsset
     let localIdentifier: String
     let filename: String
@@ -75,6 +75,22 @@ enum TimezoneGeocodingError: Error {
     case timeout
     case failed
 }
+private struct UploadPreparation: @unchecked Sendable {
+    let resources: [PHAssetResource]
+    let isFavorite: Bool
+    let createdAt: Date
+    let modifiedAt: Date
+    let timezone: TimeZone
+    let iCloudId: String?
+    let latitude: Double?
+    let longitude: Double?
+}
+private struct PreparedUploadQueue: @unchecked Sendable {
+    let entries: [(asset: PHAsset, filename: String, hasRAW: Bool, resourceCount: Int)]
+    let skippedCount: Int
+}
+
+
 
 private class ResponseTracker {
     private let lock = NSLock()
@@ -114,6 +130,7 @@ private class ResponseTracker {
     }
 }
 
+@MainActor
 class UploadManager: ObservableObject {
     @Published var uploadQueue: [UploadItem] = []
     @Published var isUploading: Bool = false
@@ -158,37 +175,56 @@ class UploadManager: ObservableObject {
     }
     
     func uploadAssets(_ assets: [PHAsset]) {
-        logInfo("Adding \(assets.count) assets to upload queue", category: .upload)
-        var addedCount = 0
-        var skippedCount = 0
-        
-        for asset in assets {
-            if uploadQueue.contains(where: { $0.localIdentifier == asset.localIdentifier && $0.status != .completed }) {
-                skippedCount += 1
-                continue
+        logInfo("Preparing \(assets.count) assets for upload queue", category: .upload)
+        let queuedIdentifiers = Set(
+            uploadQueue.lazy
+                .filter { $0.status != .completed }
+                .map(\.localIdentifier)
+        )
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            var entries = [(asset: PHAsset, filename: String, hasRAW: Bool, resourceCount: Int)]()
+            var skippedCount = 0
+
+            for asset in assets {
+                guard !queuedIdentifiers.contains(asset.localIdentifier) else {
+                    skippedCount += 1
+                    continue
+                }
+                let resources = PhotoLibraryManager.shared.getUploadableResources(for: asset)
+                let hasRAW = resources.contains { PhotoLibraryManager.shared.isRAWResource($0) }
+                let filename = resources.first.map { $0.resolvedFilename() } ?? "unknown"
+                entries.append((asset, filename, hasRAW, resources.count))
             }
-            
-            let resources = photoLibraryManager.getUploadableResources(for: asset)
-            let hasRAW = photoLibraryManager.hasRAWResource(asset)
-            let filename = resources.first.map { $0.resolvedFilename() } ?? "unknown"
-            
-            let item = UploadItem(asset: asset, filename: filename, hasRAW: hasRAW)
-            item.totalResources = resources.count
-            
-            ThumbnailCache.shared.getThumbnail(for: asset) { [weak item] image in
-                DispatchQueue.main.async {
-                    item?.thumbnail = image
+            let prepared = PreparedUploadQueue(entries: entries, skippedCount: skippedCount)
+
+            await MainActor.run {
+                var duplicateCount = 0
+                for entry in prepared.entries {
+                    guard !self.uploadQueue.contains(where: {
+                        $0.localIdentifier == entry.asset.localIdentifier && $0.status != .completed
+                    }) else {
+                        duplicateCount += 1
+                        continue
+                    }
+
+                    let item = UploadItem(asset: entry.asset, filename: entry.filename, hasRAW: entry.hasRAW)
+                    item.totalResources = entry.resourceCount
+                    ThumbnailCache.shared.getThumbnail(for: entry.asset) { [weak item] image in
+                        Task { @MainActor in item?.thumbnail = image }
+                    }
+                    self.uploadQueue.append(item)
+                }
+
+                logInfo(
+                    "Upload queue updated: added \(prepared.entries.count - duplicateCount), skipped \(prepared.skippedCount + duplicateCount), total \(self.uploadQueue.count)",
+                    category: .upload
+                )
+                if !self.isUploading, prepared.entries.count > duplicateCount {
+                    self.startUpload()
                 }
             }
-            
-            uploadQueue.append(item)
-            addedCount += 1
-        }
-        
-        logInfo("Upload queue updated: added \(addedCount), skipped \(skippedCount), total \(uploadQueue.count)", category: .upload)
-        
-        if !isUploading {
-            startUpload()
         }
     }
     
@@ -339,7 +375,22 @@ class UploadManager: ObservableObject {
     }
     
     private func uploadItem(_ item: UploadItem, serverURL: String, apiKey: String) async throws {
-        let resources = photoLibraryManager.getUploadableResources(for: item.asset)
+        let asset = item.asset
+        let metadata = await Task.detached(priority: .userInitiated) {
+            let resources = PhotoLibraryManager.shared.getUploadableResources(for: asset)
+            let timezone = await Self.getTimezone(for: asset)
+            return UploadPreparation(
+                resources: resources,
+                isFavorite: asset.isFavorite,
+                createdAt: asset.creationDate ?? Date(),
+                modifiedAt: asset.modificationDate ?? Date(),
+                timezone: timezone,
+                iCloudId: Self.getCloudIdentifier(for: asset),
+                latitude: asset.location?.coordinate.latitude,
+                longitude: asset.location?.coordinate.longitude
+            )
+        }.value
+        let resources = metadata.resources
         let totalResources = resources.count
 
         guard totalResources > 0 else {
@@ -348,14 +399,6 @@ class UploadManager: ObservableObject {
         }
 
         logDebug("Uploading \(totalResources) resource(s) for: \(item.filename)", category: .upload)
-
-        let isFavorite = item.asset.isFavorite
-        let createdAt = item.asset.creationDate ?? Date()
-        let modifiedAt = item.asset.modificationDate ?? Date()
-        let timezone = await getTimezone(for: item.asset)
-        let iCloudId = getCloudIdentifier(for: item.asset)
-        let latitude = item.asset.location?.coordinate.latitude
-        let longitude = item.asset.location?.coordinate.longitude
 
         // Use continuation to wait for all responses
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -368,132 +411,106 @@ class UploadManager: ObservableObject {
                 continuation.resume(throwing: error)
             }
 
-            Task {
-                do {
-                    for (index, resource) in resources.enumerated() {
-                        let resourceType = getResourceType(for: resource)
-                        let filename = photoLibraryManager.getFilename(for: resource)
-                        let mimeType = photoLibraryManager.getMimeType(for: resource)
-                        let deviceAssetId = "\(item.localIdentifier)-\(resourceType)-\(filename)"
-                        let currentIndex = index
-                        let isLastResource = (index + 1 == totalResources)
+            Task.detached(priority: .userInitiated) { [weak item] in
+                guard let item else {
+                    enum UploadError: Error { case itemDeallocated }
+                    responseTracker.markFailed(error: UploadError.itemDeallocated)
+                    return
+                }
+                for (index, resource) in resources.enumerated() {
+                    let resourceType = Self.getResourceType(for: resource)
+                    let filename = PhotoLibraryManager.shared.getFilename(for: resource)
+                    let mimeType = PhotoLibraryManager.shared.getMimeType(for: resource)
+                    let deviceAssetId = "\(item.localIdentifier)-\(resourceType)-\(filename)"
+                    let currentIndex = index
+                    let isLastResource = (index + 1 == totalResources)
 
-                        do {
-                            _ = try await ImmichAPIService.shared.uploadResourceNonBlocking(
-                                resource: resource,
-                                filename: filename,
-                                mimeType: mimeType,
-                                deviceAssetId: deviceAssetId,
-                                createdAt: createdAt,
-                                modifiedAt: modifiedAt,
-                                isFavorite: isFavorite,
-                                serverURL: serverURL,
-                                apiKey: apiKey,
-                                timezone: timezone,
-                                iCloudId: iCloudId,
-                                latitude: latitude,
-                                longitude: longitude
-                            ) { progress in
-                                let baseProgress = Double(currentIndex) / Double(totalResources)
-                                let resourceProgress = progress / Double(totalResources)
+                    do {
+                        _ = try await ImmichAPIService.shared.uploadResourceNonBlocking(
+                            resource: resource,
+                            filename: filename,
+                            mimeType: mimeType,
+                            deviceAssetId: deviceAssetId,
+                            createdAt: metadata.createdAt,
+                            modifiedAt: metadata.modifiedAt,
+                            isFavorite: metadata.isFavorite,
+                            serverURL: serverURL,
+                            apiKey: apiKey,
+                            timezone: metadata.timezone,
+                            iCloudId: metadata.iCloudId,
+                            latitude: metadata.latitude,
+                            longitude: metadata.longitude
+                        ) { progress in
+                            let baseProgress = Double(currentIndex) / Double(totalResources)
+                            let resourceProgress = progress / Double(totalResources)
+                            Task { @MainActor in
                                 item.progress = baseProgress + resourceProgress
-                            } responseHandler: { [weak item] result, uploadedFileSize in
-                                Task { @MainActor in
-                                    guard let item = item else {
-                                        enum UploadError: Error { case itemDeallocated }
-                                        logError("Upload item deallocated before response received for \(filename)", category: .upload)
-                                        responseTracker.markFailed(error: UploadError.itemDeallocated)
-                                        return
-                                    }
-
-                                    switch result {
-                                    case .success(let response):
-                                        DatabaseManager.shared.recordUploadedAsset(
-                                            localIdentifier: item.localIdentifier,
-                                            resourceType: resourceType,
-                                            filename: filename,
-                                            immichId: response.id,
-                                            fileSize: uploadedFileSize,
-                                            isDuplicate: response.duplicate ?? false,
-                                            isFavorite: isFavorite
-                                        )
-                                        logDebug("Resource \(filename) processed by server: \(response.id)", category: .upload)
-                                        responseTracker.markCompleted()
-                                    case .failure(let error):
-                                        logWarning("Server response error for \(filename): \(error.localizedDescription)", category: .upload)
-                                        responseTracker.markFailed(error: error)
-                                    }
+                            }
+                        } responseHandler: { [weak item] result, uploadedFileSize in
+                            Task { @MainActor in
+                                guard let item else {
+                                    enum UploadError: Error { case itemDeallocated }
+                                    responseTracker.markFailed(error: UploadError.itemDeallocated)
+                                    return
+                                }
+                                switch result {
+                                case .success(let response):
+                                    DatabaseManager.shared.recordUploadedAsset(
+                                        localIdentifier: item.localIdentifier,
+                                        resourceType: resourceType,
+                                        filename: filename,
+                                        immichId: response.id,
+                                        fileSize: uploadedFileSize,
+                                        isDuplicate: response.duplicate ?? false,
+                                        isFavorite: metadata.isFavorite
+                                    )
+                                    responseTracker.markCompleted()
+                                case .failure(let error):
+                                    responseTracker.markFailed(error: error)
                                 }
                             }
-                        } catch {
-                            responseTracker.markFailed(error: error)
-                            break  // Stop processing remaining resources since upload has failed
                         }
-
-                        await MainActor.run {
-                            item.resourcesUploaded[resourceType] = true
-                            item.progress = Double(currentIndex + 1) / Double(totalResources)
-                            if isLastResource {
-                                item.status = .processing
-                            }
-                        }
+                    } catch {
+                        responseTracker.markFailed(error: error)
+                        break
                     }
-                } catch {
-                    responseTracker.markFailed(error: error)
+
+                    await MainActor.run {
+                        item.resourcesUploaded[resourceType] = true
+                        item.progress = Double(currentIndex + 1) / Double(totalResources)
+                        if isLastResource { item.status = .processing }
+                    }
                 }
             }
         }
     }
     
-    private func getResourceType(for resource: PHAssetResource) -> String {
+    nonisolated private static func getResourceType(for resource: PHAssetResource) -> String {
         let uti = resource.uniformTypeIdentifier.lowercased()
-        
-        if uti.contains("raw-image") ||
-           uti.contains("dng") ||
-           uti.contains("arw") ||
-           uti.contains("cr2") ||
-           uti.contains("cr3") ||
-           uti.contains("nef") ||
-           uti.contains("raf") ||
-           uti.contains("orf") ||
-           uti.contains("rw2") {
+        if ["raw-image", "dng", "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2"].contains(where: uti.contains) {
             return "raw"
         }
-        
-        if resource.type == .alternatePhoto {
-            return "raw"
-        }
-        
-        if uti.contains("video") || uti.contains("movie") ||
-           uti.contains("mp4") || uti.contains("quicktime") ||
-           resource.type == .video || resource.type == .fullSizeVideo {
+        if uti.contains("video") || uti.contains("movie") || uti.contains("mp4") || uti.contains("quicktime") {
             return "video"
         }
-        
         if resource.type == .photo || resource.type == .fullSizePhoto {
-            if uti.contains("heic") || uti.contains("heif") {
-                return "heic"
-            } else if uti.contains("jpeg") || uti.contains("jpg") {
-                return "jpeg"
-            } else if uti.contains("png") {
-                return "png"
-            }
+            if uti.contains("heic") || uti.contains("heif") { return "heic" }
+            if uti.contains("png") { return "png" }
             return "jpeg"
         }
-        
         return "primary"
     }
-    
+
     func retryFailedItems() {
         let failedCount = uploadQueue.filter { $0.status == .failed }.count
         logInfo("Retrying \(failedCount) failed items", category: .upload)
-        
+
         for item in uploadQueue where item.status == .failed {
             item.status = .pending
             item.progress = 0
             item.errorMessage = nil
         }
-        
+
         if !isUploading {
             startUpload()
         }
@@ -529,63 +546,40 @@ class UploadManager: ObservableObject {
     
     // MARK: - iCloud Identifier
     
-    private func getCloudIdentifier(for asset: PHAsset) -> String? {
-        guard #available(iOS 16, *) else {
-            return nil
-        }
-        
+    nonisolated private static func getCloudIdentifier(for asset: PHAsset) -> String? {
+        guard #available(iOS 16, *) else { return nil }
         let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [asset.localIdentifier])
-        
-        guard let result = mappings[asset.localIdentifier] else {
-            return nil
-        }
-        
+        guard let result = mappings[asset.localIdentifier] else { return nil }
         switch result {
         case .success(let cloudIdentifier):
             let cloudId = cloudIdentifier.stringValue
-            // Skip invalid cloud IDs (format: "GUID:ID:" without hash suffix)
-            if cloudId.hasSuffix(":") {
-                logDebug("Invalid cloud ID format for asset \(asset.localIdentifier): \(cloudId)", category: .upload)
-                return nil
-            }
-            return cloudId
-        case .failure(let error):
-            logDebug("Failed to get cloud ID for asset \(asset.localIdentifier): \(error.localizedDescription)", category: .upload)
+            return cloudId.hasSuffix(":") ? nil : cloudId
+        case .failure:
             return nil
         }
     }
-    
-    // MARK: - Timezone
-    
-    private func getTimezone(for asset: PHAsset) async -> TimeZone {
-        guard let location = asset.location else {
-            return TimeZone.current
-        }
-        
+
+    nonisolated private static func getTimezone(for asset: PHAsset) async -> TimeZone {
+        guard let location = asset.location else { return TimeZone.current }
         do {
             return try await withThrowingTaskGroup(of: TimeZone.self) { group in
                 group.addTask {
                     let geocoder = CLGeocoder()
                     let placemarks = try await geocoder.reverseGeocodeLocation(location)
-                    guard let tz = placemarks.first?.timeZone else {
+                    guard let timezone = placemarks.first?.timeZone else {
                         throw TimezoneGeocodingError.failed
                     }
-                    return tz
+                    return timezone
                 }
-                
                 group.addTask {
                     try await Task.sleep(nanoseconds: 3_000_000_000)
                     throw TimezoneGeocodingError.timeout
                 }
-                
-                guard let result = try await group.next() else {
-                    return TimeZone.current
-                }
+                guard let result = try await group.next() else { return TimeZone.current }
                 group.cancelAll()
                 return result
             }
         } catch {
-            logDebug("Failed to get timezone from location, falling back to current. Error: \(error.localizedDescription)", category: .upload)
             return TimeZone.current
         }
     }
