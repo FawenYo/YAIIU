@@ -94,25 +94,26 @@ final class BackgroundUploadExtensionCore {
 
     private func processUploadJobs() throws -> NewUploadJobsResult {
         guard settings.isLoggedIn, settings.backgroundUploadEnabled else {
+            logDebug("Skipping run: logged in=\(settings.isLoggedIn), background upload enabled=\(settings.backgroundUploadEnabled)")
             return .completed
         }
 
-        // Reconcile first so rows freed from vanished PhotoKit jobs become
-        // rediscoverable within this same run.
-        var madeProgress = reconcileTrackedJobs() > 0
+        // Stage markers: the system can terminate the extension at any point
+        // without a crash report; per-stage boundaries show how far a run got.
+        var madeProgress = timeStage("reconcile") { reconcileTrackedJobs() > 0 }
         guard !isCancelled else { return .deferred }
 
-        madeProgress = try retryFailedJobs() || madeProgress
+        madeProgress = try timeStage("retry") { try retryFailedJobs() } || madeProgress
         guard !isCancelled else { return .deferred }
 
-        let acknowledgement = try acknowledgeCompletedJobs()
+        let acknowledgement = try timeStage("acknowledge") { try acknowledgeCompletedJobs() }
         madeProgress = acknowledgement.acknowledged || madeProgress
         guard !isCancelled else { return .deferred }
 
-        madeProgress = cancelRedundantJobs() || madeProgress
+        madeProgress = timeStage("cancel") { cancelRedundantJobs() } || madeProgress
         guard !isCancelled else { return .deferred }
 
-        let result = try createNewUploadJobs(interface: currentNetworkInterface())
+        let result = try timeStage("create") { try createNewUploadJobs(interface: currentNetworkInterface()) }
         guard result == .completed else { return result }
 
         // Unacknowledged terminal jobs still consume the job limit; request another
@@ -120,6 +121,17 @@ final class BackgroundUploadExtensionCore {
         if acknowledgement.pending { return .deferred }
 
         return madeProgress || hasJobsInFlight() ? .scheduled : .completed
+    }
+
+    private func timeStage<T>(_ name: String, _ body: () throws -> T) rethrows -> T {
+        let started = Date()
+        defer {
+            let elapsed = Date().timeIntervalSince(started)
+            let line = "Stage \(name) finished in \(String(format: "%.1f", elapsed))s"
+            if elapsed > 1 { log(line) } else { logDebug(line) }
+        }
+        logDebug("Stage \(name) starting")
+        return try body()
     }
 
     private func hasJobsInFlight() -> Bool {
@@ -890,7 +902,9 @@ final class BackgroundUploadExtensionCore {
             message: message
         )
         print(formatted)
-        logFileWriter?.appendLine(formatted)
+        // Synchronous write: the system kills this process without warning, and an
+        // async queue would drop the very lines that record how far a run got.
+        logFileWriter?.appendSync(timestamp: Date(), level: level, category: Self.logCategory, message: message)
     }
     
     private func logDebug(_ message: String) {
