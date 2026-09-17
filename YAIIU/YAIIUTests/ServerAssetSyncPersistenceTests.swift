@@ -2,6 +2,26 @@ import XCTest
 @testable import YAIIU
 
 final class ServerAssetSyncPersistenceTests: XCTestCase {
+    private var savedServerURL: String?
+
+    override func setUp() {
+        super.setUp()
+        // Tests run inside the app host, whose UserDefaults on a logged-in
+        // device holds the configured server; a foreign URL would flip the
+        // delta-sync path to full and break cache-session assertions.
+        savedServerURL = UserDefaults.standard.string(forKey: "immich_server_url")
+        UserDefaults.standard.removeObject(forKey: "immich_server_url")
+    }
+
+    override func tearDown() {
+        if let savedServerURL {
+            UserDefaults.standard.set(savedServerURL, forKey: "immich_server_url")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "immich_server_url")
+        }
+        super.tearDown()
+    }
+
     func testSyncAcknowledgesOnlyAfterPersistence() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations)
