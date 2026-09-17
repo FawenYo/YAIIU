@@ -164,25 +164,31 @@ final class BackgroundUploadExtensionCore {
                 reason = "unresolvable identity"
             }
 
+            var applied = false
             do {
                 try library.performChangesAndWait {
                     guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
                     request.cancel()
-                    cancelledAny = true
-                }
-                logWarning("Cancelled in-flight job \(job.localIdentifier): \(reason)")
-                // Delete the tracking row outright: a completed row would block the
-                // replacement job's upsert, and any non-deleted row keeps the resource
-                // classified as inflight. Rediscovery (unless genuinely uploaded) then
-                // recreates the job.
-                if let identity {
-                    database.deleteTrackedJob(
-                        assetId: identity.assetLocalIdentifier,
-                        resourceType: identity.resourceType
-                    )
+                    applied = true
                 }
             } catch {
                 logError("Failed to cancel job \(job.localIdentifier): \(error.localizedDescription)")
+            }
+            guard applied else {
+                logWarning("No change request or transaction for job \(job.localIdentifier); leaving bookkeeping intact")
+                continue
+            }
+            cancelledAny = true
+            logWarning("Cancelled in-flight job \(job.localIdentifier): \(reason)")
+            // Delete the tracking row outright: a completed row would block the
+            // replacement job's upsert, and any non-deleted row keeps the resource
+            // classified as inflight. Rediscovery (unless genuinely uploaded) then
+            // recreates the job.
+            if let identity {
+                database.deleteTrackedJob(
+                    assetId: identity.assetLocalIdentifier,
+                    resourceType: identity.resourceType
+                )
             }
         }
         return cancelledAny
@@ -692,31 +698,46 @@ final class BackgroundUploadExtensionCore {
 
     private static func parseDeviceAssetId(_ value: String) -> JobIdentity? {
         // Format: "<assetLocalIdentifier>-<resourceType>-<filename>". PhotoKit local
-        // identifiers are opaque, so the split takes the leftmost separator whose
-        // prefix contains a path separator; the real separator always precedes any
-        // "-token-" sequence inside the filename, and filenames never contain "/".
-        var best: (offset: String.Index, identity: JobIdentity)?
+        // identifiers are opaque, so candidate splits are not format-validated; each
+        // prefix is checked against the photo library, and only the header's real
+        // separator resolves to a live asset.
+        var candidates: [(offset: String.Index, identity: JobIdentity)] = []
         for token in resourceTypeTokens {
             let separator = "-\(token)-"
             var searchStart = value.startIndex
             while let range = value.range(of: separator, range: searchStart..<value.endIndex) {
                 let assetId = String(value[value.startIndex..<range.lowerBound])
                 let filename = String(value[range.upperBound...])
-                if assetId.contains("/"), !filename.isEmpty,
-                   best == nil || range.lowerBound < best!.offset {
-                    best = (
+                if !assetId.isEmpty, !filename.isEmpty {
+                    candidates.append((
                         range.lowerBound,
                         JobIdentity(
                             assetLocalIdentifier: assetId,
                             resourceType: token,
                             filename: filename
                         )
-                    )
+                    ))
                 }
                 searchStart = range.upperBound
             }
         }
-        return best?.identity
+        for candidate in candidates.sorted(by: { $0.offset < $1.offset }) {
+            if Self.assetExists(identifier: candidate.identity.assetLocalIdentifier) {
+                return candidate.identity
+            }
+        }
+        return nil
+    }
+
+    private static let assetExistenceCache = OSAllocatedUnfairLock<[String: Bool]>(initialState: [:])
+
+    private static func assetExists(identifier: String) -> Bool {
+        assetExistenceCache.withLock { cache in
+            if let cached = cache[identifier] { return cached }
+            let exists = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).count > 0
+            cache[identifier] = exists
+            return exists
+        }
     }
 
     private func uploadableResource(for job: PHAssetResourceUploadJob) -> PHAssetResource? {
