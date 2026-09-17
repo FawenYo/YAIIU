@@ -105,7 +105,8 @@ final class BackgroundUploadExtensionCore {
         madeProgress = try retryFailedJobs() || madeProgress
         guard !isCancelled else { return .deferred }
 
-        madeProgress = try acknowledgeCompletedJobs() || madeProgress
+        let acknowledgement = try acknowledgeCompletedJobs()
+        madeProgress = acknowledgement.acknowledged || madeProgress
         guard !isCancelled else { return .deferred }
 
         madeProgress = cancelRedundantJobs() || madeProgress
@@ -113,6 +114,10 @@ final class BackgroundUploadExtensionCore {
 
         let result = try createNewUploadJobs(interface: currentNetworkInterface())
         guard result == .completed else { return result }
+
+        // Unacknowledged terminal jobs still consume the job limit; request another
+        // invocation instead of entering monitoring mode.
+        if acknowledgement.pending { return .deferred }
 
         return madeProgress || hasJobsInFlight() ? .scheduled : .completed
     }
@@ -262,7 +267,7 @@ final class BackgroundUploadExtensionCore {
         return retriedAny
     }
 
-    private func acknowledgeCompletedJobs() throws -> Bool {
+    private func acknowledgeCompletedJobs() throws -> (acknowledged: Bool, pending: Bool) {
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(
             action: .acknowledge,
@@ -272,7 +277,7 @@ final class BackgroundUploadExtensionCore {
             logDebug("Acknowledgeable jobs: \(jobs.count)")
         }
 
-        var acknowledgedAny = false
+        var appliedCount = 0
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
             let succeeded = job.state == .succeeded
@@ -292,21 +297,10 @@ final class BackgroundUploadExtensionCore {
                 immichId = succeeded ? "unknown" : nil
             }
 
-            // Acknowledge first: freeing job-limit space must never depend on
-            // bookkeeping that can fail for legacy jobs.
-            do {
-                try library.performChangesAndWait {
-                    guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
-                    request.acknowledge()
-                }
-            } catch {
-                logError("Failed to acknowledge job \(job.localIdentifier): \(error.localizedDescription)")
-                continue
-            }
-            acknowledgedAny = true
-
-            guard let identity else { continue }
-            if succeeded {
+            // Persist a successful upload before releasing the PhotoKit job; the write
+            // is idempotent, while a termination between commit and record would lose
+            // the upload's durable record.
+            if succeeded, let identity {
                 database.recordUploadedAsset(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
@@ -316,6 +310,26 @@ final class BackgroundUploadExtensionCore {
                     isDuplicate: false
                 )
                 SharedSettings.shared.lastBackgroundUploadAt = Date()
+            }
+
+            var applied = false
+            do {
+                try library.performChangesAndWait {
+                    guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                    request.acknowledge()
+                    applied = true
+                }
+            } catch {
+                logError("Failed to acknowledge job \(job.localIdentifier): \(error.localizedDescription)")
+            }
+            guard applied else {
+                logWarning("No change request or transaction for job \(job.localIdentifier); leaving it acknowledged later")
+                continue
+            }
+            appliedCount += 1
+
+            guard let identity else { continue }
+            if succeeded {
                 database.markJobStatus(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
@@ -333,7 +347,7 @@ final class BackgroundUploadExtensionCore {
                 logWarning("Acknowledged failed upload: \(identity.filename)")
             }
         }
-        return acknowledgedAny
+        return (appliedCount > 0, appliedCount < jobs.count)
     }
     private enum NewUploadJobsResult {
         case completed
@@ -369,9 +383,30 @@ final class BackgroundUploadExtensionCore {
         }
 
         let capacity = uploadJobCapacity()
-        let batch = Array(resources.prefix(capacity))
-        guard !batch.isEmpty else {
+        guard capacity > 0 else {
             logWarning("PhotoKit job limit already reached; waiting for acknowledgements before creating new jobs")
+            return .remaining
+        }
+        // Keep an asset's resources in the same batch: splitting a JPEG/raw asset lets
+        // the first success's asset-wide server bookkeeping hide the sibling that was
+        // never scheduled.
+        var grouped: [[PHAssetResource]] = []
+        var groupIndexByAsset: [String: Int] = [:]
+        for resource in resources {
+            if let index = groupIndexByAsset[resource.assetLocalIdentifier] {
+                grouped[index].append(resource)
+            } else {
+                groupIndexByAsset[resource.assetLocalIdentifier] = grouped.count
+                grouped.append([resource])
+            }
+        }
+        var batch: [PHAssetResource] = []
+        for group in grouped {
+            guard batch.count + group.count <= capacity else { break }
+            batch.append(contentsOf: group)
+        }
+        guard !batch.isEmpty else {
+            logWarning("Remaining pending assets need more capacity than available; deferring whole groups")
             return .remaining
         }
         let truncated = batch.count < resources.count
@@ -656,45 +691,43 @@ final class BackgroundUploadExtensionCore {
     private static let resourceTypeTokens = ["primary", "raw", "video", "heic", "png", "jpeg"]
 
     private static func parseDeviceAssetId(_ value: String) -> JobIdentity? {
-        // Format: "<assetLocalIdentifier>-<resourceType>-<filename>" with the asset
-        // identifier always ending in PhotoKit's "/L<n>/<nnn>" suffix.
-        var best: JobIdentity?
+        // Format: "<assetLocalIdentifier>-<resourceType>-<filename>". PhotoKit local
+        // identifiers are opaque, so the split takes the leftmost separator whose
+        // prefix contains a path separator; the real separator always precedes any
+        // "-token-" sequence inside the filename, and filenames never contain "/".
+        var best: (offset: String.Index, identity: JobIdentity)?
         for token in resourceTypeTokens {
             let separator = "-\(token)-"
             var searchStart = value.startIndex
             while let range = value.range(of: separator, range: searchStart..<value.endIndex) {
                 let assetId = String(value[value.startIndex..<range.lowerBound])
                 let filename = String(value[range.upperBound...])
-                if isPhotoKitIdentifier(assetId), !filename.isEmpty,
-                   best == nil || assetId.count > best!.assetLocalIdentifier.count {
-                    best = JobIdentity(
-                        assetLocalIdentifier: assetId,
-                        resourceType: token,
-                        filename: filename
+                if assetId.contains("/"), !filename.isEmpty,
+                   best == nil || range.lowerBound < best!.offset {
+                    best = (
+                        range.lowerBound,
+                        JobIdentity(
+                            assetLocalIdentifier: assetId,
+                            resourceType: token,
+                            filename: filename
+                        )
                     )
                 }
                 searchStart = range.upperBound
             }
         }
-        return best
-    }
-
-    private static func isPhotoKitIdentifier(_ value: String) -> Bool {
-        value.range(of: #"/[A-Za-z]\d+/\d{3}$"#, options: .regularExpression) != nil
+        return best?.identity
     }
 
     private func uploadableResource(for job: PHAssetResourceUploadJob) -> PHAssetResource? {
         if #available(iOS 27.0, *) {
             guard let identity = identity(for: job),
                   let asset = fetchAsset(identifier: identity.assetLocalIdentifier) else { return nil }
-            let resources = PHAssetResource.assetResources(for: asset).filter(shouldUpload)
-            // Edited assets can expose multiple resources (e.g. .photo and
-            // .fullSizePhoto) that collapse to one resourceTypeString; the header
-            // filename disambiguates.
-            if let exact = resources.first(where: { $0.resolvedFilename(using: asset) == identity.filename }) {
-                return exact
-            }
-            return resources.first { resourceTypeString(for: $0) == identity.resourceType }
+            // Edited assets can replace the original resource; matching on anything
+            // coarser than the job's filename builds a destination whose metadata
+            // describes a different resource than PhotoKit will upload.
+            return PHAssetResource.assetResources(for: asset)
+                .first { shouldUpload($0) && $0.resolvedFilename(using: asset) == identity.filename }
         }
         return resource(for: job)
     }
