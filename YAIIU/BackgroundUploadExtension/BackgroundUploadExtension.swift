@@ -97,7 +97,12 @@ final class BackgroundUploadExtensionCore {
             return .completed
         }
 
-        var madeProgress = try retryFailedJobs()
+        // Reconcile first so rows freed from vanished PhotoKit jobs become
+        // rediscoverable within this same run.
+        var madeProgress = reconcileTrackedJobs() > 0
+        guard !isCancelled else { return .deferred }
+
+        madeProgress = try retryFailedJobs() || madeProgress
         guard !isCancelled else { return .deferred }
 
         madeProgress = try acknowledgeCompletedJobs() || madeProgress
@@ -107,7 +112,6 @@ final class BackgroundUploadExtensionCore {
         guard !isCancelled else { return .deferred }
 
         let result = try createNewUploadJobs(interface: currentNetworkInterface())
-        reconcileTrackedJobs()
         guard result == .completed else { return result }
 
         return madeProgress || hasJobsInFlight() ? .scheduled : .completed
@@ -128,7 +132,6 @@ final class BackgroundUploadExtensionCore {
         let jobs = PHAssetResourceUploadJob.fetchJobs(action: .process, options: nil)
         guard jobs.count > 0 else { return false }
 
-        let onServer = database.getAllAssetsOnServer()
         let trackedAges = database.getTrackedJobAges()
         let staleCutoff = Date().addingTimeInterval(-staleJobAgeLimit)
         var cancelledAny = false
@@ -140,11 +143,10 @@ final class BackgroundUploadExtensionCore {
 
             let reason: String
             if let identity {
-                if onServer.contains(identity.assetLocalIdentifier)
-                    || database.isResourceUploaded(
-                        assetId: identity.assetLocalIdentifier,
-                        resourceType: identity.resourceType
-                    ) {
+                if database.isResourceUploaded(
+                    assetId: identity.assetLocalIdentifier,
+                    resourceType: identity.resourceType
+                ) {
                     reason = "already uploaded through another path"
                 } else if let createdAt = key.flatMap({ trackedAges[$0] }), createdAt < staleCutoff {
                     reason = "stuck in flight since \(createdAt)"
@@ -164,11 +166,14 @@ final class BackgroundUploadExtensionCore {
                     cancelledAny = true
                 }
                 logWarning("Cancelled in-flight job \(job.localIdentifier): \(reason)")
+                // Delete the tracking row outright: a completed row would block the
+                // replacement job's upsert, and any non-deleted row keeps the resource
+                // classified as inflight. Rediscovery (unless genuinely uploaded) then
+                // recreates the job.
                 if let identity {
-                    database.markJobStatus(
+                    database.deleteTrackedJob(
                         assetId: identity.assetLocalIdentifier,
-                        resourceType: identity.resourceType,
-                        status: .completed
+                        resourceType: identity.resourceType
                     )
                 }
             } catch {
@@ -181,8 +186,8 @@ final class BackgroundUploadExtensionCore {
     // Drops locally tracked jobs that no longer exist in PhotoKit. Without this, rows
     // left by crashes or library churn keep their assets permanently skipped by
     // fetchPendingResources.
-    private func reconcileTrackedJobs() {
-        guard #available(iOS 26.5, *) else { return }
+    private func reconcileTrackedJobs() -> Int {
+        guard #available(iOS 26.5, *) else { return 0 }
         var liveKeys = Set<String>()
         let actions: [PHAssetResourceUploadJob.Action] = [.process, .acknowledge, .retry]
         for action in actions {
@@ -200,6 +205,7 @@ final class BackgroundUploadExtensionCore {
         if removed > 0 {
             logDebug("Pruned \(removed) tracked jobs absent from PhotoKit")
         }
+        return removed
     }
 
 
@@ -275,6 +281,17 @@ final class BackgroundUploadExtensionCore {
                 logWarning("Could not resolve identity for completed job \(job.localIdentifier); acknowledging without recording")
             }
 
+            // Capture response data before acknowledging; acknowledgement removes the
+            // job from PhotoKit tracking and its fields may become unavailable after.
+            let immichId: String?
+            if succeeded, #available(iOS 26.4, *),
+               let value = job.responseHeaderFields?[immichAssetIDHeader],
+               UUID(uuidString: value) != nil {
+                immichId = value
+            } else {
+                immichId = succeeded ? "unknown" : nil
+            }
+
             // Acknowledge first: freeing job-limit space must never depend on
             // bookkeeping that can fail for legacy jobs.
             do {
@@ -290,32 +307,31 @@ final class BackgroundUploadExtensionCore {
 
             guard let identity else { continue }
             if succeeded {
-                let immichId: String
-                if #available(iOS 26.4, *),
-                   let value = job.responseHeaderFields?[immichAssetIDHeader],
-                   UUID(uuidString: value) != nil {
-                    immichId = value
-                } else {
-                    immichId = "unknown"
-                }
                 database.recordUploadedAsset(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
                     filename: identity.filename,
-                    immichId: immichId,
+                    immichId: immichId ?? "unknown",
                     fileSize: 0,
                     isDuplicate: false
                 )
                 SharedSettings.shared.lastBackgroundUploadAt = Date()
+                database.markJobStatus(
+                    assetId: identity.assetLocalIdentifier,
+                    resourceType: identity.resourceType,
+                    status: .completed
+                )
                 log("Acknowledged successful upload: \(identity.filename)")
             } else {
+                // Delete the tracking row so the resource is immediately rediscoverable;
+                // a failed-status row would keep it classified as inflight while the
+                // PhotoKit job is already gone.
+                database.deleteTrackedJob(
+                    assetId: identity.assetLocalIdentifier,
+                    resourceType: identity.resourceType
+                )
                 logWarning("Acknowledged failed upload: \(identity.filename)")
             }
-            database.markJobStatus(
-                assetId: identity.assetLocalIdentifier,
-                resourceType: identity.resourceType,
-                status: succeeded ? .completed : .failed
-            )
         }
         return acknowledgedAny
     }
@@ -352,18 +368,21 @@ final class BackgroundUploadExtensionCore {
             }
         }
 
-        let timezones = captureTimezones(for: resources)
-        guard !isCancelled else { return .deferred }
-
         let capacity = uploadJobCapacity()
         let batch = Array(resources.prefix(capacity))
         guard !batch.isEmpty else {
             logWarning("PhotoKit job limit already reached; waiting for acknowledgements before creating new jobs")
             return .remaining
         }
-        if batch.count < resources.count {
+        let truncated = batch.count < resources.count
+        if truncated {
             logDebug("Capped new jobs to \(batch.count) of \(resources.count) pending to respect job limit")
         }
+
+        // Resolve timezones only for the capped batch; geocoding the whole pending
+        // list per run would repeat library-wide work on every batch.
+        let timezones = captureTimezones(for: batch)
+        guard !isCancelled else { return .deferred }
 
         let library = PHPhotoLibrary.shared()
         var createdAny = false
@@ -395,7 +414,10 @@ final class BackgroundUploadExtensionCore {
                 )
             }
         }
-        return createdAny ? .scheduled : .remaining
+        guard createdAny else { return .remaining }
+        // A truncated batch means unscheduled resources remain; the legacy process()
+        // path maps .scheduled to .completed, so signal remaining work explicitly.
+        return truncated ? .remaining : .scheduled
     }
 
     // MARK: - Resource Discovery
@@ -665,8 +687,14 @@ final class BackgroundUploadExtensionCore {
         if #available(iOS 27.0, *) {
             guard let identity = identity(for: job),
                   let asset = fetchAsset(identifier: identity.assetLocalIdentifier) else { return nil }
-            return PHAssetResource.assetResources(for: asset)
-                .first { shouldUpload($0) && resourceTypeString(for: $0) == identity.resourceType }
+            let resources = PHAssetResource.assetResources(for: asset).filter(shouldUpload)
+            // Edited assets can expose multiple resources (e.g. .photo and
+            // .fullSizePhoto) that collapse to one resourceTypeString; the header
+            // filename disambiguates.
+            if let exact = resources.first(where: { $0.resolvedFilename(using: asset) == identity.filename }) {
+                return exact
+            }
+            return resources.first { resourceTypeString(for: $0) == identity.resourceType }
         }
         return resource(for: job)
     }

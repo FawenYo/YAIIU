@@ -220,6 +220,21 @@ final class BackgroundUploadDatabase {
         }
     }
 
+    // Removes a tracking row entirely so createOrUpdateJob can re-insert it for a
+    // replacement job; a completed-status row would be skipped by the upsert and a
+    // failed-status row would keep the resource classified as inflight.
+    func deleteTrackedJob(assetId: String, resourceType: String) {
+        queue.sync {
+            let sql = "DELETE FROM upload_jobs WHERE asset_id = ? AND resource_type = ?"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, resourceType, -1, SQLITE_TRANSIENT)
+            sqlite3_step(stmt)
+        }
+    }
+
     // Creation timestamps of locally tracked jobs, keyed "assetId||resourceType".
     func getTrackedJobAges() -> [String: Date] {
         queue.sync {
