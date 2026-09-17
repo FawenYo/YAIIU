@@ -511,6 +511,48 @@ final class BackgroundUploadDatabase {
             return ids
         }
     }
+
+    // Assets whose server state is partial: the primary copy is confirmed while a
+    // known raw sibling is not, or vice versa. Bulk skip (getAllAssetsOnServer) only
+    // covers fully-confirmed assets; discovery filters each copy of a partial asset
+    // with these sets so the missing copy can be (re)scheduled without reuploading
+    // the confirmed one.
+    func getPartialServerCopyAssets() -> (primaryConfirmed: Set<String>, rawConfirmed: Set<String>) {
+        queue.sync {
+            var primaryConfirmed = Set<String>()
+            var rawConfirmed = Set<String>()
+
+            let sql = """
+                SELECT asset_id, CASE WHEN is_on_server = 1 THEN 'p' ELSE 'r' END
+                FROM hash_cache
+                WHERE (is_on_server = 1 AND has_raw = 1 AND raw_on_server = 0)
+                   OR (raw_on_server = 1 AND is_on_server = 0)
+                UNION ALL
+                SELECT asset_id, 'p' FROM assets_on_server
+                WHERE asset_id IN
+                    (SELECT asset_id FROM hash_cache WHERE has_raw = 1 AND raw_on_server = 0)
+            """
+
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                return (primaryConfirmed, rawConfirmed)
+            }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let idPtr = sqlite3_column_text(stmt, 0),
+                      let kindPtr = sqlite3_column_text(stmt, 1) else { continue }
+                let assetId = String(cString: idPtr)
+                if String(cString: kindPtr) == "p" {
+                    primaryConfirmed.insert(assetId)
+                } else {
+                    rawConfirmed.insert(assetId)
+                }
+            }
+            return (primaryConfirmed, rawConfirmed)
+        }
+    }
     
     func getAssetsOnServerCount() -> Int {
         queue.sync {

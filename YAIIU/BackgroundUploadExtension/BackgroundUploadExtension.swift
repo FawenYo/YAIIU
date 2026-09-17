@@ -473,6 +473,7 @@ final class BackgroundUploadExtensionCore {
 
     private func fetchPendingResources() -> [PHAssetResource] {
         let skip = database.getAllAssetsOnServer()
+        let partial = database.getPartialServerCopyAssets()
         let inflightKeys = database.getInflightJobKeys()
 
         let opts = PHFetchOptions()
@@ -491,6 +492,13 @@ final class BackgroundUploadExtensionCore {
                 let type = self.resourceTypeString(for: r)
                 let key = "\(asset.localIdentifier)||\(type)"
                 if inflightKeys.contains(key) { continue }
+                // Partially-synced assets (e.g. primary confirmed by checksum, raw
+                // never uploaded): filter each copy by its own server state so the
+                // missing copy is (re)scheduled without reuploading the confirmed one.
+                let copyOnServer = type == "raw"
+                    ? partial.rawConfirmed.contains(asset.localIdentifier)
+                    : partial.primaryConfirmed.contains(asset.localIdentifier)
+                if copyOnServer { continue }
                 if !self.database.isResourceUploaded(
                     assetId: asset.localIdentifier,
                     resourceType: type
