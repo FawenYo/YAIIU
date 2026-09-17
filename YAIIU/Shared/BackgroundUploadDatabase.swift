@@ -305,11 +305,12 @@ final class BackgroundUploadDatabase {
             
             sqlite3_step(stmt)
             
-            // Mark as on server in hash cache
-            let updateSql = "UPDATE hash_cache SET is_on_server = 1, checked_at = ? WHERE asset_id = ?"
+            // Per-resource server flags: raw uploads confirm only the raw copy.
+            let flagColumn = resourceType == "raw" ? "raw_on_server" : "is_on_server"
+            let updateSql = "UPDATE hash_cache SET \(flagColumn) = 1, checked_at = ? WHERE asset_id = ?"
             var updateStmt: OpaquePointer?
             defer { sqlite3_finalize(updateStmt) }
-            
+
             if sqlite3_prepare_v2(db, updateSql, -1, &updateStmt, nil) == SQLITE_OK {
                 sqlite3_bind_double(updateStmt, 1, Date().timeIntervalSince1970)
                 sqlite3_bind_text(updateStmt, 2, assetId, -1, SQLITE_TRANSIENT)
@@ -480,33 +481,33 @@ final class BackgroundUploadDatabase {
         }
     }
     
+    // Whole assets fully represented on the server: the primary copy is confirmed
+    // and, where the hash cache knows a raw sibling exists, that copy is confirmed
+    // too. Assets with an unconfirmed raw sibling stay discoverable so the sibling
+    // can be retried; per-resource uploads still gate on uploaded_assets.
     func getAllAssetsOnServer() -> Set<String> {
         queue.sync {
             var ids = Set<String>()
-            
-            // From assets_on_server table
+
+            let sql = """
+                SELECT asset_id FROM hash_cache
+                WHERE is_on_server = 1 AND (has_raw = 0 OR raw_on_server = 1)
+                UNION
+                SELECT asset_id FROM assets_on_server
+                WHERE asset_id NOT IN
+                    (SELECT asset_id FROM hash_cache WHERE has_raw = 1 AND raw_on_server = 0)
+            """
+
             var stmt: OpaquePointer?
-            let sql1 = "SELECT asset_id FROM assets_on_server"
-            if sqlite3_prepare_v2(db, sql1, -1, &stmt, nil) == SQLITE_OK {
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    if let cStr = sqlite3_column_text(stmt, 0) {
-                        ids.insert(String(cString: cStr))
-                    }
+            defer { sqlite3_finalize(stmt) }
+
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return ids }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let cStr = sqlite3_column_text(stmt, 0) {
+                    ids.insert(String(cString: cStr))
                 }
             }
-            sqlite3_finalize(stmt)
-            
-            // Also check hash_cache for confirmed uploads
-            let sql2 = "SELECT asset_id FROM hash_cache WHERE is_on_server = 1"
-            if sqlite3_prepare_v2(db, sql2, -1, &stmt, nil) == SQLITE_OK {
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    if let cStr = sqlite3_column_text(stmt, 0) {
-                        ids.insert(String(cString: cStr))
-                    }
-                }
-            }
-            sqlite3_finalize(stmt)
-            
             return ids
         }
     }
