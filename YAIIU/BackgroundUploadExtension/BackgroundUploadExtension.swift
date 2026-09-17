@@ -76,6 +76,7 @@ final class BackgroundUploadExtensionCore {
             where error.domain == PHPhotosErrorDomain
             && error.code == PHPhotosError.limitExceeded.rawValue
         {
+            logWarning("PhotoKit in-flight job limit exceeded; deferring new work")
             return .processing
         } catch {
             logError("Error: \(error.localizedDescription)")
@@ -102,7 +103,11 @@ final class BackgroundUploadExtensionCore {
         madeProgress = try acknowledgeCompletedJobs() || madeProgress
         guard !isCancelled else { return .deferred }
 
+        madeProgress = cancelRedundantJobs() || madeProgress
+        guard !isCancelled else { return .deferred }
+
         let result = try createNewUploadJobs(interface: currentNetworkInterface())
+        reconcileTrackedJobs()
         guard result == .completed else { return result }
 
         return madeProgress || hasJobsInFlight() ? .scheduled : .completed
@@ -111,6 +116,90 @@ final class BackgroundUploadExtensionCore {
     private func hasJobsInFlight() -> Bool {
         guard #available(iOS 26.5, *) else { return false }
         return PHAssetResourceUploadJob.fetchJobs(action: .process, options: nil).count > 0
+    }
+
+    // In-flight jobs that are redundant (uploaded through another path), untracked, or
+    // stuck since well before this device last had upload conditions occupy the PhotoKit
+    // job limit forever if never released. Cancellation auto-acknowledges them, freeing
+    // capacity for new work.
+    private func cancelRedundantJobs() -> Bool {
+        guard #available(iOS 26.5, *) else { return false }
+        let library = PHPhotoLibrary.shared()
+        let jobs = PHAssetResourceUploadJob.fetchJobs(action: .process, options: nil)
+        guard jobs.count > 0 else { return false }
+
+        let onServer = database.getAllAssetsOnServer()
+        let trackedAges = database.getTrackedJobAges()
+        let staleCutoff = Date().addingTimeInterval(-staleJobAgeLimit)
+        var cancelledAny = false
+
+        for i in 0..<jobs.count where !isCancelled {
+            let job = jobs.object(at: i)
+            let identity = identity(for: job)
+            let key = identity.map { "\($0.assetLocalIdentifier)||\($0.resourceType)" }
+
+            let reason: String
+            if let identity {
+                if onServer.contains(identity.assetLocalIdentifier)
+                    || database.isResourceUploaded(
+                        assetId: identity.assetLocalIdentifier,
+                        resourceType: identity.resourceType
+                    ) {
+                    reason = "already uploaded through another path"
+                } else if let createdAt = key.flatMap({ trackedAges[$0] }), createdAt < staleCutoff {
+                    reason = "stuck in flight since \(createdAt)"
+                } else if let key, !trackedAges.keys.contains(key) {
+                    reason = "untracked by the app database"
+                } else {
+                    continue
+                }
+            } else {
+                reason = "unresolvable identity"
+            }
+
+            do {
+                try library.performChangesAndWait {
+                    guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                    request.cancel()
+                    cancelledAny = true
+                }
+                logWarning("Cancelled in-flight job \(job.localIdentifier): \(reason)")
+                if let identity {
+                    database.markJobStatus(
+                        assetId: identity.assetLocalIdentifier,
+                        resourceType: identity.resourceType,
+                        status: .completed
+                    )
+                }
+            } catch {
+                logError("Failed to cancel job \(job.localIdentifier): \(error.localizedDescription)")
+            }
+        }
+        return cancelledAny
+    }
+
+    // Drops locally tracked jobs that no longer exist in PhotoKit. Without this, rows
+    // left by crashes or library churn keep their assets permanently skipped by
+    // fetchPendingResources.
+    private func reconcileTrackedJobs() {
+        guard #available(iOS 26.5, *) else { return }
+        var liveKeys = Set<String>()
+        let actions: [PHAssetResourceUploadJob.Action] = [.process, .acknowledge, .retry]
+        for action in actions {
+            let jobs = PHAssetResourceUploadJob.fetchJobs(action: action, options: nil)
+            for i in 0..<jobs.count {
+                if let identity = identity(for: jobs.object(at: i)) {
+                    liveKeys.insert("\(identity.assetLocalIdentifier)||\(identity.resourceType)")
+                }
+            }
+        }
+        let removed = database.pruneTrackedJobs(
+            liveKeys: liveKeys,
+            createdBefore: Date().addingTimeInterval(-30 * 60)
+        )
+        if removed > 0 {
+            logDebug("Pruned \(removed) tracked jobs absent from PhotoKit")
+        }
     }
 
 
@@ -123,12 +212,15 @@ final class BackgroundUploadExtensionCore {
             action: .retry,
             options: nil
         )
+        if jobs.count > 0 {
+            logDebug("Retryable jobs: \(jobs.count)")
+        }
 
         var retryResources = [(job: PHAssetResourceUploadJob, resource: PHAssetResource)]()
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
-            guard let resource = resource(for: job) else {
-                logWarning("Skipping retry for job \(job.localIdentifier): PHAssetResource unavailable")
+            guard let resource = uploadableResource(for: job) else {
+                logWarning("Skipping retry for job \(job.localIdentifier): resource unavailable; will acknowledge instead")
                 continue
             }
             retryResources.append((job, resource))
@@ -143,9 +235,6 @@ final class BackgroundUploadExtensionCore {
             let errorDescription = jobErrorDescription(job)
             logWarning("Retrying failed upload job \(job.localIdentifier): \(errorDescription)")
 
-            // If PHAsset is temporarily unavailable (e.g. PHPhotosError 3300 during
-            // iCloud sync), skip this job rather than retrying against a stale or
-            // credential-less destination.
             guard let destination = buildDestination(
                 for: resource,
                 timezone: timezones[resource.assetLocalIdentifier] ?? TimeZone.current,
@@ -154,10 +243,14 @@ final class BackgroundUploadExtensionCore {
                 logWarning("Skipping retry for \(resource.originalFilename): destination unavailable")
                 continue
             }
-            try library.performChangesAndWait {
-                guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
-                request.retry(destination: destination)
-                retriedAny = true
+            do {
+                try library.performChangesAndWait {
+                    guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                    request.retry(destination: destination)
+                    retriedAny = true
+                }
+            } catch {
+                logError("Failed to retry job \(job.localIdentifier): \(error.localizedDescription)")
             }
         }
         return retriedAny
@@ -169,63 +262,60 @@ final class BackgroundUploadExtensionCore {
             action: .acknowledge,
             options: nil
         )
-
-        var jobResources = [(job: PHAssetResourceUploadJob, resource: PHAssetResource)]()
-        var identifiers = [String]()
-        for i in 0..<jobs.count {
-            let job = jobs.object(at: i)
-            guard let resource = resource(for: job) else {
-                logWarning("Could not resolve resource for completed job \(job.localIdentifier); deferring acknowledgement")
-                continue
-            }
-            jobResources.append((job, resource))
-            identifiers.append(resource.assetLocalIdentifier)
-        }
-        let fetchResult = PHAsset.fetchAssets(
-            withLocalIdentifiers: Array(Set(identifiers)),
-            options: nil
-        )
-        var assetsById = [String: PHAsset]()
-        fetchResult.enumerateObjects { asset, _, _ in
-            assetsById[asset.localIdentifier] = asset
+        if jobs.count > 0 {
+            logDebug("Acknowledgeable jobs: \(jobs.count)")
         }
 
         var acknowledgedAny = false
-        for (job, resource) in jobResources where !isCancelled {
-
-            let resolvedFilename: String
-            if let asset = assetsById[resource.assetLocalIdentifier] {
-                resolvedFilename = resource.resolvedFilename(using: asset)
-            } else {
-                resolvedFilename = resource.resolvedFilename()
+        for i in 0..<jobs.count where !isCancelled {
+            let job = jobs.object(at: i)
+            let succeeded = job.state == .succeeded
+            let identity = identity(for: job)
+            if identity == nil {
+                logWarning("Could not resolve identity for completed job \(job.localIdentifier); acknowledging without recording")
             }
 
-            let resourceType = resourceTypeString(for: resource)
-
-            let immichId: String
-            if #available(iOS 26.4, *),
-               let value = job.responseHeaderFields?[immichAssetIDHeader],
-               UUID(uuidString: value) != nil {
-                immichId = value
-            } else {
-                immichId = "unknown"
+            // Acknowledge first: freeing job-limit space must never depend on
+            // bookkeeping that can fail for legacy jobs.
+            do {
+                try library.performChangesAndWait {
+                    guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                    request.acknowledge()
+                }
+            } catch {
+                logError("Failed to acknowledge job \(job.localIdentifier): \(error.localizedDescription)")
+                continue
             }
+            acknowledgedAny = true
 
-            database.recordUploadedAsset(
-                assetId: resource.assetLocalIdentifier,
-                resourceType: resourceType,
-                filename: resolvedFilename,
-                immichId: immichId,
-                fileSize: 0,
-                isDuplicate: false
+            guard let identity else { continue }
+            if succeeded {
+                let immichId: String
+                if #available(iOS 26.4, *),
+                   let value = job.responseHeaderFields?[immichAssetIDHeader],
+                   UUID(uuidString: value) != nil {
+                    immichId = value
+                } else {
+                    immichId = "unknown"
+                }
+                database.recordUploadedAsset(
+                    assetId: identity.assetLocalIdentifier,
+                    resourceType: identity.resourceType,
+                    filename: identity.filename,
+                    immichId: immichId,
+                    fileSize: 0,
+                    isDuplicate: false
+                )
+                SharedSettings.shared.lastBackgroundUploadAt = Date()
+                log("Acknowledged successful upload: \(identity.filename)")
+            } else {
+                logWarning("Acknowledged failed upload: \(identity.filename)")
+            }
+            database.markJobStatus(
+                assetId: identity.assetLocalIdentifier,
+                resourceType: identity.resourceType,
+                status: succeeded ? .completed : .failed
             )
-            SharedSettings.shared.lastBackgroundUploadAt = Date()
-
-            try library.performChangesAndWait {
-                guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
-                request.acknowledge()
-                acknowledgedAny = true
-            }
         }
         return acknowledgedAny
     }
@@ -265,10 +355,20 @@ final class BackgroundUploadExtensionCore {
         let timezones = captureTimezones(for: resources)
         guard !isCancelled else { return .deferred }
 
+        let capacity = uploadJobCapacity()
+        let batch = Array(resources.prefix(capacity))
+        guard !batch.isEmpty else {
+            logWarning("PhotoKit job limit already reached; waiting for acknowledgements before creating new jobs")
+            return .remaining
+        }
+        if batch.count < resources.count {
+            logDebug("Capped new jobs to \(batch.count) of \(resources.count) pending to respect job limit")
+        }
+
         let library = PHPhotoLibrary.shared()
         var createdAny = false
         try library.performChangesAndWait {
-            for resource in resources where !self.isCancelled {
+            for resource in batch where !self.isCancelled {
                 guard let dest = self.buildDestination(
                     for: resource,
                     timezone: timezones[resource.assetLocalIdentifier] ?? TimeZone.current,
@@ -280,11 +380,13 @@ final class BackgroundUploadExtensionCore {
                 self.logDebug("Creating upload job for resource: \(resolvedFilename)")
 
                 if #available(iOS 26.4, *) {
+
                     PHAssetResourceUploadJobChangeRequest.creationRequestForJob(destination: dest, resource: resource)
                 } else {
                     PHAssetResourceUploadJobChangeRequest.createJob(destination: dest, resource: resource)
                 }
                 createdAny = true
+
                 self.database.createOrUpdateJob(
                     assetId: resource.assetLocalIdentifier,
                     resourceType: self.resourceTypeString(for: resource),
@@ -344,6 +446,7 @@ final class BackgroundUploadExtensionCore {
             guard !skip.contains(asset.localIdentifier) else { return }
             collect(asset)
         }
+        logDebug("Collected \(pending.count) pending resources")
 
         return pending
     }
@@ -501,6 +604,84 @@ final class BackgroundUploadExtensionCore {
         return job.resource
     }
 
+    // In-flight jobs that any YAIIU build created carry their identity in the
+    // destination request's X-Device-Asset-Id header. Resolving identity from the
+    // header avoids PHAssetResource.assetResource(forUploadJob:), which on iOS 27
+    // faults the job's CoreData row and aborts the process (uncatchable ObjC
+    // exception) for legacy jobs whose asset row no longer resolves.
+    private struct JobIdentity {
+        let assetLocalIdentifier: String
+        let resourceType: String
+        let filename: String
+    }
+
+    private func identity(for job: PHAssetResourceUploadJob) -> JobIdentity? {
+        if let value = job.destination.value(forHTTPHeaderField: "X-Device-Asset-Id"),
+           let identity = Self.parseDeviceAssetId(value) {
+            return identity
+        }
+        if #unavailable(iOS 27.0) {
+            let resource = job.resource
+            return JobIdentity(
+                assetLocalIdentifier: resource.assetLocalIdentifier,
+                resourceType: resourceTypeString(for: resource),
+                filename: resource.originalFilename
+            )
+        }
+        return nil
+    }
+
+    private static let resourceTypeTokens = ["primary", "raw", "video", "heic", "png", "jpeg"]
+
+    private static func parseDeviceAssetId(_ value: String) -> JobIdentity? {
+        // Format: "<assetLocalIdentifier>-<resourceType>-<filename>" with the asset
+        // identifier always ending in PhotoKit's "/L<n>/<nnn>" suffix.
+        var best: JobIdentity?
+        for token in resourceTypeTokens {
+            let separator = "-\(token)-"
+            var searchStart = value.startIndex
+            while let range = value.range(of: separator, range: searchStart..<value.endIndex) {
+                let assetId = String(value[value.startIndex..<range.lowerBound])
+                let filename = String(value[range.upperBound...])
+                if isPhotoKitIdentifier(assetId), !filename.isEmpty,
+                   best == nil || assetId.count > best!.assetLocalIdentifier.count {
+                    best = JobIdentity(
+                        assetLocalIdentifier: assetId,
+                        resourceType: token,
+                        filename: filename
+                    )
+                }
+                searchStart = range.upperBound
+            }
+        }
+        return best
+    }
+
+    private static func isPhotoKitIdentifier(_ value: String) -> Bool {
+        value.range(of: #"/[A-Za-z]\d+/\d{3}$"#, options: .regularExpression) != nil
+    }
+
+    private func uploadableResource(for job: PHAssetResourceUploadJob) -> PHAssetResource? {
+        if #available(iOS 27.0, *) {
+            guard let identity = identity(for: job),
+                  let asset = fetchAsset(identifier: identity.assetLocalIdentifier) else { return nil }
+            return PHAssetResource.assetResources(for: asset)
+                .first { shouldUpload($0) && resourceTypeString(for: $0) == identity.resourceType }
+        }
+        return resource(for: job)
+    }
+
+    private func uploadJobCapacity() -> Int {
+        guard #available(iOS 26.5, *) else { return Int.max }
+        let inflight = PHAssetResourceUploadJob.fetchJobs(action: .process, options: nil).count
+            + PHAssetResourceUploadJob.fetchJobs(action: .acknowledge, options: nil).count
+        let headroom = Swift.max(0, PHAssetResourceUploadJob.jobLimit - inflight)
+        logDebug("Upload job capacity: \(headroom) available, \(inflight) unacknowledged, limit \(PHAssetResourceUploadJob.jobLimit)")
+        return headroom
+    }
+
+    private let staleJobAgeLimit: TimeInterval = 24 * 60 * 60
+
     private func jobErrorDescription(_ job: PHAssetResourceUploadJob) -> String {
         guard #available(iOS 26.4, *), let error = job.error else {
             return "unknown error"
@@ -548,10 +729,11 @@ final class BackgroundUploadExtensionCore {
     }
 
     private func fetchAsset(for resource: PHAssetResource) -> PHAsset? {
-        PHAsset.fetchAssets(
-            withLocalIdentifiers: [resource.assetLocalIdentifier],
-            options: nil
-        ).firstObject
+        fetchAsset(identifier: resource.assetLocalIdentifier)
+    }
+
+    private func fetchAsset(identifier: String) -> PHAsset? {
+        PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject
     }
     
     // MARK: - iCloud Identifier
@@ -640,6 +822,7 @@ extension BackgroundUploadExtensionCore {
             where error.domain == PHPhotosErrorDomain
             && error.code == PHPhotosError.limitExceeded.rawValue
         {
+            logWarning("PhotoKit in-flight job limit exceeded; deferring new work")
             return .processing
         } catch {
             logError("Error: \(error.localizedDescription)")

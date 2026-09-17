@@ -165,6 +165,82 @@ final class BackgroundUploadDatabase {
         }
     }
 
+    func markJobStatus(assetId: String, resourceType: String, status: UploadJobStatus) {
+        queue.sync {
+            let sql = "UPDATE upload_jobs SET status = ?, updated_at = ? WHERE asset_id = ? AND resource_type = ?"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, status.rawValue, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 3, assetId, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, resourceType, -1, SQLITE_TRANSIENT)
+            sqlite3_step(stmt)
+        }
+    }
+
+    // Removes tracked jobs (pending/uploading/failed) older than createdBefore whose
+    // resource key is absent from the live PhotoKit job set. Such rows represent jobs
+    // that vanished from PhotoKit (crash, expiry, library churn); leaving them would
+    // make fetchPendingResources skip their assets forever.
+    func pruneTrackedJobs(liveKeys: Set<String>, createdBefore: Date) -> Int {
+        queue.sync {
+            let cutoff = createdBefore.timeIntervalSince1970
+            let selectSql = """
+                SELECT id, asset_id, resource_type FROM upload_jobs
+                WHERE status IN ('pending', 'uploading', 'failed') AND created_at < ?
+            """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, selectSql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+            sqlite3_bind_double(stmt, 1, cutoff)
+
+            var doomed: [Int64] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = Int64(sqlite3_column_int64(stmt, 0))
+                guard let aPtr = sqlite3_column_text(stmt, 1),
+                      let tPtr = sqlite3_column_text(stmt, 2) else { continue }
+                let key = "\(String(cString: aPtr))||\(String(cString: tPtr))"
+                if !liveKeys.contains(key) { doomed.append(id) }
+            }
+            guard !doomed.isEmpty else { return 0 }
+
+            sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
+            let deleteSql = "DELETE FROM upload_jobs WHERE id = ?"
+            for id in doomed {
+                var del: OpaquePointer?
+                if sqlite3_prepare_v2(db, deleteSql, -1, &del, nil) == SQLITE_OK {
+                    sqlite3_bind_int64(del, 1, id)
+                    sqlite3_step(del)
+                }
+                sqlite3_finalize(del)
+            }
+            sqlite3_exec(db, "COMMIT", nil, nil, nil)
+            return doomed.count
+        }
+    }
+
+    // Creation timestamps of locally tracked jobs, keyed "assetId||resourceType".
+    func getTrackedJobAges() -> [String: Date] {
+        queue.sync {
+            var ages = [String: Date]()
+            let sql = """
+                SELECT asset_id, resource_type, created_at FROM upload_jobs
+                WHERE status IN ('pending', 'uploading', 'failed')
+            """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return ages }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let aPtr = sqlite3_column_text(stmt, 0),
+                      let tPtr = sqlite3_column_text(stmt, 1) else { continue }
+                let key = "\(String(cString: aPtr))||\(String(cString: tPtr))"
+                ages[key] = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2))
+            }
+            return ages
+        }
+    }
+
     func getInflightJobKeys() -> Set<String> {
         queue.sync {
             var keys = Set<String>()
