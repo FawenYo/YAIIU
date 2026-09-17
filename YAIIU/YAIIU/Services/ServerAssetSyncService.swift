@@ -32,6 +32,7 @@ protocol ServerAssetSyncStore {
     func deleteServerAssets(_ immichIds: [String]) -> Bool
     func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
     func clearICloudIds(for immichIds: Set<String>) -> Bool
+    func updateSourceChecksums(_ sourceChecksumsByImmichId: [String: String]) -> Bool
     func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, serverURL: String, totalAssets: Int, lastAck: String?) -> Bool
     func getServerAssetsCacheCount() -> Int
     func backfillImmichIdsFromServerCache() -> Int
@@ -280,6 +281,9 @@ class ServerAssetSyncService {
         }
         guard dbManager.clearICloudIds(for: metadataResult.iCloudIdDeletes) else {
             throw SyncError.syncFailed(reason: "Failed to persist iCloud ID deletions")
+        }
+        guard dbManager.updateSourceChecksums(metadataResult.sourceChecksumUpserts) else {
+            throw SyncError.syncFailed(reason: "Failed to persist source checksum updates")
         }
 
         let acks = Array(Set(streamResult.acks + metadataResult.acks)).sorted()

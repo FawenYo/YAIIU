@@ -49,6 +49,18 @@ func TestAddTimezoneOffsetSkipsNonImages(t *testing.T) {
 	}
 }
 
+func TestAddTimezoneOffsetReportsMissingExifTool(t *testing.T) {
+	t.Setenv("PATH", "")
+	input := []byte("image")
+	_, changed, err := addTimezoneOffsetIfMissing(input, "photo.jpg", "+08:00")
+	if err == nil {
+		t.Fatal("expected an error when exiftool is not on PATH")
+	}
+	if changed {
+		t.Fatal("expected no change when exiftool is missing")
+	}
+}
+
 func TestCreateMultipartRequestIncludesSourceChecksumAfterRewrite(t *testing.T) {
 	metadata := BackgroundUploadRequest{
 		DeviceAssetID:  "asset-1-primary-photo.jpg",

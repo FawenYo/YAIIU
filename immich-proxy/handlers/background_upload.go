@@ -125,27 +125,10 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 
 		log.Printf("[%s] Received %d bytes of photo data", clientIP, len(photoData))
 
-		normalizedData, changed, err := addTimezoneOffsetIfMissing(
-			photoData,
-			metadata.Filename,
-			metadata.TimezoneOffset,
-		)
-		if err != nil {
-			log.Printf("[%s] Failed to normalize image timezone metadata: %v", clientIP, err)
-			http.Error(w, "Failed to normalize image metadata", http.StatusInternalServerError)
-			return
-		}
-		if changed {
-			checksum := sha1.Sum(photoData)
-			metadata.SourceChecksum = hex.EncodeToString(checksum[:])
-		}
-		if changed {
-			photoData = normalizedData
-			log.Printf("[%s] Added EXIF OffsetTimeOriginal=%s", clientIP, metadata.TimezoneOffset)
-		}
-
 		// Last-resort safety net: if headers are missing or wrong, use magic byte
 		// detection to prevent video payloads from reaching Immich as image/jpeg.
+		// Runs before metadata normalization so a defaulted "upload.jpg" filename
+		// never sends a video payload through the image path.
 		if len(photoData) > 0 &&
 			(metadata.Filename == "upload.jpg" || metadata.ContentType == "application/octet-stream") {
 			detected := http.DetectContentType(photoData)
@@ -163,6 +146,23 @@ func BackgroundUploadHandler(immichServerURL string) http.HandlerFunc {
 				log.Printf("[%s] Magic byte detection overrode metadata: filename=%s contentType=%s",
 					clientIP, metadata.Filename, metadata.ContentType)
 			}
+		}
+
+		// Timezone normalization is best-effort: any failure (including a missing
+		// ExifTool install) forwards the original payload instead of failing the upload.
+		normalizedData, changed, err := addTimezoneOffsetIfMissing(
+			photoData,
+			metadata.Filename,
+			metadata.TimezoneOffset,
+		)
+		if err != nil {
+			log.Printf("[%s] Skipping image timezone normalization: %v", clientIP, err)
+		}
+		if changed {
+			checksum := sha1.Sum(photoData)
+			metadata.SourceChecksum = hex.EncodeToString(checksum[:])
+			photoData = normalizedData
+			log.Printf("[%s] Added EXIF OffsetTimeOriginal=%s", clientIP, metadata.TimezoneOffset)
 		}
 
 		// Create multipart form data for Immich

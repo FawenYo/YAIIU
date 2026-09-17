@@ -427,8 +427,23 @@ final class UploadRecordRepository {
             SELECT ua.asset_id, sac.immich_id
             FROM uploaded_assets ua
             JOIN hash_cache hc ON hc.asset_id = ua.asset_id
-            JOIN server_assets_cache sac ON COALESCE(sac.source_checksum, sac.checksum) = hc.sha1_hash
+            JOIN server_assets_cache sac ON sac.source_checksum = hc.sha1_hash
             WHERE ua.immich_id = 'unknown'
+              AND NOT (
+                  ua.resource_type IN ('raw', 'video')
+                  AND EXISTS (
+                      SELECT 1 FROM uploaded_assets ua2
+                      WHERE ua2.asset_id = ua.asset_id
+                        AND ua2.resource_type NOT IN ('raw', 'video')
+                  )
+              )
+            UNION
+            SELECT ua.asset_id, sac.immich_id
+            FROM uploaded_assets ua
+            JOIN hash_cache hc ON hc.asset_id = ua.asset_id
+            JOIN server_assets_cache sac ON sac.checksum = hc.sha1_hash
+            WHERE sac.source_checksum IS NULL
+              AND ua.immich_id = 'unknown'
               AND NOT (
                   ua.resource_type IN ('raw', 'video')
                   AND EXISTS (

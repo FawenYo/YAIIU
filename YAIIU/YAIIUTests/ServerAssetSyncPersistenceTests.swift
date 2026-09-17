@@ -100,6 +100,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             return XCTFail("Expected sync to succeed")
         }
         XCTAssertEqual(store.savedAssets.first?.sourceChecksum, "original-checksum")
+        XCTAssertEqual(store.updatedSourceChecksums, ["asset-1": "original-checksum"])
     }
     func testDeltaSyncPreservesExistingSourceChecksumWithoutMetadataEvent() async throws {
         let operations = OperationRecorder()
@@ -245,6 +246,13 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
 
     func clearICloudIds(for immichIds: Set<String>) -> Bool {
         operations.append("clear-icloud-ids")
+        return true
+    }
+
+    private(set) var updatedSourceChecksums: [String: String] = [:]
+    func updateSourceChecksums(_ sourceChecksumsByImmichId: [String: String]) -> Bool {
+        updatedSourceChecksums = sourceChecksumsByImmichId
+        operations.append("update-source-checksums")
         return true
     }
 

@@ -223,6 +223,11 @@ final class DatabaseManager {
     func clearICloudIds(for immichIds: Set<String>) -> Bool {
         serverRepo.clearICloudIds(for: immichIds)
     }
+
+    @discardableResult
+    func updateSourceChecksums(_ sourceChecksumsByImmichId: [String: String]) -> Bool {
+        serverRepo.updateSourceChecksums(sourceChecksumsByImmichId)
+    }
     
     @discardableResult
     func deleteServerAssets(_ immichIds: [String]) -> Bool {

@@ -484,7 +484,11 @@ class UploadManager: ObservableObject {
         if ["raw-image", "dng", "arw", "cr2", "cr3", "nef", "raf", "orf", "rw2"].contains(where: uti.contains) {
             return "raw"
         }
-        if uti.contains("video") || uti.contains("movie") || uti.contains("mp4") || uti.contains("quicktime") {
+        if resource.type == .alternatePhoto {
+            return "raw"
+        }
+        if uti.contains("video") || uti.contains("movie") || uti.contains("mp4") || uti.contains("quicktime")
+            || resource.type == .video || resource.type == .fullSizeVideo {
             return "video"
         }
         if resource.type == .photo || resource.type == .fullSizePhoto {

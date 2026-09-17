@@ -92,7 +92,7 @@ export IMMICH_SERVER_URL=http://your-immich-server:2283
 go run .
 ```
 
-Install ExifTool first when running the proxy directly; background image timezone normalization fails closed if it is unavailable.
+ExifTool is optional; when it is missing, the proxy logs a warning and forwards uploads with their original metadata instead of failing them.
 
 ```bash
 # macOS

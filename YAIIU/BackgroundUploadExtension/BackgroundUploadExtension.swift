@@ -124,16 +124,36 @@ final class BackgroundUploadExtensionCore {
             options: nil
         )
 
+        var retryResources = [(job: PHAssetResourceUploadJob, resource: PHAssetResource)]()
         for i in 0..<jobs.count where !isCancelled {
             let job = jobs.object(at: i)
+            guard let resource = resource(for: job) else {
+                logWarning("Skipping retry for job \(job.localIdentifier): PHAssetResource unavailable")
+                continue
+            }
+            retryResources.append((job, resource))
+        }
+
+        // Rebuild destinations from current settings; job.destination may carry a
+        // stale server URL or credential from before a logout/login or server move.
+        let timezones = captureTimezones(for: retryResources.map(\.resource))
+        guard !isCancelled else { return false }
+
+        for (job, resource) in retryResources where !isCancelled {
             let errorDescription = jobErrorDescription(job)
             logWarning("Retrying failed upload job \(job.localIdentifier): \(errorDescription)")
 
-            var destination = job.destination
-            destination.allowsCellularAccess = BackgroundUploadPolicy.allowsCellularAccess(
-                for: .retry,
-                allowCellular: settings.allowCellularBackgroundUpload
-            )
+            // If PHAsset is temporarily unavailable (e.g. PHPhotosError 3300 during
+            // iCloud sync), skip this job rather than retrying against a stale or
+            // credential-less destination.
+            guard let destination = buildDestination(
+                for: resource,
+                timezone: timezones[resource.assetLocalIdentifier] ?? TimeZone.current,
+                purpose: .retry
+            ) else {
+                logWarning("Skipping retry for \(resource.originalFilename): destination unavailable")
+                continue
+            }
             try library.performChangesAndWait {
                 guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
                 request.retry(destination: destination)

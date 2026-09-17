@@ -13,9 +13,13 @@ var exifOffsetPattern = regexp.MustCompile(`^[+-](?:0\d|1\d|2[0-3]):[0-5]\d$`)
 
 // addTimezoneOffsetIfMissing delegates lossless metadata rewriting to ExifTool.
 // Unsupported files and images that already have an offset pass through unchanged.
+// A missing ExifTool install yields an error the caller treats as "skip normalization".
 func addTimezoneOffsetIfMissing(photoData []byte, filename, offset string) ([]byte, bool, error) {
 	if !exifOffsetPattern.MatchString(offset) || !isImageFilename(filename) {
 		return photoData, false, nil
+	}
+	if _, err := exec.LookPath("exiftool"); err != nil {
+		return nil, false, fmt.Errorf("exiftool not available: %w", err)
 	}
 
 	input, err := os.CreateTemp("", "immich-proxy-input-*")
