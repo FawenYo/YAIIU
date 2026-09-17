@@ -737,15 +737,18 @@ final class BackgroundUploadExtensionCore {
         return nil
     }
 
-    private static let assetExistenceCache = OSAllocatedUnfairLock<[String: Bool]>(initialState: [:])
+    private static let assetExistenceCache = OSAllocatedUnfairLock<Set<String>>(initialState: [])
 
     private static func assetExists(identifier: String) -> Bool {
-        assetExistenceCache.withLock { cache in
-            if let cached = cache[identifier] { return cached }
-            let exists = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).count > 0
-            cache[identifier] = exists
-            return exists
+        // Cache hits only: an asset can be transiently absent during iCloud
+        // restoration or library sync, and a cached miss would strand the job as
+        // unresolvable for the rest of the process.
+        if assetExistenceCache.withLock({ $0.contains(identifier) }) { return true }
+        let exists = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).count > 0
+        if exists {
+            assetExistenceCache.withLock { $0.insert(identifier) }
         }
+        return exists
     }
 
     private func uploadableResource(for job: PHAssetResourceUploadJob) -> PHAssetResource? {
