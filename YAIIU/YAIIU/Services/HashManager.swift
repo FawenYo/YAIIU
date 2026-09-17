@@ -469,6 +469,18 @@ class HashManager: ObservableObject {
                 if let iCloudId = identifierToICloudId[identifier],
                    let checksum = checksumMap[iCloudId] {
                     guard !Task.isCancelled, self.isCurrentRun(runID) else { return }
+
+                    // One PhotoKit asset can map to multiple Immich files (JPEG+RAW).
+                    // The iCloud-ID shortcut returns only one checksum, so accepting it
+                    // for a RAW asset would erase has_raw/raw_hash and make the primary
+                    // result hide its RAW companion from background discovery.
+                    let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+                    if let asset = fetch.firstObject,
+                       AssetResourceSelector.select(for: asset)?.rawResource != nil {
+                        remainingIdentifiers.append(identifier)
+                        continue
+                    }
+
                     DatabaseManager.shared.saveMultiResourceHashCache(
                         localIdentifier: identifier,
                         primaryHash: checksum,

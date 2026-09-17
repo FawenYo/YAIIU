@@ -45,6 +45,16 @@ final class BackgroundUploadDatabase {
             sqlite3_step(stmt) // This will return SQLITE_ROW with the mode value
         }
         sqlite3_finalize(stmt)
+
+        // Older extension builds created RAW jobs without updating has_raw. Repair
+        // that durable resource-presence fact so a confirmed primary never hides a
+        // failed RAW retry.
+        exec("""
+            UPDATE hash_cache SET has_raw = 1
+            WHERE asset_id IN (
+                SELECT DISTINCT asset_id FROM upload_jobs WHERE resource_type = 'raw'
+            )
+        """)
     }
     
     private func exec(_ sql: String) {
@@ -95,6 +105,18 @@ final class BackgroundUploadDatabase {
             sqlite3_bind_text(stmt, 7, status.rawValue, -1, SQLITE_TRANSIENT)
             sqlite3_bind_double(stmt, 8, now)
             
+            sqlite3_step(stmt)
+        }
+    }
+
+    func markResourcePresent(assetId: String, resourceType: String) {
+        guard resourceType == "raw" else { return }
+        queue.sync {
+            let sql = "UPDATE hash_cache SET has_raw = 1 WHERE asset_id = ?"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
             sqlite3_step(stmt)
         }
     }
@@ -417,92 +439,23 @@ final class BackgroundUploadDatabase {
     }
     
     // MARK: - Assets On Server
-    
-    func recordAssetOnServer(assetId: String, sha1Hash: String?) {
-        queue.sync {
-            let sql = "INSERT OR REPLACE INTO assets_on_server (asset_id, sha1_hash, synced_at) VALUES (?, ?, ?)"
-            
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-            
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-            
-            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-            if let hash = sha1Hash {
-                sqlite3_bind_text(stmt, 2, hash, -1, SQLITE_TRANSIENT)
-            } else {
-                sqlite3_bind_null(stmt, 2)
-            }
-            sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
-            
-            sqlite3_step(stmt)
-        }
-    }
-    
-    func batchRecordAssetsOnServer(_ assets: [(assetId: String, sha1Hash: String?)]) {
-        queue.sync {
-            sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
-            defer { sqlite3_exec(db, "COMMIT", nil, nil, nil) }
-            
-            let sql = "INSERT OR REPLACE INTO assets_on_server (asset_id, sha1_hash, synced_at) VALUES (?, ?, ?)"
-            
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-            
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-            
-            let now = Date().timeIntervalSince1970
-            for asset in assets {
-                sqlite3_reset(stmt)
-                sqlite3_bind_text(stmt, 1, asset.assetId, -1, SQLITE_TRANSIENT)
-                if let hash = asset.sha1Hash {
-                    sqlite3_bind_text(stmt, 2, hash, -1, SQLITE_TRANSIENT)
-                } else {
-                    sqlite3_bind_null(stmt, 2)
-                }
-                sqlite3_bind_double(stmt, 3, now)
-                sqlite3_step(stmt)
-            }
-        }
-    }
-    
-    func isAssetOnServer(assetId: String) -> Bool {
-        queue.sync {
-            let sql = "SELECT 1 FROM assets_on_server WHERE asset_id = ? LIMIT 1"
-            
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-            
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
-            
-            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-            
-            return sqlite3_step(stmt) == SQLITE_ROW
-        }
-    }
-    
-    // Whole assets fully represented on the server: the primary copy is confirmed
-    // and, where the hash cache knows a raw sibling exists, that copy is confirmed
-    // too. Assets with an unconfirmed raw sibling stay discoverable so the sibling
-    // can be retried; per-resource uploads still gate on uploaded_assets.
+
+    // HashManager has already resolved local primary/RAW checksums against
+    // server_assets_cache and persisted those results on hash_cache. The extension
+    // consumes those flags; server_assets_cache itself has no local asset_id column.
     func getAllAssetsOnServer() -> Set<String> {
         queue.sync {
             var ids = Set<String>()
-
             let sql = """
                 SELECT asset_id FROM hash_cache
                 WHERE is_on_server = 1 AND (has_raw = 0 OR raw_on_server = 1)
-                UNION
-                SELECT asset_id FROM assets_on_server
-                WHERE asset_id NOT IN
-                    (SELECT asset_id FROM hash_cache WHERE has_raw = 1 AND raw_on_server = 0)
             """
-
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
-
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return ids }
-
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                if let db { print("[BackgroundUploadDatabase] getAllAssetsOnServer: \(String(cString: sqlite3_errmsg(db)))") }
+                return ids
+            }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 if let cStr = sqlite3_column_text(stmt, 0) {
                     ids.insert(String(cString: cStr))
@@ -512,34 +465,22 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    // Assets whose server state is partial: the primary copy is confirmed while a
-    // known raw sibling is not, or vice versa. Bulk skip (getAllAssetsOnServer) only
-    // covers fully-confirmed assets; discovery filters each copy of a partial asset
-    // with these sets so the missing copy can be (re)scheduled without reuploading
-    // the confirmed one.
     func getPartialServerCopyAssets() -> (primaryConfirmed: Set<String>, rawConfirmed: Set<String>) {
         queue.sync {
             var primaryConfirmed = Set<String>()
             var rawConfirmed = Set<String>()
-
             let sql = """
                 SELECT asset_id, CASE WHEN is_on_server = 1 THEN 'p' ELSE 'r' END
                 FROM hash_cache
                 WHERE (is_on_server = 1 AND has_raw = 1 AND raw_on_server = 0)
                    OR (raw_on_server = 1 AND is_on_server = 0)
-                UNION ALL
-                SELECT asset_id, 'p' FROM assets_on_server
-                WHERE asset_id IN
-                    (SELECT asset_id FROM hash_cache WHERE has_raw = 1 AND raw_on_server = 0)
             """
-
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
-
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                if let db { print("[BackgroundUploadDatabase] getPartialServerCopyAssets: \(String(cString: sqlite3_errmsg(db)))") }
                 return (primaryConfirmed, rawConfirmed)
             }
-
             while sqlite3_step(stmt) == SQLITE_ROW {
                 guard let idPtr = sqlite3_column_text(stmt, 0),
                       let kindPtr = sqlite3_column_text(stmt, 1) else { continue }
@@ -551,25 +492,6 @@ final class BackgroundUploadDatabase {
                 }
             }
             return (primaryConfirmed, rawConfirmed)
-        }
-    }
-    
-    func getAssetsOnServerCount() -> Int {
-        queue.sync {
-            let sql = "SELECT COUNT(*) FROM assets_on_server"
-            
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-            
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-            
-            return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
-        }
-    }
-    
-    func clearAssetsOnServer() {
-        queue.sync {
-            exec("DELETE FROM assets_on_server")
         }
     }
     

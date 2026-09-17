@@ -481,6 +481,10 @@ final class BackgroundUploadExtensionCore {
                     filename: resolvedFilename,
                     status: .uploading
                 )
+                self.database.markResourcePresent(
+                    assetId: resource.assetLocalIdentifier,
+                    resourceType: self.resourceTypeString(for: resource)
+                )
             }
         }
         guard createdAny else { return .remaining }
@@ -794,7 +798,7 @@ final class BackgroundUploadExtensionCore {
         if assetExistenceCache.withLock({ $0.contains(identifier) }) { return true }
         let exists = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).count > 0
         if exists {
-            assetExistenceCache.withLock { $0.insert(identifier) }
+            assetExistenceCache.withLock { _ = $0.insert(identifier) }
         }
         return exists
     }
