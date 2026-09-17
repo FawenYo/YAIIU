@@ -164,13 +164,15 @@ final class BackgroundUploadExtensionCore {
                 reason = "unresolvable identity"
             }
 
+            var requested = false
             var applied = false
             do {
                 try library.performChangesAndWait {
                     guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
                     request.cancel()
-                    applied = true
+                    requested = true
                 }
+                applied = requested
             } catch {
                 logError("Failed to cancel job \(job.localIdentifier): \(error.localizedDescription)")
             }
@@ -318,13 +320,15 @@ final class BackgroundUploadExtensionCore {
                 SharedSettings.shared.lastBackgroundUploadAt = Date()
             }
 
+            var requested = false
             var applied = false
             do {
                 try library.performChangesAndWait {
                     guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
                     request.acknowledge()
-                    applied = true
+                    requested = true
                 }
+                applied = requested
             } catch {
                 logError("Failed to acknowledge job \(job.localIdentifier): \(error.localizedDescription)")
             }
