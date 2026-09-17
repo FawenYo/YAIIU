@@ -412,7 +412,11 @@ final class BackgroundUploadExtensionCore {
         }
         var batch: [PHAssetResource] = []
         for group in grouped {
-            guard batch.count + group.count <= capacity else { break }
+            guard batch.count + group.count <= capacity else {
+                // Keep scanning: a later, smaller whole asset may still fit the
+                // remaining capacity while the oversized group defers.
+                continue
+            }
             batch.append(contentsOf: group)
         }
         guard !batch.isEmpty else {
