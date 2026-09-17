@@ -20,6 +20,24 @@ final class SyncStreamParserTests: XCTestCase {
         XCTAssertEqual(result.acksByType, ["AssetMetadataV1": "AssetMetadataV1|ack-1"])
     }
 
+    func testMetadataUpdateItemEncodesSourceChecksum() throws {
+        // The server replaces the whole mobile-app value on PUT; an update that
+        // omits sourceChecksum silently deletes it, so it must be serialized.
+        let item = MetadataUpdateItem(
+            assetId: "asset-1",
+            key: RemoteAssetMetadataItem.mobileAppKey,
+            value: MobileAppMetadata(iCloudId: "cloud-1", createdAt: nil, sourceChecksum: "0123456789abcdef0123456789abcdef01234567")
+        )
+
+        let data = try JSONEncoder().encode(["items": [item]])
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let items = try XCTUnwrap(object["items"] as? [[String: Any]])
+        let value = try XCTUnwrap(items.first?["value"] as? [String: Any])
+
+        XCTAssertEqual(value["sourceChecksum"] as? String, "0123456789abcdef0123456789abcdef01234567")
+        XCTAssertEqual(value["iCloudId"] as? String, "cloud-1")
+    }
+
     func testMetadataParserReturnsMobileAppDeletion() throws {
         let data = Data(#"{"type":"AssetMetadataDeleteV1","ack":"AssetMetadataDeleteV1|ack-1","data":{"assetId":"asset-1","key":"mobile-app"}}"#.utf8)
 

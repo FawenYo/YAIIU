@@ -371,6 +371,12 @@ class UploadManager: ObservableObject {
             isUploading = false
             setIdleTimerDisabled(false)
             uploadQueue.removeAll { $0.status == .completed }
+            // Preparations finishing while this run was active appended items
+            // outside its snapshot; pick them up instead of leaving them pending.
+            if !isPaused && uploadQueue.contains(where: { $0.status == .pending }) {
+                logInfo("Queue received new items during upload; restarting processing", category: .upload)
+                startUpload()
+            }
         }
     }
     

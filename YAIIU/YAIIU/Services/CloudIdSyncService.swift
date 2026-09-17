@@ -73,17 +73,19 @@ final class CloudIdSyncService {
         
         progressHandler?(0.5, "Preparing metadata updates...")
         
-        // Build metadata update items
+        // The server replaces the whole mobile-app value on PUT; carry the
+        // cached source checksum so metadata-only updates never drop it.
+        let sourceChecksums = DatabaseManager.shared.sourceChecksums(for: Array(localToImmich.values))
         var updateItems: [MetadataUpdateItem] = []
         for (localId, cloudId) in allCloudIds {
             guard let immichId = localToImmich[localId] else { continue }
-            
             let metadata = MobileAppMetadata(
                 iCloudId: cloudId,
                 createdAt: nil,
                 adjustmentTime: nil,
                 latitude: nil,
-                longitude: nil
+                longitude: nil,
+                sourceChecksum: sourceChecksums[immichId]
             )
             let item = MetadataUpdateItem(
                 assetId: immichId,

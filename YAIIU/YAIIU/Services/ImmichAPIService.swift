@@ -4,13 +4,13 @@ import UIKit
 
 // MARK: - Mobile App Metadata
 
-struct MobileAppMetadata: Encodable {
-    let iCloudId: String?
-    let createdAt: String?
-    let adjustmentTime: String?
-    let latitude: String?
-    let longitude: String?
-    let sourceChecksum: String?
+struct MobileAppMetadata: Codable {
+    var iCloudId: String?
+    var createdAt: String?
+    var adjustmentTime: String?
+    var latitude: String?
+    var longitude: String?
+    var sourceChecksum: String?
 
     init(iCloudId: String?, createdAt: Date?, adjustmentTime: Date? = nil, latitude: Double? = nil, longitude: Double? = nil, sourceChecksum: String? = nil) {
         self.iCloudId = iCloudId
@@ -24,7 +24,7 @@ struct MobileAppMetadata: Encodable {
         self.longitude = longitude.map { String($0) }
         self.sourceChecksum = sourceChecksum
     }
-    
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         if let iCloudId = iCloudId { try container.encode(iCloudId, forKey: .iCloudId) }
@@ -1158,10 +1158,7 @@ class ImmichAPIService: NSObject {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
         
-        let body: [String: Any] = [
-            "items": items.map { $0.toDictionary() }
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONEncoder().encode(["items": items])
         
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1191,25 +1188,10 @@ struct ImmichAlbum: Decodable {
     let albumName: String
 }
 
-struct MetadataUpdateItem {
+struct MetadataUpdateItem: Encodable {
     let assetId: String
     let key: String
     let value: MobileAppMetadata
-    
-    func toDictionary() -> [String: Any] {
-        var valueDict: [String: Any] = [:]
-        if let iCloudId = value.iCloudId { valueDict["iCloudId"] = iCloudId }
-        if let createdAt = value.createdAt { valueDict["createdAt"] = createdAt }
-        if let adjustmentTime = value.adjustmentTime { valueDict["adjustmentTime"] = adjustmentTime }
-        if let latitude = value.latitude { valueDict["latitude"] = latitude }
-        if let longitude = value.longitude { valueDict["longitude"] = longitude }
-        
-        return [
-            "assetId": assetId,
-            "key": key,
-            "value": valueDict
-        ]
-    }
 }
 
 // MARK: - Error Types

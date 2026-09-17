@@ -247,7 +247,9 @@ class HashManager: ObservableObject {
 
     /// Assets that were found on server by checksum but have no iCloudId recorded.
     /// Consumers should read this after isProcessing becomes false and push updates to the server.
-    @Published var pendingICloudIdUpdates: [(immichId: String, iCloudId: String)] = []
+    /// The source checksum is carried so metadata PUTs (which replace the whole
+    /// mobile-app value server-side) never drop it.
+    @Published var pendingICloudIdUpdates: [(immichId: String, iCloudId: String, sourceChecksum: String?)] = []
     
     private var processingQueue: [String] = []
     private var isHashingActive = false
@@ -922,16 +924,17 @@ class HashManager: ObservableObject {
                 if primaryOnServer {
                     if let iCloudId = localToCloudId[localIdentifier] {
                         if let immichId = localToImmichId[localIdentifier] {
+                            let sourceChecksum = DatabaseManager.shared.getServerAssetByImmichId(immichId)?.sourceChecksum
                             await MainActor.run {
                                 guard self.isCurrentRun(runID) else { return }
-                                self.pendingICloudIdUpdates.append((immichId: immichId, iCloudId: iCloudId))
+                                self.pendingICloudIdUpdates.append((immichId: immichId, iCloudId: iCloudId, sourceChecksum: sourceChecksum))
                             }
                         } else if let serverAsset = DatabaseManager.shared.getServerAssetByChecksum(record.primaryHash),
                                   serverAsset.iCloudId != iCloudId,
                                   currentUserId == nil || serverAsset.ownerId == currentUserId {
                             await MainActor.run {
                                 guard self.isCurrentRun(runID) else { return }
-                                self.pendingICloudIdUpdates.append((immichId: serverAsset.immichId, iCloudId: iCloudId))
+                                self.pendingICloudIdUpdates.append((immichId: serverAsset.immichId, iCloudId: iCloudId, sourceChecksum: serverAsset.sourceChecksum))
                             }
                         }
                     } else {

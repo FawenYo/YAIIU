@@ -789,7 +789,11 @@ struct PhotoGridView: View {
                     MetadataUpdateItem(
                         assetId: update.immichId,
                         key: RemoteAssetMetadataItem.mobileAppKey,
-                        value: MobileAppMetadata(iCloudId: update.iCloudId, createdAt: nil)
+                        value: MobileAppMetadata(
+                            iCloudId: update.iCloudId,
+                            createdAt: nil,
+                            sourceChecksum: update.sourceChecksum
+                        )
                     )
                 }
 

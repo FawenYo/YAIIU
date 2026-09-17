@@ -19,6 +19,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             "delete-assets",
             "update-icloud-ids",
             "clear-icloud-ids",
+            "update-source-checksums",
             "save-sync-metadata",
             "send-acks",
             "backfill-immich-ids",

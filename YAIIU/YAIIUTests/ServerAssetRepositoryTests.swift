@@ -58,6 +58,17 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(repository.getServerAssetByChecksum("original")?.immichId, "asset-1")
     }
 
+    func testSourceChecksumLookupSkipsMissingRowsAndNullChecksums() {
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "sum-a", sourceChecksum: "original-a", iCloudId: nil),
+            ServerAssetRecord(immichId: "asset-null", checksum: "sum-n", sourceChecksum: nil, originalFilename: nil, assetType: "IMAGE", updatedAt: nil, iCloudId: nil, ownerId: "owner-1")
+        ]))
+
+        let found = repository.sourceChecksums(for: ["asset-1", "asset-null", "asset-missing"])
+
+        XCTAssertEqual(found, ["asset-1": "original-a"])
+    }
+
 
     func testMetadataOnlyUpsertUpdatesExistingAsset() {
         XCTAssertTrue(repository.saveServerAssets([record(checksum: "sum", iCloudId: nil)]))

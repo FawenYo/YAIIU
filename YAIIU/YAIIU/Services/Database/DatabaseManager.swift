@@ -244,6 +244,9 @@ final class DatabaseManager {
     func getServerAssetByImmichId(_ immichId: String) -> ServerAssetRecord? {
         serverRepo.getServerAssetByImmichId(immichId)
     }
+    func sourceChecksums(for immichIds: [String]) -> [String: String] {
+        serverRepo.sourceChecksums(for: immichIds)
+    }
     
     func getServerAssetsCacheCount() -> Int {
         serverRepo.getServerAssetsCacheCount()

@@ -263,6 +263,46 @@ final class ServerAssetRepository {
         }
     }
 
+    /// Returns source checksums held by the cache for the given assets.
+    /// Missing rows and rows without a checksum are omitted.
+    func sourceChecksums(for immichIds: [String]) -> [String: String] {
+        guard !immichIds.isEmpty else { return [:] }
+        connection.ensureInitialized()
+        var result: [String: String] = [:]
+        let chunkSize = 500
+        for chunkStart in stride(from: 0, to: immichIds.count, by: chunkSize) {
+            let chunk = Array(immichIds[chunkStart..<min(chunkStart + chunkSize, immichIds.count)])
+            connection.dbQueue.sync { [weak self] in
+                guard let self else { return }
+                let values = Array(repeating: "(?)", count: chunk.count).joined(separator: ",")
+                let sql = """
+                SELECT immich_id, source_checksum
+                FROM server_assets_cache
+                WHERE immich_id IN (VALUES \(values)) AND source_checksum IS NOT NULL;
+                """
+                var statement: OpaquePointer?
+                defer { sqlite3_finalize(statement) }
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    logError("Failed to prepare source checksum lookup: \(self.connection.lastErrorMessage)", category: .database)
+                    return
+                }
+                let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                for (index, immichId) in chunk.enumerated() {
+                    _ = immichId.withCString { value in
+                        sqlite3_bind_text(statement, Int32(index + 1), value, -1, transient)
+                    }
+                }
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    let immichId = String(cString: sqlite3_column_text(statement, 0))
+                    if let checksum = sqlite3_column_text(statement, 1).map({ String(cString: $0) }) {
+                        result[immichId] = checksum
+                    }
+                }
+            }
+        }
+        return result
+    }
+
     // MARK: - Delete Methods
     
     @discardableResult
