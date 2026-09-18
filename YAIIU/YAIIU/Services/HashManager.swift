@@ -132,6 +132,17 @@ final class ResourceBudget: @unchecked Sendable {
 }
 
 enum HashPipelinePolicy {
+    /// Reserve by PhotoKit's estimated resource size so the byte budget can
+    /// admit multiple downloads. iCloud-optimised assets can report zero, so
+    /// give unknown sizes a conservative floor and reconcile with actual bytes
+    /// after PhotoKit finishes writing the temp files.
+    static func downloadReservationBytes(
+        estimatedBytes: Int64,
+        minimumBytes: Int64 = 64 * 1024 * 1024
+    ) -> Int64 {
+        max(estimatedBytes, minimumBytes)
+    }
+
     /// Runs operations with at most `limit` in flight (FIFO order, bounded
     /// window: one completion admits the next element).
     static func processConcurrently<Element: Sendable>(
@@ -667,9 +678,13 @@ class HashManager: ObservableObject {
             return
         }
 
-        // PhotoKit's KVC fileSize is only an estimate. Since writeData offers
-        // no byte-progress callback, reserve the full budget until delivery.
-        let reservation = Self.diskBudgetBytes
+        // PhotoKit's KVC fileSize is only an estimate. Reserving the entire
+        // disk budget here would serialize the download window to one asset,
+        // so reserve the estimate (with a floor for unknown iCloud sizes) and
+        // reconcile against the actual temp-file size after delivery.
+        let reservation = HashPipelinePolicy.downloadReservationBytes(
+            estimatedBytes: resources.plan.estimatedBytes
+        )
         guard await budget.acquire(reservation) else { return }
 
         let files: AssetTempFiles
@@ -690,8 +705,8 @@ class HashManager: ObservableObject {
         }
 
         let actual = files.actualBytes
-        let charged = max(reservation, actual)
-        budget.adjust(from: reservation, to: charged)
+        budget.adjust(from: reservation, to: actual)
+        let charged = actual
 
         // Hand the files to the consumer; the registry entry lets the run sweep
         // them if the cancelled stream discards the buffered handoff. The
