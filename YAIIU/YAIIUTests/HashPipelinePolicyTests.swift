@@ -255,7 +255,7 @@ final class HashPipelinePolicyTests: XCTestCase {
 
     func testDownloadReservationUsesEstimateInsteadOfWholeBudget() {
         let estimate: Int64 = 12 * 1024 * 1024
-        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate)
+        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, budgetBytes: 1_500 * 1024 * 1024)
 
         XCTAssertEqual(reservation, 64 * 1024 * 1024)
         XCTAssertLessThan(reservation, 1_500 * 1024 * 1024)
@@ -265,14 +265,18 @@ final class HashPipelinePolicyTests: XCTestCase {
         let estimate: Int64 = 240 * 1024 * 1024
 
         XCTAssertEqual(
-            HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate),
+            HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, budgetBytes: 1_500 * 1024 * 1024),
             estimate
         )
     }
 
-    func testEstimatedReservationsAllowMultipleDownloadsWithinBudget() async {
-        let budget = ResourceBudget(limit: 1_500 * 1024 * 1024)
-        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: 0)
+    func testKnownEstimatedReservationsAllowMultipleDownloadsWithinBudget() async {
+        let budgetBytes: Int64 = 1_500 * 1024 * 1024
+        let budget = ResourceBudget(limit: budgetBytes)
+        let reservation = HashPipelinePolicy.downloadReservationBytes(
+            estimatedBytes: 32 * 1024 * 1024,
+            budgetBytes: budgetBytes
+        )
 
         let first = await budget.acquire(reservation)
         let second = await budget.acquire(reservation)
@@ -285,6 +289,18 @@ final class HashPipelinePolicyTests: XCTestCase {
         budget.release(reservation)
         budget.release(reservation)
         budget.release(reservation)
+    }
+
+    func testUnknownSizeReservesWholeBudget() {
+        let budgetBytes: Int64 = 1_500 * 1024 * 1024
+
+        XCTAssertEqual(
+            HashPipelinePolicy.downloadReservationBytes(
+                estimatedBytes: 0,
+                budgetBytes: budgetBytes
+            ),
+            budgetBytes
+        )
     }
 
     func testBudgetBlocksWhenExhaustedThenAdmitsOnRelease() async {
