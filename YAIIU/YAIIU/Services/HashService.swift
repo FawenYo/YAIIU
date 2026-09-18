@@ -53,8 +53,10 @@ struct AssetResourcePlan: Sendable {
     /// RAW-only libraries hash the RAW as the primary, with no separate RAW slot.
     let isRAWOnly: Bool
     let modificationDate: Date?
-    /// KVC size estimate; may be 0 for iCloud-optimised assets (caller floors it).
+    /// Sum of KVC size estimates for resources whose sizes are known.
     let estimatedBytes: Int64
+    /// True when any selected resource has no usable PhotoKit size estimate.
+    let hasUnknownResourceSize: Bool
 }
 
 /// Resources selected for an asset: the primary (JPEG/video) and optional RAW.
@@ -98,11 +100,13 @@ enum AssetResourceSelector {
             && rawResource != nil
 
         if isRAWOnly, let raw = rawResource {
+            let estimate = sizeEstimate(of: [raw])
             let plan = AssetResourcePlan(
                 localIdentifier: asset.localIdentifier,
                 isRAWOnly: true,
                 modificationDate: asset.modificationDate,
-                estimatedBytes: estimatedSize(of: [raw])
+                estimatedBytes: estimate.bytes,
+                hasUnknownResourceSize: estimate.hasUnknown
             )
             return AssetResources(plan: plan, primaryResource: raw, rawResource: nil)
         }
@@ -111,19 +115,31 @@ enum AssetResourceSelector {
             return nil
         }
 
+        let selectedResources = [primary] + (rawResource.map { [$0] } ?? [])
+        let estimate = sizeEstimate(of: selectedResources)
         let plan = AssetResourcePlan(
             localIdentifier: asset.localIdentifier,
             isRAWOnly: false,
             modificationDate: asset.modificationDate,
-            estimatedBytes: estimatedSize(of: [primary] + (rawResource.map { [$0] } ?? []))
+            estimatedBytes: estimate.bytes,
+            hasUnknownResourceSize: estimate.hasUnknown
         )
         return AssetResources(plan: plan, primaryResource: primary, rawResource: rawResource)
     }
 
-    private static func estimatedSize(of resources: [PHAssetResource]) -> Int64 {
-        resources.reduce(0) { partial, resource in
-            partial + ((resource.value(forKey: "fileSize") as? CLong).map(Int64.init) ?? 0)
+    private static func sizeEstimate(of resources: [PHAssetResource]) -> (bytes: Int64, hasUnknown: Bool) {
+        var bytes: Int64 = 0
+        var hasUnknown = false
+
+        for resource in resources {
+            let size = (resource.value(forKey: "fileSize") as? CLong).map(Int64.init) ?? 0
+            if size > 0 {
+                bytes += size
+            } else {
+                hasUnknown = true
+            }
         }
+        return (bytes, hasUnknown)
     }
 }
 
