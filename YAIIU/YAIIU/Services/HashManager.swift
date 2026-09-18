@@ -138,9 +138,15 @@ enum HashPipelinePolicy {
     /// after PhotoKit finishes writing the temp files.
     static func downloadReservationBytes(
         estimatedBytes: Int64,
+        budgetBytes: Int64,
         minimumBytes: Int64 = 64 * 1024 * 1024
     ) -> Int64 {
-        max(estimatedBytes, minimumBytes)
+        // PhotoKit can report zero for iCloud-optimised resources. Their real
+        // size is unknowable until writeData finishes, so reserve the whole
+        // budget and serialize that download rather than risk oversubscribing
+        // temporary storage.
+        guard estimatedBytes > 0 else { return budgetBytes }
+        return max(estimatedBytes, minimumBytes)
     }
 
     /// Runs operations with at most `limit` in flight (FIFO order, bounded
@@ -683,7 +689,8 @@ class HashManager: ObservableObject {
         // so reserve the estimate (with a floor for unknown iCloud sizes) and
         // reconcile against the actual temp-file size after delivery.
         let reservation = HashPipelinePolicy.downloadReservationBytes(
-            estimatedBytes: resources.plan.estimatedBytes
+            estimatedBytes: resources.plan.estimatedBytes,
+            budgetBytes: Self.diskBudgetBytes
         )
         guard await budget.acquire(reservation) else { return }
 
