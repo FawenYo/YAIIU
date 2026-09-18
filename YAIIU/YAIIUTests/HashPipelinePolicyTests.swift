@@ -253,6 +253,40 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.owns(finalRunID))
     }
 
+    func testDownloadReservationUsesEstimateInsteadOfWholeBudget() {
+        let estimate: Int64 = 12 * 1024 * 1024
+        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate)
+
+        XCTAssertEqual(reservation, 64 * 1024 * 1024)
+        XCTAssertLessThan(reservation, 1_500 * 1024 * 1024)
+    }
+
+    func testDownloadReservationKeepsLargerEstimate() {
+        let estimate: Int64 = 240 * 1024 * 1024
+
+        XCTAssertEqual(
+            HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate),
+            estimate
+        )
+    }
+
+    func testEstimatedReservationsAllowMultipleDownloadsWithinBudget() async {
+        let budget = ResourceBudget(limit: 1_500 * 1024 * 1024)
+        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: 0)
+
+        let first = await budget.acquire(reservation)
+        let second = await budget.acquire(reservation)
+        let third = await budget.acquire(reservation)
+
+        XCTAssertTrue(first)
+        XCTAssertTrue(second)
+        XCTAssertTrue(third)
+
+        budget.release(reservation)
+        budget.release(reservation)
+        budget.release(reservation)
+    }
+
     func testBudgetBlocksWhenExhaustedThenAdmitsOnRelease() async {
         let budget = ResourceBudget(limit: 10)
         let first = await budget.acquire(6)
