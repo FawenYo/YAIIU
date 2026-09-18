@@ -138,6 +138,7 @@ enum HashPipelinePolicy {
     /// after PhotoKit finishes writing the temp files.
     static func downloadReservationBytes(
         estimatedBytes: Int64,
+        hasUnknownResourceSize: Bool,
         budgetBytes: Int64,
         minimumBytes: Int64 = 64 * 1024 * 1024
     ) -> Int64 {
@@ -145,7 +146,7 @@ enum HashPipelinePolicy {
         // size is unknowable until writeData finishes, so reserve the whole
         // budget and serialize that download rather than risk oversubscribing
         // temporary storage.
-        guard estimatedBytes > 0 else { return budgetBytes }
+        guard !hasUnknownResourceSize, estimatedBytes > 0 else { return budgetBytes }
         return max(estimatedBytes, minimumBytes)
     }
 
@@ -690,6 +691,7 @@ class HashManager: ObservableObject {
         // reconcile against the actual temp-file size after delivery.
         let reservation = HashPipelinePolicy.downloadReservationBytes(
             estimatedBytes: resources.plan.estimatedBytes,
+            hasUnknownResourceSize: resources.plan.hasUnknownResourceSize,
             budgetBytes: Self.diskBudgetBytes
         )
         guard await budget.acquire(reservation) else { return }
