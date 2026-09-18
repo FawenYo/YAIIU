@@ -255,7 +255,7 @@ final class HashPipelinePolicyTests: XCTestCase {
 
     func testDownloadReservationUsesEstimateInsteadOfWholeBudget() {
         let estimate: Int64 = 12 * 1024 * 1024
-        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, budgetBytes: 1_500 * 1024 * 1024)
+        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, hasUnknownResourceSize: false, budgetBytes: 1_500 * 1024 * 1024)
 
         XCTAssertEqual(reservation, 64 * 1024 * 1024)
         XCTAssertLessThan(reservation, 1_500 * 1024 * 1024)
@@ -265,7 +265,7 @@ final class HashPipelinePolicyTests: XCTestCase {
         let estimate: Int64 = 240 * 1024 * 1024
 
         XCTAssertEqual(
-            HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, budgetBytes: 1_500 * 1024 * 1024),
+            HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, hasUnknownResourceSize: false, budgetBytes: 1_500 * 1024 * 1024),
             estimate
         )
     }
@@ -275,6 +275,7 @@ final class HashPipelinePolicyTests: XCTestCase {
         let budget = ResourceBudget(limit: budgetBytes)
         let reservation = HashPipelinePolicy.downloadReservationBytes(
             estimatedBytes: 32 * 1024 * 1024,
+            hasUnknownResourceSize: false,
             budgetBytes: budgetBytes
         )
 
@@ -297,9 +298,24 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertEqual(
             HashPipelinePolicy.downloadReservationBytes(
                 estimatedBytes: 0,
+                hasUnknownResourceSize: true,
                 budgetBytes: budgetBytes
             ),
             budgetBytes
+        )
+    }
+
+    func testPartiallyUnknownResourcesReserveWholeBudget() {
+        let budgetBytes: Int64 = 1_500 * 1024 * 1024
+
+        XCTAssertEqual(
+            HashPipelinePolicy.downloadReservationBytes(
+                estimatedBytes: 20 * 1024 * 1024,
+                hasUnknownResourceSize: true,
+                budgetBytes: budgetBytes
+            ),
+            budgetBytes,
+            "A known JPEG plus unknown RAW must remain serialized"
         )
     }
 
