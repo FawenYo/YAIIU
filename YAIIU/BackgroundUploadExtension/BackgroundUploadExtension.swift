@@ -269,23 +269,29 @@ final class BackgroundUploadExtensionCore {
             }
 
             if !jobTargetsCurrentDestination(job) {
-                var cancelled = false
-                do {
-                    try library.performChangesAndWait {
-                        guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
-                        request.cancel()
-                        cancelled = true
+                if #available(iOS 26.4, *) {
+                    var cancelled = false
+                    do {
+                        try library.performChangesAndWait {
+                            guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                            request.cancel()
+                            cancelled = true
+                        }
+                    } catch {
+                        logError("Failed to cancel retry job for old destination \(job.localIdentifier): \(error.localizedDescription)")
                     }
-                } catch {
-                    logError("Failed to cancel retry job for old destination \(job.localIdentifier): \(error.localizedDescription)")
-                }
-                if cancelled {
-                    database.deleteTrackedJob(
-                        assetId: identity.assetLocalIdentifier,
-                        resourceType: identity.resourceType
-                    )
-                    retriedAny = true
-                    logWarning("Cancelled retry job \(job.localIdentifier) because upload destination changed")
+                    if cancelled {
+                        database.deleteTrackedJob(
+                            assetId: identity.assetLocalIdentifier,
+                            resourceType: identity.resourceType
+                        )
+                        retriedAny = true
+                        logWarning("Cancelled retry job \(job.localIdentifier) because upload destination changed")
+                    }
+                } else {
+                    // cancel() is unavailable on early background-upload SDKs. Do not
+                    // redirect an old-account resource to the new destination.
+                    logWarning("Deferring retry job \(job.localIdentifier) from an old destination; cancellation requires iOS 26.4+")
                 }
                 continue
             }
