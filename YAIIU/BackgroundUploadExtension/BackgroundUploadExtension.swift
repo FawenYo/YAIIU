@@ -428,7 +428,7 @@ final class BackgroundUploadExtensionCore {
 
         let discovery: DiscoveryResult
         if persistentMode {
-            discovery = fetchQueuedResources(limit: max(capacity * 2, 20))
+            discovery = try fetchQueuedResources(limit: max(capacity * 2, 20))
             logDebug("Delta discovery found \(discovery.resources.count) pending resources")
         } else {
             // Initial sync / recovery only. Normal invocations never enumerate the
@@ -437,16 +437,33 @@ final class BackgroundUploadExtensionCore {
             logDebug("Bootstrap discovery found \(discovery.resources.count) pending resources (complete scan: \(discovery.complete))")
         }
 
+        if !persistentMode {
+            // Bootstrap candidates must become durable before the persistent change
+            // checkpoint is advanced. Include currently tracked in-flight assets too:
+            // they may have been created by an earlier build and can later fail or be
+            // cancelled after the full scan starts skipping them.
+            var bootstrapAssetIds = Set(discovery.resources.map(\.assetLocalIdentifier))
+            for key in database.getInflightJobKeys() {
+                if let separator = key.range(of: "||") {
+                    bootstrapAssetIds.insert(String(key[..<separator.lowerBound]))
+                }
+            }
+            try database.enqueueAssets(bootstrapAssetIds)
+
+            if discovery.complete, let bootstrapTokenData {
+                // Every outstanding bootstrap asset is now represented by the durable
+                // queue, so it is safe to switch to persistent-delta mode even if job
+                // creation below is interrupted or an existing job later fails.
+                database.saveChangeToken(bootstrapTokenData)
+                log("Established PhotoKit persistent change checkpoint after durable bootstrap queueing")
+            }
+        }
+
         guard !discovery.resources.isEmpty else {
             if persistentMode {
-                return database.hasQueuedAssets() ? .remaining : .completed
+                return try database.hasQueuedAssets() ? .remaining : .completed
             }
-            if discovery.complete, let bootstrapTokenData {
-                database.saveChangeToken(bootstrapTokenData)
-                log("Established PhotoKit persistent change checkpoint after bootstrap")
-                return .completed
-            }
-            return .remaining
+            return discovery.complete ? .completed : .remaining
         }
         let resources = discovery.resources
         // Keep an asset's resources in the same batch: splitting a JPEG/raw asset lets
@@ -522,13 +539,6 @@ final class BackgroundUploadExtensionCore {
             }
         }
         guard createdAny else { return .remaining }
-
-        if !persistentMode, discovery.complete, !truncated, let bootstrapTokenData {
-            // Only advance the initial checkpoint after every resource discovered by
-            // this complete scan has been handed off to PhotoKit successfully.
-            database.saveChangeToken(bootstrapTokenData)
-            log("Established PhotoKit persistent change checkpoint after bootstrap")
-        }
 
         // A truncated batch means unscheduled resources remain; the legacy process()
         // path maps .scheduled to .completed, so signal remaining work explicitly.
@@ -637,8 +647,8 @@ final class BackgroundUploadExtensionCore {
     /// Resolves only assets captured by PhotoKit persistent history. The queue entry
     /// remains until every uploadable resource is confirmed uploaded, making retries
     /// idempotent without returning to a full-library scan.
-    private func fetchQueuedResources(limit: Int) -> DiscoveryResult {
-        let assetIds = database.getQueuedAssetIds(limit: max(limit * 2, 50))
+    private func fetchQueuedResources(limit: Int) throws -> DiscoveryResult {
+        let assetIds = try database.getQueuedAssetIds(limit: max(limit * 2, 50))
         guard !assetIds.isEmpty else {
             return DiscoveryResult(resources: [], complete: true)
         }
@@ -724,9 +734,10 @@ final class BackgroundUploadExtensionCore {
             }
         }
 
+        let queueHasRemainingAssets = try database.hasQueuedAssets()
         return DiscoveryResult(
             resources: pending,
-            complete: !stoppedEarly && !database.hasQueuedAssets()
+            complete: !stoppedEarly && !queueHasRemainingAssets
         )
     }
 
