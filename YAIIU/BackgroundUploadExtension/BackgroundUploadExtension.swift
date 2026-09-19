@@ -1048,6 +1048,7 @@ final class BackgroundUploadExtensionCore {
     }
 
     private static let assetExistenceCache = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+    private static let iso8601Formatter = ISO8601DateFormatter()
 
     private static func assetExists(identifier: String) -> Bool {
         // Cache hits only: an asset can be transiently absent during iCloud
@@ -1070,7 +1071,7 @@ final class BackgroundUploadExtensionCore {
         }
 
         if let value = job.destination.value(forHTTPHeaderField: "X-File-Modified-At"),
-           let uploadedDate = ISO8601DateFormatter().date(from: value),
+           let uploadedDate = Self.iso8601Formatter.date(from: value),
            let currentDate = asset.modificationDate,
            abs(uploadedDate.timeIntervalSince(currentDate)) > 1 {
             return false
