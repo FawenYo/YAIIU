@@ -634,6 +634,102 @@ final class BackgroundUploadExtensionCore {
     // extension without a crash report when a run overruns its execution budget.
     private let discoveryTimeBudget: TimeInterval = 20
 
+    /// Resolves only assets captured by PhotoKit persistent history. The queue entry
+    /// remains until every uploadable resource is confirmed uploaded, making retries
+    /// idempotent without returning to a full-library scan.
+    private func fetchQueuedResources(limit: Int) -> DiscoveryResult {
+        let assetIds = database.getQueuedAssetIds(limit: max(limit * 2, 50))
+        guard !assetIds.isEmpty else {
+            return DiscoveryResult(resources: [], complete: true)
+        }
+
+        let inflightKeys = database.getInflightJobKeys()
+        let fullyOnServer = database.getAllAssetsOnServer()
+        let partial = database.getPartialServerCopyAssets()
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: nil)
+
+        var foundIds = Set<String>()
+        var pending = [PHAssetResource]()
+        var stoppedEarly = false
+        let deadline = Date().addingTimeInterval(discoveryTimeBudget)
+
+        fetchResult.enumerateObjects { asset, _, stop in
+            if self.isCancelled || Date() >= deadline {
+                stoppedEarly = true
+                stop.pointee = true
+                return
+            }
+
+            foundIds.insert(asset.localIdentifier)
+
+            guard asset.mediaType == .image || asset.mediaType == .video else {
+                self.database.removeQueuedAsset(asset.localIdentifier)
+                return
+            }
+
+            if fullyOnServer.contains(asset.localIdentifier) {
+                self.database.removeQueuedAsset(asset.localIdentifier)
+                return
+            }
+
+            let resources = PHAssetResource.assetResources(for: asset).filter(self.shouldUpload)
+            var assetHasOutstandingWork = false
+
+            for resource in resources {
+                let type = self.resourceTypeString(for: resource)
+                let key = "\(asset.localIdentifier)||\(type)"
+
+                if inflightKeys.contains(key) {
+                    assetHasOutstandingWork = true
+                    continue
+                }
+
+                let copyOnServer = type == "raw"
+                    ? partial.rawConfirmed.contains(asset.localIdentifier)
+                    : partial.primaryConfirmed.contains(asset.localIdentifier)
+                if copyOnServer {
+                    continue
+                }
+
+                if self.database.isResourceUploaded(
+                    assetId: asset.localIdentifier,
+                    resourceType: type
+                ) {
+                    continue
+                }
+
+                assetHasOutstandingWork = true
+                pending.append(resource)
+            }
+
+            if !assetHasOutstandingWork {
+                self.database.removeQueuedAsset(asset.localIdentifier)
+            }
+
+            // Finish the current asset so JPEG/RAW siblings stay together, then stop
+            // before resolving another queued asset once we have enough candidates.
+            if pending.count >= limit {
+                stoppedEarly = true
+                stop.pointee = true
+            }
+        }
+
+        // Identifiers that no longer resolve represent assets deleted before they
+        // reached the uploader. Their corresponding persistent deletion may arrive
+        // later, but dropping them here also prevents an unresolvable queue head from
+        // blocking progress indefinitely.
+        if !stoppedEarly {
+            for missingId in Set(assetIds).subtracting(foundIds) {
+                database.removeQueuedAsset(missingId)
+            }
+        }
+
+        return DiscoveryResult(
+            resources: pending,
+            complete: !stoppedEarly && !database.hasQueuedAssets()
+        )
+    }
+
     private func fetchPendingResources(limit: Int) -> DiscoveryResult {
         let skip = database.getAllAssetsOnServer()
         let partial = database.getPartialServerCopyAssets()
