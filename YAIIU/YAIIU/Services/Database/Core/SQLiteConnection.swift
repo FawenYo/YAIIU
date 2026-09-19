@@ -103,6 +103,7 @@ final class SQLiteConnection {
         createSyncMetadataTable()
         createChangeTokensTable()
         createBackgroundUploadQueueTable()
+        createBackgroundUploadStateTable()
         createIndexes()
     }
     
@@ -207,6 +208,18 @@ final class SQLiteConnection {
         CREATE TABLE IF NOT EXISTS background_upload_queue (
             asset_id TEXT PRIMARY KEY NOT NULL,
             enqueued_at REAL NOT NULL
+        );
+        """
+        executeStatement(sql)
+    }
+
+    private func createBackgroundUploadStateTable() {
+        let sql = """
+        CREATE TABLE IF NOT EXISTS background_upload_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            bootstrap_token_data BLOB,
+            destination_identity TEXT,
+            updated_at REAL NOT NULL
         );
         """
         executeStatement(sql)
@@ -449,6 +462,14 @@ final class SQLiteConnection {
         executeStatement(
             "CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)"
         )
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS background_upload_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                bootstrap_token_data BLOB,
+                destination_identity TEXT,
+                updated_at REAL NOT NULL
+            );
+        """)
     }
 
 
@@ -456,9 +477,11 @@ final class SQLiteConnection {
         let syncMetadataColumns = tableColumns("sync_metadata")
         let serverAssetColumns = tableColumns("server_assets_cache")
         let backgroundUploadQueueColumns = tableColumns("background_upload_queue")
+        let backgroundUploadStateColumns = tableColumns("background_upload_state")
         return ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
             && serverAssetColumns.contains("source_checksum")
             && ["asset_id", "enqueued_at"].allSatisfy(backgroundUploadQueueColumns.contains)
+            && ["bootstrap_token_data", "destination_identity", "updated_at"].allSatisfy(backgroundUploadStateColumns.contains)
     }
 
     private func tableColumns(_ table: String) -> Set<String> {
