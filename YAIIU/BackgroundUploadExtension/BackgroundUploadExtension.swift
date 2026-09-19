@@ -406,13 +406,47 @@ final class BackgroundUploadExtensionCore {
             return .remaining
         }
 
-        // Discover only what a batch needs: a full library scan (per-asset
-        // PHAssetResource.assetResources) outlives the extension's execution
-        // budget and gets the process killed before any job is created.
-        let discovery = fetchPendingResources(limit: max(capacity * 2, 20))
-        logDebug("Found \(discovery.resources.count) pending resources for upload (complete scan: \(discovery.complete))")
+        let persistentMode: Bool
+        var bootstrapTokenData: Data?
+
+        if database.loadChangeToken() != nil {
+            switch try ingestPersistentChanges() {
+            case .ready:
+                persistentMode = true
+            case .requiresBootstrap:
+                // Apple requires a full re-sync after persistent history expires or
+                // can no longer provide complete details. Do that on the next pass.
+                return .remaining
+            }
+        } else {
+            persistentMode = false
+            // Snapshot the library before the bootstrap scan. If assets arrive while
+            // the scan is running, the saved checkpoint will intentionally precede
+            // them and the next delta fetch will pick them up.
+            bootstrapTokenData = try archiveChangeToken(PHPhotoLibrary.shared().currentChangeToken)
+        }
+
+        let discovery: DiscoveryResult
+        if persistentMode {
+            discovery = fetchQueuedResources(limit: max(capacity * 2, 20))
+            logDebug("Delta discovery found \(discovery.resources.count) pending resources")
+        } else {
+            // Initial sync / recovery only. Normal invocations never enumerate the
+            // whole photo library once a persistent change token has been established.
+            discovery = fetchPendingResources(limit: max(capacity * 2, 20))
+            logDebug("Bootstrap discovery found \(discovery.resources.count) pending resources (complete scan: \(discovery.complete))")
+        }
+
         guard !discovery.resources.isEmpty else {
-            return discovery.complete ? .completed : .remaining
+            if persistentMode {
+                return database.hasQueuedAssets() ? .remaining : .completed
+            }
+            if discovery.complete, let bootstrapTokenData {
+                database.saveChangeToken(bootstrapTokenData)
+                log("Established PhotoKit persistent change checkpoint after bootstrap")
+                return .completed
+            }
+            return .remaining
         }
         let resources = discovery.resources
         // Keep an asset's resources in the same batch: splitting a JPEG/raw asset lets
@@ -488,9 +522,104 @@ final class BackgroundUploadExtensionCore {
             }
         }
         guard createdAny else { return .remaining }
+
+        if !persistentMode, discovery.complete, !truncated, let bootstrapTokenData {
+            // Only advance the initial checkpoint after every resource discovered by
+            // this complete scan has been handed off to PhotoKit successfully.
+            database.saveChangeToken(bootstrapTokenData)
+            log("Established PhotoKit persistent change checkpoint after bootstrap")
+        }
+
         // A truncated batch means unscheduled resources remain; the legacy process()
         // path maps .scheduled to .completed, so signal remaining work explicitly.
         return truncated ? .remaining : .scheduled
+    }
+
+    // MARK: - Persistent Photo Library Changes
+
+    private enum PersistentChangeIngestionResult {
+        case ready
+        case requiresBootstrap
+    }
+
+    private func archiveChangeToken(_ token: PHPersistentChangeToken) throws -> Data {
+        try NSKeyedArchiver.archivedData(
+            withRootObject: token,
+            requiringSecureCoding: true
+        )
+    }
+
+    private func unarchiveChangeToken(_ data: Data) -> PHPersistentChangeToken? {
+        try? NSKeyedUnarchiver.unarchivedObject(
+            ofClass: PHPersistentChangeToken.self,
+            from: data
+        )
+    }
+
+    /// Copies PhotoKit's durable change history into our app-group queue. Each
+    /// persistent change and its token are committed in one SQLite transaction, so
+    /// termination can cause replay but can never cause a skipped asset.
+    private func ingestPersistentChanges() throws -> PersistentChangeIngestionResult {
+        guard let tokenData = database.loadChangeToken(),
+              let token = unarchiveChangeToken(tokenData) else {
+            database.clearChangeToken()
+            logWarning("Persistent change token could not be decoded; scheduling bootstrap reconciliation")
+            return .requiresBootstrap
+        }
+
+        let library = PHPhotoLibrary.shared()
+
+        do {
+            let changes = try library.fetchPersistentChanges(since: token)
+            var changeCount = 0
+            var insertedCount = 0
+            var updatedCount = 0
+            var deletedCount = 0
+
+            for change in changes {
+                guard !isCancelled else { break }
+                let details = try change.changeDetails(for: .asset)
+                let inserted = details.insertedLocalIdentifiers
+                let deleted = details.deletedLocalIdentifiers
+                let updated = details.updatedLocalIdentifiers
+                let nextTokenData = try archiveChangeToken(change.changeToken)
+
+                guard database.commitPersistentChange(
+                    insertedAssetIds: inserted,
+                    deletedAssetIds: deleted,
+                    tokenData: nextTokenData
+                ) else {
+                    throw NSError(
+                        domain: "com.fawenyo.yaiiu.background-upload",
+                        code: 1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Failed to atomically persist PhotoKit change history"
+                        ]
+                    )
+                }
+
+                changeCount += 1
+                insertedCount += inserted.count
+                updatedCount += updated.count
+                deletedCount += deleted.count
+            }
+
+            if changeCount > 0 {
+                log("Persistent changes: \(changeCount) batch(es), \(insertedCount) inserted, \(updatedCount) updated, \(deletedCount) deleted")
+            }
+            return .ready
+        } catch let error as NSError
+            where error.domain == PHPhotosErrorDomain
+            && (
+                error.code == PHPhotosError.persistentChangeTokenExpired.rawValue
+                || error.code == PHPhotosError.persistentChangeDetailsUnavailable.rawValue
+            )
+        {
+            database.clearChangeToken()
+            logWarning("Persistent PhotoKit history is no longer complete; falling back to bootstrap reconciliation")
+            return .requiresBootstrap
+        }
     }
 
     // MARK: - Resource Discovery
