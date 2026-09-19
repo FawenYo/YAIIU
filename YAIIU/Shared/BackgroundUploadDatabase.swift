@@ -449,7 +449,6 @@ final class BackgroundUploadDatabase {
             guard let db else { throw sqliteError("Destination state database unavailable") }
 
             var selectStmt: OpaquePointer?
-            defer { sqlite3_finalize(selectStmt) }
             guard sqlite3_prepare_v2(
                 db,
                 "SELECT destination_identity FROM background_upload_state WHERE id = 1",
@@ -465,6 +464,8 @@ final class BackgroundUploadDatabase {
             let existingIdentity: String? = hadStateRow
                 ? sqlite3_column_text(selectStmt, 0).map { String(cString: $0) }
                 : nil
+            sqlite3_finalize(selectStmt)
+            selectStmt = nil
 
             if existingIdentity == identity {
                 return false
