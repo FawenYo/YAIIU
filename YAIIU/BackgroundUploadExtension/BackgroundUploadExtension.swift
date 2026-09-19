@@ -856,8 +856,10 @@ final class BackgroundUploadExtensionCore {
 
     private func jobTargetsCurrentDestination(_ job: PHAssetResourceUploadJob) -> Bool {
         guard let currentURL = currentUploadURL(),
-              let jobURL = job.destination.url else { return false }
-        return jobURL == currentURL
+              let jobURL = job.destination.url,
+              jobURL == currentURL else { return false }
+        return job.destination.value(forHTTPHeaderField: "Authorization")
+            == "Bearer \(settings.apiKey)"
     }
 
     private func buildRetryDestination(for job: PHAssetResourceUploadJob) -> URLRequest? {
