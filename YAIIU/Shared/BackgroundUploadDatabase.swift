@@ -64,6 +64,14 @@ final class BackgroundUploadDatabase {
                 enqueued_at REAL NOT NULL
             )
         """)
+        exec("""
+            CREATE TABLE IF NOT EXISTS background_upload_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                bootstrap_token_data BLOB,
+                destination_identity TEXT,
+                updated_at REAL NOT NULL
+            )
+        """)
         exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
 
         // Older extension builds created RAW jobs without updating has_raw. Repair
@@ -429,6 +437,209 @@ final class BackgroundUploadDatabase {
             code: code,
             userInfo: [NSLocalizedDescriptionKey: "\(operation): \(message)"]
         )
+    }
+
+    /// Associates persistent PhotoKit discovery with the active upload destination.
+    /// Changing account/server invalidates destination-specific completion state and
+    /// forces a new bootstrap, while first-time initialization preserves existing
+    /// upload/hash cache data from pre-delta builds.
+    @discardableResult
+    func ensureDestinationIdentity(_ identity: String) throws -> Bool {
+        try queue.sync {
+            guard let db else { throw sqliteError("Destination state database unavailable") }
+
+            var selectStmt: OpaquePointer?
+            defer { sqlite3_finalize(selectStmt) }
+            guard sqlite3_prepare_v2(
+                db,
+                "SELECT destination_identity FROM background_upload_state WHERE id = 1",
+                -1,
+                &selectStmt,
+                nil
+            ) == SQLITE_OK else {
+                throw sqliteError("Prepare destination identity read")
+            }
+
+            let selectResult = sqlite3_step(selectStmt)
+            let hadStateRow = selectResult == SQLITE_ROW
+            let existingIdentity: String? = hadStateRow
+                ? sqlite3_column_text(selectStmt, 0).map { String(cString: $0) }
+                : nil
+
+            if existingIdentity == identity {
+                return false
+            }
+            guard selectResult == SQLITE_ROW || selectResult == SQLITE_DONE else {
+                throw sqliteError("Read destination identity")
+            }
+
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("Begin destination reset")
+            }
+            var committed = false
+            defer {
+                if !committed {
+                    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+                }
+            }
+
+            // A checkpoint created without a destination identity cannot be trusted
+            // across an upgrade, so initialization also restarts persistent discovery.
+            let checkpointResetSql = [
+                "DELETE FROM change_tokens",
+                "DELETE FROM background_upload_queue",
+            ]
+            for sql in checkpointResetSql {
+                guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                    throw sqliteError("Reset persistent discovery")
+                }
+            }
+
+            let destinationChanged = hadStateRow && existingIdentity != nil
+            if destinationChanged {
+                // These flags describe the previous server/account. Preserve hashes,
+                // but require the new destination to reconfirm server presence.
+                let destinationSpecificSql = [
+                    "DELETE FROM uploaded_assets",
+                    "DELETE FROM upload_jobs WHERE status = 'completed'",
+                    "UPDATE hash_cache SET is_on_server = 0, raw_on_server = 0, checked_at = NULL",
+                ]
+                for sql in destinationSpecificSql {
+                    guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+                        throw sqliteError("Reset destination-specific upload state")
+                    }
+                }
+            }
+
+            let upsertSql = """
+                INSERT INTO background_upload_state
+                    (id, bootstrap_token_data, destination_identity, updated_at)
+                VALUES (1, NULL, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    bootstrap_token_data = NULL,
+                    destination_identity = excluded.destination_identity,
+                    updated_at = excluded.updated_at
+            """
+            var upsertStmt: OpaquePointer?
+            defer { sqlite3_finalize(upsertStmt) }
+            guard sqlite3_prepare_v2(db, upsertSql, -1, &upsertStmt, nil) == SQLITE_OK,
+                  sqlite3_bind_text(upsertStmt, 1, identity, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_double(upsertStmt, 2, Date().timeIntervalSince1970) == SQLITE_OK,
+                  sqlite3_step(upsertStmt) == SQLITE_DONE else {
+                throw sqliteError("Persist destination identity")
+            }
+
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("Commit destination reset")
+            }
+            committed = true
+            return true
+        }
+    }
+
+    func loadBootstrapToken() throws -> Data? {
+        try queue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(
+                db,
+                "SELECT bootstrap_token_data FROM background_upload_state WHERE id = 1",
+                -1,
+                &stmt,
+                nil
+            ) == SQLITE_OK else {
+                throw sqliteError("Prepare bootstrap token read")
+            }
+
+            let result = sqlite3_step(stmt)
+            if result == SQLITE_DONE { return nil }
+            guard result == SQLITE_ROW else { throw sqliteError("Read bootstrap token") }
+            guard let blob = sqlite3_column_blob(stmt, 0) else { return nil }
+            return Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 0)))
+        }
+    }
+
+    func saveBootstrapToken(_ data: Data) throws {
+        try queue.sync {
+            let sql = """
+                INSERT INTO background_upload_state
+                    (id, bootstrap_token_data, destination_identity, updated_at)
+                VALUES (1, ?, NULL, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    bootstrap_token_data = excluded.bootstrap_token_data,
+                    updated_at = excluded.updated_at
+            """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK,
+                  sqlite3_bind_blob(
+                    stmt,
+                    1,
+                    (data as NSData).bytes,
+                    Int32(data.count),
+                    SQLITE_TRANSIENT
+                  ) == SQLITE_OK,
+                  sqlite3_bind_double(stmt, 2, Date().timeIntervalSince1970) == SQLITE_OK,
+                  sqlite3_step(stmt) == SQLITE_DONE else {
+                throw sqliteError("Persist bootstrap token")
+            }
+        }
+    }
+
+    /// Atomically promotes the original bootstrap checkpoint to the persistent
+    /// checkpoint and clears bootstrap state after the full reconciliation finishes.
+    func promoteBootstrapToken(_ data: Data) throws {
+        try queue.sync {
+            guard let db else { throw sqliteError("Bootstrap promotion database unavailable") }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("Begin bootstrap promotion")
+            }
+            var committed = false
+            defer {
+                if !committed {
+                    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+                }
+            }
+
+            let now = Date().timeIntervalSince1970
+            let tokenSql = """
+                INSERT OR REPLACE INTO change_tokens (id, token_data, updated_at)
+                VALUES (1, ?, ?)
+            """
+            var tokenStmt: OpaquePointer?
+            defer { sqlite3_finalize(tokenStmt) }
+            guard sqlite3_prepare_v2(db, tokenSql, -1, &tokenStmt, nil) == SQLITE_OK,
+                  sqlite3_bind_blob(
+                    tokenStmt,
+                    1,
+                    (data as NSData).bytes,
+                    Int32(data.count),
+                    SQLITE_TRANSIENT
+                  ) == SQLITE_OK,
+                  sqlite3_bind_double(tokenStmt, 2, now) == SQLITE_OK,
+                  sqlite3_step(tokenStmt) == SQLITE_DONE else {
+                throw sqliteError("Persist promoted bootstrap token")
+            }
+
+            var clearStmt: OpaquePointer?
+            defer { sqlite3_finalize(clearStmt) }
+            guard sqlite3_prepare_v2(
+                db,
+                "UPDATE background_upload_state SET bootstrap_token_data = NULL, updated_at = ? WHERE id = 1",
+                -1,
+                &clearStmt,
+                nil
+            ) == SQLITE_OK,
+            sqlite3_bind_double(clearStmt, 1, now) == SQLITE_OK,
+            sqlite3_step(clearStmt) == SQLITE_DONE else {
+                throw sqliteError("Clear bootstrap token after promotion")
+            }
+
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("Commit bootstrap promotion")
+            }
+            committed = true
+        }
     }
 
     /// Durably queues assets discovered by bootstrap before a persistent change
