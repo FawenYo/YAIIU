@@ -102,6 +102,7 @@ final class SQLiteConnection {
         createServerAssetsCacheTable()
         createSyncMetadataTable()
         createChangeTokensTable()
+        createBackgroundUploadQueueTable()
         createIndexes()
     }
     
@@ -200,9 +201,20 @@ final class SQLiteConnection {
         """
         executeStatement(sql)
     }
+
+    private func createBackgroundUploadQueueTable() {
+        let sql = """
+        CREATE TABLE IF NOT EXISTS background_upload_queue (
+            asset_id TEXT PRIMARY KEY NOT NULL,
+            enqueued_at REAL NOT NULL
+        );
+        """
+        executeStatement(sql)
+    }
     
     private func createIndexes() {
         executeStatement("CREATE INDEX IF NOT EXISTS idx_jobs_status ON upload_jobs(status)")
+        executeStatement("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_jobs_asset ON upload_jobs(asset_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_uploaded_asset ON uploaded_assets(asset_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_checksum ON server_assets_cache(checksum)")
