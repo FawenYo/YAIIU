@@ -503,20 +503,20 @@ final class BackgroundUploadDatabase {
                 INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
                 VALUES (?, ?)
             """
+            var insertStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, insertSql, -1, &insertStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(insertStmt)
+                return false
+            }
+            defer { sqlite3_finalize(insertStmt) }
             for assetId in insertedAssetIds.union(updatedAssetIds) {
-                var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, insertSql, -1, &stmt, nil) == SQLITE_OK else {
-                    sqlite3_finalize(stmt)
+                sqlite3_reset(insertStmt)
+                sqlite3_clear_bindings(insertStmt)
+                guard sqlite3_bind_text(insertStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                      sqlite3_bind_double(insertStmt, 2, now) == SQLITE_OK,
+                      sqlite3_step(insertStmt) == SQLITE_DONE else {
                     return false
                 }
-                guard sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                      sqlite3_bind_double(stmt, 2, now) == SQLITE_OK else {
-                    sqlite3_finalize(stmt)
-                    return false
-                }
-                let result = sqlite3_step(stmt)
-                sqlite3_finalize(stmt)
-                guard result == SQLITE_DONE else { return false }
             }
 
             // A persistent asset update invalidates the resource state that was
@@ -548,16 +548,19 @@ final class BackgroundUploadDatabase {
             }
 
             let deleteSql = "DELETE FROM background_upload_queue WHERE asset_id = ?"
+            var deleteStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, deleteSql, -1, &deleteStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(deleteStmt)
+                return false
+            }
+            defer { sqlite3_finalize(deleteStmt) }
             for assetId in deletedAssetIds {
-                var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, deleteSql, -1, &stmt, nil) == SQLITE_OK else {
-                    sqlite3_finalize(stmt)
+                sqlite3_reset(deleteStmt)
+                sqlite3_clear_bindings(deleteStmt)
+                guard sqlite3_bind_text(deleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                      sqlite3_step(deleteStmt) == SQLITE_DONE else {
                     return false
                 }
-                sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-                let result = sqlite3_step(stmt)
-                sqlite3_finalize(stmt)
-                guard result == SQLITE_DONE else { return false }
             }
 
             let tokenSql = """
