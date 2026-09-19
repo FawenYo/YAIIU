@@ -263,8 +263,30 @@ final class BackgroundUploadExtensionCore {
             let errorDescription = jobErrorDescription(job)
             logWarning("Retrying failed upload job \(job.localIdentifier): \(errorDescription)")
 
-            guard identity(for: job) != nil else {
+            guard let identity = identity(for: job) else {
                 logWarning("Skipping retry for job \(job.localIdentifier): asset identity unavailable")
+                continue
+            }
+
+            if !jobTargetsCurrentDestination(job) {
+                var cancelled = false
+                do {
+                    try library.performChangesAndWait {
+                        guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                        request.cancel()
+                        cancelled = true
+                    }
+                } catch {
+                    logError("Failed to cancel retry job for old destination \(job.localIdentifier): \(error.localizedDescription)")
+                }
+                if cancelled {
+                    database.deleteTrackedJob(
+                        assetId: identity.assetLocalIdentifier,
+                        resourceType: identity.resourceType
+                    )
+                    retriedAny = true
+                    logWarning("Cancelled retry job \(job.localIdentifier) because upload destination changed")
+                }
                 continue
             }
 
