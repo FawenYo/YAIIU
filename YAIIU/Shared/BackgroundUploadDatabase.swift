@@ -38,6 +38,8 @@ final class BackgroundUploadDatabase {
             return
         }
         
+        sqlite3_busy_timeout(db, 5000)
+
         // WAL mode for concurrent read/write across processes
         // PRAGMA returns a result row, so we need to handle it differently
         var stmt: OpaquePointer?
@@ -47,7 +49,15 @@ final class BackgroundUploadDatabase {
         sqlite3_finalize(stmt)
 
         // The background upload extension may launch before the host app gets a
-        // chance to run schema setup, so ensure its durable delta queue exists here.
+        // chance to run schema setup, so ensure its persistent checkpoint and durable
+        // delta queue exist here.
+        exec("""
+            CREATE TABLE IF NOT EXISTS change_tokens (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                token_data BLOB,
+                updated_at REAL NOT NULL
+            )
+        """)
         exec("""
             CREATE TABLE IF NOT EXISTS background_upload_queue (
                 asset_id TEXT PRIMARY KEY NOT NULL,
@@ -439,24 +449,28 @@ final class BackgroundUploadDatabase {
             """
             for assetId in insertedAssetIds {
                 var stmt: OpaquePointer?
-                defer { sqlite3_finalize(stmt) }
                 guard sqlite3_prepare_v2(db, insertSql, -1, &stmt, nil) == SQLITE_OK else {
+                    sqlite3_finalize(stmt)
                     return false
                 }
                 sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_double(stmt, 2, now)
-                guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
+                let result = sqlite3_step(stmt)
+                sqlite3_finalize(stmt)
+                guard result == SQLITE_DONE else { return false }
             }
 
             let deleteSql = "DELETE FROM background_upload_queue WHERE asset_id = ?"
             for assetId in deletedAssetIds {
                 var stmt: OpaquePointer?
-                defer { sqlite3_finalize(stmt) }
                 guard sqlite3_prepare_v2(db, deleteSql, -1, &stmt, nil) == SQLITE_OK else {
+                    sqlite3_finalize(stmt)
                     return false
                 }
                 sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-                guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
+                let result = sqlite3_step(stmt)
+                sqlite3_finalize(stmt)
+                guard result == SQLITE_DONE else { return false }
             }
 
             let tokenSql = """
