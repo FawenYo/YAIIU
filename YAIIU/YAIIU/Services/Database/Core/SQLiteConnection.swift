@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 8
+    private static let schemaVersion = 9
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -265,6 +265,7 @@ final class SQLiteConnection {
             if currentVersion < 6 { migrateToV6() }
             if currentVersion < 7 { migrateToV7() }
             if currentVersion < 8 { migrateToV8() }
+            if currentVersion < 9 { migrateToV9() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -434,12 +435,30 @@ final class SQLiteConnection {
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_source_checksum ON server_assets_cache(source_checksum)")
     }
 
+    /// Migration to version 9: persist PhotoKit delta candidates so the background
+    /// upload extension can advance its persistent change token without losing assets
+    /// when a run is interrupted or PhotoKit job capacity is exhausted.
+    private func migrateToV9() {
+        logInfo("Migrating database to version 9: adding background upload delta queue", category: .database)
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS background_upload_queue (
+                asset_id TEXT PRIMARY KEY NOT NULL,
+                enqueued_at REAL NOT NULL
+            );
+        """)
+        executeStatement(
+            "CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)"
+        )
+    }
+
 
     private func hasSchemaColumnsForCurrentVersion() -> Bool {
         let syncMetadataColumns = tableColumns("sync_metadata")
         let serverAssetColumns = tableColumns("server_assets_cache")
+        let backgroundUploadQueueColumns = tableColumns("background_upload_queue")
         return ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
             && serverAssetColumns.contains("source_checksum")
+            && ["asset_id", "enqueued_at"].allSatisfy(backgroundUploadQueueColumns.contains)
     }
 
     private func tableColumns(_ table: String) -> Set<String> {
