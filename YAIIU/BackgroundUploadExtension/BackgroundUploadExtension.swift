@@ -778,9 +778,11 @@ final class BackgroundUploadExtensionCore {
         // A local identifier can be temporarily unresolvable during iCloud restore
         // or Photos library synchronization. Explicit persistent deletion changes
         // already remove queue rows, so keep unresolved identifiers durable here.
-        let hasUnresolvedAssets = !Set(assetIds).subtracting(foundIds).isEmpty
+        let unresolvedAssetIds = Set(assetIds).subtracting(foundIds)
+        let hasUnresolvedAssets = !unresolvedAssetIds.isEmpty
         if hasUnresolvedAssets {
-            logDebug("Delta discovery retained temporarily unresolved queued assets")
+            try database.deferQueuedAssets(unresolvedAssetIds)
+            logDebug("Delta discovery retained and deferred temporarily unresolved queued assets")
         }
 
         return DiscoveryResult(
