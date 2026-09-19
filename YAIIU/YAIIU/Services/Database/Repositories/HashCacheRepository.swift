@@ -147,7 +147,11 @@ final class HashCacheRepository {
         
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
+            guard self.connection.beginTransaction() else { return }
             self.updateHashCacheServerStatusInternal(localIdentifier: localIdentifier, isOnServer: isOnServer)
+            if self.connection.commitTransaction() == false {
+                self.connection.rollbackTransaction()
+            }
         }
     }
     
@@ -168,6 +172,24 @@ final class HashCacheRepository {
         }
         
         sqlite3_finalize(statement)
+        enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
+    }
+
+    private func enqueueIfMissingOnServerInternal(localIdentifier: String) {
+        let sql = """
+        INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
+        SELECT asset_id, ?
+        FROM hash_cache
+        WHERE asset_id = ?
+          AND checked_at IS NOT NULL
+          AND (is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0));
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+        sqlite3_bind_text(statement, 2, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_step(statement)
+        sqlite3_finalize(statement)
     }
     
     func updateMultiResourceHashCacheServerStatus(
@@ -179,11 +201,15 @@ final class HashCacheRepository {
         
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
+            guard self.connection.beginTransaction() else { return }
             self.updateMultiResourceHashCacheServerStatusInternal(
                 localIdentifier: localIdentifier,
                 primaryOnServer: primaryOnServer,
                 rawOnServer: rawOnServer
             )
+            if self.connection.commitTransaction() == false {
+                self.connection.rollbackTransaction()
+            }
         }
     }
     
@@ -209,6 +235,7 @@ final class HashCacheRepository {
         }
         
         sqlite3_finalize(statement)
+        enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
     }
     
     func batchUpdateHashCacheServerStatus(results: [(String, Bool)]) {
