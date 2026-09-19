@@ -46,6 +46,16 @@ final class BackgroundUploadDatabase {
         }
         sqlite3_finalize(stmt)
 
+        // The background upload extension may launch before the host app gets a
+        // chance to run schema setup, so ensure its durable delta queue exists here.
+        exec("""
+            CREATE TABLE IF NOT EXISTS background_upload_queue (
+                asset_id TEXT PRIMARY KEY NOT NULL,
+                enqueued_at REAL NOT NULL
+            )
+        """)
+        exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
+
         // Older extension builds created RAW jobs without updating has_raw. Repair
         // that durable resource-presence fact so a confirmed primary never hides a
         // failed RAW retry.
@@ -399,7 +409,136 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    // MARK: - Change Token
+    // MARK: - Change Token / Persistent Delta Queue
+
+    /// Atomically persists a Photos persistent-change checkpoint with the asset IDs
+    /// discovered before that checkpoint. This guarantees that advancing the token
+    /// can never strand assets if the extension is terminated immediately afterward.
+    func commitPersistentChange(
+        insertedAssetIds: Set<String>,
+        deletedAssetIds: Set<String>,
+        tokenData: Data
+    ) -> Bool {
+        queue.sync {
+            guard let db else { return false }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
+                return false
+            }
+
+            var committed = false
+            defer {
+                if !committed {
+                    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+                }
+            }
+
+            let now = Date().timeIntervalSince1970
+            let insertSql = """
+                INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
+                VALUES (?, ?)
+            """
+            for assetId in insertedAssetIds {
+                var stmt: OpaquePointer?
+                defer { sqlite3_finalize(stmt) }
+                guard sqlite3_prepare_v2(db, insertSql, -1, &stmt, nil) == SQLITE_OK else {
+                    return false
+                }
+                sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_double(stmt, 2, now)
+                guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
+            }
+
+            let deleteSql = "DELETE FROM background_upload_queue WHERE asset_id = ?"
+            for assetId in deletedAssetIds {
+                var stmt: OpaquePointer?
+                defer { sqlite3_finalize(stmt) }
+                guard sqlite3_prepare_v2(db, deleteSql, -1, &stmt, nil) == SQLITE_OK else {
+                    return false
+                }
+                sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+                guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
+            }
+
+            let tokenSql = """
+                INSERT OR REPLACE INTO change_tokens (id, token_data, updated_at)
+                VALUES (1, ?, ?)
+            """
+            var tokenStmt: OpaquePointer?
+            defer { sqlite3_finalize(tokenStmt) }
+            guard sqlite3_prepare_v2(db, tokenSql, -1, &tokenStmt, nil) == SQLITE_OK else {
+                return false
+            }
+            sqlite3_bind_blob(
+                tokenStmt,
+                1,
+                (tokenData as NSData).bytes,
+                Int32(tokenData.count),
+                SQLITE_TRANSIENT
+            )
+            sqlite3_bind_double(tokenStmt, 2, now)
+            guard sqlite3_step(tokenStmt) == SQLITE_DONE else { return false }
+
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                return false
+            }
+            committed = true
+            return true
+        }
+    }
+
+    func getQueuedAssetIds(limit: Int) -> [String] {
+        queue.sync {
+            let sql = """
+                SELECT asset_id FROM background_upload_queue
+                ORDER BY enqueued_at ASC
+                LIMIT ?
+            """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            sqlite3_bind_int(stmt, 1, Int32(max(1, limit)))
+
+            var ids: [String] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let ptr = sqlite3_column_text(stmt, 0) {
+                    ids.append(String(cString: ptr))
+                }
+            }
+            return ids
+        }
+    }
+
+    func removeQueuedAsset(_ assetId: String) {
+        queue.sync {
+            let sql = "DELETE FROM background_upload_queue WHERE asset_id = ?"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+            sqlite3_step(stmt)
+        }
+    }
+
+    func hasQueuedAssets() -> Bool {
+        queue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(
+                db,
+                "SELECT 1 FROM background_upload_queue LIMIT 1",
+                -1,
+                &stmt,
+                nil
+            ) == SQLITE_OK else { return false }
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
+    func clearChangeToken() {
+        queue.sync {
+            exec("DELETE FROM change_tokens")
+        }
+    }
     
     func saveChangeToken(_ data: Data?) {
         queue.sync {
