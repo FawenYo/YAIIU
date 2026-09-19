@@ -206,8 +206,12 @@ actor AlbumSyncService {
         }
         var syncedMemberships = UserDefaults.standard.dictionary(forKey: membershipsKey) as? [String: [String]] ?? [:]
         let remoteById = Dictionary(remoteAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var remoteAlbumsByName = Dictionary(grouping: remoteAlbums) {
+            $0.albumName.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         var createdCount = 0
+        var reusedCount = 0
         var addedCount = 0
 
         for localAlbum in localAlbums {
@@ -223,16 +227,30 @@ actor AlbumSyncService {
                 if remoteAlbum == nil {
                     let title = (localAlbum.localizedTitle ?? "Untitled Album")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    let createdAlbum = try await ImmichAPIService.shared.createAlbum(
-                        name: title,
-                        serverURL: serverURL,
-                        apiKey: apiKey
-                    )
-                    try checkSession()
-                    mappings[localAlbum.localIdentifier] = createdAlbum.id
-                    UserDefaults.standard.set(mappings, forKey: mappingKey)
-                    remoteAlbum = createdAlbum
-                    createdCount += 1
+                    let matchingAlbums = remoteAlbumsByName[title] ?? []
+
+                    if matchingAlbums.count == 1, let existingAlbum = matchingAlbums.first {
+                        mappings[localAlbum.localIdentifier] = existingAlbum.id
+                        UserDefaults.standard.set(mappings, forKey: mappingKey)
+                        remoteAlbum = existingAlbum
+                        reusedCount += 1
+                        logInfo(
+                            "Reusing existing Immich album \(existingAlbum.id) for Apple Photos album \(title)",
+                            category: .sync
+                        )
+                    } else {
+                        let createdAlbum = try await ImmichAPIService.shared.createAlbum(
+                            name: title,
+                            serverURL: serverURL,
+                            apiKey: apiKey
+                        )
+                        try checkSession()
+                        mappings[localAlbum.localIdentifier] = createdAlbum.id
+                        UserDefaults.standard.set(mappings, forKey: mappingKey)
+                        remoteAlbum = createdAlbum
+                        remoteAlbumsByName[title, default: []].append(createdAlbum)
+                        createdCount += 1
+                    }
                 }
 
                 guard let remoteAlbum else { continue }
@@ -277,7 +295,7 @@ actor AlbumSyncService {
             }
         }
 
-        logInfo("Album sync completed: \(localAlbums.count) scanned, \(createdCount) created, \(addedCount) asset memberships submitted", category: .sync)
+        logInfo("Album sync completed: \(localAlbums.count) scanned, \(createdCount) created, \(reusedCount) reused, \(addedCount) asset memberships submitted", category: .sync)
     }
 
     private func fetchLocalAlbums() -> [PHAssetCollection] {
