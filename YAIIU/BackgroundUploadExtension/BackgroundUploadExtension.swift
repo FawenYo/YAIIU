@@ -270,17 +270,19 @@ final class BackgroundUploadExtensionCore {
 
             if !jobTargetsCurrentDestination(job) {
                 if #available(iOS 26.4, *) {
-                    var cancelled = false
+                    var requested = false
+                    var applied = false
                     do {
                         try library.performChangesAndWait {
                             guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
                             request.cancel()
-                            cancelled = true
+                            requested = true
                         }
+                        applied = requested
                     } catch {
                         logError("Failed to cancel retry job for old destination \(job.localIdentifier): \(error.localizedDescription)")
                     }
-                    if cancelled {
+                    if applied {
                         database.deleteTrackedJob(
                             assetId: identity.assetLocalIdentifier,
                             resourceType: identity.resourceType
@@ -289,9 +291,23 @@ final class BackgroundUploadExtensionCore {
                         logWarning("Cancelled retry job \(job.localIdentifier) because upload destination changed")
                     }
                 } else {
-                    // cancel() is unavailable on early background-upload SDKs. Do not
-                    // redirect an old-account resource to the new destination.
-                    logWarning("Deferring retry job \(job.localIdentifier) from an old destination; cancellation requires iOS 26.4+")
+                    // Early PhotoKit background-upload releases cannot cancel retry
+                    // jobs. Redirect the original resource using its original version
+                    // metadata; acknowledgement will still reject it as stale if the
+                    // PHAsset has been edited since the job was first created.
+                    guard let destination = buildRetryDestination(for: job) else {
+                        logWarning("Skipping old-destination retry \(job.localIdentifier): destination unavailable")
+                        continue
+                    }
+                    do {
+                        try library.performChangesAndWait {
+                            guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                            request.retry(destination: destination)
+                            retriedAny = true
+                        }
+                    } catch {
+                        logError("Failed to redirect retry job \(job.localIdentifier): \(error.localizedDescription)")
+                    }
                 }
                 continue
             }
