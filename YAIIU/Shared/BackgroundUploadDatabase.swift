@@ -481,6 +481,7 @@ final class BackgroundUploadDatabase {
     /// can never strand assets if the extension is terminated immediately afterward.
     func commitPersistentChange(
         insertedAssetIds: Set<String>,
+        updatedAssetIds: Set<String>,
         deletedAssetIds: Set<String>,
         tokenData: Data
     ) -> Bool {
@@ -502,17 +503,48 @@ final class BackgroundUploadDatabase {
                 INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
                 VALUES (?, ?)
             """
-            for assetId in insertedAssetIds {
+            for assetId in insertedAssetIds.union(updatedAssetIds) {
                 var stmt: OpaquePointer?
                 guard sqlite3_prepare_v2(db, insertSql, -1, &stmt, nil) == SQLITE_OK else {
                     sqlite3_finalize(stmt)
                     return false
                 }
-                sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_double(stmt, 2, now)
+                guard sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                      sqlite3_bind_double(stmt, 2, now) == SQLITE_OK else {
+                    sqlite3_finalize(stmt)
+                    return false
+                }
                 let result = sqlite3_step(stmt)
                 sqlite3_finalize(stmt)
                 guard result == SQLITE_DONE else { return false }
+            }
+
+            // A persistent asset update invalidates the resource state that was
+            // recorded for the previous asset version. Keep active job rows so the
+            // extension can recognize/cancel or acknowledge their stale PhotoKit
+            // jobs, but remove completed rows so a current-version replacement job
+            // can be tracked by createOrUpdateJob.
+            let invalidationStatements = [
+                "DELETE FROM uploaded_assets WHERE asset_id = ?",
+                "DELETE FROM hash_cache WHERE asset_id = ?",
+                "DELETE FROM upload_jobs WHERE asset_id = ? AND status = 'completed'",
+            ]
+            for sql in invalidationStatements {
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                    sqlite3_finalize(stmt)
+                    return false
+                }
+                for assetId in updatedAssetIds {
+                    sqlite3_reset(stmt)
+                    sqlite3_clear_bindings(stmt)
+                    guard sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                          sqlite3_step(stmt) == SQLITE_DONE else {
+                        sqlite3_finalize(stmt)
+                        return false
+                    }
+                }
+                sqlite3_finalize(stmt)
             }
 
             let deleteSql = "DELETE FROM background_upload_queue WHERE asset_id = ?"
@@ -537,15 +569,15 @@ final class BackgroundUploadDatabase {
             guard sqlite3_prepare_v2(db, tokenSql, -1, &tokenStmt, nil) == SQLITE_OK else {
                 return false
             }
-            sqlite3_bind_blob(
+            guard sqlite3_bind_blob(
                 tokenStmt,
                 1,
                 (tokenData as NSData).bytes,
                 Int32(tokenData.count),
                 SQLITE_TRANSIENT
-            )
-            sqlite3_bind_double(tokenStmt, 2, now)
-            guard sqlite3_step(tokenStmt) == SQLITE_DONE else { return false }
+            ) == SQLITE_OK,
+            sqlite3_bind_double(tokenStmt, 2, now) == SQLITE_OK,
+            sqlite3_step(tokenStmt) == SQLITE_DONE else { return false }
 
             guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
                 return false
