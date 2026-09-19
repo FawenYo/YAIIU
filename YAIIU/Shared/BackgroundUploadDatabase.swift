@@ -850,6 +850,30 @@ final class BackgroundUploadDatabase {
         }
     }
 
+    /// Keeps temporarily unresolved assets durable while rotating them behind other
+    /// queued work so an iCloud-restoring asset cannot starve later candidates.
+    func deferQueuedAssets(_ assetIds: Set<String>) throws {
+        guard !assetIds.isEmpty else { return }
+        try queue.sync {
+            let sql = "UPDATE background_upload_queue SET enqueued_at = ? WHERE asset_id = ?"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw sqliteError("Prepare queued asset deferral")
+            }
+            let now = Date().timeIntervalSince1970
+            for assetId in assetIds {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard sqlite3_bind_double(stmt, 1, now) == SQLITE_OK,
+                      sqlite3_bind_text(stmt, 2, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                      sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw sqliteError("Defer unresolved queued asset")
+                }
+            }
+        }
+    }
+
     func hasQueuedAssets() throws -> Bool {
         try queue.sync {
             var stmt: OpaquePointer?
