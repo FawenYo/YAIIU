@@ -590,8 +590,14 @@ final class BackgroundUploadDatabase {
     func getQueuedAssetIds(limit: Int) throws -> [String] {
         try queue.sync {
             let sql = """
-                SELECT asset_id FROM background_upload_queue
-                ORDER BY enqueued_at ASC
+                SELECT q.asset_id
+                FROM background_upload_queue AS q
+                ORDER BY CASE WHEN EXISTS (
+                    SELECT 1 FROM upload_jobs AS j
+                    WHERE j.asset_id = q.asset_id
+                      AND j.status IN ('pending', 'uploading', 'failed')
+                ) THEN 1 ELSE 0 END ASC,
+                q.enqueued_at ASC
                 LIMIT ?
             """
             var stmt: OpaquePointer?
