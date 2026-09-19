@@ -421,6 +421,61 @@ final class BackgroundUploadDatabase {
 
     // MARK: - Change Token / Persistent Delta Queue
 
+    private func sqliteError(_ operation: String) -> NSError {
+        let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "database unavailable"
+        let code = db.map { Int(sqlite3_errcode($0)) } ?? -1
+        return NSError(
+            domain: "com.fawenyo.yaiiu.background-upload.database",
+            code: code,
+            userInfo: [NSLocalizedDescriptionKey: "\(operation): \(message)"]
+        )
+    }
+
+    /// Durably queues assets discovered by bootstrap before a persistent change
+    /// checkpoint is established. INSERT OR IGNORE makes replay safe.
+    func enqueueAssets(_ assetIds: Set<String>) throws {
+        guard !assetIds.isEmpty else { return }
+        try queue.sync {
+            guard let db else { throw sqliteError("Queue database unavailable") }
+            guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("Begin queue transaction")
+            }
+
+            var committed = false
+            defer {
+                if !committed {
+                    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+                }
+            }
+
+            let sql = """
+                INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
+                VALUES (?, ?)
+            """
+            let now = Date().timeIntervalSince1970
+
+            for assetId in assetIds {
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                    sqlite3_finalize(stmt)
+                    throw sqliteError("Prepare queue insert")
+                }
+                sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_double(stmt, 2, now)
+                let result = sqlite3_step(stmt)
+                sqlite3_finalize(stmt)
+                guard result == SQLITE_DONE else {
+                    throw sqliteError("Insert queued asset")
+                }
+            }
+
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("Commit queue transaction")
+            }
+            committed = true
+        }
+    }
+
     /// Atomically persists a Photos persistent-change checkpoint with the asset IDs
     /// discovered before that checkpoint. This guarantees that advancing the token
     /// can never strand assets if the extension is terminated immediately afterward.
@@ -500,8 +555,8 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    func getQueuedAssetIds(limit: Int) -> [String] {
-        queue.sync {
+    func getQueuedAssetIds(limit: Int) throws -> [String] {
+        try queue.sync {
             let sql = """
                 SELECT asset_id FROM background_upload_queue
                 ORDER BY enqueued_at ASC
@@ -509,13 +564,22 @@ final class BackgroundUploadDatabase {
             """
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw sqliteError("Prepare queued asset read")
+            }
             sqlite3_bind_int(stmt, 1, Int32(max(1, limit)))
 
             var ids: [String] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let ptr = sqlite3_column_text(stmt, 0) {
-                    ids.append(String(cString: ptr))
+            while true {
+                let result = sqlite3_step(stmt)
+                if result == SQLITE_ROW {
+                    if let ptr = sqlite3_column_text(stmt, 0) {
+                        ids.append(String(cString: ptr))
+                    }
+                } else if result == SQLITE_DONE {
+                    break
+                } else {
+                    throw sqliteError("Read queued assets")
                 }
             }
             return ids
@@ -533,8 +597,8 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    func hasQueuedAssets() -> Bool {
-        queue.sync {
+    func hasQueuedAssets() throws -> Bool {
+        try queue.sync {
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
             guard sqlite3_prepare_v2(
@@ -543,8 +607,14 @@ final class BackgroundUploadDatabase {
                 -1,
                 &stmt,
                 nil
-            ) == SQLITE_OK else { return false }
-            return sqlite3_step(stmt) == SQLITE_ROW
+            ) == SQLITE_OK else {
+                throw sqliteError("Prepare queue existence read")
+            }
+
+            let result = sqlite3_step(stmt)
+            if result == SQLITE_ROW { return true }
+            if result == SQLITE_DONE { return false }
+            throw sqliteError("Read queue existence")
         }
     }
 
