@@ -592,12 +592,12 @@ final class BackgroundUploadDatabase {
             let sql = """
                 SELECT q.asset_id
                 FROM background_upload_queue AS q
-                ORDER BY CASE WHEN EXISTS (
+                WHERE NOT EXISTS (
                     SELECT 1 FROM upload_jobs AS j
                     WHERE j.asset_id = q.asset_id
                       AND j.status IN ('pending', 'uploading', 'failed')
-                ) THEN 1 ELSE 0 END ASC,
-                q.enqueued_at ASC
+                )
+                ORDER BY q.enqueued_at ASC
                 LIMIT ?
             """
             var stmt: OpaquePointer?
