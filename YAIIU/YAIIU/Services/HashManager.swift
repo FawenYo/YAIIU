@@ -576,9 +576,9 @@ class HashManager: ObservableObject {
             let outstandingGate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
             let registry = PreparedWorkRegistry()
             var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
-            // Unbounded is safe: the producer window plus the byte budget cap
-            // how many prepared works can ever be queued; a dropping policy
-            // would lose handoffs and leak budget reservations.
+            // Unbounded handoff is safe because the outstanding-work gate and
+            // byte budget cap how many prepared works can exist at once. A
+            // dropping policy would lose handoffs and leak reservations.
             let pending = AsyncStream<PreparedHashWork>(bufferingPolicy: .unbounded) { continuation in
                 streamContinuation = continuation
             }
