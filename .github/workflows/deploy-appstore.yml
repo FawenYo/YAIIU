@@ -7,6 +7,13 @@ on:
     paths:
       - "YAIIU/**"
       - ".github/workflows/deploy-appstore.yml"
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+    paths:
+      - "YAIIU/**"
+      - ".github/workflows/deploy-appstore.yml"
 
 concurrency:
   group: deploy-appstore
@@ -15,6 +22,7 @@ concurrency:
 jobs:
   deploy:
     name: Upload to App Store Connect
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: xcode-27
     timeout-minutes: 45
 
