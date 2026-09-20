@@ -263,7 +263,8 @@ final class HashPipelinePolicyTests: XCTestCase {
         let gate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
 
         for _ in 0..<Int(HashPipelinePolicy.outstandingWorkLimit) {
-            XCTAssertTrue(await gate.acquire(1))
+            let acquired = await gate.acquire(1)
+            XCTAssertTrue(acquired)
         }
 
         let probe = ConcurrencyProbe()
@@ -275,11 +276,13 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
 
         try? await Task.sleep(nanoseconds: 50_000_000)
-        XCTAssertEqual(await probe.totalCount, 0, "producer must wait while all outstanding-work slots are occupied")
+        let admittedWhileFull = await probe.totalCount
+        XCTAssertEqual(admittedWhileFull, 0, "producer must wait while all outstanding-work slots are occupied")
 
         gate.release(1)
         await waiter.value
-        XCTAssertEqual(await probe.totalCount, 1)
+        let admittedAfterRelease = await probe.totalCount
+        XCTAssertEqual(admittedAfterRelease, 1)
 
         for _ in 1..<Int(HashPipelinePolicy.outstandingWorkLimit) {
             gate.release(1)
