@@ -11,9 +11,6 @@ on:
     branches:
       - main
     types: [opened, synchronize, reopened]
-    paths:
-      - "YAIIU/**"
-      - ".github/workflows/deploy-appstore.yml"
 
 concurrency:
   group: deploy-appstore
@@ -112,31 +109,42 @@ jobs:
 
           app_id = app_data["data"][0]["id"]
 
-          # Step 2: Get all builds and find the highest version number
-          # API sort=-version uses string sorting, so we fetch multiple and compare numerically
+          # Step 2: Find the highest bundle version across both processed builds
+          # and build uploads that may still be processing. Looking only at /builds
+          # can race with a just-uploaded build that has not appeared there yet.
           max_version = 0
-          builds_url = (
+
+          def update_max_from_url(url, attribute):
+              global max_version
+              while url:
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req) as resp:
+                      data = json.loads(resp.read())
+
+                  for item in data.get("data", []):
+                      try:
+                          v = int(item["attributes"][attribute])
+                          if v > max_version:
+                              max_version = v
+                      except (ValueError, TypeError, KeyError):
+                          pass
+
+                  url = data.get("links", {}).get("next")
+
+          # Processed builds.
+          update_max_from_url(
               f"https://api.appstoreconnect.apple.com/v1/builds"
-              f"?filter[app]={app_id}"
-              f"&fields[builds]=version"
-              f"&limit=200"
+              f"?filter[app]={app_id}&fields[builds]=version&limit=200",
+              "version",
           )
 
-          while builds_url:
-              req = urllib.request.Request(builds_url, headers=headers)
-              with urllib.request.urlopen(req) as resp:
-                  builds_data = json.loads(resp.read())
-
-              for build in builds_data.get("data", []):
-                  try:
-                      v = int(build["attributes"]["version"])
-                      if v > max_version:
-                          max_version = v
-                  except (ValueError, KeyError):
-                      pass
-
-              # Handle pagination
-              builds_url = builds_data.get("links", {}).get("next")
+          # In-flight and completed upload reservations. This catches versions that
+          # Apple has accepted but has not exposed through /v1/builds yet.
+          update_max_from_url(
+              f"https://api.appstoreconnect.apple.com/v1/apps/{app_id}/buildUploads"
+              f"?fields[buildUploads]=cfBundleVersion&limit=200",
+              "cfBundleVersion",
+          )
 
           print(max_version + 1, end="")
           PYEOF
