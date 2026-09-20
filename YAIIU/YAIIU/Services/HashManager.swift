@@ -132,6 +132,21 @@ final class ResourceBudget: @unchecked Sendable {
 }
 
 enum HashPipelinePolicy {
+    /// Keep PhotoKit writes below the previous six-request fan-out. Even though
+    /// hashing itself uses fixed-size buffers, writeData can put substantial
+    /// pressure on framework and file-cache memory when many originals arrive
+    /// at once.
+    static let photoKitDownloadWindow = 3
+
+    /// Bounds the whole producer/consumer pipeline, not just active downloads.
+    /// With three hash workers, six outstanding items still allow downloads to
+    /// stay ahead without accumulating an arbitrarily deep prepared-file queue.
+    static let outstandingWorkLimit: Int64 = 6
+
+    /// Keep prepared temp-file backlog well below the old 1.5 GB ceiling that
+    /// was observed immediately before repeated iOS memory warnings.
+    static let diskBudgetBytes: Int64 = 512 * 1024 * 1024
+
     /// Reserve by PhotoKit's estimated resource size so the byte budget can
     /// admit multiple downloads. iCloud-optimised assets can report zero, so
     /// give unknown sizes a conservative floor and reconcile with actual bytes
@@ -278,14 +293,7 @@ class HashManager: ObservableObject {
     
     /// Number of concurrent server checks
     private let checkConcurrency = 5
-    /// Assets downloading to temp files at once. Larger than the hash gate so
-    /// iCloud downloads always run ahead of hashing.
-    private static let downloadWindow = 6
-    /// Total bytes allowed in temp files at once. Bounds on-disk footprint
-    /// independently of how many downloads are in flight; a resource larger
-    /// than the whole budget is admitted alone (see ResourceBudget).
-    private static let diskBudgetBytes: Int64 = 1_500 * 1024 * 1024
-    private static let hashDiskBudget = ResourceBudget(limit: diskBudgetBytes)
+    private static let hashDiskBudget = ResourceBudget(limit: HashPipelinePolicy.diskBudgetBytes)
     /// Assets hashed concurrently. Hashing reads with a fixed buffer, so this
     /// only caps CPU/IO overlap, not memory.
     private static let hashConcurrency = 3
@@ -565,6 +573,7 @@ class HashManager: ObservableObject {
 
             let budget = Self.hashDiskBudget
             let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
+            let outstandingGate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
             let registry = PreparedWorkRegistry()
             var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
             // Unbounded is safe: the producer window plus the byte budget cap
@@ -585,6 +594,7 @@ class HashManager: ObservableObject {
                     await self.downloadHashItems(
                         identifiers: identifiersToProcess,
                         budget: budget,
+                        outstandingGate: outstandingGate,
                         registry: registry,
                         runID: runID,
                         continuation: streamContinuation
@@ -615,12 +625,13 @@ class HashManager: ObservableObject {
     private func downloadHashItems(
         identifiers: [String],
         budget: ResourceBudget,
+        outstandingGate: ResourceBudget,
         registry: PreparedWorkRegistry,
         runID: UUID,
         continuation: AsyncStream<PreparedHashWork>.Continuation
     ) async {
         await withTaskGroup(of: Void.self) { group in
-            let limit = Self.downloadWindow
+            let limit = HashPipelinePolicy.photoKitDownloadWindow
             var index = 0
             var inFlight = 0
 
@@ -634,6 +645,7 @@ class HashManager: ObservableObject {
                     await self.downloadHashItem(
                         identifier: identifier,
                         budget: budget,
+                        outstandingGate: outstandingGate,
                         registry: registry,
                         runID: runID,
                         continuation: continuation
@@ -659,11 +671,20 @@ class HashManager: ObservableObject {
     private func downloadHashItem(
         identifier: String,
         budget: ResourceBudget,
+        outstandingGate: ResourceBudget,
         registry: PreparedWorkRegistry,
         runID: UUID,
         continuation: AsyncStream<PreparedHashWork>.Continuation
     ) async {
         guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+        guard await outstandingGate.acquire(1) else { return }
+
+        var ownsOutstandingSlot = true
+        defer {
+            if ownsOutstandingSlot {
+                outstandingGate.release(1)
+            }
+        }
 
         await MainActor.run {
             guard self.isCurrentRun(runID) else { return }
@@ -692,7 +713,7 @@ class HashManager: ObservableObject {
         let reservation = HashPipelinePolicy.downloadReservationBytes(
             estimatedBytes: resources.plan.estimatedBytes,
             hasUnknownResourceSize: resources.plan.hasUnknownResourceSize,
-            budgetBytes: Self.diskBudgetBytes
+            budgetBytes: HashPipelinePolicy.diskBudgetBytes
         )
         guard await budget.acquire(reservation) else { return }
 
@@ -723,9 +744,11 @@ class HashManager: ObservableObject {
         let work = PreparedHashWork(files: files, reservedBytes: charged, budget: budget)
         registry.record(work)
         work.onCompletion { [weak registry, weak work] in
+            outstandingGate.release(1)
             guard let work else { return }
             registry?.remove(work)
         }
+        ownsOutstandingSlot = false
         continuation.yield(work)
     }
 
