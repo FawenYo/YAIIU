@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import YAIIU
 
@@ -251,6 +252,32 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertTrue(state.owns(finalRunID))
         XCTAssertTrue(state.finish(finalRunID))
         XCTAssertFalse(state.owns(finalRunID))
+    }
+
+    func testFileHasherProducesExpectedSHA1WithExplicitCancellationHook() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hash-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try Data("abc".utf8).write(to: url)
+        let result = try FileHasher.sha1Hex(ofFileAt: url, shouldCancel: { false })
+
+        XCTAssertEqual(result.hash, "a9993e364706816aba3e25717850c26c9cd0d89d")
+        XCTAssertEqual(result.size, 3)
+    }
+
+    func testFileHasherHonorsExplicitCancellationHook() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hash-cancel-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try Data(repeating: 0xAB, count: 1024).write(to: url)
+
+        XCTAssertThrowsError(
+            try FileHasher.sha1Hex(ofFileAt: url, shouldCancel: { true })
+        ) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
     }
 
     func testHashPipelineMemoryPressureLimits() {
