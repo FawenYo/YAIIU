@@ -29,7 +29,7 @@ enum ResourceFileAccess {
 
         let state = WriteState(fileURL: fileURL)
         let startedAt = Date()
-        logInfo(
+        logDebug(
             "Resource file request started: type=\(String(describing: resource.type)), networkAllowed=true",
             category: .hash
         )
@@ -40,7 +40,7 @@ enum ResourceFileAccess {
                 manager.writeData(for: resource, toFile: fileURL, options: options) { error in
                     if state.complete(error: error) {
                         let size = state.fileSize(at: fileURL)
-                        logInfo(
+                        logDebug(
                             "Resource file request finished: type=\(String(describing: resource.type)), bytes=\(size), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(startedAt)))s",
                             category: .hash
                         )
@@ -134,21 +134,27 @@ enum FileHasher {
 
     /// Throws `CancellationError` between chunks so a stopped run releases
     /// large-file hashing promptly.
-    static func sha1Hex(ofFileAt fileURL: URL) throws -> (hash: String, size: Int) {
+    static func sha1Hex(
+        ofFileAt fileURL: URL,
+        shouldCancel: () -> Bool = { Task.isCancelled }
+    ) throws -> (hash: String, size: Int) {
         let sha1 = StreamingSHA1()
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
 
         while true {
-            let chunk = try autoreleasepool(invoking: { () throws -> Data? in
-                guard !Task.isCancelled else { return nil }
-                return try handle.read(upToCount: chunkSize)
+            if shouldCancel() {
+                throw CancellationError()
+            }
+
+            let chunk = try autoreleasepool(invoking: {
+                try handle.read(upToCount: chunkSize)
             })
             guard let chunk, !chunk.isEmpty else { break }
             sha1.update(data: chunk)
         }
 
-        if Task.isCancelled {
+        if shouldCancel() {
             throw CancellationError()
         }
         return (sha1.finalize(), sha1.totalSize)
