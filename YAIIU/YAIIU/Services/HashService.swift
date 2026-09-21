@@ -350,19 +350,19 @@ class HashService {
         assetIdentifier: String,
         resourceLabel: String
     ) async throws -> (hash: String, size: Int) {
-        let scheduledAt = Date()
         let cancellation = HashCancellationToken()
 
         logDebug(
             "Hash resource scheduled: asset=\(assetIdentifier), resource=\(resourceLabel)",
             category: .hash
         )
+        let scheduledAt = ProcessInfo.processInfo.systemUptime
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 hashWorkerQueue.addOperation {
-                    let workerStartedAt = Date()
-                    let queueDelay = workerStartedAt.timeIntervalSince(scheduledAt)
+                    let workerStartedAt = ProcessInfo.processInfo.systemUptime
+                    let queueDelay = workerStartedAt - scheduledAt
 
                     if queueDelay >= slowQueueDelayThreshold {
                         logInfo(
@@ -381,11 +381,12 @@ class HashService {
                             throw CancellationError()
                         }
 
+                        let hashStartedAt = ProcessInfo.processInfo.systemUptime
                         let result = try FileHasher.sha1Hex(
                             ofFileAt: url,
                             shouldCancel: { cancellation.isCancelled }
                         )
-                        let hashElapsed = Date().timeIntervalSince(workerStartedAt)
+                        let hashElapsed = ProcessInfo.processInfo.systemUptime - hashStartedAt
                         let mebibytes = Double(result.size) / (1024.0 * 1024.0)
                         let throughput = hashElapsed > 0 ? mebibytes / hashElapsed : 0
 
