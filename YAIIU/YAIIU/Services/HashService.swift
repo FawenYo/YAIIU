@@ -307,8 +307,7 @@ class HashService {
     }
 
     /// Hashes prepared temp files with a bounded read buffer and deletes them.
-    /// Diagnostic timing intentionally leaves scheduling priority and concurrency
-    /// unchanged so logs can distinguish executor delay from file-read/SHA work.
+    /// Blocking reads run on the dedicated hash worker queue.
     func hash(_ files: AssetTempFiles) async throws -> MultiResourceHashResult {
         defer { files.removeAll() }
 
