@@ -494,13 +494,42 @@ jobs:
           mkdir -p ~/.private_keys
           cp $API_KEY_PATH ~/.private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8
 
-          # Upload using xcrun altool
-          xcrun altool --upload-app \
-            --type ios \
-            --file $RUNNER_TEMP/export/YAIIU.ipa \
-            --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
-            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
-            --verbose
+          # altool retries some server failures internally, but those retries are
+          # very aggressive. Retry the whole upload with backoff so transient
+          # App Store Connect 5xx/502 failures have time to recover.
+          MAX_ATTEMPTS=4
+          for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
+            LOG_PATH="$RUNNER_TEMP/altool-upload-attempt-${ATTEMPT}.log"
+
+            set +e
+            xcrun altool --upload-app \
+              --type ios \
+              --file $RUNNER_TEMP/export/YAIIU.ipa \
+              --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+              --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID" \
+              --verbose 2>&1 | tee "$LOG_PATH"
+            STATUS=${PIPESTATUS[0]}
+            set -e
+
+            if [ "$STATUS" -eq 0 ]; then
+              echo "✅ Upload succeeded on attempt ${ATTEMPT}"
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq "$MAX_ATTEMPTS" ]; then
+              echo "❌ Upload failed after ${MAX_ATTEMPTS} attempts"
+              exit "$STATUS"
+            fi
+
+            if grep -Eqi 'status code: 5[0-9]{2}|received status code 5[0-9]{2}|unexpected error occurred.*\(5[0-9]{2}\)|HTTP.*5[0-9]{2}|502 Bad Gateway' "$LOG_PATH"; then
+              DELAY=$((30 * (2 ** (ATTEMPT - 1))))
+              echo "⚠️ App Store Connect returned a transient 5xx error; retrying in ${DELAY}s..."
+              sleep "$DELAY"
+            else
+              echo "❌ Upload failed with a non-transient error; not retrying."
+              exit "$STATUS"
+            fi
+          done
 
       - name: Upload IPA as artifact (backup)
         uses: actions/upload-artifact@v4
