@@ -231,7 +231,7 @@ jobs:
           pip3 install PyJWT cryptography --quiet --break-system-packages
 
           BUILD_NUMBER=$(python3 - <<'PYEOF'
-          import json, time, os, sys, urllib.request, base64
+          import json, time, os, sys, urllib.request, urllib.error, base64
           import jwt
 
           key_id = os.environ["APP_STORE_CONNECT_API_KEY_ID"]
@@ -251,11 +251,38 @@ jobs:
           )
           headers = {"Authorization": f"Bearer {token}"}
 
+          def fetch_json(url, attempts=5):
+              for attempt in range(attempts):
+                  req = urllib.request.Request(url, headers=headers)
+                  try:
+                      with urllib.request.urlopen(req) as resp:
+                          return json.loads(resp.read())
+                  except urllib.error.HTTPError as exc:
+                      retryable = exc.code == 429 or 500 <= exc.code < 600
+                      if not retryable or attempt == attempts - 1:
+                          raise
+                      retry_after = exc.headers.get("Retry-After")
+                      delay = int(retry_after) if retry_after and retry_after.isdigit() else min(2 ** attempt, 30)
+                      print(
+                          f"App Store Connect returned HTTP {exc.code}; "
+                          f"retrying in {delay}s ({attempt + 1}/{attempts})...",
+                          file=sys.stderr,
+                      )
+                      time.sleep(delay)
+                  except urllib.error.URLError:
+                      if attempt == attempts - 1:
+                          raise
+                      delay = min(2 ** attempt, 30)
+                      print(
+                          f"App Store Connect request failed; "
+                          f"retrying in {delay}s ({attempt + 1}/{attempts})...",
+                          file=sys.stderr,
+                      )
+                      time.sleep(delay)
+
           # Step 1: Get app ID by bundle ID
           app_url = f"https://api.appstoreconnect.apple.com/v1/apps?filter[bundleId]={bundle_id}&fields[apps]=bundleId"
-          req = urllib.request.Request(app_url, headers=headers)
-          with urllib.request.urlopen(req) as resp:
-              app_data = json.loads(resp.read())
+          app_data = fetch_json(app_url)
 
           if not app_data.get("data"):
               print(f"Error: App with bundle ID '{bundle_id}' not found.", file=sys.stderr)
@@ -271,9 +298,7 @@ jobs:
           def update_max_from_url(url, attribute):
               global max_version
               while url:
-                  req = urllib.request.Request(url, headers=headers)
-                  with urllib.request.urlopen(req) as resp:
-                      data = json.loads(resp.read())
+                  data = fetch_json(url)
 
                   for item in data.get("data", []):
                       try:
