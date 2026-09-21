@@ -277,18 +277,27 @@ class HashService {
     }
 
     /// Hashes prepared temp files with a bounded read buffer and deletes them.
-    /// File reads run off the cooperative pool so large originals never block it.
+    /// Diagnostic timing intentionally leaves scheduling priority and concurrency
+    /// unchanged so logs can distinguish executor delay from file-read/SHA work.
     func hash(_ files: AssetTempFiles) async throws -> MultiResourceHashResult {
         defer { files.removeAll() }
 
         let plan = files.plan
-        let (primaryHash, primarySize) = try await Self.readFileHash(files.primaryFileURL)
+        let (primaryHash, primarySize) = try await Self.readFileHash(
+            files.primaryFileURL,
+            assetIdentifier: plan.localIdentifier,
+            resourceLabel: plan.isRAWOnly ? "raw-primary" : "primary"
+        )
 
         var rawHash: String?
         var rawSize: Int64?
 
         if !plan.isRAWOnly, let rawFileURL = files.rawFileURL {
-            let (hash, size) = try await Self.readFileHash(rawFileURL)
+            let (hash, size) = try await Self.readFileHash(
+                rawFileURL,
+                assetIdentifier: plan.localIdentifier,
+                resourceLabel: "raw"
+            )
             rawHash = hash
             rawSize = Int64(size)
         }
@@ -304,11 +313,38 @@ class HashService {
         )
     }
 
-    /// File hashing on a utility-priority thread, with cancellation forwarded
-    /// so a stopped run abandons large files between chunks.
-    private static func readFileHash(_ url: URL) async throws -> (hash: String, size: Int) {
+    /// Records both detached-task queue delay and actual synchronous file
+    /// read/SHA time. This is diagnostic-only: execution still uses the same
+    /// utility-priority detached task as before.
+    private static func readFileHash(
+        _ url: URL,
+        assetIdentifier: String,
+        resourceLabel: String
+    ) async throws -> (hash: String, size: Int) {
+        let scheduledAt = Date()
+        logInfo(
+            "Hash resource scheduled: asset=\(assetIdentifier), resource=\(resourceLabel)",
+            category: .hash
+        )
+
         let task = Task.detached(priority: .utility) {
-            try FileHasher.sha1Hex(ofFileAt: url)
+            let workerStartedAt = Date()
+            let queueDelay = workerStartedAt.timeIntervalSince(scheduledAt)
+            logInfo(
+                "Hash worker started: asset=\(assetIdentifier), resource=\(resourceLabel), queueDelay=\(String(format: "%.3f", queueDelay))s",
+                category: .hash
+            )
+
+            let result = try FileHasher.sha1Hex(ofFileAt: url)
+            let hashElapsed = Date().timeIntervalSince(workerStartedAt)
+            let mebibytes = Double(result.size) / (1024.0 * 1024.0)
+            let throughput = hashElapsed > 0 ? mebibytes / hashElapsed : 0
+
+            logInfo(
+                "Hash resource finished: asset=\(assetIdentifier), resource=\(resourceLabel), bytes=\(result.size), queueDelay=\(String(format: "%.3f", queueDelay))s, hashElapsed=\(String(format: "%.3f", hashElapsed))s, throughput=\(String(format: "%.1f", throughput))MiB/s",
+                category: .hash
+            )
+            return result
         }
         return try await withTaskCancellationHandler {
             try await task.value
