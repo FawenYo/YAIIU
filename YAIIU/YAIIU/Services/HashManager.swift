@@ -791,7 +791,7 @@ class HashManager: ObservableObject {
         do {
             let result = try await HashService.shared.hash(files)
             guard isCurrentRun(runID), !shouldStop else { return }
-            logInfo(
+            logDebug(
                 "Hash finished: asset=\(identifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s",
                 category: .hash
             )
