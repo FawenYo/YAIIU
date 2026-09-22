@@ -141,6 +141,94 @@ final class HashCacheRepository {
     }
     
     // MARK: - Update Methods
+
+    func updateRawHash(localIdentifier: String, rawHash: String, rawOnServer: Bool) {
+        connection.ensureInitialized()
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return }
+            let sql = """
+            UPDATE hash_cache
+            SET raw_hash = ?, raw_on_server = ?, has_raw = 1
+            WHERE asset_id = ?;
+            """
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(statement, 1, (rawHash as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(statement, 2, rawOnServer ? 1 : 0)
+            sqlite3_bind_text(statement, 3, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_step(statement)
+        }
+    }
+
+    /// After an upload/server sync, Immich already knows the checksum of the
+    /// uploaded RAW. Reuse it instead of re-reading RAW bytes through PhotoKit.
+    @discardableResult
+    func backfillRawHashesFromServerCache() -> Int {
+        connection.ensureInitialized()
+        var updated = 0
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return }
+            let sql = """
+            UPDATE hash_cache
+            SET raw_hash = (
+                    SELECT COALESCE(sac.source_checksum, sac.checksum)
+                    FROM uploaded_assets ua
+                    JOIN server_assets_cache sac ON sac.immich_id = ua.immich_id
+                    WHERE ua.asset_id = hash_cache.asset_id
+                      AND ua.resource_type = 'raw'
+                      AND ua.immich_id != 'unknown'
+                    ORDER BY ua.id DESC
+                    LIMIT 1
+                ),
+                raw_on_server = 1
+            WHERE has_raw = 1
+              AND (raw_hash IS NULL OR raw_on_server = 0)
+              AND EXISTS (
+                    SELECT 1
+                    FROM uploaded_assets ua
+                    JOIN server_assets_cache sac ON sac.immich_id = ua.immich_id
+                    WHERE ua.asset_id = hash_cache.asset_id
+                      AND ua.resource_type = 'raw'
+                      AND ua.immich_id != 'unknown'
+                );
+            """
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+            guard sqlite3_step(statement) == SQLITE_DONE else { return }
+            updated = Int(sqlite3_changes(self.connection.db))
+        }
+        return updated
+    }
+
+    func getMultiResourceHashRecord(localIdentifier: String) -> MultiResourceHashRecord? {
+        connection.ensureInitialized()
+        var record: MultiResourceHashRecord?
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return }
+            let sql = """
+            SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server
+            FROM hash_cache WHERE asset_id = ?;
+            """
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            guard sqlite3_step(statement) == SQLITE_ROW,
+                  let idPtr = sqlite3_column_text(statement, 0),
+                  let hashPtr = sqlite3_column_text(statement, 1) else { return }
+            record = MultiResourceHashRecord(
+                assetId: String(cString: idPtr),
+                primaryHash: String(cString: hashPtr),
+                rawHash: sqlite3_column_text(statement, 2).map { String(cString: $0) },
+                hasRAW: sqlite3_column_int(statement, 3) == 1,
+                primaryOnServer: sqlite3_column_int(statement, 4) == 1,
+                rawOnServer: sqlite3_column_int(statement, 5) == 1
+            )
+        }
+        return record
+    }
     
     func updateHashCacheServerStatus(localIdentifier: String, isOnServer: Bool) {
         connection.ensureInitialized()
@@ -519,8 +607,10 @@ final class HashCacheRepository {
     
     // MARK: - Modified Asset Invalidation
 
-    /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate
-    /// has changed since the date was last stored. Assets with NULL stored dates are skipped.
+    /// Invalidates the primary hash and primary upload records when Photos reports
+    /// a changed modificationDate. RAW upload records are preserved because Photos
+    /// edits are non-destructive to the RAW companion; if server presence later
+    /// becomes ambiguous, RAW can still be lazily re-hashed.
     func resetCacheForModifiedAssets(assets: [PHAsset]) {
         guard !assets.isEmpty else { return }
 
@@ -578,11 +668,13 @@ final class HashCacheRepository {
 
         logInfo("Invalidating \(invalidatedIds.count) modified assets", category: .hash)
 
-        // Delete both hash_cache and uploaded_assets for each invalidated asset
+        // Drop the version-sensitive primary hash, but preserve RAW upload
+        // identity so an edit to the rendered JPEG/HEIC does not force the
+        // unchanged RAW companion through PhotoKit again.
         connection.beginTransaction()
 
         let hashDeleteSql = "DELETE FROM hash_cache WHERE asset_id = ?;"
-        let uploadDeleteSql = "DELETE FROM uploaded_assets WHERE asset_id = ?;"
+        let uploadDeleteSql = "DELETE FROM uploaded_assets WHERE asset_id = ? AND resource_type != 'raw';"
 
         var hashStmt: OpaquePointer?
         var uploadStmt: OpaquePointer?
