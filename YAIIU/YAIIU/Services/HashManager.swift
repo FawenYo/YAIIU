@@ -296,12 +296,6 @@ final class PhotoKitRateLimiter: @unchecked Sendable {
         self.bytesPerSecond = Double(max(1, bytesPerSecond))
     }
 
-    func reset() {
-        lock.lock()
-        nextAdmissionUptime = 0
-        lock.unlock()
-    }
-
     func waitForAdmission(bytes: Int64) async -> Bool {
         let now = ProcessInfo.processInfo.systemUptime
         let spacing = Double(max(1, bytes)) / bytesPerSecond
@@ -719,8 +713,6 @@ class HashManager: ObservableObject {
         }
 
         isHashingActive = true
-        photoKitRateLimiter.reset()
-        memoryPressureThrottle.reset()
         hashTask?.cancel()
 
         hashTask = Task { [weak self] in
@@ -768,6 +760,14 @@ class HashManager: ObservableObject {
             // A cancelled iterator discards buffered elements; guarantee their
             // temp files and reservations are released.
             registry.sweep()
+
+            // Only the still-current run may clear emergency pressure mode.
+            // A stopped/stale run can have uncancellable PhotoKit writes draining
+            // while a replacement run starts; keeping the throttle global prevents
+            // that replacement from immediately restoring three-way writeData.
+            if self.isCurrentRun(runID) {
+                self.memoryPressureThrottle.reset()
+            }
 
             await MainActor.run {
                 if self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled {
