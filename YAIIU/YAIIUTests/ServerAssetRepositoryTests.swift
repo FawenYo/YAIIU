@@ -7,6 +7,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
     private var connection: SQLiteConnection!
     private var repository: ServerAssetRepository!
     private var uploadRepository: UploadRecordRepository!
+    private var hashRepository: HashCacheRepository!
     override func setUp() {
         super.setUp()
         databaseURL = FileManager.default.temporaryDirectory
@@ -15,9 +16,11 @@ final class ServerAssetRepositoryTests: XCTestCase {
         connection.ensureInitialized()
         repository = ServerAssetRepository(connection: connection)
         uploadRepository = UploadRecordRepository(connection: connection)
+        hashRepository = HashCacheRepository(connection: connection)
     }
 
     override func tearDown() {
+        hashRepository = nil
         uploadRepository = nil
         repository = nil
         connection = nil
@@ -162,6 +165,36 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(resolved[videoAssetId], videoId)
         XCTAssertEqual(resolved[rawAssetId], rawId)
         XCTAssertEqual(resolved[livePhotoAssetId], livePhotoId)
+    }
+
+    func testRawHashBackfillUsesUploadedRawImmichId() {
+        let rawImmichId = "99999999-9999-4999-8999-999999999999"
+        execute("""
+            INSERT INTO hash_cache
+                (asset_id, sha1_hash, is_on_server, calculated_at, raw_hash, raw_on_server, has_raw)
+            VALUES ('asset-pair', 'primary-sum', 0, 0, NULL, 0, 1);
+        """)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "asset-pair",
+            resourceType: "raw",
+            filename: "photo.arw",
+            immichId: rawImmichId
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: rawImmichId,
+                checksum: "server-rewritten-raw-sum",
+                sourceChecksum: "original-raw-sum",
+                ownerId: "owner-1"
+            )
+        ]))
+
+        XCTAssertEqual(hashRepository.backfillRawHashesFromServerCache(), 1)
+
+        let record = hashRepository.getMultiResourceHashRecord(localIdentifier: "asset-pair")
+        XCTAssertEqual(record?.rawHash, "original-raw-sum")
+        XCTAssertEqual(record?.rawOnServer, true)
+        XCTAssertEqual(record?.hasRAW, true)
     }
 
     func testAlbumAssetIdsIncludesStandaloneVideoAndRawUploadRecords() throws {
