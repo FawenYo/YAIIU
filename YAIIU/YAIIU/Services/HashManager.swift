@@ -1313,11 +1313,21 @@ class HashManager: ObservableObject {
         }
 
         let estimatedBytes = (rawResource.value(forKey: "fileSize") as? CLong).map(Int64.init) ?? 0
+        let hasUnknownSize = estimatedBytes <= 0
         let charge = HashPipelinePolicy.photoKitRateLimitChargeBytes(
             estimatedBytes: max(estimatedBytes, 0),
-            hasUnknownResourceSize: estimatedBytes <= 0
+            hasUnknownResourceSize: hasUnknownSize
         )
         guard await photoKitRateLimiter.waitForAdmission(bytes: charge) else { return nil }
+
+        let reservation = HashPipelinePolicy.downloadReservationBytes(
+            estimatedBytes: max(estimatedBytes, 0),
+            hasUnknownResourceSize: hasUnknownSize,
+            budgetBytes: HashPipelinePolicy.diskBudgetBytes
+        )
+        guard await Self.hashDiskBudget.acquire(reservation) else { return nil }
+        defer { Self.hashDiskBudget.release(reservation) }
+
         guard let pressurePermitHeld = await memoryPressureThrottle.acquireIfNeeded() else { return nil }
         defer { memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld) }
 
