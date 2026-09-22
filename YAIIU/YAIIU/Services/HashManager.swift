@@ -284,6 +284,22 @@ enum HashPipelinePolicy {
     }
 }
 
+enum RawHashPolicy {
+    static func shouldCalculateRawHash(
+        primaryOnServer: Bool,
+        rawOnServer: Bool,
+        rawUploaded: Bool,
+        rawHash: String?,
+        hasServerCache: Bool
+    ) -> Bool {
+        primaryOnServer
+            && !rawOnServer
+            && !rawUploaded
+            && rawHash == nil
+            && hasServerCache
+    }
+}
+
 /// Long-term admission pacing for PhotoKit writes. This controls how quickly
 /// new assets may enter `writeData` while still allowing an in-flight write
 /// to overlap the next one when it naturally takes longer than the spacing.
@@ -1174,12 +1190,36 @@ class HashManager: ObservableObject {
                     }
                 }
                 
-                // Check RAW hash against server if asset has RAW
+                // RAW is intentionally lazy:
+                // - if primary is missing, upload can send JPEG/HEIC + RAW directly
+                //   and Immich's checksum is backfilled after server sync;
+                // - if primary already exists, hash RAW only when neither an upload
+                //   record nor a cached RAW hash can answer whether it is present.
                 if record.hasRAW && !rawOnServer {
-                    if DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "raw") {
+                    let rawUploaded = DatabaseManager.shared.isAssetUploaded(
+                        localIdentifier: localIdentifier,
+                        resourceType: "raw"
+                    )
+                    if rawUploaded {
                         rawOnServer = true
                     } else if hasServerCache, let rawHash = record.rawHash {
                         rawOnServer = DatabaseManager.shared.isAssetOnServer(checksum: rawHash)
+                    } else if RawHashPolicy.shouldCalculateRawHash(
+                        primaryOnServer: primaryOnServer,
+                        rawOnServer: rawOnServer,
+                        rawUploaded: rawUploaded,
+                        rawHash: record.rawHash,
+                        hasServerCache: hasServerCache
+                    ), let rawHash = await self.hashRawOnlyIfNeeded(
+                        localIdentifier: localIdentifier,
+                        runID: runID
+                    ) {
+                        rawOnServer = DatabaseManager.shared.isAssetOnServer(checksum: rawHash)
+                        DatabaseManager.shared.updateRawHash(
+                            localIdentifier: localIdentifier,
+                            rawHash: rawHash,
+                            rawOnServer: rawOnServer
+                        )
                     }
                 }
                 guard self.isCurrentRun(runID), !Task.isCancelled else { return }
@@ -1223,6 +1263,49 @@ class HashManager: ObservableObject {
         }
     }
     
+    private func hashRawOnlyIfNeeded(
+        localIdentifier: String,
+        runID: UUID
+    ) async -> String? {
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return nil }
+
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetchResult.firstObject,
+              let resources = AssetResourceSelector.select(for: asset),
+              let rawResource = resources.rawResource else {
+            return nil
+        }
+
+        let estimatedBytes = (rawResource.value(forKey: "fileSize") as? CLong).map(Int64.init) ?? 0
+        let charge = HashPipelinePolicy.photoKitRateLimitChargeBytes(
+            estimatedBytes: max(estimatedBytes, 0),
+            hasUnknownResourceSize: estimatedBytes <= 0
+        )
+        guard await photoKitRateLimiter.waitForAdmission(bytes: charge) else { return nil }
+        guard let pressurePermitHeld = await memoryPressureThrottle.acquireIfNeeded() else { return nil }
+        defer { memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld) }
+
+        do {
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            let result = try await HashService.shared.hashRawResource(
+                rawResource,
+                assetIdentifier: localIdentifier
+            )
+            logDebug(
+                "Lazy RAW hash finished: asset=\(localIdentifier), bytes=\(result.size), elapsed=\(String(format: "%.2f", ProcessInfo.processInfo.systemUptime - startedAt))s",
+                category: .hash
+            )
+            return result.hash
+        } catch {
+            guard !Task.isCancelled else { return nil }
+            logError(
+                "Lazy RAW hash failed: asset=\(localIdentifier), error=\(error.localizedDescription)",
+                category: .hash
+            )
+            return nil
+        }
+    }
+
     private func finishProcessing(runID: UUID, shouldSyncAlbums: Bool = false) {
         guard runState.finish(runID) else { return }
         if shouldSyncAlbums {
