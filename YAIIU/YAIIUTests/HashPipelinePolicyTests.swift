@@ -254,6 +254,42 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.owns(finalRunID))
     }
 
+    func testMemoryPressureThrottleUsesFastPathBeforeWarning() async {
+        let throttle = HashMemoryPressureThrottle()
+
+        let permit = await throttle.acquireIfNeeded()
+
+        XCTAssertEqual(permit, false)
+        XCTAssertFalse(throttle.isThrottled)
+    }
+
+    func testMemoryPressureThrottleSerializesAfterWarning() async {
+        let throttle = HashMemoryPressureThrottle()
+        throttle.signal(cooldown: 0)
+
+        guard let firstPermit = await throttle.acquireIfNeeded() else {
+            return XCTFail("Expected first pressure-mode permit")
+        }
+        XCTAssertTrue(firstPermit)
+        XCTAssertTrue(throttle.isThrottled)
+
+        let probe = ConcurrencyProbe()
+        let waiter = Task {
+            guard let permit = await throttle.acquireIfNeeded() else { return }
+            await probe.bump()
+            throttle.releaseIfNeeded(permit)
+        }
+
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        let admittedWhileHeld = await probe.totalCount
+        XCTAssertEqual(admittedWhileHeld, 0)
+
+        throttle.releaseIfNeeded(firstPermit)
+        await waiter.value
+        let admittedAfterRelease = await probe.totalCount
+        XCTAssertEqual(admittedAfterRelease, 1)
+    }
+
     func testFileHasherProducesExpectedSHA1WithExplicitCancellationHook() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("hash-test-\(UUID().uuidString)")
