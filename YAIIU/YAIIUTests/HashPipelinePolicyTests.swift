@@ -325,6 +325,127 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertEqual(admittedAfterRelease, 1)
     }
 
+    func testRawHashPolicySkipsRawWhenPrimaryIsMissing() {
+        XCTAssertFalse(
+            RawHashPolicy.shouldCalculateRawHash(
+                primaryOnServer: false,
+                rawOnServer: false,
+                rawUploaded: false,
+                rawHash: nil,
+                hasServerCache: true
+            )
+        )
+    }
+
+    func testRawHashPolicyCalculatesOnlyForAmbiguousExistingPrimary() {
+        XCTAssertTrue(
+            RawHashPolicy.shouldCalculateRawHash(
+                primaryOnServer: true,
+                rawOnServer: false,
+                rawUploaded: false,
+                rawHash: nil,
+                hasServerCache: true
+            )
+        )
+
+        XCTAssertFalse(
+            RawHashPolicy.shouldCalculateRawHash(
+                primaryOnServer: true,
+                rawOnServer: false,
+                rawUploaded: true,
+                rawHash: nil,
+                hasServerCache: true
+            )
+        )
+        XCTAssertFalse(
+            RawHashPolicy.shouldCalculateRawHash(
+                primaryOnServer: true,
+                rawOnServer: false,
+                rawUploaded: false,
+                rawHash: "cached-raw",
+                hasServerCache: true
+            )
+        )
+    }
+
+    func testUploadResourcePolicyUploadsBothWhenNeitherCopyIsKnown() {
+        let cached = MultiResourceHashRecord(
+            assetId: "asset",
+            primaryHash: "primary",
+            rawHash: nil,
+            hasRAW: true,
+            primaryOnServer: false,
+            rawOnServer: false
+        )
+
+        XCTAssertTrue(UploadResourcePolicy.shouldUpload(resourceType: "jpeg", cached: cached, uploadedTypes: []))
+        XCTAssertTrue(UploadResourcePolicy.shouldUpload(resourceType: "raw", cached: cached, uploadedTypes: []))
+    }
+
+    func testUploadResourcePolicyUploadsOnlyRawWhenPrimaryExists() {
+        let cached = MultiResourceHashRecord(
+            assetId: "asset",
+            primaryHash: "primary",
+            rawHash: nil,
+            hasRAW: true,
+            primaryOnServer: true,
+            rawOnServer: false
+        )
+
+        XCTAssertFalse(UploadResourcePolicy.shouldUpload(resourceType: "jpeg", cached: cached, uploadedTypes: []))
+        XCTAssertTrue(UploadResourcePolicy.shouldUpload(resourceType: "raw", cached: cached, uploadedTypes: []))
+    }
+
+    func testUploadResourcePolicyUploadsOnlyPrimaryWhenRawExists() {
+        let cached = MultiResourceHashRecord(
+            assetId: "asset",
+            primaryHash: "primary",
+            rawHash: "raw",
+            hasRAW: true,
+            primaryOnServer: false,
+            rawOnServer: true
+        )
+
+        XCTAssertTrue(UploadResourcePolicy.shouldUpload(resourceType: "heic", cached: cached, uploadedTypes: []))
+        XCTAssertFalse(UploadResourcePolicy.shouldUpload(resourceType: "raw", cached: cached, uploadedTypes: []))
+    }
+
+    func testUploadResourcePolicyTreatsRawOnlyAsPrimary() {
+        let cached = MultiResourceHashRecord(
+            assetId: "raw-only",
+            primaryHash: "raw-primary",
+            rawHash: nil,
+            hasRAW: false,
+            primaryOnServer: true,
+            rawOnServer: false
+        )
+
+        XCTAssertFalse(
+            UploadResourcePolicy.shouldUpload(
+                resourceType: "raw",
+                cached: cached,
+                uploadedTypes: []
+            )
+        )
+    }
+
+    func testUploadResourcePolicyTrustsUploadRecordsBeforeServerRefresh() {
+        XCTAssertFalse(
+            UploadResourcePolicy.shouldUpload(
+                resourceType: "jpeg",
+                cached: nil,
+                uploadedTypes: ["jpeg", "raw"]
+            )
+        )
+        XCTAssertFalse(
+            UploadResourcePolicy.shouldUpload(
+                resourceType: "raw",
+                cached: nil,
+                uploadedTypes: ["jpeg", "raw"]
+            )
+        )
+    }
+
     func testFileHasherProducesExpectedSHA1WithExplicitCancellationHook() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("hash-test-\(UUID().uuidString)")
