@@ -43,6 +43,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             "save-sync-metadata",
             "send-acks",
             "backfill-immich-ids",
+            "backfill-raw-hashes",
         ])
         XCTAssertEqual(api.sentAcks, ["AssetMetadataV1|metadata-1", "AssetV2|asset-1"])
     }
@@ -293,6 +294,11 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
 
     func backfillImmichIdsFromServerCache() -> Int {
         operations.append("backfill-immich-ids")
+        return 0
+    }
+
+    func backfillRawHashesFromServerCache() -> Int {
+        operations.append("backfill-raw-hashes")
         return 0
     }
 }
