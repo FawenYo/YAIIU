@@ -410,6 +410,25 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(UploadResourcePolicy.shouldUpload(resourceType: "raw", cached: cached, uploadedTypes: []))
     }
 
+    func testUploadResourcePolicyTreatsVideoAsPrimary() {
+        let cached = MultiResourceHashRecord(
+            assetId: "video",
+            primaryHash: "video-primary",
+            rawHash: nil,
+            hasRAW: false,
+            primaryOnServer: true,
+            rawOnServer: false
+        )
+
+        XCTAssertFalse(
+            UploadResourcePolicy.shouldUpload(
+                resourceType: "video",
+                cached: cached,
+                uploadedTypes: []
+            )
+        )
+    }
+
     func testUploadResourcePolicyTreatsRawOnlyAsPrimary() {
         let cached = MultiResourceHashRecord(
             assetId: "raw-only",
@@ -444,6 +463,15 @@ final class HashPipelinePolicyTests: XCTestCase {
                 uploadedTypes: ["jpeg", "raw"]
             )
         )
+    }
+
+    func testStreamingSHA1ProducesExpectedDigestAcrossChunks() {
+        let hasher = StreamingSHA1()
+        hasher.update(data: Data("a".utf8))
+        hasher.update(data: Data("bc".utf8))
+
+        XCTAssertEqual(hasher.finalize(), "a9993e364706816aba3e25717850c26c9cd0d89d")
+        XCTAssertEqual(hasher.totalSize, 3)
     }
 
     func testFileHasherProducesExpectedSHA1WithExplicitCancellationHook() throws {
