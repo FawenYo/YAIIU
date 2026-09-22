@@ -52,6 +52,8 @@ struct AssetResourcePlan: Sendable {
     let localIdentifier: String
     /// RAW-only libraries hash the RAW as the primary, with no separate RAW slot.
     let isRAWOnly: Bool
+    /// A JPEG/HEIC primary has a separate RAW companion that may be hashed lazily.
+    let hasRAWCompanion: Bool
     let modificationDate: Date?
     /// Sum of KVC size estimates for resources whose sizes are known.
     let estimatedBytes: Int64
@@ -104,6 +106,7 @@ enum AssetResourceSelector {
             let plan = AssetResourcePlan(
                 localIdentifier: asset.localIdentifier,
                 isRAWOnly: true,
+                hasRAWCompanion: false,
                 modificationDate: asset.modificationDate,
                 estimatedBytes: estimate.bytes,
                 hasUnknownResourceSize: estimate.hasUnknown
@@ -115,11 +118,13 @@ enum AssetResourceSelector {
             return nil
         }
 
-        let selectedResources = [primary] + (rawResource.map { [$0] } ?? [])
-        let estimate = sizeEstimate(of: selectedResources)
+        // Initial discovery hashes only the primary. RAW is kept as a logical
+        // companion and materialized later only when server state is ambiguous.
+        let estimate = sizeEstimate(of: [primary])
         let plan = AssetResourcePlan(
             localIdentifier: asset.localIdentifier,
             isRAWOnly: false,
+            hasRAWCompanion: rawResource != nil,
             modificationDate: asset.modificationDate,
             estimatedBytes: estimate.bytes,
             hasUnknownResourceSize: estimate.hasUnknown
@@ -288,22 +293,13 @@ class HashService {
         return rawIdentifiers.contains { uti.contains($0) }
     }
 
-    /// Downloads both planned resources to temp files (bounded by the caller's
-    /// byte budget). The caller owns the files and must delete them.
+    /// Downloads only the primary resource for the initial hash pass. A RAW
+    /// companion is deliberately deferred until the primary is confirmed on
+    /// the server and RAW presence still cannot be resolved from local/server
+    /// records.
     func prepare(_ resources: AssetResources) async throws -> AssetTempFiles {
         let primaryFileURL = try await ResourceFileAccess.tempFile(for: resources.primaryResource)
-        do {
-            let rawFileURL: URL?
-            if let rawResource = resources.rawResource {
-                rawFileURL = try await ResourceFileAccess.tempFile(for: rawResource)
-            } else {
-                rawFileURL = nil
-            }
-            return AssetTempFiles(plan: resources.plan, primaryFileURL: primaryFileURL, rawFileURL: rawFileURL)
-        } catch {
-            try? FileManager.default.removeItem(at: primaryFileURL)
-            throw error
-        }
+        return AssetTempFiles(plan: resources.plan, primaryFileURL: primaryFileURL, rawFileURL: nil)
     }
 
     /// Hashes prepared temp files with a bounded read buffer and deletes them.
@@ -318,28 +314,33 @@ class HashService {
             resourceLabel: plan.isRAWOnly ? "raw-primary" : "primary"
         )
 
-        var rawHash: String?
-        var rawSize: Int64?
-
-        if !plan.isRAWOnly, let rawFileURL = files.rawFileURL {
-            let (hash, size) = try await Self.readFileHash(
-                rawFileURL,
-                assetIdentifier: plan.localIdentifier,
-                resourceLabel: "raw"
-            )
-            rawHash = hash
-            rawSize = Int64(size)
-        }
-
         return MultiResourceHashResult(
             localIdentifier: plan.localIdentifier,
             primaryHash: primaryHash,
             primaryFileSize: Int64(primarySize),
-            rawHash: plan.isRAWOnly ? nil : rawHash,
-            rawFileSize: plan.isRAWOnly ? nil : rawSize,
-            hasRAW: !plan.isRAWOnly && files.rawFileURL != nil,
+            rawHash: nil,
+            rawFileSize: nil,
+            hasRAW: plan.hasRAWCompanion,
             calculatedAt: Date()
         )
+    }
+
+    /// Materializes and hashes a RAW companion only on the lazy fallback path.
+    /// The caller decides whether RAW hashing is necessary after primary/server
+    /// checks have already run.
+    func hashRawResource(
+        _ resource: PHAssetResource,
+        assetIdentifier: String
+    ) async throws -> (hash: String, size: Int64) {
+        let fileURL = try await ResourceFileAccess.tempFile(for: resource)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let result = try await Self.readFileHash(
+            fileURL,
+            assetIdentifier: assetIdentifier,
+            resourceLabel: "raw-lazy"
+        )
+        return (result.hash, Int64(result.size))
     }
 
     /// Runs blocking file I/O + SHA1 on a dedicated bounded worker queue rather
