@@ -668,13 +668,13 @@ final class HashCacheRepository {
 
         logInfo("Invalidating \(invalidatedIds.count) modified assets", category: .hash)
 
-        // Drop the version-sensitive primary hash, but preserve RAW upload
-        // identity so an edit to the rendered JPEG/HEIC does not force the
-        // unchanged RAW companion through PhotoKit again.
+        // Treat a Photos edit as a new paired upload candidate. Clear both
+        // the cached hashes and upload records; if the RAW is unchanged, Immich
+        // will return the existing asset as a duplicate after receiving it.
         connection.beginTransaction()
 
         let hashDeleteSql = "DELETE FROM hash_cache WHERE asset_id = ?;"
-        let uploadDeleteSql = "DELETE FROM uploaded_assets WHERE asset_id = ? AND resource_type != 'raw';"
+        let uploadDeleteSql = "DELETE FROM uploaded_assets WHERE asset_id = ?;"
 
         var hashStmt: OpaquePointer?
         var uploadStmt: OpaquePointer?
