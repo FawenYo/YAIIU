@@ -245,69 +245,6 @@ final class PreparedWorkRegistry: @unchecked Sendable {
 }
 
 
-private final class StreamingResourceHashRequest: @unchecked Sendable {
-    private let lock = NSLock()
-    private let hasher = StreamingSHA1()
-    private var requestID: PHAssetResourceDataRequestID?
-    private var isCancelled = false
-    private var isCompleted = false
-
-    func receive(_ data: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !isCancelled, !isCompleted else { return }
-        hasher.update(data: data)
-    }
-
-    func installRequestID(
-        _ id: PHAssetResourceDataRequestID,
-        manager: PHAssetResourceManager
-    ) {
-        lock.lock()
-        requestID = id
-        let shouldCancel = isCancelled
-        lock.unlock()
-
-        if shouldCancel {
-            manager.cancelDataRequest(id)
-        }
-    }
-
-    func cancel(manager: PHAssetResourceManager) {
-        lock.lock()
-        isCancelled = true
-        let id = requestID
-        lock.unlock()
-
-        if let id {
-            manager.cancelDataRequest(id)
-        }
-    }
-
-    func finish(error: Error?) throws -> (hash: String, size: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard !isCompleted else {
-            throw CancellationError()
-        }
-        isCompleted = true
-
-        if isCancelled {
-            throw CancellationError()
-        }
-        if let error {
-            if let photosError = error as? PHPhotosError,
-               photosError.code == .userCancelled {
-                throw CancellationError()
-            }
-            throw error
-        }
-
-        return (hasher.finalize(), hasher.totalSize)
-    }
-}
-
 class HashService {
     static let shared = HashService()
 
@@ -354,65 +291,6 @@ class HashService {
 
         let uti = resource.uniformTypeIdentifier.lowercased()
         return rawIdentifiers.contains { uti.contains($0) }
-    }
-
-    /// Hashes the normal primary resource directly from PhotoKit's chunk stream.
-    /// This is the same shape as Immich's native iOS hashing path: bytes are fed
-    /// into SHA1 as PhotoKit delivers them, with no temp-file write/read pass.
-    ///
-    /// RAW companions are deliberately excluded here and remain on the lazy
-    /// fallback path below.
-    func hashPrimaryStreaming(_ resources: AssetResources) async throws -> MultiResourceHashResult {
-        let manager = PHAssetResourceManager.default()
-        let options = PHAssetResourceRequestOptions()
-        options.isNetworkAccessAllowed = true
-        let request = StreamingResourceHashRequest()
-        let startedAt = ProcessInfo.processInfo.systemUptime
-
-        logDebug(
-            "Streaming hash request started: asset=\(resources.plan.localIdentifier), resource=primary",
-            category: .hash
-        )
-
-        let result: (hash: String, size: Int) = try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let requestID = manager.requestData(
-                    for: resources.primaryResource,
-                    options: options,
-                    dataReceivedHandler: { data in
-                        request.receive(data)
-                    },
-                    completionHandler: { error in
-                        do {
-                            continuation.resume(returning: try request.finish(error: error))
-                        } catch {
-                            continuation.resume(throwing: error)
-                        }
-                    }
-                )
-                request.installRequestID(requestID, manager: manager)
-            }
-        } onCancel: {
-            request.cancel(manager: manager)
-        }
-
-        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
-        let mebibytes = Double(result.size) / (1024.0 * 1024.0)
-        let throughput = elapsed > 0 ? mebibytes / elapsed : 0
-        logDebug(
-            "Streaming hash request finished: asset=\(resources.plan.localIdentifier), bytes=\(result.size), elapsed=\(String(format: "%.3f", elapsed))s, throughput=\(String(format: "%.1f", throughput))MiB/s",
-            category: .hash
-        )
-
-        return MultiResourceHashResult(
-            localIdentifier: resources.plan.localIdentifier,
-            primaryHash: result.hash,
-            primaryFileSize: Int64(result.size),
-            rawHash: nil,
-            rawFileSize: nil,
-            hasRAW: resources.plan.hasRAWCompanion,
-            calculatedAt: Date()
-        )
     }
 
     /// Downloads only the primary resource for the normal hash pass. RAW
