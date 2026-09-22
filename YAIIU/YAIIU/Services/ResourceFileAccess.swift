@@ -1,16 +1,16 @@
 import Foundation
 import Photos
 
-/// Delivers original photo-library bytes through a temp file instead of the
-/// `requestData` chunk stream.
+/// Temp-file access for conservative fallback paths.
 ///
-/// PhotoKit's `requestData` retains copies of every delivered chunk inside
-/// PhotoLibraryServicesCore and never releases them (verified via Instruments:
-/// ~10 MB pinned per hashed asset, app jetsam-killed after a few hundred
-/// photos). `writeData(for:toFile:...)` writes the same bytes straight to a
-/// caller-owned file, so peak memory stays constant at the read buffer size.
+/// YAIIU previously moved all hashing from `requestData` to `writeData` after
+/// Instruments showed native PhotoLibraryServicesCore memory accumulating during
+/// the old long-running JPEG+RAW workload. Primary-only hashing now experiments
+/// with direct `requestData` streaming again; lazy RAW fallback still uses this
+/// temp-file path so large RAW materialization remains bounded and isolated.
+///
 /// The file is byte-identical to the concatenated `requestData` chunks, so
-/// checksums computed this way match existing hash-cache entries.
+/// checksums computed either way match existing hash-cache entries.
 enum ResourceFileAccess {
 
     /// Writes the resource's original data to a fresh temp file and returns its
