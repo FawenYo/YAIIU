@@ -91,7 +91,7 @@ private struct PreparedUploadQueue: @unchecked Sendable {
 }
 
 enum UploadResourcePolicy {
-    private static let primaryTypes: Set<String> = ["primary", "photo", "jpeg", "heic", "png"]
+    private static let primaryTypes: Set<String> = ["primary", "photo", "jpeg", "heic", "png", "video"]
 
     static func shouldUpload(
         resourceType: String,
