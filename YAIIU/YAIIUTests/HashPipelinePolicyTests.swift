@@ -254,6 +254,41 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.owns(finalRunID))
     }
 
+    func testPhotoKitRateLimitUsesKnownEstimate() {
+        let estimate: Int64 = 42 * 1024 * 1024
+        XCTAssertEqual(
+            HashPipelinePolicy.photoKitRateLimitChargeBytes(
+                estimatedBytes: estimate,
+                hasUnknownResourceSize: false
+            ),
+            estimate
+        )
+    }
+
+    func testPhotoKitRateLimitUsesConservativeUnknownCharge() {
+        XCTAssertEqual(
+            HashPipelinePolicy.photoKitRateLimitChargeBytes(
+                estimatedBytes: 0,
+                hasUnknownResourceSize: true
+            ),
+            HashPipelinePolicy.photoKitUnknownResourceChargeBytes
+        )
+
+        let knownPortion: Int64 = 96 * 1024 * 1024
+        XCTAssertEqual(
+            HashPipelinePolicy.photoKitRateLimitChargeBytes(
+                estimatedBytes: knownPortion,
+                hasUnknownResourceSize: true
+            ),
+            knownPortion
+        )
+    }
+
+    func testPhotoKitRateLimitIsBelowObservedWarningThroughput() {
+        XCTAssertEqual(HashPipelinePolicy.photoKitTargetBytesPerSecond, 24 * 1024 * 1024)
+        XCTAssertLessThan(HashPipelinePolicy.photoKitTargetBytesPerSecond, 58 * 1024 * 1024)
+    }
+
     func testMemoryPressureThrottleUsesFastPathBeforeWarning() async {
         let throttle = HashMemoryPressureThrottle()
 
