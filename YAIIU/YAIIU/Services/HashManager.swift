@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import Combine
+import UIKit
 
 /// FIFO admission to a shared resource budget (bytes or slots) with
 /// cancellation-safe async acquisition. Acquisition returns false when the
@@ -265,6 +266,76 @@ enum HashPipelinePolicy {
     }
 }
 
+/// Leaves the normal hash pipeline fast, but applies emergency backpressure
+/// after iOS reports memory pressure. Once tripped for a run, new PhotoKit
+/// writes pause briefly and then serialize so framework/native caches get time
+/// to drain instead of continuing at full throughput toward Jetsam.
+final class HashMemoryPressureThrottle: @unchecked Sendable {
+    private let lock = NSLock()
+    private let serializedGate = ResourceBudget(limit: 1)
+    private var throttled = false
+    private var resumeUptime: TimeInterval = 0
+
+    func reset() {
+        lock.lock()
+        throttled = false
+        resumeUptime = 0
+        lock.unlock()
+    }
+
+    func signal(cooldown: TimeInterval = 10) {
+        lock.lock()
+        throttled = true
+        resumeUptime = max(
+            resumeUptime,
+            ProcessInfo.processInfo.systemUptime + max(0, cooldown)
+        )
+        lock.unlock()
+    }
+
+    /// nil = cancelled before admission; false = normal fast path;
+    /// true = caller holds the serialized pressure-mode permit.
+    func acquireIfNeeded() async -> Bool? {
+        lock.lock()
+        let shouldThrottle = throttled
+        lock.unlock()
+
+        guard shouldThrottle else { return false }
+        guard await serializedGate.acquire(1) else { return nil }
+
+        while true {
+            lock.lock()
+            let delay = resumeUptime - ProcessInfo.processInfo.systemUptime
+            lock.unlock()
+
+            if delay <= 0 {
+                return true
+            }
+
+            do {
+                try await Task.sleep(
+                    nanoseconds: UInt64(min(delay, 1.0) * 1_000_000_000)
+                )
+            } catch {
+                serializedGate.release(1)
+                return nil
+            }
+        }
+    }
+
+    func releaseIfNeeded(_ held: Bool) {
+        if held {
+            serializedGate.release(1)
+        }
+    }
+
+    var isThrottled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return throttled
+    }
+}
+
 class HashManager: ObservableObject {
     static let shared = HashManager()
     
@@ -307,9 +378,29 @@ class HashManager: ObservableObject {
     private var checkTask: Task<Void, Never>?
     private var matchingTask: Task<Void, Never>?
     private let runState = HashPipelinePolicy.RunState()
+    private let memoryPressureThrottle = HashMemoryPressureThrottle()
+    private var memoryWarningObserver: NSObjectProtocol?
     
     private init() {
         loadCachedStatus()
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.isHashingActive else { return }
+            self.memoryPressureThrottle.signal()
+            logWarning(
+                "Hash pipeline memory pressure: pausing new PhotoKit writes for 10s and serializing downloads for the remainder of this run",
+                category: .hash
+            )
+        }
+    }
+
+    deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
     }
     
     @MainActor
@@ -561,6 +652,7 @@ class HashManager: ObservableObject {
         }
 
         isHashingActive = true
+        memoryPressureThrottle.reset()
         hashTask?.cancel()
 
         hashTask = Task { [weak self] in
@@ -717,10 +809,17 @@ class HashManager: ObservableObject {
         )
         guard await budget.acquire(reservation) else { return }
 
+        guard let pressurePermitHeld = await memoryPressureThrottle.acquireIfNeeded() else {
+            budget.release(reservation)
+            return
+        }
+
         let files: AssetTempFiles
         do {
             files = try await HashService.shared.prepare(resources)
+            memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
         } catch {
+            memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
             budget.release(reservation)
             if !Task.isCancelled {
                 logError("Resource download failed: asset=\(identifier), error=\(error.localizedDescription)", category: .hash)
