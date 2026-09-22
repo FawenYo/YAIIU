@@ -711,11 +711,9 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Producer-consumer hashing: a download window streams originals to temp
-    /// files (admitted by a shared byte budget so the on-disk footprint stays
-    /// bounded), while a smaller hash gate consumes finished files and deletes
-    /// them right after hashing. Downloads pipeline ahead of hashing instead of
-    /// being serialized behind it.
+    /// Normal primary hashing follows Immich's iOS shape: PhotoKit streams
+    /// chunks directly into SHA1 with no temp-file round trip. RAW companions
+    /// are excluded here and remain on the lazy fallback path.
     private func processHashItems(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
@@ -732,55 +730,20 @@ class HashManager: ObservableObject {
         hashTask?.cancel()
 
         hashTask = Task { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
 
             let identifiersToProcess = self.processingQueue
             await MainActor.run {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            let budget = Self.hashDiskBudget
-            let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
-            let outstandingGate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
-            let registry = PreparedWorkRegistry()
-            var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
-            // Unbounded handoff is safe because the outstanding-work gate and
-            // byte budget cap how many prepared works can exist at once. A
-            // dropping policy would lose handoffs and leak reservations.
-            let pending = AsyncStream<PreparedHashWork>(bufferingPolicy: .unbounded) { continuation in
-                streamContinuation = continuation
+            await HashPipelinePolicy.processConcurrently(
+                identifiersToProcess,
+                limit: Self.hashConcurrency
+            ) { [weak self] identifier in
+                await self?.hashStreamingAsset(identifier: identifier, runID: runID)
             }
 
-            // Producer and consumer are both children of hashTask so cancelling
-            // the run propagates to in-flight downloads, not just hashing.
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else {
-                        streamContinuation.finish()
-                        return
-                    }
-                    await self.downloadHashItems(
-                        identifiers: identifiersToProcess,
-                        budget: budget,
-                        outstandingGate: outstandingGate,
-                        registry: registry,
-                        runID: runID,
-                        continuation: streamContinuation
-                    )
-                }
-                group.addTask { [weak self] in
-                    await self?.consumeHashStream(pending, gate: hashGate, runID: runID)
-                }
-                await group.waitForAll()
-            }
-            // A cancelled iterator discards buffered elements; guarantee their
-            // temp files and reservations are released.
-            registry.sweep()
-
-            // Only the still-current run may clear emergency pressure mode.
-            // A stopped/stale run can have uncancellable PhotoKit writes draining
-            // while a replacement run starts; keeping the throttle global prevents
-            // that replacement from immediately restoring three-way writeData.
             if self.isCurrentRun(runID) {
                 self.memoryPressureThrottle.reset()
             }
@@ -792,6 +755,79 @@ class HashManager: ObservableObject {
                 } else {
                     self.finishProcessing(runID: runID)
                 }
+            }
+        }
+    }
+
+    private func hashStreamingAsset(identifier: String, runID: UUID) async {
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+
+        await MainActor.run {
+            guard self.isCurrentRun(runID) else { return }
+            self.syncStatusCache[identifier] = .processing
+            self.objectWillChange.send()
+        }
+
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+
+        guard let asset = fetchResult.firstObject,
+              let resources = AssetResourceSelector.select(for: asset) else {
+            await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
+                self.syncStatusCache[identifier] = .error
+                self.processedAssetsCount += 1
+                self.objectWillChange.send()
+            }
+            return
+        }
+
+        guard let pressurePermitHeld = await memoryPressureThrottle.acquireIfNeeded() else {
+            return
+        }
+
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        do {
+            let result = try await HashService.shared.hashPrimaryStreaming(resources)
+            memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
+
+            guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+            logDebug(
+                "Hash finished: asset=\(identifier), primaryBytes=\(result.primaryFileSize), rawBytes=0, hasRAW=\(result.hasRAW), mode=requestData, elapsed=\(String(format: "%.3f", elapsed))s",
+                category: .hash
+            )
+
+            DatabaseManager.shared.saveMultiResourceHashCache(
+                localIdentifier: result.localIdentifier,
+                primaryHash: result.primaryHash,
+                rawHash: nil,
+                hasRAW: result.hasRAW,
+                modificationDate: resources.plan.modificationDate
+            )
+            guard isCurrentRun(runID) else { return }
+
+            await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
+                self.processedAssetsCount += 1
+                self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
+                self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+                self.syncStatusCache[identifier] = .pending
+                self.objectWillChange.send()
+            }
+        } catch {
+            memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
+            guard !Task.isCancelled else { return }
+
+            logError(
+                "Streaming hash failed: asset=\(identifier), elapsed=\(String(format: "%.3f", ProcessInfo.processInfo.systemUptime - startedAt))s, error=\(error.localizedDescription)",
+                category: .hash
+            )
+            await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
+                self.processedAssetsCount += 1
+                self.syncStatusCache[identifier] = .error
+                self.objectWillChange.send()
             }
         }
     }
