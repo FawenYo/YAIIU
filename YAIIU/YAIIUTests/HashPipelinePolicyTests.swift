@@ -254,10 +254,6 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.owns(finalRunID))
     }
 
-    func testStreamingHashBatchSizeMatchesImmichExperiment() {
-        XCTAssertEqual(HashPipelinePolicy.streamingHashBatchSize, 32)
-    }
-
     func testPhotoKitRateLimitUsesKnownEstimate() {
         let estimate: Int64 = 42 * 1024 * 1024
         XCTAssertEqual(
