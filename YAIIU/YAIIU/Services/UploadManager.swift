@@ -90,7 +90,31 @@ private struct PreparedUploadQueue: @unchecked Sendable {
     let skippedCount: Int
 }
 
+enum UploadResourcePolicy {
+    private static let primaryTypes: Set<String> = ["primary", "photo", "jpeg", "heic", "png"]
 
+    static func shouldUpload(
+        resourceType: String,
+        cached: MultiResourceHashRecord?,
+        uploadedTypes: Set<String>
+    ) -> Bool {
+        if resourceType == "raw" {
+            // RAW-only assets use their RAW resource as the primary checksum.
+            // Paired JPEG/RAW assets track the RAW companion separately.
+            if let cached, !cached.hasRAW {
+                return !cached.primaryOnServer && !uploadedTypes.contains("raw")
+            }
+            return cached?.rawOnServer != true && !uploadedTypes.contains("raw")
+        }
+
+        if primaryTypes.contains(resourceType) {
+            let hasUploadedPrimary = uploadedTypes.contains { primaryTypes.contains($0) }
+            return cached?.primaryOnServer != true && !hasUploadedPrimary
+        }
+
+        return true
+    }
+}
 
 private class ResponseTracker {
     private let lock = NSLock()
@@ -397,11 +421,30 @@ class UploadManager: ObservableObject {
                 longitude: asset.location?.coordinate.longitude
             )
         }.value
-        let resources = metadata.resources
+        let cached = DatabaseManager.shared.getMultiResourceHashRecord(localIdentifier: localIdentifier)
+        let uploadedTypes = Set(
+            DatabaseManager.shared.getUploadRecords(for: localIdentifier).map(\.resourceType)
+        )
+        let resources = metadata.resources.filter { resource in
+            let resourceType = Self.getResourceType(for: resource)
+            return UploadResourcePolicy.shouldUpload(
+                resourceType: resourceType,
+                cached: cached,
+                uploadedTypes: uploadedTypes
+            )
+        }
         let totalResources = resources.count
 
+        await MainActor.run {
+            item.totalResources = totalResources
+        }
+
         guard totalResources > 0 else {
-            logWarning("No uploadable resources found for: \(item.filename)", category: .upload)
+            logDebug("All resources already confirmed on server for: \(item.filename)", category: .upload)
+            await MainActor.run {
+                item.progress = 1.0
+                item.status = .completed
+            }
             return
         }
 
