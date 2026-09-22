@@ -36,6 +36,7 @@ protocol ServerAssetSyncStore {
     func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, serverURL: String, totalAssets: Int, lastAck: String?) -> Bool
     func getServerAssetsCacheCount() -> Int
     func backfillImmichIdsFromServerCache() -> Int
+    func backfillRawHashesFromServerCache() -> Int
 }
 
 extension ImmichAPIService: ServerAssetSyncAPI {}
@@ -304,11 +305,12 @@ class ServerAssetSyncService {
         }
 
         let backfilledCount = dbManager.backfillImmichIdsFromServerCache()
+        let rawHashBackfilledCount = dbManager.backfillRawHashesFromServerCache()
         let total = dbManager.getServerAssetsCacheCount()
         logInfo(
             "Sync completed: type=\(syncType), total=\(total), assetUpserts=\(serverAssetRecords.count), "
-                + "backfilled=\(backfilledCount), assetDeletes=\(deletedIds.count), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
-                + "metadataDeletes=\(metadataResult.iCloudIdDeletes.count), acks=\(acks.count)",
+                + "backfilled=\(backfilledCount), rawHashBackfilled=\(rawHashBackfilledCount), assetDeletes=\(deletedIds.count), "
+                + "metadataUpserts=\(metadataResult.iCloudIdUpserts.count), metadataDeletes=\(metadataResult.iCloudIdDeletes.count), acks=\(acks.count)",
             category: .sync
         )
 
