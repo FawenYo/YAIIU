@@ -148,6 +148,24 @@ enum HashPipelinePolicy {
     /// was observed immediately before repeated iOS memory warnings.
     static let diskBudgetBytes: Int64 = 512 * 1024 * 1024
 
+    /// Proactively pace PhotoKit instead of waiting for a memory warning.
+    /// Recent device logs showed warnings near ~58 MiB/s sustained resource
+    /// delivery, while post-warning serialization still arrived too late to
+    /// recover. Start conservatively at 24 MiB/s and tune upward only after
+    /// long runs stay below memory pressure.
+    static let photoKitTargetBytesPerSecond: Int64 = 24 * 1024 * 1024
+    static let photoKitUnknownResourceChargeBytes: Int64 = 64 * 1024 * 1024
+
+    static func photoKitRateLimitChargeBytes(
+        estimatedBytes: Int64,
+        hasUnknownResourceSize: Bool
+    ) -> Int64 {
+        if hasUnknownResourceSize {
+            return max(estimatedBytes, photoKitUnknownResourceChargeBytes)
+        }
+        return max(estimatedBytes, 1)
+    }
+
     /// Reserve by PhotoKit's estimated resource size so the byte budget can
     /// admit multiple downloads. iCloud-optimised assets can report zero, so
     /// give unknown sizes a conservative floor and reconcile with actual bytes
@@ -266,6 +284,52 @@ enum HashPipelinePolicy {
     }
 }
 
+/// Long-term admission pacing for PhotoKit writes. This controls how quickly
+/// new assets may enter `writeData` while still allowing an in-flight write
+/// to overlap the next one when it naturally takes longer than the spacing.
+final class PhotoKitRateLimiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let bytesPerSecond: Double
+    private var nextAdmissionUptime: TimeInterval = 0
+
+    init(bytesPerSecond: Int64) {
+        self.bytesPerSecond = Double(max(1, bytesPerSecond))
+    }
+
+    func reset() {
+        lock.lock()
+        nextAdmissionUptime = 0
+        lock.unlock()
+    }
+
+    func waitForAdmission(bytes: Int64) async -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        let spacing = Double(max(1, bytes)) / bytesPerSecond
+
+        lock.lock()
+        let scheduled = max(now, nextAdmissionUptime)
+        nextAdmissionUptime = scheduled + spacing
+        lock.unlock()
+
+        let delay = scheduled - now
+        guard delay > 0 else { return !Task.isCancelled }
+
+        logDebug(
+            "PhotoKit rate limit: delaying next asset by \(String(format: "%.2f", delay))s for \(bytes) estimated bytes",
+            category: .hash
+        )
+
+        do {
+            try await Task.sleep(
+                nanoseconds: UInt64(delay * 1_000_000_000)
+            )
+            return !Task.isCancelled
+        } catch {
+            return false
+        }
+    }
+}
+
 /// Leaves the normal hash pipeline fast, but applies emergency backpressure
 /// after iOS reports memory pressure. Once tripped for a run, new PhotoKit
 /// writes pause briefly and then serialize so framework/native caches get time
@@ -378,6 +442,9 @@ class HashManager: ObservableObject {
     private var checkTask: Task<Void, Never>?
     private var matchingTask: Task<Void, Never>?
     private let runState = HashPipelinePolicy.RunState()
+    private let photoKitRateLimiter = PhotoKitRateLimiter(
+        bytesPerSecond: HashPipelinePolicy.photoKitTargetBytesPerSecond
+    )
     private let memoryPressureThrottle = HashMemoryPressureThrottle()
     private var memoryWarningObserver: NSObjectProtocol?
     
@@ -652,6 +719,7 @@ class HashManager: ObservableObject {
         }
 
         isHashingActive = true
+        photoKitRateLimiter.reset()
         memoryPressureThrottle.reset()
         hashTask?.cancel()
 
@@ -802,6 +870,12 @@ class HashManager: ObservableObject {
         // disk budget here would serialize the download window to one asset,
         // so reserve the estimate (with a floor for unknown iCloud sizes) and
         // reconcile against the actual temp-file size after delivery.
+        let rateLimitCharge = HashPipelinePolicy.photoKitRateLimitChargeBytes(
+            estimatedBytes: resources.plan.estimatedBytes,
+            hasUnknownResourceSize: resources.plan.hasUnknownResourceSize
+        )
+        guard await photoKitRateLimiter.waitForAdmission(bytes: rateLimitCharge) else { return }
+
         let reservation = HashPipelinePolicy.downloadReservationBytes(
             estimatedBytes: resources.plan.estimatedBytes,
             hasUnknownResourceSize: resources.plan.hasUnknownResourceSize,
