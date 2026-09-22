@@ -125,6 +125,27 @@ final class DatabaseManager {
             rawOnServer: rawOnServer
         )
     }
+
+    func updateRawHash(localIdentifier: String, rawHash: String, rawOnServer: Bool) {
+        hashRepo.updateRawHash(
+            localIdentifier: localIdentifier,
+            rawHash: rawHash,
+            rawOnServer: rawOnServer
+        )
+    }
+
+    func getMultiResourceHashRecord(localIdentifier: String) -> MultiResourceHashRecord? {
+        hashRepo.getMultiResourceHashRecord(localIdentifier: localIdentifier)
+    }
+
+    @discardableResult
+    func backfillRawHashesFromServerCache() -> Int {
+        let count = hashRepo.backfillRawHashesFromServerCache()
+        if count > 0 {
+            logInfo("Backfilled RAW checksums for \(count) uploaded assets", category: .database)
+        }
+        return count
+    }
     
     func batchUpdateHashCacheServerStatus(results: [(String, Bool)]) {
         hashRepo.batchUpdateHashCacheServerStatus(results: results)
