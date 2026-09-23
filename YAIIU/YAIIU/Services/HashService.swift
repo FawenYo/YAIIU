@@ -474,18 +474,42 @@ class HashService {
             if Task.isCancelled { return nil }
 
             let estimatedBytes = resources.plan.estimatedBytes
-            let charge = estimatedBytes > 0
-                ? estimatedBytes
+            let useRequestData = HashPipelinePolicy.shouldUseRequestData(
+                estimatedBytes: estimatedBytes,
+                hasUnknownResourceSize: resources.plan.hasUnknownResourceSize
+            )
+            let charge = useRequestData
+                ? max(estimatedBytes, 1)
                 : HashPipelinePolicy.requestDataActiveBytesLimit
 
+            // A safe-path resource acquires the entire budget, so it waits for
+            // all active requestData streams to drain and runs exclusively.
             guard await activeBytesBudget.acquire(charge) else { return nil }
             defer { activeBytesBudget.release(charge) }
 
-            if charge > HashPipelinePolicy.requestDataActiveBytesLimit {
+            if !useRequestData {
                 logInfo(
-                    "Large requestData resource admitted exclusively: asset=\(asset.localIdentifier), estimatedBytes=\(charge)",
+                    "Primary hash using safe temp-file path: asset=\(asset.localIdentifier), estimatedBytes=\(estimatedBytes), unknownSize=\(resources.plan.hasUnknownResourceSize)",
                     category: .hash
                 )
+
+                do {
+                    let files = try await prepare(resources)
+                    let result = try await hash(files)
+                    return PrimaryHashBatchItem(
+                        localIdentifier: asset.localIdentifier,
+                        result: result,
+                        modificationDate: resources.plan.modificationDate,
+                        errorDescription: nil
+                    )
+                } catch {
+                    return PrimaryHashBatchItem(
+                        localIdentifier: asset.localIdentifier,
+                        result: nil,
+                        modificationDate: resources.plan.modificationDate,
+                        errorDescription: error.localizedDescription
+                    )
+                }
             }
 
             let options = PHAssetResourceRequestOptions()
