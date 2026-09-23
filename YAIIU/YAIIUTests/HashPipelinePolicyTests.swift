@@ -500,6 +500,10 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
+    func testImmichHashBatchSizeIs32() {
+        XCTAssertEqual(HashPipelinePolicy.immichHashBatchSize, 32)
+    }
+
     func testHashPipelineMemoryPressureLimits() {
         XCTAssertEqual(HashPipelinePolicy.photoKitDownloadWindow, 3)
         XCTAssertEqual(HashPipelinePolicy.outstandingWorkLimit, 6)
