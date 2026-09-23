@@ -349,6 +349,43 @@ class HashService {
     ) async -> [PrimaryHashBatchItem] {
         guard !assetIds.isEmpty else { return [] }
 
+        // Immich creates a fresh unstructured native hash Task for every Pigeon
+        // hashAssets call. YAIIU's caller is one long-lived pipeline Task, so
+        // explicitly create and retire a separate task per 32-asset call rather
+        // than only creating a new TaskGroup inside that long-lived task.
+        let nativeTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return [] }
+            return await self.hashPrimaryBatchImpl(
+                assetIds: assetIds,
+                allowNetworkAccess: allowNetworkAccess
+            )
+        }
+
+        return await withTaskCancellationHandler {
+            await nativeTask.value
+        } onCancel: {
+            nativeTask.cancel()
+        }
+    }
+
+    private func hashPrimaryBatchImpl(
+        assetIds: [String],
+        allowNetworkAccess: Bool
+    ) async -> [PrimaryHashBatchItem] {
+        guard !assetIds.isEmpty else { return [] }
+
+        logDebug(
+            "Immich-style native hash task started: assets=\(assetIds.count)",
+            category: .hash
+        )
+
+        defer {
+            logDebug(
+                "Immich-style native hash task returning: assets=\(assetIds.count)",
+                category: .hash
+            )
+        }
+
         var missingAssetIds = Set(assetIds)
         var assets: [PHAsset] = []
         assets.reserveCapacity(assetIds.count)
