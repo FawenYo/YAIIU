@@ -353,8 +353,10 @@ class HashService {
         // hashAssets call. YAIIU's caller is one long-lived pipeline Task, so
         // explicitly create and retire a separate task per 32-asset call rather
         // than only creating a new TaskGroup inside that long-lived task.
-        let nativeTask = Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return [] }
+        let nativeTask: Task<[PrimaryHashBatchItem], Never> = Task.detached(
+            priority: .userInitiated
+        ) { [weak self] in
+            guard let self else { return [PrimaryHashBatchItem]() }
             return await self.hashPrimaryBatchImpl(
                 assetIds: assetIds,
                 allowNetworkAccess: allowNetworkAccess
