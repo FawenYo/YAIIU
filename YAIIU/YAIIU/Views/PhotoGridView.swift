@@ -876,6 +876,10 @@ struct PhotoGridView: View {
     }
     
     private func prefetchThumbnails(around index: Int) {
+        // Avoid competing PhotoKit caching work during the memory-critical hash
+        // phase. Visible cells can still request their own thumbnails on demand.
+        guard !hashManager.isProcessing else { return }
+
         let count = photoLibraryManager.assetCount
         guard count > 0 else { return }
         
