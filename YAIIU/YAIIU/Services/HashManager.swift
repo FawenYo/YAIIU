@@ -142,11 +142,25 @@ enum HashPipelinePolicy {
     /// Immich iOS hashes at most 32 asset IDs per native hashAssets call.
     static let immichHashBatchSize = 32
 
-    /// Bound the estimated bytes of active requestData streams. A resource
-    /// larger than the whole budget is admitted alone by ResourceBudget.
-    /// This keeps ordinary photo batches highly concurrent while preventing a
-    /// pathological batch of multiple multi-GB videos from running together.
-    static let requestDataActiveBytesLimit: Int64 = 1024 * 1024 * 1024
+    /// Keep the fast requestData path for ordinary photos/small videos, but
+    /// cap the estimated bytes that may be actively streaming at once. This is
+    /// intentionally much lower than the pathological 6+ GiB batch that
+    /// reproduced Jetsam on-device while still allowing many ~20 MiB photos to
+    /// hash concurrently.
+    static let requestDataActiveBytesLimit: Int64 = 256 * 1024 * 1024
+
+    /// Resources above this size (or with unknown size) use the proven-stable
+    /// writeData -> temp file -> bounded file hash path instead of requestData.
+    static let requestDataSingleResourceLimit: Int64 = 256 * 1024 * 1024
+
+    static func shouldUseRequestData(
+        estimatedBytes: Int64,
+        hasUnknownResourceSize: Bool
+    ) -> Bool {
+        !hasUnknownResourceSize
+            && estimatedBytes > 0
+            && estimatedBytes <= requestDataSingleResourceLimit
+    }
 
     /// Bounds the whole producer/consumer pipeline, not just active downloads.
     /// With three hash workers, six outstanding items still allow downloads to
@@ -738,6 +752,10 @@ class HashManager: ObservableObject {
 
         isHashingActive = true
         hashTask?.cancel()
+
+        // Hashing is the memory-critical phase. Drop prefetched thumbnails and
+        // PhotoKit image caches before starting requestData/writeData work.
+        ThumbnailCache.shared.clearCache()
 
         hashTask = Task { [weak self] in
             guard let self else { return }
