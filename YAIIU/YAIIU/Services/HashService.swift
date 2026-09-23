@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import CommonCrypto
+import CryptoKit
 
 enum PhotoSyncStatus: String {
     case pending = "pending"
@@ -12,7 +13,7 @@ enum PhotoSyncStatus: String {
 }
 
 /// Result containing hashes for all resources of an asset (JPEG and RAW if present)
-struct MultiResourceHashResult {
+struct MultiResourceHashResult: Sendable {
     let localIdentifier: String
     let primaryHash: String
     let primaryFileSize: Int64
@@ -72,64 +73,102 @@ struct AssetResources {
 }
 
 enum AssetResourceSelector {
+    /// Match Immich iOS resource selection for the primary hash:
+    /// 1. media resources valid for the PHAsset media type
+    /// 2. the only resource when there is one
+    /// 3. the resource whose private `isCurrent` flag is true
+    /// 4. full-size photo/video fallback
+    ///
+    /// YAIIU additionally remembers a paired RAW companion for lazy RAW
+    /// verification/upload, but does not hash that companion in the normal pass.
     static func select(for asset: PHAsset) -> AssetResources? {
-        let resources = PHAssetResource.assetResources(for: asset)
-
-        var primaryResource: PHAssetResource?
-        var rawResource: PHAssetResource?
-
-        for resource in resources {
-            let isRAW = HashService.isRAWResource(resource)
-
-            if isRAW {
-                if rawResource == nil || resource.type == .alternatePhoto {
-                    rawResource = resource
-                }
-            } else {
-                let resourceType = resource.type
-                if resourceType == .fullSizePhoto || resourceType == .fullSizeVideo {
-                    primaryResource = resource
-                } else if resourceType == .photo || resourceType == .video {
-                    if primaryResource == nil {
-                        primaryResource = resource
-                    }
-                }
-            }
+        let allResources = PHAssetResource.assetResources(for: asset)
+        let validResources = allResources.filter {
+            isMediaResource($0) && isValidResourceType($0.type, mediaType: asset.mediaType)
         }
 
-        let isRAWOnly = primaryResource == nil
-            && resources.first(where: { !HashService.isRAWResource($0) }) == nil
-            && rawResource != nil
+        guard !validResources.isEmpty else { return nil }
 
-        if isRAWOnly, let raw = rawResource {
-            let estimate = sizeEstimate(of: [raw])
-            let plan = AssetResourcePlan(
-                localIdentifier: asset.localIdentifier,
-                isRAWOnly: true,
-                hasRAWCompanion: false,
-                modificationDate: asset.modificationDate,
-                estimatedBytes: estimate.bytes,
-                hasUnknownResourceSize: estimate.hasUnknown
-            )
-            return AssetResources(plan: plan, primaryResource: raw, rawResource: nil)
+        let primary: PHAssetResource?
+        if validResources.count == 1 {
+            primary = validResources.first
+        } else if let current = validResources.first(where: { isCurrent($0) }) {
+            primary = current
+        } else {
+            primary = validResources.first(where: {
+                isFullSizeResourceType($0.type, mediaType: asset.mediaType)
+            })
         }
 
-        guard let primary = primaryResource ?? resources.first(where: { !HashService.isRAWResource($0) }) else {
-            return nil
-        }
+        guard let primary else { return nil }
 
-        // Initial discovery hashes only the primary. RAW is kept as a logical
-        // companion and materialized later only when server state is ambiguous.
+        let rawResources = allResources.filter { HashService.isRAWResource($0) }
+        let hasNonRAW = allResources.contains { !HashService.isRAWResource($0) }
+        let primaryIsRAW = HashService.isRAWResource(primary)
+        let isRAWOnly = primaryIsRAW && !hasNonRAW
+        let rawCompanion = rawResources.first(where: { $0 !== primary })
+            ?? (primaryIsRAW ? nil : rawResources.first)
+
         let estimate = sizeEstimate(of: [primary])
         let plan = AssetResourcePlan(
             localIdentifier: asset.localIdentifier,
-            isRAWOnly: false,
-            hasRAWCompanion: rawResource != nil,
+            isRAWOnly: isRAWOnly,
+            hasRAWCompanion: !isRAWOnly && rawCompanion != nil,
             modificationDate: asset.modificationDate,
             estimatedBytes: estimate.bytes,
             hasUnknownResourceSize: estimate.hasUnknown
         )
-        return AssetResources(plan: plan, primaryResource: primary, rawResource: rawResource)
+
+        logDebug(
+            "Immich-style resource selected: asset=\(asset.localIdentifier), mediaType=\(asset.mediaType.rawValue), type=\(primary.type.rawValue), isCurrent=\(isCurrent(primary)), isRAW=\(primaryIsRAW), hasRAWCompanion=\(plan.hasRAWCompanion), estimatedBytes=\(estimate.bytes)",
+            category: .hash
+        )
+
+        return AssetResources(
+            plan: plan,
+            primaryResource: primary,
+            rawResource: rawCompanion
+        )
+    }
+
+    private static func isCurrent(_ resource: PHAssetResource) -> Bool {
+        resource.value(forKey: "isCurrent") as? Bool ?? false
+    }
+
+    private static func isMediaResource(_ resource: PHAssetResource) -> Bool {
+        var isMedia = resource.type != .adjustmentData
+        if #available(iOS 17, *) {
+            isMedia = isMedia && resource.type != .photoProxy
+        }
+        return isMedia
+    }
+
+    private static func isValidResourceType(
+        _ type: PHAssetResourceType,
+        mediaType: PHAssetMediaType
+    ) -> Bool {
+        switch mediaType {
+        case .image:
+            return [.photo, .alternatePhoto, .fullSizePhoto].contains(type)
+        case .video:
+            return [.video, .fullSizeVideo, .fullSizePairedVideo].contains(type)
+        default:
+            return false
+        }
+    }
+
+    private static func isFullSizeResourceType(
+        _ type: PHAssetResourceType,
+        mediaType: PHAssetMediaType
+    ) -> Bool {
+        switch mediaType {
+        case .image:
+            return type == .fullSizePhoto
+        case .video:
+            return type == .fullSizeVideo
+        default:
+            return false
+        }
     }
 
     private static func sizeEstimate(of resources: [PHAssetResource]) -> (bytes: Int64, hasUnknown: Bool) {
@@ -245,6 +284,13 @@ final class PreparedWorkRegistry: @unchecked Sendable {
 }
 
 
+struct PrimaryHashBatchItem: Sendable {
+    let localIdentifier: String
+    let result: MultiResourceHashResult?
+    let modificationDate: Date?
+    let errorDescription: String?
+}
+
 class HashService {
     static let shared = HashService()
 
@@ -291,6 +337,158 @@ class HashService {
 
         let uti = resource.uniformTypeIdentifier.lowercased()
         return rawIdentifiers.contains { uti.contains($0) }
+    }
+
+    /// Mirrors Immich's iOS native hashing call: fetch the supplied asset IDs
+    /// once, add every PHAsset in this finite call to one TaskGroup, await all
+    /// requestData hashes, then return. HashManager invokes this with 32 IDs and
+    /// does not create the next call until this method has fully returned.
+    func hashPrimaryBatch(
+        assetIds: [String],
+        allowNetworkAccess: Bool
+    ) async -> [PrimaryHashBatchItem] {
+        guard !assetIds.isEmpty else { return [] }
+
+        var missingAssetIds = Set(assetIds)
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(assetIds.count)
+
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: nil)
+        fetchResult.enumerateObjects { asset, _, stop in
+            if Task.isCancelled {
+                stop.pointee = true
+                return
+            }
+            missingAssetIds.remove(asset.localIdentifier)
+            assets.append(asset)
+        }
+
+        if Task.isCancelled { return [] }
+
+        return await withTaskGroup(of: PrimaryHashBatchItem?.self) { taskGroup in
+            var items: [PrimaryHashBatchItem] = []
+            items.reserveCapacity(assetIds.count)
+
+            // Intentionally add the whole finite batch, matching Immich.
+            for asset in assets {
+                if Task.isCancelled { break }
+                taskGroup.addTask { [weak self] in
+                    guard let self else { return nil }
+                    return await self.hashPrimaryAssetImmichStyle(
+                        asset,
+                        allowNetworkAccess: allowNetworkAccess
+                    )
+                }
+            }
+
+            for await item in taskGroup {
+                guard let item else { continue }
+                items.append(item)
+            }
+
+            for missing in missingAssetIds {
+                items.append(
+                    PrimaryHashBatchItem(
+                        localIdentifier: missing,
+                        result: nil,
+                        modificationDate: nil,
+                        errorDescription: "Asset not found in library"
+                    )
+                )
+            }
+            return items
+        }
+    }
+
+    /// Deliberately follows Immich's `hashAsset` implementation shape:
+    /// local RequestRef, local CryptoKit SHA1 state, requestData callbacks, and
+    /// cancellation via cancelDataRequest. No shared wrapper/lock/hash object is
+    /// retained across assets.
+    private func hashPrimaryAssetImmichStyle(
+        _ asset: PHAsset,
+        allowNetworkAccess: Bool
+    ) async -> PrimaryHashBatchItem? {
+        final class RequestRef: @unchecked Sendable {
+            var id: PHAssetResourceDataRequestID?
+        }
+
+        let requestRef = RequestRef()
+        return await withTaskCancellationHandler {
+            if Task.isCancelled { return nil }
+
+            guard let resources = AssetResourceSelector.select(for: asset) else {
+                return PrimaryHashBatchItem(
+                    localIdentifier: asset.localIdentifier,
+                    result: nil,
+                    modificationDate: asset.modificationDate,
+                    errorDescription: "Cannot get asset resource"
+                )
+            }
+
+            if Task.isCancelled { return nil }
+
+            let options = PHAssetResourceRequestOptions()
+            options.isNetworkAccessAllowed = allowNetworkAccess
+            let startedAt = ProcessInfo.processInfo.systemUptime
+
+            return await withCheckedContinuation { continuation in
+                var hasher = Insecure.SHA1()
+                var totalBytes = 0
+
+                requestRef.id = PHAssetResourceManager.default().requestData(
+                    for: resources.primaryResource,
+                    options: options,
+                    dataReceivedHandler: { data in
+                        totalBytes += data.count
+                        hasher.update(data: data)
+                    },
+                    completionHandler: { error in
+                        let item: PrimaryHashBatchItem?
+                        switch error {
+                        case let photosError as PHPhotosError where photosError.code == .userCancelled:
+                            item = nil
+                        case let error?:
+                            item = PrimaryHashBatchItem(
+                                localIdentifier: asset.localIdentifier,
+                                result: nil,
+                                modificationDate: resources.plan.modificationDate,
+                                errorDescription: error.localizedDescription
+                            )
+                        case nil:
+                            let digest = Data(hasher.finalize())
+                            let hash = digest.map { String(format: "%02x", $0) }.joined()
+                            let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+                            let mebibytes = Double(totalBytes) / (1024.0 * 1024.0)
+                            let throughput = elapsed > 0 ? mebibytes / elapsed : 0
+
+                            logDebug(
+                                "Immich-style hash finished: asset=\(asset.localIdentifier), bytes=\(totalBytes), elapsed=\(String(format: "%.3f", elapsed))s, throughput=\(String(format: "%.1f", throughput))MiB/s",
+                                category: .hash
+                            )
+
+                            item = PrimaryHashBatchItem(
+                                localIdentifier: asset.localIdentifier,
+                                result: MultiResourceHashResult(
+                                    localIdentifier: asset.localIdentifier,
+                                    primaryHash: hash,
+                                    primaryFileSize: Int64(totalBytes),
+                                    rawHash: nil,
+                                    rawFileSize: nil,
+                                    hasRAW: resources.plan.hasRAWCompanion,
+                                    calculatedAt: Date()
+                                ),
+                                modificationDate: resources.plan.modificationDate,
+                                errorDescription: nil
+                            )
+                        }
+                        continuation.resume(returning: item)
+                    }
+                )
+            }
+        } onCancel: {
+            guard let requestId = requestRef.id else { return }
+            PHAssetResourceManager.default().cancelDataRequest(requestId)
+        }
     }
 
     /// Downloads only the primary resource for the normal hash pass. RAW
