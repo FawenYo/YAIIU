@@ -142,6 +142,12 @@ enum HashPipelinePolicy {
     /// Immich iOS hashes at most 32 asset IDs per native hashAssets call.
     static let immichHashBatchSize = 32
 
+    /// Bound the estimated bytes of active requestData streams. A resource
+    /// larger than the whole budget is admitted alone by ResourceBudget.
+    /// This keeps ordinary photo batches highly concurrent while preventing a
+    /// pathological batch of multiple multi-GB videos from running together.
+    static let requestDataActiveBytesLimit: Int64 = 1024 * 1024 * 1024
+
     /// Bounds the whole producer/consumer pipeline, not just active downloads.
     /// With three hash workers, six outstanding items still allow downloads to
     /// stay ahead without accumulating an arbitrarily deep prepared-file queue.
