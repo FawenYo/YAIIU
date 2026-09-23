@@ -1,14 +1,12 @@
 import Foundation
 import Photos
 
-/// Delivers original photo-library bytes through a temp file instead of the
-/// `requestData` chunk stream.
+/// Temp-file delivery used by the conservative RAW fallback and rollback path.
 ///
-/// Device testing reproduced native PhotoKit memory pressure and process restart
-/// even with primary-only `requestData` hashing, so normal primary hashing and
-/// lazy RAW fallback both use `writeData(for:toFile:...)`. This keeps PhotoKit
-/// delivery out of the app's chunk stream; the caller then hashes the temp file
-/// with a fixed-size read buffer.
+/// Normal primary hashing currently mirrors Immich's native iOS `requestData`
+/// implementation as an A/B test. Lazy RAW hashing stays on
+/// `writeData(for:toFile:...)` so a paired RAW is only materialized when its
+/// server state is genuinely ambiguous.
 ///
 /// The file is byte-identical to the concatenated `requestData` chunks, so
 /// checksums remain compatible with existing hash-cache entries.
