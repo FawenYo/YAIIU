@@ -1430,9 +1430,15 @@ class HashManager: ObservableObject {
     
     @MainActor
     func forceReprocess(assets: [PHAsset]) {
+        let snapshots = assets.map {
+            PhotoAssetSnapshot(
+                localIdentifier: $0.localIdentifier,
+                modificationDate: $0.modificationDate
+            )
+        }
         startBackgroundProcessing(
-            identifiers: assets.map { $0.localIdentifier },
-            assetsToInvalidate: assets,
+            identifiers: snapshots.map { $0.localIdentifier },
+            snapshotsToInvalidate: snapshots,
             shouldClearCache: true
         )
     }
