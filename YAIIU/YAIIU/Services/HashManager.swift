@@ -139,6 +139,9 @@ enum HashPipelinePolicy {
     /// at once.
     static let photoKitDownloadWindow = 3
 
+    /// Immich iOS hashes at most 32 asset IDs per native hashAssets call.
+    static let immichHashBatchSize = 32
+
     /// Bounds the whole producer/consumer pipeline, not just active downloads.
     /// With three hash workers, six outstanding items still allow downloads to
     /// stay ahead without accumulating an arbitrarily deep prepared-file queue.
@@ -468,7 +471,7 @@ class HashManager: ObservableObject {
             guard let self, self.isHashingActive else { return }
             self.memoryPressureThrottle.signal()
             logWarning(
-                "Hash pipeline memory pressure: pausing new PhotoKit writes for 10s and serializing downloads for the remainder of this run",
+                "Hash pipeline memory pressure observed; lazy writeData paths will pause/serialize while Immich-style requestData batch diagnostics continue",
                 category: .hash
             )
         }
@@ -711,10 +714,10 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Producer-consumer hashing: PhotoKit writes each primary original to a
-    /// temp file under bounded admission, then dedicated hash workers read it
-    /// with a fixed buffer. RAW companions are excluded from this normal pass
-    /// and remain on the lazy fallback path.
+    /// Primary hashing intentionally mirrors Immich's call boundary. HashManager
+    /// sends 32 IDs into one HashService native-style call and waits for that
+    /// method to fully return before creating the next call. RAW companions are
+    /// excluded from the normal pass and remain on the lazy writeData fallback.
     private func processHashItems(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
@@ -731,47 +734,81 @@ class HashManager: ObservableObject {
         hashTask?.cancel()
 
         hashTask = Task { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
 
-            let identifiersToProcess = self.processingQueue
+            let identifiers = self.processingQueue
             await MainActor.run {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            let budget = Self.hashDiskBudget
-            let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
-            let outstandingGate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
-            let registry = PreparedWorkRegistry()
-            var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
-            let pending = AsyncStream<PreparedHashWork>(bufferingPolicy: .unbounded) { continuation in
-                streamContinuation = continuation
-            }
+            let batchSize = HashPipelinePolicy.immichHashBatchSize
+            let totalBatches = (identifiers.count + batchSize - 1) / batchSize
 
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else {
-                        streamContinuation.finish()
-                        return
+            for batchIndex in 0..<totalBatches {
+                guard self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled else { break }
+
+                let lower = batchIndex * batchSize
+                let upper = Swift.min(lower + batchSize, identifiers.count)
+                let batch = Array(identifiers[lower..<upper])
+
+                await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
+                    for identifier in batch {
+                        self.syncStatusCache[identifier] = .processing
                     }
-                    await self.downloadHashItems(
-                        identifiers: identifiersToProcess,
-                        budget: budget,
-                        outstandingGate: outstandingGate,
-                        registry: registry,
-                        runID: runID,
-                        continuation: streamContinuation
-                    )
+                    self.objectWillChange.send()
                 }
-                group.addTask { [weak self] in
-                    await self?.consumeHashStream(pending, gate: hashGate, runID: runID)
+
+                logInfo(
+                    "Immich-style hash batch started: batch=\(batchIndex + 1)/\(totalBatches), assets=\(batch.count)",
+                    category: .hash
+                )
+
+                // This call owns the PHAsset fetch, TaskGroup, RequestRef objects,
+                // CryptoKit hashers, and requestData continuations for the batch.
+                // Nothing from the next batch is created until it returns.
+                let items = await HashService.shared.hashPrimaryBatch(
+                    assetIds: batch,
+                    allowNetworkAccess: true
+                )
+
+                guard self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled else { break }
+
+                for item in items {
+                    if let result = item.result {
+                        DatabaseManager.shared.saveMultiResourceHashCache(
+                            localIdentifier: result.localIdentifier,
+                            primaryHash: result.primaryHash,
+                            rawHash: nil,
+                            hasRAW: result.hasRAW,
+                            modificationDate: item.modificationDate
+                        )
+
+                        logDebug(
+                            "Hash finished: asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=0, hasRAW=\(result.hasRAW), mode=immich-requestData, batch=\(batchIndex + 1)/\(totalBatches)",
+                            category: .hash
+                        )
+                    } else if let error = item.errorDescription {
+                        logError(
+                            "Immich-style hash failed: asset=\(item.localIdentifier), error=\(error)",
+                            category: .hash
+                        )
+                    }
+
+                    await MainActor.run {
+                        guard self.isCurrentRun(runID) else { return }
+                        self.processedAssetsCount += 1
+                        self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
+                        self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+                        self.syncStatusCache[item.localIdentifier] = item.result == nil ? .error : .pending
+                        self.objectWillChange.send()
+                    }
                 }
-                await group.waitForAll()
-            }
 
-            registry.sweep()
-
-            if self.isCurrentRun(runID) {
-                self.memoryPressureThrottle.reset()
+                logInfo(
+                    "Immich-style hash batch returned: batch=\(batchIndex + 1)/\(totalBatches), results=\(items.count)",
+                    category: .hash
+                )
             }
 
             await MainActor.run {
