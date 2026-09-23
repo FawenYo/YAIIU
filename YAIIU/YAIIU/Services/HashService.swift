@@ -404,18 +404,24 @@ class HashService {
 
         if Task.isCancelled { return [] }
 
+        let activeBytesBudget = ResourceBudget(
+            limit: HashPipelinePolicy.requestDataActiveBytesLimit
+        )
+
         return await withTaskGroup(of: PrimaryHashBatchItem?.self) { taskGroup in
             var items: [PrimaryHashBatchItem] = []
             items.reserveCapacity(assetIds.count)
 
-            // Intentionally add the whole finite batch, matching Immich.
+            // Keep all 32 tasks in the finite batch, but gate the actual
+            // requestData streams by estimated active bytes.
             for asset in assets {
                 if Task.isCancelled { break }
                 taskGroup.addTask { [weak self] in
                     guard let self else { return nil }
                     return await self.hashPrimaryAssetImmichStyle(
                         asset,
-                        allowNetworkAccess: allowNetworkAccess
+                        allowNetworkAccess: allowNetworkAccess,
+                        activeBytesBudget: activeBytesBudget
                     )
                 }
             }
@@ -445,7 +451,8 @@ class HashService {
     /// retained across assets.
     private func hashPrimaryAssetImmichStyle(
         _ asset: PHAsset,
-        allowNetworkAccess: Bool
+        allowNetworkAccess: Bool,
+        activeBytesBudget: ResourceBudget
     ) async -> PrimaryHashBatchItem? {
         final class RequestRef: @unchecked Sendable {
             var id: PHAssetResourceDataRequestID?
@@ -465,6 +472,21 @@ class HashService {
             }
 
             if Task.isCancelled { return nil }
+
+            let estimatedBytes = resources.plan.estimatedBytes
+            let charge = estimatedBytes > 0
+                ? estimatedBytes
+                : HashPipelinePolicy.requestDataActiveBytesLimit
+
+            guard await activeBytesBudget.acquire(charge) else { return nil }
+            defer { activeBytesBudget.release(charge) }
+
+            if charge > HashPipelinePolicy.requestDataActiveBytesLimit {
+                logInfo(
+                    "Large requestData resource admitted exclusively: asset=\(asset.localIdentifier), estimatedBytes=\(charge)",
+                    category: .hash
+                )
+            }
 
             let options = PHAssetResourceRequestOptions()
             options.isNetworkAccessAllowed = allowNetworkAccess
