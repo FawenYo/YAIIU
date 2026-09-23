@@ -539,9 +539,9 @@ struct PhotoGridView: View {
         
         let manager = photoLibraryManager
         Task.detached(priority: .utility) {
-            let assets = manager.allAssets()
+            let snapshots = manager.allAssetSnapshots()
             await MainActor.run {
-                HashManager.shared.startBackgroundProcessing(assets: assets)
+                HashManager.shared.startBackgroundProcessing(snapshots: snapshots)
             }
         }
     }
