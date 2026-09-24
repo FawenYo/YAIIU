@@ -737,7 +737,9 @@ struct PhotoDetailView: View {
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
     @State private var dragProgress: CGFloat = 0
-    @State private var imageLoadTask: Task<Void, Never>?
+    @State private var imageRequestID: PHImageRequestID?
+    @State private var videoThumbnailRequestID: PHImageRequestID?
+    @State private var videoPlayerRequestID: PHImageRequestID?
     
     @State private var player: AVPlayer?
     @State private var isVideoLoading: Bool = false
@@ -1403,7 +1405,22 @@ struct PhotoDetailView: View {
     }
     
     private func cleanupCurrentAsset() {
-        imageLoadTask?.cancel()
+        let imageManager = PHImageManager.default()
+
+        if let requestID = imageRequestID {
+            imageManager.cancelImageRequest(requestID)
+            imageRequestID = nil
+        }
+        if let requestID = videoThumbnailRequestID {
+            imageManager.cancelImageRequest(requestID)
+            videoThumbnailRequestID = nil
+        }
+        if let requestID = videoPlayerRequestID {
+            imageManager.cancelImageRequest(requestID)
+            videoPlayerRequestID = nil
+        }
+
+        fullImage = nil
         player?.pause()
         player = nil
         if let observer = playerEndObserver {
@@ -1434,60 +1451,91 @@ struct PhotoDetailView: View {
     
     // MARK: - Data Loading
     
+    private func detailPreviewTargetSize(for asset: PHAsset) -> CGSize {
+        // A full-resolution 48 MP decode can consume well over 100 MiB. The
+        // detail view only needs enough pixels for the current display plus a
+        // modest zoom margin; PhotoKit can therefore return a downsampled image.
+        let screen = UIScreen.main.bounds.size
+        let scale = UIScreen.main.scale
+        let overscan: CGFloat = 1.5
+        let target = CGSize(
+            width: screen.width * scale * overscan,
+            height: screen.height * scale * overscan
+        )
+
+        return CGSize(
+            width: min(target.width, CGFloat(asset.pixelWidth)),
+            height: min(target.height, CGFloat(asset.pixelHeight))
+        )
+    }
+
     private func loadFullImage(for asset: PHAsset) {
-        imageLoadTask = Task {
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isNetworkAccessAllowed = true
-            options.isSynchronous = false
-            options.resizeMode = .none
-            
-            await withCheckedContinuation { continuation in
-                PHImageManager.default().requestImage(
-                    for: asset,
-                    targetSize: PHImageManagerMaximumSize,
-                    contentMode: .aspectFit,
-                    options: options
-                ) { image, info in
-                    let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                    
-                    Task { @MainActor in
-                        if asset.localIdentifier == self.currentAsset?.localIdentifier {
-                            if let image = image {
-                                self.fullImage = image
-                            }
-                        }
-                        
-                        if !isDegraded {
-                            continuation.resume()
-                        }
-                    }
+        if let requestID = imageRequestID {
+            PHImageManager.default().cancelImageRequest(requestID)
+            imageRequestID = nil
+        }
+
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+        options.resizeMode = .fast
+
+        let targetSize = detailPreviewTargetSize(for: asset)
+
+        imageRequestID = PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { image, info in
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+
+            Task { @MainActor in
+                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if !isCancelled, let image {
+                    self.fullImage = image
+                }
+                if !isDegraded {
+                    self.imageRequestID = nil
                 }
             }
         }
     }
-    
+
     private func loadVideoThumbnail(for asset: PHAsset) {
+        if let requestID = videoThumbnailRequestID {
+            PHImageManager.default().cancelImageRequest(requestID)
+            videoThumbnailRequestID = nil
+        }
+
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
+        options.resizeMode = .fast
         
         let targetSize = CGSize(
             width: UIScreen.main.bounds.width * UIScreen.main.scale,
             height: UIScreen.main.bounds.height * UIScreen.main.scale
         )
         
-        PHImageManager.default().requestImage(
+        videoThumbnailRequestID = PHImageManager.default().requestImage(
             for: asset,
             targetSize: targetSize,
             contentMode: .aspectFit,
             options: options
         ) { image, info in
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+
             Task { @MainActor in
-                if asset.localIdentifier == self.currentAsset?.localIdentifier {
-                    if let image = image {
-                        self.fullImage = image
-                    }
+                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if !isCancelled, let image {
+                    self.fullImage = image
+                }
+                if !isDegraded {
+                    self.videoThumbnailRequestID = nil
                 }
             }
         }
@@ -1500,9 +1548,15 @@ struct PhotoDetailView: View {
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .automatic
         
-        PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
+        if let requestID = videoPlayerRequestID {
+            PHImageManager.default().cancelImageRequest(requestID)
+            videoPlayerRequestID = nil
+        }
+
+        videoPlayerRequestID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
             Task { @MainActor in
                 guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                self.videoPlayerRequestID = nil
                 self.isVideoLoading = false
                 
                 if let playerItem = playerItem {
