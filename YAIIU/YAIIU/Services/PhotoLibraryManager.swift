@@ -2,6 +2,12 @@ import Foundation
 import Photos
 import UIKit
 
+struct PhotoAssetSnapshot: Sendable {
+    let localIdentifier: String
+    let modificationDate: Date?
+}
+
+
 /// Manages photo library access with lazy loading for optimal memory performance.
 /// Uses PHFetchResult directly instead of materializing all PHAsset objects into arrays.
 final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
@@ -261,14 +267,25 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         return identifiers
     }
 
-    func allAssets() -> [PHAsset] {
+    /// Lightweight full-library snapshot used by background hash invalidation.
+    /// Avoid retaining the entire photo library as PHAsset objects while the
+    /// hash pipeline is active.
+    func allAssetSnapshots() -> [PhotoAssetSnapshot] {
         guard let result = fetchResult else { return [] }
-        var assets: [PHAsset] = []
-        assets.reserveCapacity(result.count)
+        var snapshots: [PhotoAssetSnapshot] = []
+        snapshots.reserveCapacity(result.count)
+
         result.enumerateObjects { asset, _, _ in
-            assets.append(asset)
+            autoreleasepool {
+                snapshots.append(
+                    PhotoAssetSnapshot(
+                        localIdentifier: asset.localIdentifier,
+                        modificationDate: asset.modificationDate
+                    )
+                )
+            }
         }
-        return assets
+        return snapshots
     }
     
     private func triggerFavoriteSync() async {
