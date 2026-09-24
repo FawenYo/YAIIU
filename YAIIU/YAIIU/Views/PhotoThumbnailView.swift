@@ -215,6 +215,15 @@ struct PhotoThumbnailView: View {
                 .receive(on: RunLoop.main)
         ) { _ in
             guard isViewActive else { return }
+            thumbnail = nil
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .thumbnailCacheShouldReloadVisible)
+                .receive(on: RunLoop.main)
+        ) { _ in
+            guard isViewActive,
+                  thumbnail == nil,
+                  UIApplication.shared.applicationState == .active else { return }
             requestThumbnail()
         }
     }
