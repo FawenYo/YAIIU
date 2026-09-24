@@ -493,22 +493,22 @@ class HashManager: ObservableObject {
     }
     
     @MainActor
-    func startBackgroundProcessing(assets: [PHAsset]) {
+    func startBackgroundProcessing(snapshots: [PhotoAssetSnapshot]) {
         startBackgroundProcessing(
-            identifiers: assets.map { $0.localIdentifier },
-            assetsToInvalidate: assets
+            identifiers: snapshots.map { $0.localIdentifier },
+            snapshotsToInvalidate: snapshots
         )
     }
 
     @MainActor
     func startBackgroundProcessing(identifiers: [String]) {
-        startBackgroundProcessing(identifiers: identifiers, assetsToInvalidate: nil)
+        startBackgroundProcessing(identifiers: identifiers, snapshotsToInvalidate: nil)
     }
 
     @MainActor
     private func startBackgroundProcessing(
         identifiers: [String],
-        assetsToInvalidate: [PHAsset]?,
+        snapshotsToInvalidate: [PhotoAssetSnapshot]?,
         shouldClearCache: Bool = false
     ) {
         guard !isStopping && !isHashingActive && !isCheckingActive else { return }
@@ -517,8 +517,8 @@ class HashManager: ObservableObject {
                 DatabaseManager.shared.clearHashCache()
                 syncStatusCache.removeAll()
             }
-            if let assetsToInvalidate {
-                DatabaseManager.shared.resetCacheForModifiedAssets(assets: assetsToInvalidate)
+            if let snapshotsToInvalidate {
+                DatabaseManager.shared.resetCacheForModifiedAssets(snapshots: snapshotsToInvalidate)
             }
         }) else { return }
         shouldStop = false
@@ -1287,9 +1287,15 @@ class HashManager: ObservableObject {
     
     @MainActor
     func forceReprocess(assets: [PHAsset]) {
+        let snapshots = assets.map {
+            PhotoAssetSnapshot(
+                localIdentifier: $0.localIdentifier,
+                modificationDate: $0.modificationDate
+            )
+        }
         startBackgroundProcessing(
-            identifiers: assets.map { $0.localIdentifier },
-            assetsToInvalidate: assets,
+            identifiers: snapshots.map { $0.localIdentifier },
+            snapshotsToInvalidate: snapshots,
             shouldClearCache: true
         )
     }
