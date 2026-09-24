@@ -5,6 +5,7 @@ import os.lock
 
 extension Notification.Name {
     static let thumbnailCacheDidClear = Notification.Name("com.fawenyo.yaiiu.thumbnailCacheDidClear")
+    static let thumbnailCacheShouldReloadVisible = Notification.Name("com.fawenyo.yaiiu.thumbnailCacheShouldReloadVisible")
 }
 
 final class ThumbnailCache {
@@ -71,6 +72,7 @@ final class ThumbnailCache {
     @objc private func handleWillEnterForeground() {
         cache.countLimit = Self.foregroundCountLimit
         cache.totalCostLimit = Self.foregroundCostLimit
+        requestVisibleThumbnailReload()
     }
     
     func getThumbnail(
@@ -131,6 +133,14 @@ final class ThumbnailCache {
                 return
             }
 
+            // Keep the generation check + cache write atomic with clearCache().
+            // Otherwise a completion can pass the check, clearCache() can run,
+            // and the stale completion can repopulate the cache afterwards.
+            if let image, !isDegraded {
+                let cost = Int(image.size.width * image.size.height * 4)
+                self.cache.setObject(image, forKey: cacheKey, cost: cost)
+            }
+
             let callbacks: [(UIImage?) -> Void]
             if isDegraded {
                 callbacks = self.pendingRequests[keyString] ?? []
@@ -140,11 +150,6 @@ final class ThumbnailCache {
                 self.activeRequestGenerations.removeValue(forKey: keyString)
             }
             os_unfair_lock_unlock(&self.pendingLock)
-
-            if let image, !isDegraded {
-                let cost = Int(image.size.width * image.size.height * 4)
-                self.cache.setObject(image, forKey: cacheKey, cost: cost)
-            }
 
             if image != nil || !isDegraded {
                 DispatchQueue.main.async {
@@ -229,10 +234,10 @@ final class ThumbnailCache {
     /// stopCachingImagesForAllAssets() only stops preheating; it does not cancel
     /// requestImage calls already retained by this cache.
     func clearCache() {
-        cache.removeAllObjects()
         cachingImageManager.stopCachingImagesForAllAssets()
 
         os_unfair_lock_lock(&pendingLock)
+        cache.removeAllObjects()
         let requestIDs = Array(activeRequestIDs.values)
         activeRequestIDs.removeAll(keepingCapacity: false)
         activeRequestGenerations.removeAll(keepingCapacity: false)
@@ -243,12 +248,21 @@ final class ThumbnailCache {
             cachingImageManager.cancelImageRequest(requestID)
         }
 
-        // Visible cells own their display lifecycle and can selectively
-        // re-request a small thumbnail after cancellation. This avoids leaving
-        // an on-screen cell stuck on its placeholder while still dropping all
-        // cache/preheat/in-flight PhotoKit work immediately.
+        // Clearing is intentionally separate from reloading. Memory warnings,
+        // backgrounding, and hash startup must be allowed to actually shed the
+        // visible-cell UIImage working set instead of immediately rebuilding it.
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: .thumbnailCacheDidClear, object: nil)
+        }
+    }
+
+    func requestVisibleThumbnailReload() {
+        DispatchQueue.main.async {
+            guard UIApplication.shared.applicationState == .active else { return }
+            NotificationCenter.default.post(
+                name: .thumbnailCacheShouldReloadVisible,
+                object: nil
+            )
         }
     }
     
