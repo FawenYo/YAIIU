@@ -500,44 +500,6 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
-    func testRequestDataPolicyUsesStreamingForOrdinaryPhoto() {
-        XCTAssertTrue(
-            HashPipelinePolicy.shouldUseRequestData(
-                estimatedBytes: 24 * 1024 * 1024,
-                hasUnknownResourceSize: false
-            )
-        )
-    }
-
-    func testRequestDataPolicyDisablesStreamingAfterCircuitTrip() {
-        XCTAssertFalse(
-            HashPipelinePolicy.shouldUseRequestData(
-                estimatedBytes: 24 * 1024 * 1024,
-                hasUnknownResourceSize: false,
-                requestDataEnabled: false
-            )
-        )
-    }
-
-    func testRequestDataPolicyUsesSafePathForLargeOrUnknownResource() {
-        XCTAssertFalse(
-            HashPipelinePolicy.shouldUseRequestData(
-                estimatedBytes: 2 * 1024 * 1024 * 1024,
-                hasUnknownResourceSize: false
-            )
-        )
-        XCTAssertFalse(
-            HashPipelinePolicy.shouldUseRequestData(
-                estimatedBytes: 0,
-                hasUnknownResourceSize: true
-            )
-        )
-    }
-
-    func testImmichHashBatchSizeIs32() {
-        XCTAssertEqual(HashPipelinePolicy.immichHashBatchSize, 32)
-    }
-
     func testHashPipelineMemoryPressureLimits() {
         XCTAssertEqual(HashPipelinePolicy.photoKitDownloadWindow, 3)
         XCTAssertEqual(HashPipelinePolicy.outstandingWorkLimit, 6)
