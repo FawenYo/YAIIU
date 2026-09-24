@@ -139,31 +139,6 @@ enum HashPipelinePolicy {
     /// at once.
     static let photoKitDownloadWindow = 3
 
-    /// Immich iOS hashes at most 32 asset IDs per native hashAssets call.
-    static let immichHashBatchSize = 32
-
-    /// Keep the fast requestData path for ordinary photos/small videos, but
-    /// cap the estimated bytes that may be actively streaming at once. This is
-    /// intentionally much lower than the pathological 6+ GiB batch that
-    /// reproduced Jetsam on-device while still allowing many ~20 MiB photos to
-    /// hash concurrently.
-    static let requestDataActiveBytesLimit: Int64 = 256 * 1024 * 1024
-
-    /// Resources above this size (or with unknown size) use the proven-stable
-    /// writeData -> temp file -> bounded file hash path instead of requestData.
-    static let requestDataSingleResourceLimit: Int64 = 256 * 1024 * 1024
-
-    static func shouldUseRequestData(
-        estimatedBytes: Int64,
-        hasUnknownResourceSize: Bool,
-        requestDataEnabled: Bool = true
-    ) -> Bool {
-        requestDataEnabled
-            && !hasUnknownResourceSize
-            && estimatedBytes > 0
-            && estimatedBytes <= requestDataSingleResourceLimit
-    }
-
     /// Bounds the whole producer/consumer pipeline, not just active downloads.
     /// With three hash workers, six outstanding items still allow downloads to
     /// stay ahead without accumulating an arbitrarily deep prepared-file queue.
@@ -493,7 +468,7 @@ class HashManager: ObservableObject {
             guard let self, self.isHashingActive else { return }
             self.memoryPressureThrottle.signal()
             logWarning(
-                "Hash pipeline memory pressure observed; current requestData batch may finish, then all future primary batches switch to serialized writeData for the remainder of this app process",
+                "Hash pipeline memory pressure: pausing new PhotoKit writes for 10s and serializing downloads for the remainder of this run",
                 category: .hash
             )
         }
@@ -736,10 +711,10 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Primary hashing intentionally mirrors Immich's call boundary. HashManager
-    /// sends 32 IDs into one HashService native-style call and waits for that
-    /// method to fully return before creating the next call. RAW companions are
-    /// excluded from the normal pass and remain on the lazy writeData fallback.
+    /// Producer-consumer hashing: PhotoKit writes each primary original to a
+    /// temp file under bounded admission, then dedicated hash workers read it
+    /// with a fixed buffer. RAW companions are excluded from this normal pass
+    /// and remain on the lazy fallback path.
     private func processHashItems(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
@@ -756,106 +731,54 @@ class HashManager: ObservableObject {
         hashTask?.cancel()
 
         // Hashing is the memory-critical phase. Drop prefetched thumbnails and
-        // PhotoKit image caches before starting requestData/writeData work.
+        // PhotoKit image caches before starting bounded writeData work.
         ThumbnailCache.shared.clearCache()
 
         hashTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self = self else { return }
 
-            let identifiers = self.processingQueue
+            let identifiersToProcess = self.processingQueue
             await MainActor.run {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            let batchSize = HashPipelinePolicy.immichHashBatchSize
-            let totalBatches = (identifiers.count + batchSize - 1) / batchSize
+            let budget = Self.hashDiskBudget
+            let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
+            let outstandingGate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
+            let registry = PreparedWorkRegistry()
+            var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
+            // Unbounded handoff is safe because outstandingGate bounds the
+            // number of prepared/in-flight assets; a dropping policy would
+            // lose work ownership and leak reservations.
+            let pending = AsyncStream<PreparedHashWork>(bufferingPolicy: .unbounded) { continuation in
+                streamContinuation = continuation
+            }
 
-            for batchIndex in 0..<totalBatches {
-                guard self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled else { break }
-
-                let lower = batchIndex * batchSize
-                let upper = Swift.min(lower + batchSize, identifiers.count)
-                let batch = Array(identifiers[lower..<upper])
-
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    for identifier in batch {
-                        self.syncStatusCache[identifier] = .processing
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else {
+                        streamContinuation.finish()
+                        return
                     }
-                    self.objectWillChange.send()
+                    await self.downloadHashItems(
+                        identifiers: identifiersToProcess,
+                        budget: budget,
+                        outstandingGate: outstandingGate,
+                        registry: registry,
+                        runID: runID,
+                        continuation: streamContinuation
+                    )
                 }
-
-                // Once iOS reports memory pressure, do not start another
-                // requestData stream in this app process. Let the in-flight batch
-                // finish, then wait out the pressure cooldown and run all later
-                // primary resources through the serialized writeData safe path.
-                let requestDataEnabled = !self.memoryPressureThrottle.isThrottled
-                var pressurePermitHeld = false
-
-                if !requestDataEnabled {
-                    guard let permit = await self.memoryPressureThrottle.acquireIfNeeded() else {
-                        break
-                    }
-                    pressurePermitHeld = permit
+                group.addTask { [weak self] in
+                    await self?.consumeHashStream(pending, gate: hashGate, runID: runID)
                 }
+                await group.waitForAll()
+            }
 
-                let batchMode = requestDataEnabled
-                    ? "hybrid-requestData"
-                    : "safe-writeData-only"
+            registry.sweep()
 
-                logInfo(
-                    "Primary hash batch started: batch=\(batchIndex + 1)/\(totalBatches), assets=\(batch.count), mode=\(batchMode)",
-                    category: .hash
-                )
-
-                // This call owns the PHAsset fetch, TaskGroup, RequestRef objects,
-                // CryptoKit hashers, and requestData continuations for the batch.
-                // Nothing from the next batch is created until it returns.
-                let items = await HashService.shared.hashPrimaryBatch(
-                    assetIds: batch,
-                    allowNetworkAccess: true,
-                    requestDataEnabled: requestDataEnabled
-                )
-
-                self.memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
-
-                guard self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled else { break }
-
-                for item in items {
-                    if let result = item.result {
-                        DatabaseManager.shared.saveMultiResourceHashCache(
-                            localIdentifier: result.localIdentifier,
-                            primaryHash: result.primaryHash,
-                            rawHash: nil,
-                            hasRAW: result.hasRAW,
-                            modificationDate: item.modificationDate
-                        )
-
-                        logDebug(
-                            "Hash finished: asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=0, hasRAW=\(result.hasRAW), mode=\(batchMode), batch=\(batchIndex + 1)/\(totalBatches)",
-                            category: .hash
-                        )
-                    } else if let error = item.errorDescription {
-                        logError(
-                            "Immich-style hash failed: asset=\(item.localIdentifier), error=\(error)",
-                            category: .hash
-                        )
-                    }
-
-                    await MainActor.run {
-                        guard self.isCurrentRun(runID) else { return }
-                        self.processedAssetsCount += 1
-                        self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
-                        self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
-                        self.syncStatusCache[item.localIdentifier] = item.result == nil ? .error : .pending
-                        self.objectWillChange.send()
-                    }
-                }
-
-                logInfo(
-                    "Primary hash batch returned: batch=\(batchIndex + 1)/\(totalBatches), results=\(items.count), mode=\(batchMode)",
-                    category: .hash
-                )
+            if self.isCurrentRun(runID) {
+                self.memoryPressureThrottle.reset()
             }
 
             await MainActor.run {
