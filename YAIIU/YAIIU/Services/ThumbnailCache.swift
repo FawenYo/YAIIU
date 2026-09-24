@@ -13,9 +13,14 @@ final class ThumbnailCache {
     private var activeRequestIDs: [String: PHImageRequestID] = [:]
     private var pendingLock = os_unfair_lock()
     
+    private static let foregroundCountLimit = 96
+    private static let foregroundCostLimit = 24 * 1024 * 1024
+    private static let backgroundCountLimit = 32
+    private static let backgroundCostLimit = 8 * 1024 * 1024
+
     private init() {
-        cache.countLimit = 200
-        cache.totalCostLimit = 50 * 1024 * 1024
+        cache.countLimit = Self.foregroundCountLimit
+        cache.totalCostLimit = Self.foregroundCostLimit
         
         cachingImageManager.allowsCachingHighQualityImages = false
         
@@ -51,11 +56,14 @@ final class ThumbnailCache {
     }
     
     @objc private func handleBackgroundTransition() {
-        cache.countLimit = 100
+        cache.countLimit = Self.backgroundCountLimit
+        cache.totalCostLimit = Self.backgroundCostLimit
+        clearCache()
     }
     
     @objc private func handleWillEnterForeground() {
-        cache.countLimit = 200
+        cache.countLimit = Self.foregroundCountLimit
+        cache.totalCostLimit = Self.foregroundCostLimit
     }
     
     func getThumbnail(
@@ -198,10 +206,22 @@ final class ThumbnailCache {
         )
     }
     
-    /// Clear all cached thumbnails
+    /// Clear all cached thumbnails and cancel in-flight PhotoKit image work.
+    /// stopCachingImagesForAllAssets() only stops preheating; it does not cancel
+    /// requestImage calls already retained by this cache.
     func clearCache() {
         cache.removeAllObjects()
         cachingImageManager.stopCachingImagesForAllAssets()
+
+        os_unfair_lock_lock(&pendingLock)
+        let requestIDs = Array(activeRequestIDs.values)
+        activeRequestIDs.removeAll(keepingCapacity: false)
+        pendingRequests.removeAll(keepingCapacity: false)
+        os_unfair_lock_unlock(&pendingLock)
+
+        for requestID in requestIDs {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
     }
     
     /// Remove cached thumbnail for specific asset
