@@ -3,6 +3,10 @@ import UIKit
 import Photos
 import os.lock
 
+extension Notification.Name {
+    static let thumbnailCacheDidClear = Notification.Name("com.fawenyo.yaiiu.thumbnailCacheDidClear")
+}
+
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
     
@@ -221,6 +225,14 @@ final class ThumbnailCache {
 
         for requestID in requestIDs {
             cachingImageManager.cancelImageRequest(requestID)
+        }
+
+        // Visible cells own their display lifecycle and can selectively
+        // re-request a small thumbnail after cancellation. This avoids leaving
+        // an on-screen cell stuck on its placeholder while still dropping all
+        // cache/preheat/in-flight PhotoKit work immediately.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .thumbnailCacheDidClear, object: nil)
         }
     }
     
