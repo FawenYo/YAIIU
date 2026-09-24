@@ -466,6 +466,7 @@ struct PhotoGridView: View {
                 stopCurrentThumbnailPrefetch()
                 ThumbnailCache.shared.clearCache()
             } else if oldValue == true {
+                ThumbnailCache.shared.requestVisibleThumbnailReload()
                 syncPendingICloudIds()
             }
         }
