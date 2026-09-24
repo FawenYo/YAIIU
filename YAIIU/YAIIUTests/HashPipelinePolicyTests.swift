@@ -509,6 +509,16 @@ final class HashPipelinePolicyTests: XCTestCase {
         )
     }
 
+    func testRequestDataPolicyDisablesStreamingAfterCircuitTrip() {
+        XCTAssertFalse(
+            HashPipelinePolicy.shouldUseRequestData(
+                estimatedBytes: 24 * 1024 * 1024,
+                hasUnknownResourceSize: false,
+                requestDataEnabled: false
+            )
+        )
+    }
+
     func testRequestDataPolicyUsesSafePathForLargeOrUnknownResource() {
         XCTAssertFalse(
             HashPipelinePolicy.shouldUseRequestData(
