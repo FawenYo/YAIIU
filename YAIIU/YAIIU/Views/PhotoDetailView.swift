@@ -1452,20 +1452,18 @@ struct PhotoDetailView: View {
     // MARK: - Data Loading
     
     private func detailPreviewTargetSize(for asset: PHAsset) -> CGSize {
-        // A full-resolution 48 MP decode can consume well over 100 MiB. The
-        // detail view only needs enough pixels for the current display plus a
-        // modest zoom margin; PhotoKit can therefore return a downsampled image.
+        // A full-resolution 48 MP decode can consume well over 100 MiB. Use an
+        // orientation-independent long-edge target so a photo opened in portrait
+        // remains sharp after rotating to landscape without another full-size
+        // PhotoKit request.
         let screen = UIScreen.main.bounds.size
         let scale = UIScreen.main.scale
         let overscan: CGFloat = 1.5
-        let target = CGSize(
-            width: screen.width * scale * overscan,
-            height: screen.height * scale * overscan
-        )
+        let longEdge = max(screen.width, screen.height) * scale * overscan
 
         return CGSize(
-            width: min(target.width, CGFloat(asset.pixelWidth)),
-            height: min(target.height, CGFloat(asset.pixelHeight))
+            width: min(longEdge, CGFloat(asset.pixelWidth)),
+            height: min(longEdge, CGFloat(asset.pixelHeight))
         )
     }
 
