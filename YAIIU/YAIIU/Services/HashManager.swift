@@ -155,9 +155,11 @@ enum HashPipelinePolicy {
 
     static func shouldUseRequestData(
         estimatedBytes: Int64,
-        hasUnknownResourceSize: Bool
+        hasUnknownResourceSize: Bool,
+        requestDataEnabled: Bool = true
     ) -> Bool {
-        !hasUnknownResourceSize
+        requestDataEnabled
+            && !hasUnknownResourceSize
             && estimatedBytes > 0
             && estimatedBytes <= requestDataSingleResourceLimit
     }
@@ -491,7 +493,7 @@ class HashManager: ObservableObject {
             guard let self, self.isHashingActive else { return }
             self.memoryPressureThrottle.signal()
             logWarning(
-                "Hash pipeline memory pressure observed; lazy writeData paths will pause/serialize while Immich-style requestData batch diagnostics continue",
+                "Hash pipeline memory pressure observed; current requestData batch may finish, then all future primary batches switch to serialized writeData for the remainder of this app process",
                 category: .hash
             )
         }
@@ -783,8 +785,26 @@ class HashManager: ObservableObject {
                     self.objectWillChange.send()
                 }
 
+                // Once iOS reports memory pressure, do not start another
+                // requestData stream in this app process. Let the in-flight batch
+                // finish, then wait out the pressure cooldown and run all later
+                // primary resources through the serialized writeData safe path.
+                let requestDataEnabled = !self.memoryPressureThrottle.isThrottled
+                var pressurePermitHeld = false
+
+                if !requestDataEnabled {
+                    guard let permit = await self.memoryPressureThrottle.acquireIfNeeded() else {
+                        break
+                    }
+                    pressurePermitHeld = permit
+                }
+
+                let batchMode = requestDataEnabled
+                    ? "hybrid-requestData"
+                    : "safe-writeData-only"
+
                 logInfo(
-                    "Immich-style hash batch started: batch=\(batchIndex + 1)/\(totalBatches), assets=\(batch.count)",
+                    "Primary hash batch started: batch=\(batchIndex + 1)/\(totalBatches), assets=\(batch.count), mode=\(batchMode)",
                     category: .hash
                 )
 
@@ -793,8 +813,11 @@ class HashManager: ObservableObject {
                 // Nothing from the next batch is created until it returns.
                 let items = await HashService.shared.hashPrimaryBatch(
                     assetIds: batch,
-                    allowNetworkAccess: true
+                    allowNetworkAccess: true,
+                    requestDataEnabled: requestDataEnabled
                 )
+
+                self.memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
 
                 guard self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled else { break }
 
@@ -809,7 +832,7 @@ class HashManager: ObservableObject {
                         )
 
                         logDebug(
-                            "Hash finished: asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=0, hasRAW=\(result.hasRAW), mode=immich-requestData, batch=\(batchIndex + 1)/\(totalBatches)",
+                            "Hash finished: asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=0, hasRAW=\(result.hasRAW), mode=\(batchMode), batch=\(batchIndex + 1)/\(totalBatches)",
                             category: .hash
                         )
                     } else if let error = item.errorDescription {
@@ -830,7 +853,7 @@ class HashManager: ObservableObject {
                 }
 
                 logInfo(
-                    "Immich-style hash batch returned: batch=\(batchIndex + 1)/\(totalBatches), results=\(items.count)",
+                    "Primary hash batch returned: batch=\(batchIndex + 1)/\(totalBatches), results=\(items.count), mode=\(batchMode)",
                     category: .hash
                 )
             }
