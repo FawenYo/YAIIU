@@ -740,6 +740,9 @@ struct PhotoDetailView: View {
     @State private var imageRequestID: PHImageRequestID?
     @State private var videoThumbnailRequestID: PHImageRequestID?
     @State private var videoPlayerRequestID: PHImageRequestID?
+    @State private var imageRequestGeneration = UUID()
+    @State private var videoThumbnailRequestGeneration = UUID()
+    @State private var videoPlayerRequestGeneration = UUID()
     
     @State private var player: AVPlayer?
     @State private var isVideoLoading: Bool = false
@@ -1407,6 +1410,10 @@ struct PhotoDetailView: View {
     private func cleanupCurrentAsset() {
         let imageManager = PHImageManager.default()
 
+        imageRequestGeneration = UUID()
+        videoThumbnailRequestGeneration = UUID()
+        videoPlayerRequestGeneration = UUID()
+
         if let requestID = imageRequestID {
             imageManager.cancelImageRequest(requestID)
             imageRequestID = nil
@@ -1468,6 +1475,9 @@ struct PhotoDetailView: View {
     }
 
     private func loadFullImage(for asset: PHAsset) {
+        let generation = UUID()
+        imageRequestGeneration = generation
+
         if let requestID = imageRequestID {
             PHImageManager.default().cancelImageRequest(requestID)
             imageRequestID = nil
@@ -1491,8 +1501,10 @@ struct PhotoDetailView: View {
             let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
 
             Task { @MainActor in
-                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
-                if !isCancelled, let image {
+                guard !isCancelled,
+                      generation == self.imageRequestGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if let image {
                     self.fullImage = image
                 }
                 if !isDegraded {
@@ -1503,6 +1515,9 @@ struct PhotoDetailView: View {
     }
 
     private func loadVideoThumbnail(for asset: PHAsset) {
+        let generation = UUID()
+        videoThumbnailRequestGeneration = generation
+
         if let requestID = videoThumbnailRequestID {
             PHImageManager.default().cancelImageRequest(requestID)
             videoThumbnailRequestID = nil
@@ -1528,8 +1543,10 @@ struct PhotoDetailView: View {
             let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
 
             Task { @MainActor in
-                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
-                if !isCancelled, let image {
+                guard !isCancelled,
+                      generation == self.videoThumbnailRequestGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if let image {
                     self.fullImage = image
                 }
                 if !isDegraded {
@@ -1540,6 +1557,8 @@ struct PhotoDetailView: View {
     }
     
     private func loadVideo(for asset: PHAsset) {
+        let generation = UUID()
+        videoPlayerRequestGeneration = generation
         isVideoLoading = true
         
         let options = PHVideoRequestOptions()
@@ -1552,8 +1571,12 @@ struct PhotoDetailView: View {
         }
 
         videoPlayerRequestID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
+            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+
             Task { @MainActor in
-                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                guard !isCancelled,
+                      generation == self.videoPlayerRequestGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
                 self.videoPlayerRequestID = nil
                 self.isVideoLoading = false
                 
