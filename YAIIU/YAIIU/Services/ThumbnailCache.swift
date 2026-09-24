@@ -15,6 +15,9 @@ final class ThumbnailCache {
     
     private var pendingRequests: [String: [(UIImage?) -> Void]] = [:]
     private var activeRequestIDs: [String: PHImageRequestID] = [:]
+    /// A generation token prevents a late completion from a cancelled request
+    /// from deleting state belonging to a newer request for the same cell/key.
+    private var activeRequestGenerations: [String: UUID] = [:]
     private var pendingLock = os_unfair_lock()
     
     private static let foregroundCountLimit = 96
@@ -76,16 +79,17 @@ final class ThumbnailCache {
         completion: @escaping (UIImage?) -> Void
     ) {
         let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
-        
+
         if let cachedImage = cache.object(forKey: cacheKey) {
             DispatchQueue.main.async {
                 completion(cachedImage)
             }
             return
         }
-        
+
         let keyString = cacheKey as String
-        
+        let generation = UUID()
+
         os_unfair_lock_lock(&pendingLock)
         if var existingCallbacks = pendingRequests[keyString] {
             existingCallbacks.append(completion)
@@ -94,85 +98,96 @@ final class ThumbnailCache {
             return
         }
         pendingRequests[keyString] = [completion]
+        activeRequestGenerations[keyString] = generation
         os_unfair_lock_unlock(&pendingLock)
-        
+
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = true
         options.resizeMode = .fast
-        
+
         let requestID = cachingImageManager.requestImage(
             for: asset,
             targetSize: targetSize,
             contentMode: .aspectFill,
             options: options
         ) { [weak self] image, info in
-            guard let self = self else { return }
-            
+            guard let self else { return }
+
             let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
             let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
-            
-            if isCancelled {
-                os_unfair_lock_lock(&self.pendingLock)
-                self.pendingRequests.removeValue(forKey: keyString)
-                self.activeRequestIDs.removeValue(forKey: keyString)
+
+            os_unfair_lock_lock(&self.pendingLock)
+            guard self.activeRequestGenerations[keyString] == generation else {
                 os_unfair_lock_unlock(&self.pendingLock)
                 return
             }
-            
-            if let image = image {
-                if !isDegraded {
-                    let cost = Int(image.size.width * image.size.height * 4)
-                    self.cache.setObject(image, forKey: cacheKey, cost: cost)
-                }
-                
-                os_unfair_lock_lock(&self.pendingLock)
-                let callbacks: [(UIImage?) -> Void]
-                if isDegraded {
-                    callbacks = self.pendingRequests[keyString] ?? []
-                } else {
-                    callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
-                    self.activeRequestIDs.removeValue(forKey: keyString)
-                }
+
+            if isCancelled {
+                self.pendingRequests.removeValue(forKey: keyString)
+                self.activeRequestIDs.removeValue(forKey: keyString)
+                self.activeRequestGenerations.removeValue(forKey: keyString)
                 os_unfair_lock_unlock(&self.pendingLock)
-                
+                return
+            }
+
+            let callbacks: [(UIImage?) -> Void]
+            if isDegraded {
+                callbacks = self.pendingRequests[keyString] ?? []
+            } else {
+                callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
+                self.activeRequestIDs.removeValue(forKey: keyString)
+                self.activeRequestGenerations.removeValue(forKey: keyString)
+            }
+            os_unfair_lock_unlock(&self.pendingLock)
+
+            if let image, !isDegraded {
+                let cost = Int(image.size.width * image.size.height * 4)
+                self.cache.setObject(image, forKey: cacheKey, cost: cost)
+            }
+
+            if image != nil || !isDegraded {
                 DispatchQueue.main.async {
                     for callback in callbacks {
                         callback(image)
                     }
                 }
-            } else if !isDegraded {
-                os_unfair_lock_lock(&self.pendingLock)
-                let callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
-                self.activeRequestIDs.removeValue(forKey: keyString)
-                os_unfair_lock_unlock(&self.pendingLock)
-                
-                DispatchQueue.main.async {
-                    for callback in callbacks {
-                        callback(nil)
-                    }
-                }
             }
         }
-        
+
+        var shouldCancelImmediately = false
         os_unfair_lock_lock(&pendingLock)
-        activeRequestIDs[keyString] = requestID
-        os_unfair_lock_unlock(&pendingLock)
-    }
-    
-    func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = CGSize(width: 200, height: 200)) {
-        let keyString = "\(assetIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))"
-        
-        os_unfair_lock_lock(&pendingLock)
-        if let requestID = activeRequestIDs.removeValue(forKey: keyString) {
-            pendingRequests.removeValue(forKey: keyString)
-            os_unfair_lock_unlock(&pendingLock)
-            cachingImageManager.cancelImageRequest(requestID)
+        if activeRequestGenerations[keyString] == generation {
+            activeRequestIDs[keyString] = requestID
         } else {
-            os_unfair_lock_unlock(&pendingLock)
+            // clearCache()/cancelThumbnail() won the race while requestImage
+            // was being created. Do not let this orphan continue.
+            shouldCancelImmediately = true
+        }
+        os_unfair_lock_unlock(&pendingLock)
+
+        if shouldCancelImmediately {
+            cachingImageManager.cancelImageRequest(requestID)
         }
     }
-    
+
+    func cancelThumbnail(
+        for assetIdentifier: String,
+        targetSize: CGSize = CGSize(width: 200, height: 200)
+    ) {
+        let keyString = "\(assetIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+
+        os_unfair_lock_lock(&pendingLock)
+        let requestID = activeRequestIDs.removeValue(forKey: keyString)
+        pendingRequests.removeValue(forKey: keyString)
+        activeRequestGenerations.removeValue(forKey: keyString)
+        os_unfair_lock_unlock(&pendingLock)
+
+        if let requestID {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
+    }
+
     /// Prefetch thumbnails for better scrolling performance
     func prefetchThumbnails(for assets: [PHAsset], targetSize: CGSize = CGSize(width: 200, height: 200)) {
         let uncachedAssets = assets.filter { asset in
@@ -220,6 +235,7 @@ final class ThumbnailCache {
         os_unfair_lock_lock(&pendingLock)
         let requestIDs = Array(activeRequestIDs.values)
         activeRequestIDs.removeAll(keepingCapacity: false)
+        activeRequestGenerations.removeAll(keepingCapacity: false)
         pendingRequests.removeAll(keepingCapacity: false)
         os_unfair_lock_unlock(&pendingLock)
 
