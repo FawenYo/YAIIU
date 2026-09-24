@@ -1,5 +1,6 @@
 import SwiftUI
 import Photos
+import Combine
 import os.lock
 
 final class RAWFormatChecker {
