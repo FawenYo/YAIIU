@@ -209,6 +209,13 @@ struct PhotoThumbnailView: View {
             loadTask = nil
             ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier)
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .thumbnailCacheDidClear)
+                .receive(on: RunLoop.main)
+        ) { _ in
+            guard isViewActive else { return }
+            requestThumbnail()
+        }
     }
     
     @ViewBuilder
@@ -306,14 +313,9 @@ struct PhotoThumbnailView: View {
             hasRAW = cachedRAW
         }
         
+        requestThumbnail()
+
         loadTask = Task { @MainActor in
-            ThumbnailCache.shared.getThumbnail(for: asset) { [self] image in
-                guard self.isViewActive else { return }
-                if let image = image {
-                    self.thumbnail = image
-                }
-            }
-            
             // Only check RAW if not already cached
             if RAWFormatChecker.shared.getCachedRAWStatus(for: asset.localIdentifier) == nil {
                 let assetId = asset.localIdentifier
@@ -330,6 +332,15 @@ struct PhotoThumbnailView: View {
         }
     }
     
+    private func requestThumbnail() {
+        ThumbnailCache.shared.getThumbnail(for: asset) { [self] image in
+            guard self.isViewActive else { return }
+            if let image {
+                self.thumbnail = image
+            }
+        }
+    }
+
     private func formatDuration(_ duration: TimeInterval) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
