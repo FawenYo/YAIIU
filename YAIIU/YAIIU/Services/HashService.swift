@@ -345,7 +345,8 @@ class HashService {
     /// does not create the next call until this method has fully returned.
     func hashPrimaryBatch(
         assetIds: [String],
-        allowNetworkAccess: Bool
+        allowNetworkAccess: Bool,
+        requestDataEnabled: Bool = true
     ) async -> [PrimaryHashBatchItem] {
         guard !assetIds.isEmpty else { return [] }
 
@@ -359,7 +360,8 @@ class HashService {
             guard let self else { return [PrimaryHashBatchItem]() }
             return await self.hashPrimaryBatchImpl(
                 assetIds: assetIds,
-                allowNetworkAccess: allowNetworkAccess
+                allowNetworkAccess: allowNetworkAccess,
+                requestDataEnabled: requestDataEnabled
             )
         }
 
@@ -372,7 +374,8 @@ class HashService {
 
     private func hashPrimaryBatchImpl(
         assetIds: [String],
-        allowNetworkAccess: Bool
+        allowNetworkAccess: Bool,
+        requestDataEnabled: Bool
     ) async -> [PrimaryHashBatchItem] {
         guard !assetIds.isEmpty else { return [] }
 
@@ -421,6 +424,7 @@ class HashService {
                     return await self.hashPrimaryAssetImmichStyle(
                         asset,
                         allowNetworkAccess: allowNetworkAccess,
+                        requestDataEnabled: requestDataEnabled,
                         activeBytesBudget: activeBytesBudget
                     )
                 }
@@ -452,6 +456,7 @@ class HashService {
     private func hashPrimaryAssetImmichStyle(
         _ asset: PHAsset,
         allowNetworkAccess: Bool,
+        requestDataEnabled: Bool,
         activeBytesBudget: ResourceBudget
     ) async -> PrimaryHashBatchItem? {
         final class RequestRef: @unchecked Sendable {
@@ -476,7 +481,8 @@ class HashService {
             let estimatedBytes = resources.plan.estimatedBytes
             let useRequestData = HashPipelinePolicy.shouldUseRequestData(
                 estimatedBytes: estimatedBytes,
-                hasUnknownResourceSize: resources.plan.hasUnknownResourceSize
+                hasUnknownResourceSize: resources.plan.hasUnknownResourceSize,
+                requestDataEnabled: requestDataEnabled
             )
             let charge = useRequestData
                 ? max(estimatedBytes, 1)
@@ -489,7 +495,7 @@ class HashService {
 
             if !useRequestData {
                 logInfo(
-                    "Primary hash using safe temp-file path: asset=\(asset.localIdentifier), estimatedBytes=\(estimatedBytes), unknownSize=\(resources.plan.hasUnknownResourceSize)",
+                    "Primary hash using safe temp-file path: asset=\(asset.localIdentifier), estimatedBytes=\(estimatedBytes), unknownSize=\(resources.plan.hasUnknownResourceSize), requestDataEnabled=\(requestDataEnabled)",
                     category: .hash
                 )
 
