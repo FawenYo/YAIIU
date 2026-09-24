@@ -295,7 +295,7 @@ struct PhotoGridView: View {
         Array(repeating: GridItem(.flexible(), spacing: Self.gridSpacing), count: Self.columnCount)
     }
     
-    private let prefetchBuffer = 30
+    private let prefetchBuffer = 12
     
     private var displayCount: Int {
         switch currentFilter {
@@ -417,6 +417,7 @@ struct PhotoGridView: View {
             recomputeTask = nil
             processingTask?.cancel()
             processingTask = nil
+            stopCurrentThumbnailPrefetch()
         }
         .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
             if newValue > 0 && oldValue == 0 {
@@ -458,7 +459,13 @@ struct PhotoGridView: View {
             }
         }
         .onChange(of: hashManager.isProcessing) { oldValue, newValue in
-            if oldValue == true && newValue == false {
+            if newValue {
+                // Hashing and grid preheating both compete for PhotoKit/native
+                // memory. Drop UI prefetch/cache immediately and let visible
+                // cells request only what they actually need.
+                stopCurrentThumbnailPrefetch()
+                ThumbnailCache.shared.clearCache()
+            } else if oldValue == true {
                 syncPendingICloudIds()
             }
         }
@@ -876,6 +883,10 @@ struct PhotoGridView: View {
     }
     
     private func prefetchThumbnails(around index: Int) {
+        // Do not let PHCachingImageManager build a second working set while the
+        // hash pipeline is active.
+        guard !hashManager.isProcessing else { return }
+
         let count = photoLibraryManager.assetCount
         guard count > 0 else { return }
         
@@ -898,6 +909,15 @@ struct PhotoGridView: View {
         
         let assetsToPreload = photoLibraryManager.assets(in: newRange)
         ThumbnailCache.shared.prefetchThumbnails(for: assetsToPreload)
+    }
+
+    private func stopCurrentThumbnailPrefetch() {
+        guard let range = lastPrefetchedRange else { return }
+        let assets = photoLibraryManager.assets(in: range)
+        if !assets.isEmpty {
+            ThumbnailCache.shared.stopPrefetching(for: assets)
+        }
+        lastPrefetchedRange = nil
     }
     
     private func refreshPhotosAsync() async {
