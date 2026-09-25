@@ -109,6 +109,7 @@ struct UploadProgressView: View {
 struct UploadItemRow: View {
     @ObservedObject var item: UploadItem
     @State private var isActive = false
+    @State private var thumbnailRequestToken: ThumbnailCache.RequestToken?
     
     var body: some View {
         HStack(spacing: 12) {
@@ -223,6 +224,10 @@ struct UploadItemRow: View {
         }
         .onDisappear {
             isActive = false
+            if let thumbnailRequestToken {
+                ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
+                self.thumbnailRequestToken = nil
+            }
             item.thumbnail = nil
         }
         .onReceive(
@@ -245,7 +250,13 @@ struct UploadItemRow: View {
 
     private func loadThumbnailIfNeeded() {
         guard item.thumbnail == nil else { return }
-        ThumbnailCache.shared.getThumbnail(for: item.asset) { [weak item] image in
+
+        if let thumbnailRequestToken {
+            ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
+            self.thumbnailRequestToken = nil
+        }
+
+        thumbnailRequestToken = ThumbnailCache.shared.getThumbnail(for: item.asset) { [weak item] image in
             Task { @MainActor in
                 guard isActive else { return }
                 item?.thumbnail = image
