@@ -160,7 +160,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
             imageView.image = nil
             currentImageSize = .zero
             lastLayoutBounds = .zero
-            zoomScale = 1.0
+            zoomScale = minimumZoomScale
             return
         }
 
@@ -170,7 +170,43 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         if imageView.image === image && lastLayoutBounds == bounds.size { return }
 
         let hadImage = imageView.image != nil
-        let previousZoomScale = zoomScale
+        let previousZoomScale = min(
+            max(zoomScale, minimumZoomScale),
+            maximumZoomScale
+        )
+
+        // Preserve the center of the visible viewport as a normalized position
+        // in the current zoomed content. Reset the zoom transform before
+        // changing imageView.frame below.
+        let previousContentSize = contentSize
+        let normalizedCenter: CGPoint? = {
+            guard hadImage,
+                  previousContentSize.width > 0,
+                  previousContentSize.height > 0 else { return nil }
+
+            return CGPoint(
+                x: min(
+                    max(
+                        (contentOffset.x + bounds.width / 2)
+                            / previousContentSize.width,
+                        0
+                    ),
+                    1
+                ),
+                y: min(
+                    max(
+                        (contentOffset.y + bounds.height / 2)
+                            / previousContentSize.height,
+                        0
+                    ),
+                    1
+                )
+            )
+        }()
+
+        if hadImage {
+            setZoomScale(minimumZoomScale, animated: false)
+        }
 
         currentImageSize = image.size
         imageView.image = image
@@ -180,14 +216,34 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
             lastLayoutBounds = bounds.size
         }
 
-        if hadImage {
-            setZoomScale(
-                min(max(previousZoomScale, minimumZoomScale), maximumZoomScale),
-                animated: false
+        guard hadImage else {
+            zoomScale = minimumZoomScale
+            return
+        }
+
+        setZoomScale(previousZoomScale, animated: false)
+        centerImageView()
+
+        if let normalizedCenter {
+            let desiredOffset = CGPoint(
+                x: contentSize.width * normalizedCenter.x - bounds.width / 2,
+                y: contentSize.height * normalizedCenter.y - bounds.height / 2
             )
-            centerImageView()
-        } else {
-            zoomScale = 1.0
+            let inset = adjustedContentInset
+            let minX = -inset.left
+            let minY = -inset.top
+            let maxX = max(
+                minX,
+                contentSize.width - bounds.width + inset.right
+            )
+            let maxY = max(
+                minY,
+                contentSize.height - bounds.height + inset.bottom
+            )
+            contentOffset = CGPoint(
+                x: min(max(desiredOffset.x, minX), maxX),
+                y: min(max(desiredOffset.y, minY), maxY)
+            )
         }
     }
     
