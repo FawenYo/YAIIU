@@ -222,6 +222,7 @@ struct PhotoThumbnailView: View {
                 .receive(on: RunLoop.main)
         ) { _ in
             guard isViewActive,
+                  !HashManager.shared.isProcessing,
                   UIApplication.shared.applicationState == .active else { return }
             // A reload notification means the cache has already been
             // invalidated. Drop any stale cell-held image before requesting.
