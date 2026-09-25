@@ -151,9 +151,9 @@ final class ThumbnailCache {
             }
 
             if isCancelled {
-                let callbacks = Array(
-                    self.pendingRequests.removeValue(forKey: keyString)?.values ?? [:].values
-                )
+                let callbacks = self.pendingRequests
+                    .removeValue(forKey: keyString)
+                    .map { Array($0.values) } ?? []
                 self.activeRequestIDs.removeValue(forKey: keyString)
                 self.activeRequestGenerations.removeValue(forKey: keyString)
                 os_unfair_lock_unlock(&self.pendingLock)
@@ -183,11 +183,11 @@ final class ThumbnailCache {
 
             let callbacks: [(UIImage?) -> Void]
             if isDegraded {
-                callbacks = Array(self.pendingRequests[keyString]?.values ?? [:].values)
+                callbacks = self.pendingRequests[keyString].map { Array($0.values) } ?? []
             } else {
-                callbacks = Array(
-                    self.pendingRequests.removeValue(forKey: keyString)?.values ?? [:].values
-                )
+                callbacks = self.pendingRequests
+                    .removeValue(forKey: keyString)
+                    .map { Array($0.values) } ?? []
                 self.activeRequestIDs.removeValue(forKey: keyString)
                 self.activeRequestGenerations.removeValue(forKey: keyString)
             }
