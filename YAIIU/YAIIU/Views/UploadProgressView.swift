@@ -106,6 +106,7 @@ struct UploadProgressView: View {
 
 struct UploadItemRow: View {
     @ObservedObject var item: UploadItem
+    @State private var isActive = false
     
     var body: some View {
         HStack(spacing: 12) {
@@ -214,6 +215,40 @@ struct UploadItemRow: View {
             }
         }
         .padding(.vertical, 4)
+        .onAppear {
+            isActive = true
+            loadThumbnailIfNeeded()
+        }
+        .onDisappear {
+            isActive = false
+            item.thumbnail = nil
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .thumbnailCacheDidClear)
+                .receive(on: RunLoop.main)
+        ) { _ in
+            guard isActive else { return }
+            item.thumbnail = nil
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .thumbnailCacheShouldReloadVisible)
+                .receive(on: RunLoop.main)
+        ) { _ in
+            guard isActive,
+                  !HashManager.shared.isProcessing,
+                  UIApplication.shared.applicationState == .active else { return }
+            loadThumbnailIfNeeded()
+        }
+    }
+
+    private func loadThumbnailIfNeeded() {
+        guard item.thumbnail == nil else { return }
+        ThumbnailCache.shared.getThumbnail(for: item.asset) { [weak item] image in
+            Task { @MainActor in
+                guard isActive else { return }
+                item?.thumbnail = image
+            }
+        }
     }
 }
 
