@@ -1430,6 +1430,8 @@ struct PhotoDetailView: View {
         fullImage = nil
         player?.pause()
         player = nil
+        isVideoLoading = false
+        isVideoPlaying = false
         if let observer = playerEndObserver {
             NotificationCenter.default.removeObserver(observer)
             playerEndObserver = nil
