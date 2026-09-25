@@ -211,9 +211,9 @@ class UploadManager: ObservableObject {
 
                     let item = UploadItem(asset: entry.asset, filename: entry.filename, hasRAW: entry.hasRAW)
                     item.totalResources = entry.resourceCount
-                    ThumbnailCache.shared.getThumbnail(for: entry.asset) { [weak item] image in
-                        Task { @MainActor in item?.thumbnail = image }
-                    }
+                    // Thumbnails are loaded by visible UploadItemRow instances.
+                    // Keeping them out of queue construction avoids retaining a
+                    // decoded UIImage for every queued upload.
                     self.uploadQueue.append(item)
                 }
 
