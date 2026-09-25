@@ -160,19 +160,34 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
             imageView.image = nil
             currentImageSize = .zero
             lastLayoutBounds = .zero
+            zoomScale = 1.0
             return
         }
-        
-        // Skip redundant updates for same image when bounds unchanged
-        if currentImageSize == image.size && lastLayoutBounds == bounds.size { return }
-        
+
+        // Skip only the exact same UIImage instance. A higher-resolution
+        // replacement can have the same logical point size with a different
+        // backing pixel count.
+        if imageView.image === image && lastLayoutBounds == bounds.size { return }
+
+        let hadImage = imageView.image != nil
+        let previousZoomScale = zoomScale
+
         currentImageSize = image.size
         imageView.image = image
-        zoomScale = 1.0
-        
+
         if bounds.width > 0 && bounds.height > 0 {
             configureImageSize(for: image)
             lastLayoutBounds = bounds.size
+        }
+
+        if hadImage {
+            setZoomScale(
+                min(max(previousZoomScale, minimumZoomScale), maximumZoomScale),
+                animated: false
+            )
+            centerImageView()
+        } else {
+            zoomScale = 1.0
         }
     }
     
@@ -743,6 +758,7 @@ struct PhotoDetailView: View {
     @State private var imageRequestGeneration = UUID()
     @State private var videoThumbnailRequestGeneration = UUID()
     @State private var videoPlayerRequestGeneration = UUID()
+    @State private var zoomResolutionRequested = false
     
     @State private var player: AVPlayer?
     @State private var isVideoLoading: Bool = false
@@ -889,6 +905,17 @@ struct PhotoDetailView: View {
             cleanupCurrentAsset()
             resetAssetStates()
             loadAssetAtCurrentIndex()
+        }
+        .onChange(of: scale) { _, newScale in
+            guard newScale >= 1.75,
+                  !zoomResolutionRequested,
+                  let asset = currentAsset,
+                  asset.mediaType == .image else { return }
+
+            // Keep the baseline decode small. Only when the user actually zooms
+            // do we request enough pixels for the supported 4× zoom range.
+            zoomResolutionRequested = true
+            loadFullImage(for: asset, overscan: 4.0)
         }
     }
     
@@ -1441,6 +1468,7 @@ struct PhotoDetailView: View {
     private func resetAssetStates() {
         currentAsset = nil
         fullImage = nil
+        zoomResolutionRequested = false
         scale = 1.0
         offset = .zero
         dragProgress = 0
@@ -1460,14 +1488,15 @@ struct PhotoDetailView: View {
     
     // MARK: - Data Loading
     
-    private func detailPreviewTargetSize(for asset: PHAsset) -> CGSize {
+    private func detailPreviewTargetSize(
+        for asset: PHAsset,
+        overscan: CGFloat
+    ) -> CGSize {
         // A full-resolution 48 MP decode can consume well over 100 MiB. Use an
-        // orientation-independent long-edge target so a photo opened in portrait
-        // remains sharp after rotating to landscape without another full-size
-        // PhotoKit request.
+        // orientation-independent long-edge target for the baseline preview,
+        // then request more pixels only after the user actually zooms.
         let screen = UIScreen.main.bounds.size
         let scale = UIScreen.main.scale
-        let overscan: CGFloat = 1.5
         let longEdge = max(screen.width, screen.height) * scale * overscan
 
         return CGSize(
@@ -1476,7 +1505,10 @@ struct PhotoDetailView: View {
         )
     }
 
-    private func loadFullImage(for asset: PHAsset) {
+    private func loadFullImage(
+        for asset: PHAsset,
+        overscan: CGFloat = 1.5
+    ) {
         let generation = UUID()
         imageRequestGeneration = generation
 
@@ -1491,7 +1523,8 @@ struct PhotoDetailView: View {
         options.isSynchronous = false
         options.resizeMode = .fast
 
-        let targetSize = detailPreviewTargetSize(for: asset)
+        let targetSize = detailPreviewTargetSize(for: asset, overscan: overscan)
+        let isZoomUpgrade = overscan > 1.5
 
         imageRequestID = PHImageManager.default().requestImage(
             for: asset,
@@ -1511,6 +1544,9 @@ struct PhotoDetailView: View {
                 }
                 if !isDegraded {
                     self.imageRequestID = nil
+                    if isZoomUpgrade && image == nil {
+                        self.zoomResolutionRequested = false
+                    }
                 }
             }
         }
