@@ -9,12 +9,19 @@ extension Notification.Name {
 }
 
 final class ThumbnailCache {
+    struct RequestToken: Hashable, Sendable {
+        fileprivate let key: String
+        fileprivate let consumerID: UUID
+    }
+
     static let shared = ThumbnailCache()
     
     private let cache = NSCache<NSString, UIImage>()
     private let cachingImageManager = PHCachingImageManager()
     
-    private var pendingRequests: [String: [(UIImage?) -> Void]] = [:]
+    /// Per-key consumer callbacks. Multiple views may share one PhotoKit
+    /// request without sharing cancellation ownership.
+    private var pendingRequests: [String: [UUID: (UIImage?) -> Void]] = [:]
     private var activeRequestIDs: [String: PHImageRequestID] = [:]
     /// A generation token prevents a late completion from a cancelled request
     /// from deleting state belonging to a newer request for the same cell/key.
@@ -88,31 +95,35 @@ final class ThumbnailCache {
         requestVisibleThumbnailReload()
     }
     
+    @discardableResult
     func getThumbnail(
         for asset: PHAsset,
         targetSize: CGSize = CGSize(width: 200, height: 200),
         completion: @escaping (UIImage?) -> Void
-    ) {
+    ) -> RequestToken? {
         let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
 
         if let cachedImage = cache.object(forKey: cacheKey) {
             DispatchQueue.main.async {
                 completion(cachedImage)
             }
-            return
+            return nil
         }
 
         let keyString = cacheKey as String
+        let consumerID = UUID()
+        let token = RequestToken(key: keyString, consumerID: consumerID)
         let generation = UUID()
 
         os_unfair_lock_lock(&pendingLock)
         if var existingCallbacks = pendingRequests[keyString] {
-            existingCallbacks.append(completion)
+            existingCallbacks[consumerID] = completion
             pendingRequests[keyString] = existingCallbacks
             os_unfair_lock_unlock(&pendingLock)
-            return
+            return token
         }
-        pendingRequests[keyString] = [completion]
+
+        pendingRequests[keyString] = [consumerID: completion]
         activeRequestGenerations[keyString] = generation
         let requestEpoch = cacheEpoch
         os_unfair_lock_unlock(&pendingLock)
@@ -140,7 +151,9 @@ final class ThumbnailCache {
             }
 
             if isCancelled {
-                let callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
+                let callbacks = Array(
+                    self.pendingRequests.removeValue(forKey: keyString)?.values ?? [:].values
+                )
                 self.activeRequestIDs.removeValue(forKey: keyString)
                 self.activeRequestGenerations.removeValue(forKey: keyString)
                 os_unfair_lock_unlock(&self.pendingLock)
@@ -156,8 +169,6 @@ final class ThumbnailCache {
             }
 
             // Keep the generation check + cache write atomic with clearCache().
-            // Otherwise a completion can pass the check, clearCache() can run,
-            // and the stale completion can repopulate the cache afterwards.
             if let image, !isDegraded {
                 let cost: Int
                 if let cgImage = image.cgImage {
@@ -172,9 +183,11 @@ final class ThumbnailCache {
 
             let callbacks: [(UIImage?) -> Void]
             if isDegraded {
-                callbacks = self.pendingRequests[keyString] ?? []
+                callbacks = Array(self.pendingRequests[keyString]?.values ?? [:].values)
             } else {
-                callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
+                callbacks = Array(
+                    self.pendingRequests.removeValue(forKey: keyString)?.values ?? [:].values
+                )
                 self.activeRequestIDs.removeValue(forKey: keyString)
                 self.activeRequestGenerations.removeValue(forKey: keyString)
             }
@@ -194,8 +207,8 @@ final class ThumbnailCache {
         if activeRequestGenerations[keyString] == generation {
             activeRequestIDs[keyString] = requestID
         } else {
-            // clearCache()/cancelThumbnail() won the race while requestImage
-            // was being created. Do not let this orphan continue.
+            // clearCache() or the last consumer cancellation won the race while
+            // requestImage was being created.
             shouldCancelImmediately = true
         }
         os_unfair_lock_unlock(&pendingLock)
@@ -203,30 +216,33 @@ final class ThumbnailCache {
         if shouldCancelImmediately {
             cachingImageManager.cancelImageRequest(requestID)
         }
+
+        return token
     }
 
-    func cancelThumbnail(
-        for assetIdentifier: String,
-        targetSize: CGSize = CGSize(width: 200, height: 200)
-    ) {
-        let keyString = "\(assetIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+    /// Cancels only one consumer. The shared PhotoKit request remains alive
+    /// while at least one other consumer still needs the same thumbnail.
+    func cancelThumbnail(_ token: RequestToken) {
+        var requestIDToCancel: PHImageRequestID?
 
         os_unfair_lock_lock(&pendingLock)
-        let requestID = activeRequestIDs.removeValue(forKey: keyString)
-        let callbacks = pendingRequests.removeValue(forKey: keyString) ?? []
-        activeRequestGenerations.removeValue(forKey: keyString)
-        os_unfair_lock_unlock(&pendingLock)
-
-        if let requestID {
-            cachingImageManager.cancelImageRequest(requestID)
+        guard var callbacks = pendingRequests[token.key] else {
+            os_unfair_lock_unlock(&pendingLock)
+            return
         }
 
-        if !callbacks.isEmpty {
-            DispatchQueue.main.async {
-                for callback in callbacks {
-                    callback(nil)
-                }
-            }
+        callbacks.removeValue(forKey: token.consumerID)
+        if callbacks.isEmpty {
+            pendingRequests.removeValue(forKey: token.key)
+            requestIDToCancel = activeRequestIDs.removeValue(forKey: token.key)
+            activeRequestGenerations.removeValue(forKey: token.key)
+        } else {
+            pendingRequests[token.key] = callbacks
+        }
+        os_unfair_lock_unlock(&pendingLock)
+
+        if let requestIDToCancel {
+            cachingImageManager.cancelImageRequest(requestIDToCancel)
         }
     }
 
@@ -296,6 +312,7 @@ final class ThumbnailCache {
         cacheEpoch &+= 1
         cache.removeAllObjects()
         let requestIDs = Array(activeRequestIDs.values)
+        let callbacks = pendingRequests.values.flatMap { $0.values }
         activeRequestIDs.removeAll(keepingCapacity: false)
         activeRequestGenerations.removeAll(keepingCapacity: false)
         pendingRequests.removeAll(keepingCapacity: false)
@@ -303,6 +320,14 @@ final class ThumbnailCache {
 
         for requestID in requestIDs {
             cachingImageManager.cancelImageRequest(requestID)
+        }
+
+        if !callbacks.isEmpty {
+            DispatchQueue.main.async {
+                for callback in callbacks {
+                    callback(nil)
+                }
+            }
         }
 
         // Clearing is intentionally separate from reloading. Memory warnings,
