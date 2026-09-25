@@ -400,6 +400,12 @@ struct PhotoGridView: View {
                 hasAppeared = true
                 photoLibraryManager.requestAuthorization()
             }
+
+            if hashManager.isProcessing {
+                stopCurrentThumbnailPrefetch()
+                ThumbnailCache.shared.clearCache()
+            }
+
             performAutoSync()
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
