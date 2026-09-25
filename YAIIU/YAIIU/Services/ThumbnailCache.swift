@@ -19,6 +19,10 @@ final class ThumbnailCache {
     /// A generation token prevents a late completion from a cancelled request
     /// from deleting state belonging to a newer request for the same cell/key.
     private var activeRequestGenerations: [String: UUID] = [:]
+    /// Incremented whenever clearCache() invalidates the visible thumbnail
+    /// working set. Callback delivery captures the epoch and is suppressed if a
+    /// clear happened after PhotoKit completed but before the main-queue callback.
+    private var cacheEpoch: UInt64 = 0
     private var pendingLock = os_unfair_lock()
     
     private static let foregroundCountLimit = 96
@@ -101,6 +105,7 @@ final class ThumbnailCache {
         }
         pendingRequests[keyString] = [completion]
         activeRequestGenerations[keyString] = generation
+        let requestEpoch = cacheEpoch
         os_unfair_lock_unlock(&pendingLock)
 
         let options = PHImageRequestOptions()
@@ -132,11 +137,11 @@ final class ThumbnailCache {
                 os_unfair_lock_unlock(&self.pendingLock)
 
                 if !callbacks.isEmpty {
-                    DispatchQueue.main.async {
-                        for callback in callbacks {
-                            callback(nil)
-                        }
-                    }
+                    self.deliver(
+                        callbacks: callbacks,
+                        image: nil,
+                        requestEpoch: requestEpoch
+                    )
                 }
                 return
             }
@@ -167,11 +172,11 @@ final class ThumbnailCache {
             os_unfair_lock_unlock(&self.pendingLock)
 
             if image != nil || !isDegraded {
-                DispatchQueue.main.async {
-                    for callback in callbacks {
-                        callback(image)
-                    }
-                }
+                self.deliver(
+                    callbacks: callbacks,
+                    image: image,
+                    requestEpoch: requestEpoch
+                )
             }
         }
 
@@ -212,6 +217,25 @@ final class ThumbnailCache {
                 for callback in callbacks {
                     callback(nil)
                 }
+            }
+        }
+    }
+
+    private func deliver(
+        callbacks: [(UIImage?) -> Void],
+        image: UIImage?,
+        requestEpoch: UInt64
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            os_unfair_lock_lock(&self.pendingLock)
+            let epochIsCurrent = self.cacheEpoch == requestEpoch
+            os_unfair_lock_unlock(&self.pendingLock)
+
+            guard epochIsCurrent else { return }
+            for callback in callbacks {
+                callback(image)
             }
         }
     }
@@ -260,6 +284,7 @@ final class ThumbnailCache {
         cachingImageManager.stopCachingImagesForAllAssets()
 
         os_unfair_lock_lock(&pendingLock)
+        cacheEpoch &+= 1
         cache.removeAllObjects()
         let requestIDs = Array(activeRequestIDs.values)
         activeRequestIDs.removeAll(keepingCapacity: false)
