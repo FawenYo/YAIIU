@@ -65,6 +65,15 @@ final class ThumbnailCache {
     @objc private func handleMemoryWarning() {
         clearCache()
         logInfo("ThumbnailCache cleared due to memory warning", category: .app)
+
+        // If the app stays active, mounted cells will not receive another
+        // onAppear. Give the system a short recovery window, then ask visible
+        // consumers to reload only when hashing is not competing for PhotoKit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard UIApplication.shared.applicationState == .active,
+                  !HashManager.shared.isProcessing else { return }
+            self?.requestVisibleThumbnailReload()
+        }
     }
     
     @objc private func handleBackgroundTransition() {
