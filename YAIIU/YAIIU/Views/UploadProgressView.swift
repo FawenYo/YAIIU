@@ -1,4 +1,6 @@
 import SwiftUI
+import Combine
+import UIKit
 
 struct UploadProgressView: View {
     @EnvironmentObject var uploadManager: UploadManager
