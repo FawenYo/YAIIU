@@ -48,8 +48,8 @@ final class ThumbnailCache {
         
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(handleWillEnterForeground),
-            name: UIApplication.willEnterForegroundNotification,
+            selector: #selector(handleDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
     }
@@ -69,7 +69,7 @@ final class ThumbnailCache {
         clearCache()
     }
     
-    @objc private func handleWillEnterForeground() {
+    @objc private func handleDidBecomeActive() {
         cache.countLimit = Self.foregroundCountLimit
         cache.totalCostLimit = Self.foregroundCostLimit
         requestVisibleThumbnailReload()
@@ -126,10 +126,18 @@ final class ThumbnailCache {
             }
 
             if isCancelled {
-                self.pendingRequests.removeValue(forKey: keyString)
+                let callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
                 self.activeRequestIDs.removeValue(forKey: keyString)
                 self.activeRequestGenerations.removeValue(forKey: keyString)
                 os_unfair_lock_unlock(&self.pendingLock)
+
+                if !callbacks.isEmpty {
+                    DispatchQueue.main.async {
+                        for callback in callbacks {
+                            callback(nil)
+                        }
+                    }
+                }
                 return
             }
 
@@ -137,7 +145,14 @@ final class ThumbnailCache {
             // Otherwise a completion can pass the check, clearCache() can run,
             // and the stale completion can repopulate the cache afterwards.
             if let image, !isDegraded {
-                let cost = Int(image.size.width * image.size.height * 4)
+                let cost: Int
+                if let cgImage = image.cgImage {
+                    cost = max(1, cgImage.bytesPerRow * cgImage.height)
+                } else {
+                    let pixelWidth = Int(image.size.width * image.scale)
+                    let pixelHeight = Int(image.size.height * image.scale)
+                    cost = max(1, pixelWidth * pixelHeight * 4)
+                }
                 self.cache.setObject(image, forKey: cacheKey, cost: cost)
             }
 
@@ -184,12 +199,20 @@ final class ThumbnailCache {
 
         os_unfair_lock_lock(&pendingLock)
         let requestID = activeRequestIDs.removeValue(forKey: keyString)
-        pendingRequests.removeValue(forKey: keyString)
+        let callbacks = pendingRequests.removeValue(forKey: keyString) ?? []
         activeRequestGenerations.removeValue(forKey: keyString)
         os_unfair_lock_unlock(&pendingLock)
 
         if let requestID {
             cachingImageManager.cancelImageRequest(requestID)
+        }
+
+        if !callbacks.isEmpty {
+            DispatchQueue.main.async {
+                for callback in callbacks {
+                    callback(nil)
+                }
+            }
         }
     }
 
