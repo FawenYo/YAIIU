@@ -71,6 +71,7 @@ struct PhotoThumbnailView: View {
     @State private var videoDuration: TimeInterval = 0
     @State private var isVideo: Bool = false
     @State private var loadTask: Task<Void, Never>?
+    @State private var thumbnailRequestToken: ThumbnailCache.RequestToken?
     @State private var isViewActive: Bool = false
     
     init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, isUploaded: Bool) {
@@ -208,7 +209,10 @@ struct PhotoThumbnailView: View {
             isViewActive = false
             loadTask?.cancel()
             loadTask = nil
-            ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier)
+            if let thumbnailRequestToken {
+                ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
+                self.thumbnailRequestToken = nil
+            }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .thumbnailCacheDidClear)
@@ -346,7 +350,12 @@ struct PhotoThumbnailView: View {
     }
     
     private func requestThumbnail() {
-        ThumbnailCache.shared.getThumbnail(for: asset) { [self] image in
+        if let thumbnailRequestToken {
+            ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
+            self.thumbnailRequestToken = nil
+        }
+
+        thumbnailRequestToken = ThumbnailCache.shared.getThumbnail(for: asset) { [self] image in
             guard self.isViewActive else { return }
             if let image {
                 self.thumbnail = image
