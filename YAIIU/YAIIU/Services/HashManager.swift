@@ -894,6 +894,13 @@ class HashManager: ObservableObject {
                     )
                     self.finishProcessing(runID: runID)
                 } else if !self.shouldStop && !Task.isCancelled {
+                    self.logRequestDataMemory(
+                        stage: "pipeline-complete",
+                        batch: nil,
+                        totalBatches: nil,
+                        primaryBytes: cumulativePrimaryBytes
+                    )
+                    self.isHashingActive = false
                     self.statusMessage = "Checking cloud status..."
                     self.startServerCheck(runID: runID)
                 } else {
