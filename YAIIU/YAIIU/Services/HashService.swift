@@ -251,6 +251,15 @@ struct PrimaryHashBatchItem: Sendable {
     let errorDescription: String?
 }
 
+private struct RequestDataPrimaryItem: Sendable {
+    let localIdentifier: String
+    let primaryHash: String?
+    let primaryFileSize: Int64
+    let modificationDate: Date?
+    let hasRAWCompanion: Bool
+    let errorDescription: String?
+}
+
 
 
 class HashService {
@@ -351,15 +360,12 @@ class HashService {
 
         guard !Task.isCancelled else { return [] }
 
-        // RAW is deliberately outside the requestData experiment. Serialize its
-        // existing temp-file hashing so RAW work cannot create a second burst of
-        // PhotoKit pressure while primary requestData is being measured.
-        let rawGate = ResourceBudget(limit: 1)
-
-        return await withTaskGroup(
-            of: PrimaryHashBatchItem?.self
+        // Phase 1 is the actual experiment: all primary resources in the finite
+        // batch are streamed through requestData and fully awaited.
+        let primaryItems = await withTaskGroup(
+            of: RequestDataPrimaryItem?.self
         ) { group in
-            var items: [PrimaryHashBatchItem] = []
+            var items: [RequestDataPrimaryItem] = []
             items.reserveCapacity(assetIds.count)
 
             for asset in assets {
@@ -368,8 +374,7 @@ class HashService {
                     guard let self else { return nil }
                     return await self.hashPrimaryAssetWithRequestData(
                         asset,
-                        allowNetworkAccess: allowNetworkAccess,
-                        rawGate: rawGate
+                        allowNetworkAccess: allowNetworkAccess
                     )
                 }
             }
@@ -379,29 +384,97 @@ class HashService {
                     items.append(item)
                 }
             }
+            return items
+        }
 
-            if !Task.isCancelled {
-                for missing in missingAssetIds {
-                    items.append(
+        guard !Task.isCancelled else { return [] }
+
+        // Phase 2 preserves current-main RAW semantics only after every primary
+        // requestData stream in this batch has stopped. RAW uses the stable
+        // temp-file hasher and is deliberately serialized.
+        var finalItems: [PrimaryHashBatchItem] = []
+        finalItems.reserveCapacity(assetIds.count)
+
+        for item in primaryItems {
+            guard !Task.isCancelled else { break }
+
+            guard let primaryHash = item.primaryHash,
+                  item.errorDescription == nil else {
+                finalItems.append(
+                    PrimaryHashBatchItem(
+                        localIdentifier: item.localIdentifier,
+                        result: nil,
+                        modificationDate: item.modificationDate,
+                        errorDescription: item.errorDescription
+                            ?? "Primary requestData hash failed"
+                    )
+                )
+                continue
+            }
+
+            var rawHash: String?
+            var rawSize: Int64?
+
+            if item.hasRAWCompanion {
+                do {
+                    let raw = try await hashRawCompanionSafely(
+                        assetIdentifier: item.localIdentifier
+                    )
+                    rawHash = raw.hash
+                    rawSize = raw.size
+                } catch {
+                    guard !Task.isCancelled else { break }
+                    finalItems.append(
                         PrimaryHashBatchItem(
-                            localIdentifier: missing,
+                            localIdentifier: item.localIdentifier,
                             result: nil,
-                            modificationDate: nil,
-                            errorDescription: "Asset not found in library"
+                            modificationDate: item.modificationDate,
+                            errorDescription:
+                                "RAW safe-path failed: \(error.localizedDescription)"
                         )
                     )
+                    continue
                 }
             }
 
-            return items
+            finalItems.append(
+                PrimaryHashBatchItem(
+                    localIdentifier: item.localIdentifier,
+                    result: MultiResourceHashResult(
+                        localIdentifier: item.localIdentifier,
+                        primaryHash: primaryHash,
+                        primaryFileSize: item.primaryFileSize,
+                        rawHash: rawHash,
+                        rawFileSize: rawSize,
+                        hasRAW: item.hasRAWCompanion,
+                        calculatedAt: Date()
+                    ),
+                    modificationDate: item.modificationDate,
+                    errorDescription: nil
+                )
+            )
         }
+
+        if !Task.isCancelled {
+            for missing in missingAssetIds {
+                finalItems.append(
+                    PrimaryHashBatchItem(
+                        localIdentifier: missing,
+                        result: nil,
+                        modificationDate: nil,
+                        errorDescription: "Asset not found in library"
+                    )
+                )
+            }
+        }
+
+        return finalItems
     }
 
     private func hashPrimaryAssetWithRequestData(
         _ asset: PHAsset,
-        allowNetworkAccess: Bool,
-        rawGate: ResourceBudget
-    ) async -> PrimaryHashBatchItem? {
+        allowNetworkAccess: Bool
+    ) async -> RequestDataPrimaryItem? {
         final class RequestRef: @unchecked Sendable {
             private let lock = NSLock()
             private var id: PHAssetResourceDataRequestID?
@@ -437,10 +510,12 @@ class HashService {
         return await withTaskCancellationHandler {
             guard !Task.isCancelled else { return nil }
             guard let resources = AssetResourceSelector.select(for: asset) else {
-                return PrimaryHashBatchItem(
+                return RequestDataPrimaryItem(
                     localIdentifier: asset.localIdentifier,
-                    result: nil,
+                    primaryHash: nil,
+                    primaryFileSize: 0,
                     modificationDate: asset.modificationDate,
+                    hasRAWCompanion: false,
                     errorDescription: "Cannot get asset resource"
                 )
             }
@@ -449,50 +524,55 @@ class HashService {
             options.isNetworkAccessAllowed = allowNetworkAccess
             let startedAt = ProcessInfo.processInfo.systemUptime
 
-            let primary: (hash: String, size: Int64, error: String?) = await withCheckedContinuation {
-                continuation in
-                var hasher = Insecure.SHA1()
-                var totalBytes = 0
+            let primary: (hash: String, size: Int64, error: String?) =
+                await withCheckedContinuation { continuation in
+                    var hasher = Insecure.SHA1()
+                    var totalBytes = 0
 
-                let requestID = PHAssetResourceManager.default().requestData(
-                    for: resources.primaryResource,
-                    options: options,
-                    dataReceivedHandler: { data in
-                        totalBytes += data.count
-                        hasher.update(data: data)
-                    },
-                    completionHandler: { error in
-                        switch error {
-                        case let photosError as PHPhotosError
-                            where photosError.code == .userCancelled:
-                            continuation.resume(
-                                returning: ("", 0, "PhotoKit request cancelled")
-                            )
-                        case let error?:
-                            continuation.resume(
-                                returning: ("", 0, error.localizedDescription)
-                            )
-                        case nil:
-                            let digest = Data(hasher.finalize())
-                            let hash = digest
-                                .map { String(format: "%02x", $0) }
-                                .joined()
-                            continuation.resume(
-                                returning: (hash, Int64(totalBytes), nil)
-                            )
+                    let requestID = PHAssetResourceManager.default().requestData(
+                        for: resources.primaryResource,
+                        options: options,
+                        dataReceivedHandler: { data in
+                            totalBytes += data.count
+                            hasher.update(data: data)
+                        },
+                        completionHandler: { error in
+                            switch error {
+                            case let photosError as PHPhotosError
+                                where photosError.code == .userCancelled:
+                                continuation.resume(
+                                    returning:
+                                        ("", 0, "PhotoKit request cancelled")
+                                )
+                            case let error?:
+                                continuation.resume(
+                                    returning:
+                                        ("", 0, error.localizedDescription)
+                                )
+                            case nil:
+                                let digest = Data(hasher.finalize())
+                                let hash = digest
+                                    .map { String(format: "%02x", $0) }
+                                    .joined()
+                                continuation.resume(
+                                    returning:
+                                        (hash, Int64(totalBytes), nil)
+                                )
+                            }
                         }
-                    }
-                )
-                requestRef.install(requestID)
-            }
+                    )
+                    requestRef.install(requestID)
+                }
 
             guard !Task.isCancelled else { return nil }
 
             if let error = primary.error {
-                return PrimaryHashBatchItem(
+                return RequestDataPrimaryItem(
                     localIdentifier: asset.localIdentifier,
-                    result: nil,
+                    primaryHash: nil,
+                    primaryFileSize: 0,
                     modificationDate: resources.plan.modificationDate,
+                    hasRAWCompanion: resources.rawResource != nil,
                     errorDescription: error
                 )
             }
@@ -506,54 +586,47 @@ class HashService {
                 category: .hash
             )
 
-            var rawHash: String?
-            var rawSize: Int64?
-
-            if let rawResource = resources.rawResource {
-                guard await rawGate.acquire(1) else { return nil }
-                defer { rawGate.release(1) }
-
-                do {
-                    let rawURL = try await ResourceFileAccess.tempFile(
-                        for: rawResource
-                    )
-                    defer { try? FileManager.default.removeItem(at: rawURL) }
-
-                    let rawResult = try await Self.readFileHash(
-                        rawURL,
-                        assetIdentifier: asset.localIdentifier,
-                        resourceLabel: "raw-safe"
-                    )
-                    rawHash = rawResult.hash
-                    rawSize = Int64(rawResult.size)
-                } catch {
-                    guard !Task.isCancelled else { return nil }
-                    return PrimaryHashBatchItem(
-                        localIdentifier: asset.localIdentifier,
-                        result: nil,
-                        modificationDate: resources.plan.modificationDate,
-                        errorDescription: "RAW safe-path failed: \(error.localizedDescription)"
-                    )
-                }
-            }
-
-            return PrimaryHashBatchItem(
+            return RequestDataPrimaryItem(
                 localIdentifier: asset.localIdentifier,
-                result: MultiResourceHashResult(
-                    localIdentifier: asset.localIdentifier,
-                    primaryHash: primary.hash,
-                    primaryFileSize: primary.size,
-                    rawHash: rawHash,
-                    rawFileSize: rawSize,
-                    hasRAW: resources.rawResource != nil,
-                    calculatedAt: Date()
-                ),
+                primaryHash: primary.hash,
+                primaryFileSize: primary.size,
                 modificationDate: resources.plan.modificationDate,
+                hasRAWCompanion: resources.rawResource != nil,
                 errorDescription: nil
             )
         } onCancel: {
             requestRef.cancel()
         }
+    }
+
+    private func hashRawCompanionSafely(
+        assetIdentifier: String
+    ) async throws -> (hash: String, size: Int64) {
+        let fetch = PHAsset.fetchAssets(
+            withLocalIdentifiers: [assetIdentifier],
+            options: nil
+        )
+        guard let asset = fetch.firstObject,
+              let rawResource = AssetResourceSelector.select(for: asset)?.rawResource else {
+            throw NSError(
+                domain: "HashService",
+                code: 404,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "RAW companion disappeared before safe hashing"
+                ]
+            )
+        }
+
+        let rawURL = try await ResourceFileAccess.tempFile(for: rawResource)
+        defer { try? FileManager.default.removeItem(at: rawURL) }
+
+        let result = try await Self.readFileHash(
+            rawURL,
+            assetIdentifier: assetIdentifier,
+            resourceLabel: "raw-safe"
+        )
+        return (result.hash, Int64(result.size))
     }
 
     /// Downloads both planned resources to temp files (bounded by the caller's
