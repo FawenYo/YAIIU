@@ -187,6 +187,7 @@ enum HashPipelinePolicy {
     /// Match Immich's finite native hashAssets call size. The experiment waits
     /// for one full batch to return before creating the next batch.
     static let requestDataExperimentBatchSize = 32
+    static let requestDataBatchDrainNanoseconds: UInt64 = 250_000_000
 
     /// Keep PhotoKit writes below the previous six-request fan-out. Even though
     /// hashing itself uses fixed-size buffers, writeData can put substantial
@@ -889,7 +890,9 @@ class HashManager: ObservableObject {
                 // window before the next native batch is created.
                 items.removeAll(keepingCapacity: false)
                 await Task.yield()
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                try? await Task.sleep(
+                    nanoseconds: HashPipelinePolicy.requestDataBatchDrainNanoseconds
+                )
 
                 guard self.isCurrentRun(runID),
                       !self.shouldStop,
