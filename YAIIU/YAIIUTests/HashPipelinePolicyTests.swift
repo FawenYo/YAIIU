@@ -27,6 +27,13 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertEqual(HashPipelinePolicy.requestDataExperimentBatchSize, 32)
     }
 
+    func testRequestDataExperimentIncludesBatchDrainBoundary() {
+        XCTAssertEqual(
+            HashPipelinePolicy.requestDataBatchDrainNanoseconds,
+            250_000_000
+        )
+    }
+
     func testRequestDataExperimentStateAbortsAndResets() {
         let state = RequestDataExperimentState()
 
