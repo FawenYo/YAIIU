@@ -827,7 +827,7 @@ class HashManager: ObservableObject {
                     primaryBytes: cumulativePrimaryBytes
                 )
 
-                let items = await HashService.shared
+                var items = await HashService.shared
                     .hashPrimaryBatchWithRequestData(
                         assetIds: batch,
                         allowNetworkAccess: true
@@ -878,6 +878,28 @@ class HashManager: ObservableObject {
 
                 self.logRequestDataMemory(
                     stage: "batch-end",
+                    batch: batchIndex + 1,
+                    totalBatches: totalBatches,
+                    primaryBytes: cumulativePrimaryBytes
+                )
+
+                // Mirror Immich's cross-runtime/native-call boundary more
+                // closely: persist first, release the finite batch result graph,
+                // yield the executor, and give PhotoKit/Foundation a small idle
+                // window before the next native batch is created.
+                items.removeAll(keepingCapacity: false)
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 250_000_000)
+
+                guard self.isCurrentRun(runID),
+                      !self.shouldStop,
+                      !Task.isCancelled,
+                      !self.requestDataExperimentState.isAborted else {
+                    break
+                }
+
+                self.logRequestDataMemory(
+                    stage: "batch-drain",
                     batch: batchIndex + 1,
                     totalBatches: totalBatches,
                     primaryBytes: cumulativePrimaryBytes
