@@ -2,6 +2,57 @@ import Foundation
 import Photos
 import Combine
 import UIKit
+import Darwin
+
+enum ProcessMemoryMetrics {
+    static func physFootprintBytes() -> UInt64? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size
+                / MemoryLayout<natural_t>.size
+        )
+
+        let result: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(
+                to: integer_t.self,
+                capacity: Int(count)
+            ) {
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(TASK_VM_INFO),
+                    $0,
+                    &count
+                )
+            }
+        }
+
+        guard result == KERN_SUCCESS else { return nil }
+        return info.phys_footprint
+    }
+}
+
+final class RequestDataExperimentState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var aborted = false
+
+    func reset() {
+        lock.lock()
+        aborted = false
+        lock.unlock()
+    }
+
+    func abort() {
+        lock.lock()
+        aborted = true
+        lock.unlock()
+    }
+
+    var isAborted: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return aborted
+    }
+}
 
 /// FIFO admission to a shared resource budget (bytes or slots) with
 /// cancellation-safe async acquisition. Acquisition returns false when the
@@ -133,6 +184,10 @@ final class ResourceBudget: @unchecked Sendable {
 }
 
 enum HashPipelinePolicy {
+    /// Match Immich's finite native hashAssets call size. The experiment waits
+    /// for one full batch to return before creating the next batch.
+    static let requestDataExperimentBatchSize = 32
+
     /// Keep PhotoKit writes below the previous six-request fan-out. Even though
     /// hashing itself uses fixed-size buffers, writeData can put substantial
     /// pressure on framework and file-cache memory when many originals arrive
@@ -440,6 +495,7 @@ class HashManager: ObservableObject {
         bytesPerSecond: HashPipelinePolicy.photoKitTargetBytesPerSecond
     )
     private let memoryPressureThrottle = HashMemoryPressureThrottle()
+    private let requestDataExperimentState = RequestDataExperimentState()
     private var memoryWarningObserver: NSObjectProtocol?
     
     private init() {
@@ -450,11 +506,19 @@ class HashManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self, self.isHashingActive else { return }
-            self.memoryPressureThrottle.signal()
+
+            self.requestDataExperimentState.abort()
+            self.logRequestDataMemory(
+                stage: "memory-warning",
+                batch: nil,
+                totalBatches: nil,
+                primaryBytes: nil
+            )
             logWarning(
-                "Hash pipeline memory pressure: pausing new PhotoKit writes for 10s and serializing downloads for the remainder of this run",
+                "requestData experiment aborted on first iOS memory warning; cancelling in-flight PhotoKit data requests",
                 category: .hash
             )
+            self.hashTask?.cancel()
         }
     }
 
@@ -695,11 +759,10 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Producer-consumer hashing: a download window streams originals to temp
-    /// files (admitted by a shared byte budget so the on-disk footprint stays
-    /// bounded), while a smaller hash gate consumes finished files and deletes
-    /// them right after hashing. Downloads pipeline ahead of hashing instead of
-    /// being serialized behind it.
+    /// Controlled requestData experiment. Only the primary resource uses
+    /// requestData. RAW companions remain on the existing safe temp-file path.
+    /// A memory warning aborts the run immediately instead of changing strategy,
+    /// so the memory trace remains a clean measurement of requestData behavior.
     private func processHashItems(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
@@ -714,63 +777,123 @@ class HashManager: ObservableObject {
 
         isHashingActive = true
         hashTask?.cancel()
+        requestDataExperimentState.reset()
+
+        // Start from the lowest UI/PhotoKit baseline available after PR #90.
+        ThumbnailCache.shared.clearCache()
+        logRequestDataMemory(
+            stage: "pipeline-start",
+            batch: nil,
+            totalBatches: nil,
+            primaryBytes: 0
+        )
 
         hashTask = Task { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
 
-            let identifiersToProcess = self.processingQueue
+            let identifiers = self.processingQueue
             await MainActor.run {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            let budget = Self.hashDiskBudget
-            let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
-            let outstandingGate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
-            let registry = PreparedWorkRegistry()
-            var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
-            // Unbounded handoff is safe because the outstanding-work gate and
-            // byte budget cap how many prepared works can exist at once. A
-            // dropping policy would lose handoffs and leak reservations.
-            let pending = AsyncStream<PreparedHashWork>(bufferingPolicy: .unbounded) { continuation in
-                streamContinuation = continuation
-            }
+            let batchSize = HashPipelinePolicy.requestDataExperimentBatchSize
+            let totalBatches = (identifiers.count + batchSize - 1) / batchSize
+            var cumulativePrimaryBytes: Int64 = 0
 
-            // Producer and consumer are both children of hashTask so cancelling
-            // the run propagates to in-flight downloads, not just hashing.
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else {
-                        streamContinuation.finish()
-                        return
+            for batchIndex in 0..<totalBatches {
+                guard self.isCurrentRun(runID),
+                      !self.shouldStop,
+                      !Task.isCancelled,
+                      !self.requestDataExperimentState.isAborted else {
+                    break
+                }
+
+                let lower = batchIndex * batchSize
+                let upper = Swift.min(lower + batchSize, identifiers.count)
+                let batch = Array(identifiers[lower..<upper])
+
+                await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
+                    for identifier in batch {
+                        self.syncStatusCache[identifier] = .processing
                     }
-                    await self.downloadHashItems(
-                        identifiers: identifiersToProcess,
-                        budget: budget,
-                        outstandingGate: outstandingGate,
-                        registry: registry,
-                        runID: runID,
-                        continuation: streamContinuation
-                    )
+                    self.objectWillChange.send()
                 }
-                group.addTask { [weak self] in
-                    await self?.consumeHashStream(pending, gate: hashGate, runID: runID)
-                }
-                await group.waitForAll()
-            }
-            // A cancelled iterator discards buffered elements; guarantee their
-            // temp files and reservations are released.
-            registry.sweep()
 
-            // Only the still-current run may clear emergency pressure mode.
-            // A stopped/stale run can have uncancellable PhotoKit writes draining
-            // while a replacement run starts; keeping the throttle global prevents
-            // that replacement from immediately restoring three-way writeData.
-            if self.isCurrentRun(runID) {
-                self.memoryPressureThrottle.reset()
+                self.logRequestDataMemory(
+                    stage: "batch-start",
+                    batch: batchIndex + 1,
+                    totalBatches: totalBatches,
+                    primaryBytes: cumulativePrimaryBytes
+                )
+
+                let items = await HashService.shared
+                    .hashPrimaryBatchWithRequestData(
+                        assetIds: batch,
+                        allowNetworkAccess: true
+                    )
+
+                guard self.isCurrentRun(runID),
+                      !self.shouldStop,
+                      !Task.isCancelled,
+                      !self.requestDataExperimentState.isAborted else {
+                    break
+                }
+
+                for item in items {
+                    if let result = item.result {
+                        cumulativePrimaryBytes += result.primaryFileSize
+                        DatabaseManager.shared.saveMultiResourceHashCache(
+                            localIdentifier: result.localIdentifier,
+                            primaryHash: result.primaryHash,
+                            rawHash: result.rawHash,
+                            hasRAW: result.hasRAW,
+                            modificationDate: item.modificationDate
+                        )
+
+                        logDebug(
+                            "requestData experiment hash finished: asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), batch=\(batchIndex + 1)/\(totalBatches)",
+                            category: .hash
+                        )
+                    } else if let error = item.errorDescription {
+                        logError(
+                            "requestData experiment hash failed: asset=\(item.localIdentifier), error=\(error)",
+                            category: .hash
+                        )
+                    }
+
+                    await MainActor.run {
+                        guard self.isCurrentRun(runID) else { return }
+                        self.processedAssetsCount += 1
+                        self.processingProgress =
+                            Double(self.processedAssetsCount)
+                            / Double(self.totalAssetsToProcess)
+                        self.statusMessage =
+                            "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+                        self.syncStatusCache[item.localIdentifier] =
+                            item.result == nil ? .error : .pending
+                        self.objectWillChange.send()
+                    }
+                }
+
+                self.logRequestDataMemory(
+                    stage: "batch-end",
+                    batch: batchIndex + 1,
+                    totalBatches: totalBatches,
+                    primaryBytes: cumulativePrimaryBytes
+                )
             }
 
             await MainActor.run {
-                if self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled {
+                guard self.isCurrentRun(runID) else { return }
+
+                if self.requestDataExperimentState.isAborted {
+                    logError(
+                        "requestData experiment stopped after memory pressure; server check intentionally skipped",
+                        category: .hash
+                    )
+                    self.finishProcessing(runID: runID)
+                } else if !self.shouldStop && !Task.isCancelled {
                     self.statusMessage = "Checking cloud status..."
                     self.startServerCheck(runID: runID)
                 } else {
@@ -778,6 +901,38 @@ class HashManager: ObservableObject {
                 }
             }
         }
+    }
+
+    private func logRequestDataMemory(
+        stage: String,
+        batch: Int?,
+        totalBatches: Int?,
+        primaryBytes: Int64?
+    ) {
+        let batchLabel: String
+        if let batch, let totalBatches {
+            batchLabel = "\(batch)/\(totalBatches)"
+        } else {
+            batchLabel = "-"
+        }
+
+        let primaryMiB = primaryBytes.map {
+            String(format: "%.1f", Double($0) / (1024.0 * 1024.0))
+        } ?? "-"
+
+        guard let footprint = ProcessMemoryMetrics.physFootprintBytes() else {
+            logWarning(
+                "requestData memory: stage=\(stage), batch=\(batchLabel), physFootprintMiB=unavailable, cumulativePrimaryMiB=\(primaryMiB)",
+                category: .hash
+            )
+            return
+        }
+
+        let footprintMiB = Double(footprint) / (1024.0 * 1024.0)
+        logInfo(
+            "requestData memory: stage=\(stage), batch=\(batchLabel), physFootprintBytes=\(footprint), physFootprintMiB=\(String(format: "%.1f", footprintMiB)), cumulativePrimaryMiB=\(primaryMiB)",
+            category: .hash
+        )
     }
 
     /// Downloads planned resources within the budget and publishes prepared
