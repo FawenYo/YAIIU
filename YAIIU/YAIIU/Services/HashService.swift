@@ -144,6 +144,126 @@ enum AssetResourceSelector {
     }
 }
 
+struct ImmichRequestDataSelection: @unchecked Sendable {
+    let resource: PHAssetResource
+    let selectedSize: Int64
+    let candidateDescription: String
+}
+
+enum ImmichRequestDataResourceSelector {
+    static func select(for asset: PHAsset) -> ImmichRequestDataSelection? {
+        let all = PHAssetResource.assetResources(for: asset)
+        let candidates = all.filter {
+            isMediaResource($0)
+                && isValidResourceType($0.type, mediaType: asset.mediaType)
+        }
+
+        guard !candidates.isEmpty else { return nil }
+
+        let selected: PHAssetResource?
+        if candidates.count == 1 {
+            selected = candidates.first
+        } else if let current = candidates.first(where: { isCurrent($0) }) {
+            selected = current
+        } else {
+            selected = candidates.first(where: {
+                isFullSizeResourceType($0.type, mediaType: asset.mediaType)
+            })
+        }
+
+        guard let selected else { return nil }
+
+        let description = candidates.map { resource in
+            let bytes = fileSize(resource)
+            return [
+                "type=\(resource.type.rawValue)",
+                "current=\(isCurrent(resource))",
+                "bytes=\(bytes)",
+                "uti=\(resource.uniformTypeIdentifier)",
+                "name=\(resource.originalFilename)"
+            ].joined(separator: ",")
+        }.joined(separator: " | ")
+
+        return ImmichRequestDataSelection(
+            resource: selected,
+            selectedSize: fileSize(selected),
+            candidateDescription: description
+        )
+    }
+
+    static func isCurrent(_ resource: PHAssetResource) -> Bool {
+        resource.value(forKey: "isCurrent") as? Bool ?? false
+    }
+
+    static func fileSize(_ resource: PHAssetResource) -> Int64 {
+        (resource.value(forKey: "fileSize") as? CLong)
+            .map(Int64.init) ?? 0
+    }
+
+    private static func isMediaResource(_ resource: PHAssetResource) -> Bool {
+        if resource.type == .adjustmentData {
+            return false
+        }
+        if #available(iOS 17, *), resource.type == .photoProxy {
+            return false
+        }
+        return true
+    }
+
+    private static func isValidResourceType(
+        _ type: PHAssetResourceType,
+        mediaType: PHAssetMediaType
+    ) -> Bool {
+        switch mediaType {
+        case .image:
+            return [.photo, .alternatePhoto, .fullSizePhoto].contains(type)
+        case .video:
+            return [.video, .fullSizeVideo, .fullSizePairedVideo].contains(type)
+        default:
+            return false
+        }
+    }
+
+    private static func isFullSizeResourceType(
+        _ type: PHAssetResourceType,
+        mediaType: PHAssetMediaType
+    ) -> Bool {
+        switch mediaType {
+        case .image:
+            return type == .fullSizePhoto
+        case .video:
+            return type == .fullSizeVideo
+        default:
+            return false
+        }
+    }
+}
+
+final class RequestDataHashAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasher = Insecure.SHA1()
+    private var totalBytes = 0
+
+    func append(_ data: Data) {
+        lock.lock()
+        totalBytes += data.count
+        hasher.update(data: data)
+        lock.unlock()
+    }
+
+    func finalize() -> (hash: String, size: Int64) {
+        lock.lock()
+        let digest = Data(hasher.finalize())
+        let bytes = totalBytes
+        lock.unlock()
+
+        return (
+            digest.map { String(format: "%02x", $0) }.joined(),
+            Int64(bytes)
+        )
+    }
+}
+
 /// Pre-downloaded temp files for one asset's planned resources.
 struct AssetTempFiles: Sendable {
     let plan: AssetResourcePlan
@@ -509,16 +629,24 @@ class HashService {
 
         return await withTaskCancellationHandler {
             guard !Task.isCancelled else { return nil }
-            guard let resources = AssetResourceSelector.select(for: asset) else {
+            guard let selection = ImmichRequestDataResourceSelector.select(for: asset) else {
                 return RequestDataPrimaryItem(
                     localIdentifier: asset.localIdentifier,
                     primaryHash: nil,
                     primaryFileSize: 0,
                     modificationDate: asset.modificationDate,
                     hasRAWCompanion: false,
-                    errorDescription: "Cannot get asset resource"
+                    errorDescription: "Cannot get Immich-compatible asset resource"
                 )
             }
+
+            let safeResources = AssetResourceSelector.select(for: asset)
+            let hasRAWCompanion = safeResources?.rawResource != nil
+
+            logDebug(
+                "Immich resource selection: asset=\(asset.localIdentifier), mediaType=\(asset.mediaType.rawValue), selectedType=\(selection.resource.type.rawValue), selectedCurrent=\(ImmichRequestDataResourceSelector.isCurrent(selection.resource)), selectedBytes=\(selection.selectedSize), candidates=[\(selection.candidateDescription)]",
+                category: .hash
+            )
 
             let options = PHAssetResourceRequestOptions()
             options.isNetworkAccessAllowed = allowNetworkAccess
@@ -526,15 +654,13 @@ class HashService {
 
             let primary: (hash: String, size: Int64, error: String?) =
                 await withCheckedContinuation { continuation in
-                    var hasher = Insecure.SHA1()
-                    var totalBytes = 0
+                    let accumulator = RequestDataHashAccumulator()
 
                     let requestID = PHAssetResourceManager.default().requestData(
-                        for: resources.primaryResource,
+                        for: selection.resource,
                         options: options,
                         dataReceivedHandler: { data in
-                            totalBytes += data.count
-                            hasher.update(data: data)
+                            accumulator.append(data)
                         },
                         completionHandler: { error in
                             switch error {
@@ -550,13 +676,10 @@ class HashService {
                                         ("", 0, error.localizedDescription)
                                 )
                             case nil:
-                                let digest = Data(hasher.finalize())
-                                let hash = digest
-                                    .map { String(format: "%02x", $0) }
-                                    .joined()
+                                let result = accumulator.finalize()
                                 continuation.resume(
                                     returning:
-                                        (hash, Int64(totalBytes), nil)
+                                        (result.hash, result.size, nil)
                                 )
                             }
                         }
@@ -571,8 +694,8 @@ class HashService {
                     localIdentifier: asset.localIdentifier,
                     primaryHash: nil,
                     primaryFileSize: 0,
-                    modificationDate: resources.plan.modificationDate,
-                    hasRAWCompanion: resources.rawResource != nil,
+                    modificationDate: asset.modificationDate,
+                    hasRAWCompanion: hasRAWCompanion,
                     errorDescription: error
                 )
             }
@@ -590,8 +713,8 @@ class HashService {
                 localIdentifier: asset.localIdentifier,
                 primaryHash: primary.hash,
                 primaryFileSize: primary.size,
-                modificationDate: resources.plan.modificationDate,
-                hasRAWCompanion: resources.rawResource != nil,
+                modificationDate: asset.modificationDate,
+                hasRAWCompanion: hasRAWCompanion,
                 errorDescription: nil
             )
         } onCancel: {
