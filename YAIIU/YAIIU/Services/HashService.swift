@@ -643,10 +643,31 @@ class HashService {
             let safeResources = AssetResourceSelector.select(for: asset)
             let hasRAWCompanion = safeResources?.rawResource != nil
 
+            let selectedIsRAW = HashService.isRAWResource(selection.resource)
+
             logDebug(
-                "Immich resource selection: asset=\(asset.localIdentifier), mediaType=\(asset.mediaType.rawValue), selectedType=\(selection.resource.type.rawValue), selectedCurrent=\(ImmichRequestDataResourceSelector.isCurrent(selection.resource)), selectedBytes=\(selection.selectedSize), candidates=[\(selection.candidateDescription)]",
+                "Immich resource selection: asset=\(asset.localIdentifier), mediaType=\(asset.mediaType.rawValue), selectedType=\(selection.resource.type.rawValue), selectedCurrent=\(ImmichRequestDataResourceSelector.isCurrent(selection.resource)), selectedIsRAW=\(selectedIsRAW), selectedBytes=\(selection.selectedSize), candidates=[\(selection.candidateDescription)]",
                 category: .hash
             )
+
+            // We want Immich's selection decision in the diagnostics, but RAW
+            // must not contaminate the primary requestData memory experiment.
+            // If Immich would select a RAW/alternate resource as current, record
+            // that fact and skip this asset rather than streaming the RAW bytes.
+            if selectedIsRAW {
+                logWarning(
+                    "Immich resource selection chose RAW; skipping requestData primary experiment for asset=\(asset.localIdentifier), selectedType=\(selection.resource.type.rawValue), selectedBytes=\(selection.selectedSize)",
+                    category: .hash
+                )
+                return RequestDataPrimaryItem(
+                    localIdentifier: asset.localIdentifier,
+                    primaryHash: nil,
+                    primaryFileSize: 0,
+                    modificationDate: asset.modificationDate,
+                    hasRAWCompanion: true,
+                    errorDescription: "Immich selector chose RAW; excluded from requestData experiment"
+                )
+            }
 
             let options = PHAssetResourceRequestOptions()
             options.isNetworkAccessAllowed = allowNetworkAccess
