@@ -509,9 +509,9 @@ class HashService {
 
         guard !Task.isCancelled else { return [] }
 
-        // Phase 2 preserves current-main RAW semantics only after every primary
-        // requestData stream in this batch has stopped. RAW uses the stable
-        // temp-file hasher and is deliberately serialized.
+        // Exact Immich comparison: native hashAssets hashes one selected
+        // resource per PHAsset. Do not hash RAW companions here; doing so adds
+        // extra PhotoKit writeData work that Immich's hashAssets does not do.
         var finalItems: [PrimaryHashBatchItem] = []
         finalItems.reserveCapacity(assetIds.count)
 
@@ -532,31 +532,6 @@ class HashService {
                 continue
             }
 
-            var rawHash: String?
-            var rawSize: Int64?
-
-            if item.hasRAWCompanion {
-                do {
-                    let raw = try await hashRawCompanionSafely(
-                        assetIdentifier: item.localIdentifier
-                    )
-                    rawHash = raw.hash
-                    rawSize = raw.size
-                } catch {
-                    guard !Task.isCancelled else { break }
-                    finalItems.append(
-                        PrimaryHashBatchItem(
-                            localIdentifier: item.localIdentifier,
-                            result: nil,
-                            modificationDate: item.modificationDate,
-                            errorDescription:
-                                "RAW safe-path failed: \(error.localizedDescription)"
-                        )
-                    )
-                    continue
-                }
-            }
-
             finalItems.append(
                 PrimaryHashBatchItem(
                     localIdentifier: item.localIdentifier,
@@ -564,8 +539,8 @@ class HashService {
                         localIdentifier: item.localIdentifier,
                         primaryHash: primaryHash,
                         primaryFileSize: item.primaryFileSize,
-                        rawHash: rawHash,
-                        rawFileSize: rawSize,
+                        rawHash: nil,
+                        rawFileSize: nil,
                         hasRAW: item.hasRAWCompanion,
                         calculatedAt: Date()
                     ),
@@ -741,36 +716,6 @@ class HashService {
         } onCancel: {
             requestRef.cancel()
         }
-    }
-
-    private func hashRawCompanionSafely(
-        assetIdentifier: String
-    ) async throws -> (hash: String, size: Int64) {
-        let fetch = PHAsset.fetchAssets(
-            withLocalIdentifiers: [assetIdentifier],
-            options: nil
-        )
-        guard let asset = fetch.firstObject,
-              let rawResource = AssetResourceSelector.select(for: asset)?.rawResource else {
-            throw NSError(
-                domain: "HashService",
-                code: 404,
-                userInfo: [
-                    NSLocalizedDescriptionKey:
-                        "RAW companion disappeared before safe hashing"
-                ]
-            )
-        }
-
-        let rawURL = try await ResourceFileAccess.tempFile(for: rawResource)
-        defer { try? FileManager.default.removeItem(at: rawURL) }
-
-        let result = try await Self.readFileHash(
-            rawURL,
-            assetIdentifier: assetIdentifier,
-            resourceLabel: "raw-safe"
-        )
-        return (result.hash, Int64(result.size))
     }
 
     /// Downloads both planned resources to temp files (bounded by the caller's
