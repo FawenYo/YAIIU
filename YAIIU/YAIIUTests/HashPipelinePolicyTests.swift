@@ -23,6 +23,20 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
+    func testRequestDataExperimentUsesImmichBatchSize() {
+        XCTAssertEqual(HashPipelinePolicy.requestDataExperimentBatchSize, 32)
+    }
+
+    func testRequestDataExperimentStateAbortsAndResets() {
+        let state = RequestDataExperimentState()
+
+        XCTAssertFalse(state.isAborted)
+        state.abort()
+        XCTAssertTrue(state.isAborted)
+        state.reset()
+        XCTAssertFalse(state.isAborted)
+    }
+
     func testProcessesHashOperationsWithBoundedConcurrency() async {
         let probe = ConcurrencyProbe()
         let limit = 3
