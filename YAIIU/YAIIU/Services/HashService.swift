@@ -13,7 +13,7 @@ enum PhotoSyncStatus: String {
 }
 
 /// Result containing hashes for all resources of an asset (JPEG and RAW if present)
-struct MultiResourceHashResult {
+struct MultiResourceHashResult: Sendable {
     let localIdentifier: String
     let primaryHash: String
     let primaryFileSize: Int64
@@ -403,7 +403,33 @@ class HashService {
         rawGate: ResourceBudget
     ) async -> PrimaryHashBatchItem? {
         final class RequestRef: @unchecked Sendable {
-            var id: PHAssetResourceDataRequestID?
+            private let lock = NSLock()
+            private var id: PHAssetResourceDataRequestID?
+            private var cancelled = false
+
+            func install(_ id: PHAssetResourceDataRequestID) {
+                lock.lock()
+                if cancelled {
+                    lock.unlock()
+                    PHAssetResourceManager.default().cancelDataRequest(id)
+                    return
+                }
+                self.id = id
+                lock.unlock()
+            }
+
+            func cancel() {
+                lock.lock()
+                cancelled = true
+                let requestID = id
+                id = nil
+                lock.unlock()
+
+                if let requestID {
+                    PHAssetResourceManager.default()
+                        .cancelDataRequest(requestID)
+                }
+            }
         }
 
         let requestRef = RequestRef()
@@ -428,7 +454,7 @@ class HashService {
                 var hasher = Insecure.SHA1()
                 var totalBytes = 0
 
-                requestRef.id = PHAssetResourceManager.default().requestData(
+                let requestID = PHAssetResourceManager.default().requestData(
                     for: resources.primaryResource,
                     options: options,
                     dataReceivedHandler: { data in
@@ -457,6 +483,7 @@ class HashService {
                         }
                     }
                 )
+                requestRef.install(requestID)
             }
 
             guard !Task.isCancelled else { return nil }
@@ -525,9 +552,7 @@ class HashService {
                 errorDescription: nil
             )
         } onCancel: {
-            if let requestID = requestRef.id {
-                PHAssetResourceManager.default().cancelDataRequest(requestID)
-            }
+            requestRef.cancel()
         }
     }
 
