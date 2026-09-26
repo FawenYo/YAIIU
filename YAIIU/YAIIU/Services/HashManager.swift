@@ -844,16 +844,13 @@ class HashManager: ObservableObject {
                 for item in items {
                     if let result = item.result {
                         cumulativePrimaryBytes += result.primaryFileSize
-                        DatabaseManager.shared.saveMultiResourceHashCache(
-                            localIdentifier: result.localIdentifier,
-                            primaryHash: result.primaryHash,
-                            rawHash: result.rawHash,
-                            hasRAW: result.hasRAW,
-                            modificationDate: item.modificationDate
-                        )
 
+                        // Read-only experiment: never write an Immich-selected
+                        // checksum into YAIIU's production cache because the
+                        // selected resource may differ from the production
+                        // full-size resource used for server matching.
                         logDebug(
-                            "requestData experiment hash finished: asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), batch=\(batchIndex + 1)/\(totalBatches)",
+                            "requestData experiment hash finished (not persisted): asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), batch=\(batchIndex + 1)/\(totalBatches)",
                             category: .hash
                         )
                     } else if let error = item.errorDescription {
@@ -885,7 +882,7 @@ class HashManager: ObservableObject {
                 )
 
                 // Mirror Immich's cross-runtime/native-call boundary more
-                // closely: persist first, release the finite batch result graph,
+                // closely: consume/log the finite batch, release its result graph,
                 // yield the executor, and give PhotoKit/Foundation a small idle
                 // window before the next native batch is created.
                 items.removeAll(keepingCapacity: false)
@@ -925,9 +922,11 @@ class HashManager: ObservableObject {
                         totalBatches: nil,
                         primaryBytes: cumulativePrimaryBytes
                     )
-                    self.isHashingActive = false
-                    self.statusMessage = "Checking cloud status..."
-                    self.startServerCheck(runID: runID)
+                    logInfo(
+                        "Immich requestData experiment completed without persisting experimental hashes; server check intentionally skipped",
+                        category: .hash
+                    )
+                    self.finishProcessing(runID: runID)
                 } else {
                     self.finishProcessing(runID: runID)
                 }
