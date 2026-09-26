@@ -760,8 +760,9 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Controlled requestData experiment. Only the primary resource uses
-    /// requestData. RAW companions remain on the existing safe temp-file path.
+    /// Controlled Immich-style requestData experiment. Exactly one selected
+    /// current media resource is hashed per PHAsset. RAW companions are not
+    /// separately hashed and no hash/server database state is written.
     /// A memory warning aborts the run immediately instead of changing strategy,
     /// so the memory trace remains a clean measurement of requestData behavior.
     private func processHashItems(runID: UUID) {
@@ -850,7 +851,7 @@ class HashManager: ObservableObject {
                         // selected resource may differ from the production
                         // full-size resource used for server matching.
                         logDebug(
-                            "requestData experiment hash finished (not persisted): asset=\(result.localIdentifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), batch=\(batchIndex + 1)/\(totalBatches)",
+                            "requestData experiment hash finished (not persisted): asset=\(result.localIdentifier), selectedBytes=\(result.primaryFileSize), rawCompanionPresent=\(result.hasRAW), batch=\(batchIndex + 1)/\(totalBatches)",
                             category: .hash
                         )
                     } else if let error = item.errorDescription {
@@ -911,7 +912,7 @@ class HashManager: ObservableObject {
 
                 if self.requestDataExperimentState.isAborted {
                     logError(
-                        "requestData experiment stopped after memory pressure; server check intentionally skipped",
+                        "requestData experiment stopped after memory pressure; hash cache and server state intentionally unchanged",
                         category: .hash
                     )
                     self.finishProcessing(runID: runID)
