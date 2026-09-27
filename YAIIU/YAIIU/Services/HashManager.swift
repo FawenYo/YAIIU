@@ -31,7 +31,7 @@ enum ProcessMemoryMetrics {
     }
 }
 
-final class RequestDataExperimentState: @unchecked Sendable {
+final class RequestDataPipelineState: @unchecked Sendable {
     private let lock = NSLock()
     private var aborted = false
 
@@ -184,10 +184,14 @@ final class ResourceBudget: @unchecked Sendable {
 }
 
 enum HashPipelinePolicy {
-    /// Match Immich's finite native hashAssets call size. The experiment waits
-    /// for one full batch to return before creating the next batch.
-    static let requestDataExperimentBatchSize = 32
-    static let requestDataBatchDrainNanoseconds: UInt64 = 250_000_000
+    /// Keep the local-only requestData pass finite while allowing enough
+    /// concurrency to amortize PhotoKit overhead.
+    static let requestDataLocalBatchSize = 32
+
+    /// Network-backed PhotoKit requests have a much longer tail. Keep this
+    /// queue small so one slow iCloud asset does not block dozens of local
+    /// assets or create unnecessary memory/network pressure.
+    static let requestDataNetworkBatchSize = 4
 
     /// Keep PhotoKit writes below the previous six-request fan-out. Even though
     /// hashing itself uses fixed-size buffers, writeData can put substantial
@@ -496,7 +500,7 @@ class HashManager: ObservableObject {
         bytesPerSecond: HashPipelinePolicy.photoKitTargetBytesPerSecond
     )
     private let memoryPressureThrottle = HashMemoryPressureThrottle()
-    private let requestDataExperimentState = RequestDataExperimentState()
+    private let requestDataPipelineState = RequestDataPipelineState()
     private var memoryWarningObserver: NSObjectProtocol?
     
     private init() {
@@ -508,7 +512,7 @@ class HashManager: ObservableObject {
         ) { [weak self] _ in
             guard let self, self.isHashingActive else { return }
 
-            self.requestDataExperimentState.abort()
+            self.requestDataPipelineState.abort()
             self.logRequestDataMemory(
                 stage: "memory-warning",
                 batch: nil,
@@ -516,7 +520,7 @@ class HashManager: ObservableObject {
                 primaryBytes: nil
             )
             logWarning(
-                "requestData experiment aborted on first iOS memory warning; cancelling in-flight PhotoKit data requests",
+                "requestData pipeline aborted on first iOS memory warning; cancelling in-flight PhotoKit data requests",
                 category: .hash
             )
             self.hashTask?.cancel()
@@ -577,40 +581,69 @@ class HashManager: ObservableObject {
         shouldClearCache: Bool = false
     ) {
         guard !isStopping && !isHashingActive && !isCheckingActive else { return }
-
-        // Diagnostic-only branch: deliberately ignore production cache
-        // invalidation and force-reprocess side effects. The experiment must be
-        // repeatable against the same library without changing YAIIU state.
-        _ = snapshotsToInvalidate
-        _ = shouldClearCache
-
-        guard let runID = HashPipelinePolicy.admitIfIdle(
-            using: runState,
-            performSideEffects: { _ in }
-        ) else { return }
+        guard let runID = HashPipelinePolicy.admitIfIdle(using: runState, performSideEffects: { _ in
+            if shouldClearCache {
+                DatabaseManager.shared.clearHashCache()
+                syncStatusCache.removeAll()
+            }
+            if let snapshotsToInvalidate {
+                DatabaseManager.shared.resetCacheForModifiedAssets(snapshots: snapshotsToInvalidate)
+            }
+        }) else { return }
 
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
         pendingICloudIdUpdates = []
-        statusMessage = "Preparing requestData experiment..."
+        statusMessage = "Preparing..."
         processingProgress = 0
         processedAssetsCount = 0
-        totalAssetsToProcess = identifiers.count
+        totalAssetsToProcess = 0
 
-        logInfo(
-            "Immich requestData experiment started: identifiers=\(identifiers.count), productionCacheBypassed=true, invalidationBypassed=true, iCloudMatchingBypassed=true",
-            category: .hash
-        )
+        logInfo("Hash pipeline started: identifiers=\(identifiers.count)", category: .hash)
 
-        guard !identifiers.isEmpty else {
-            finishProcessing(runID: runID)
-            return
+        // The cache is the first line of defence for large libraries: only new
+        // or invalidated assets should ever reach PhotoKit hashing.
+        DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
+            guard let self else { return }
+            logInfo(
+                "Hash cache lookup complete: total=\(identifiers.count), needingHash=\(needingHash.count)",
+                category: .hash
+            )
+
+            Task { @MainActor in
+                guard self.isCurrentRun(runID), !self.shouldStop else {
+                    self.finishProcessing(runID: runID)
+                    return
+                }
+
+                if needingHash.isEmpty {
+                    self.statusMessage = "Checking cloud status..."
+                    self.startServerCheck(runID: runID)
+                    return
+                }
+
+                self.tryICloudIdMatching(identifiers: needingHash, runID: runID) { remainingNeedingHash in
+                    guard self.isCurrentRun(runID), !self.shouldStop else {
+                        self.finishProcessing(runID: runID)
+                        return
+                    }
+
+                    if remainingNeedingHash.isEmpty {
+                        self.statusMessage = "Checking cloud status..."
+                        self.startServerCheck(runID: runID)
+                        return
+                    }
+
+                    self.processingQueue = remainingNeedingHash
+                    self.totalAssetsToProcess = remainingNeedingHash.count
+                    self.processedAssetsCount = 0
+                    self.processingProgress = 0
+                    self.statusMessage = "Analyzing local photos (0/\(remainingNeedingHash.count))..."
+                    self.processHashItems(runID: runID)
+                }
+            }
         }
-
-        processingQueue = identifiers
-        statusMessage = "Analyzing photos (0/\(identifiers.count))..."
-        processHashItems(runID: runID)
     }
 
     private func tryICloudIdMatching(identifiers: [String], runID: UUID, completion: @escaping ([String]) -> Void) {
@@ -743,11 +776,10 @@ class HashManager: ObservableObject {
         }
     }
     
-    /// Controlled Immich-style requestData experiment. Exactly one selected
-    /// current media resource is hashed per PHAsset. RAW companions are not
-    /// separately hashed and no hash/server database state is written.
-    /// A memory warning aborts the run immediately instead of changing strategy,
-    /// so the memory trace remains a clean measurement of requestData behavior.
+    /// Production requestData hashing. The first pass is local-only so iCloud
+    /// assets cannot head-of-line block the fast path. Only assets that fail the
+    /// local pass are retried in a small network-enabled queue. Successful
+    /// hashes are persisted immediately, making the run resumable via cache.
     private func processHashItems(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
@@ -755,15 +787,15 @@ class HashManager: ObservableObject {
         }
 
         guard !processingQueue.isEmpty else {
-            finishProcessing(runID: runID)
+            statusMessage = "Checking cloud status..."
+            startServerCheck(runID: runID)
             return
         }
 
         isHashingActive = true
         hashTask?.cancel()
-        requestDataExperimentState.reset()
+        requestDataPipelineState.reset()
 
-        // Start from the lowest UI/PhotoKit baseline available after PR #90.
         ThumbnailCache.shared.clearCache()
         logRequestDataMemory(
             stage: "pipeline-start",
@@ -780,95 +812,202 @@ class HashManager: ObservableObject {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            let batchSize = HashPipelinePolicy.requestDataExperimentBatchSize
-            let totalBatches = (identifiers.count + batchSize - 1) / batchSize
             var cumulativePrimaryBytes: Int64 = 0
+            var networkIdentifiers: [String] = []
+            networkIdentifiers.reserveCapacity(identifiers.count / 8)
 
-            for batchIndex in 0..<totalBatches {
+            let localBatchSize = HashPipelinePolicy.requestDataLocalBatchSize
+            let localBatchCount = (identifiers.count + localBatchSize - 1) / localBatchSize
+
+            for batchIndex in 0..<localBatchCount {
                 guard self.isCurrentRun(runID),
                       !self.shouldStop,
                       !Task.isCancelled,
-                      !self.requestDataExperimentState.isAborted else {
+                      !self.requestDataPipelineState.isAborted else {
                     break
                 }
 
-                let lower = batchIndex * batchSize
-                let upper = Swift.min(lower + batchSize, identifiers.count)
+                let lower = batchIndex * localBatchSize
+                let upper = Swift.min(lower + localBatchSize, identifiers.count)
                 let batch = Array(identifiers[lower..<upper])
 
                 self.logRequestDataMemory(
-                    stage: "batch-start",
+                    stage: "local-batch-start",
                     batch: batchIndex + 1,
-                    totalBatches: totalBatches,
+                    totalBatches: localBatchCount,
                     primaryBytes: cumulativePrimaryBytes
                 )
 
-                var items = await HashService.shared
-                    .hashPrimaryBatchWithRequestData(
-                        assetIds: batch,
-                        allowNetworkAccess: true
-                    )
+                var items = await HashService.shared.hashPrimaryBatchWithRequestData(
+                    assetIds: batch,
+                    allowNetworkAccess: false
+                )
 
                 guard self.isCurrentRun(runID),
                       !self.shouldStop,
                       !Task.isCancelled,
-                      !self.requestDataExperimentState.isAborted else {
+                      !self.requestDataPipelineState.isAborted else {
                     break
                 }
 
                 for item in items {
-                    if item.hash != nil {
+                    if let hash = item.hash {
                         cumulativePrimaryBytes += item.fileSize
-                        logDebug(
-                            "requestData experiment hash finished (not persisted): asset=\(item.localIdentifier), selectedBytes=\(item.fileSize), selectedIsRAW=\(item.selectedIsRAW), batch=\(batchIndex + 1)/\(totalBatches)",
-                            category: .hash
+                        DatabaseManager.shared.saveMultiResourceHashCache(
+                            localIdentifier: item.localIdentifier,
+                            primaryHash: hash,
+                            rawHash: nil,
+                            hasRAW: false,
+                            modificationDate: item.modificationDate
                         )
-                    } else if let error = item.errorDescription {
-                        logError(
-                            "requestData experiment hash failed: asset=\(item.localIdentifier), error=\(error)",
-                            category: .hash
-                        )
-                    }
 
-                    await MainActor.run {
-                        guard self.isCurrentRun(runID) else { return }
-                        self.processedAssetsCount += 1
-                        self.processingProgress =
-                            Double(self.processedAssetsCount)
-                            / Double(self.totalAssetsToProcess)
-                        self.statusMessage =
-                            "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+                        logDebug(
+                            "requestData local hash persisted: asset=\(item.localIdentifier), bytes=\(item.fileSize), selectedIsRAW=\(item.selectedIsRAW), batch=\(batchIndex + 1)/\(localBatchCount)",
+                            category: .hash
+                        )
+
+                        await MainActor.run {
+                            guard self.isCurrentRun(runID) else { return }
+                            self.processedAssetsCount += 1
+                            self.processingProgress =
+                                Double(self.processedAssetsCount)
+                                / Double(self.totalAssetsToProcess)
+                            self.statusMessage =
+                                "Analyzing local photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+                            self.syncStatusCache[item.localIdentifier] = .pending
+                            self.objectWillChange.send()
+                        }
+                    } else {
+                        networkIdentifiers.append(item.localIdentifier)
+                        logDebug(
+                            "requestData local miss deferred to network queue: asset=\(item.localIdentifier), reason=\(item.errorDescription ?? "local resource unavailable")",
+                            category: .hash
+                        )
                     }
                 }
 
+                items.removeAll(keepingCapacity: false)
+                await Task.yield()
+
                 self.logRequestDataMemory(
-                    stage: "batch-end",
+                    stage: "local-batch-end",
                     batch: batchIndex + 1,
-                    totalBatches: totalBatches,
+                    totalBatches: localBatchCount,
+                    primaryBytes: cumulativePrimaryBytes
+                )
+            }
+
+            guard self.isCurrentRun(runID),
+                  !self.shouldStop,
+                  !Task.isCancelled,
+                  !self.requestDataPipelineState.isAborted else {
+                await MainActor.run {
+                    self.finishProcessing(runID: runID)
+                }
+                return
+            }
+
+            if !networkIdentifiers.isEmpty {
+                logInfo(
+                    "Local requestData pass complete: local=\(identifiers.count - networkIdentifiers.count), networkDeferred=\(networkIdentifiers.count)",
+                    category: .hash
+                )
+                await MainActor.run {
+                    guard self.isCurrentRun(runID) else { return }
+                    self.statusMessage =
+                        "Downloading iCloud photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+                }
+            }
+
+            let networkBatchSize = HashPipelinePolicy.requestDataNetworkBatchSize
+            let networkBatchCount =
+                (networkIdentifiers.count + networkBatchSize - 1) / networkBatchSize
+
+            for batchIndex in 0..<networkBatchCount {
+                guard self.isCurrentRun(runID),
+                      !self.shouldStop,
+                      !Task.isCancelled,
+                      !self.requestDataPipelineState.isAborted else {
+                    break
+                }
+
+                let lower = batchIndex * networkBatchSize
+                let upper = Swift.min(
+                    lower + networkBatchSize,
+                    networkIdentifiers.count
+                )
+                let batch = Array(networkIdentifiers[lower..<upper])
+
+                self.logRequestDataMemory(
+                    stage: "network-batch-start",
+                    batch: batchIndex + 1,
+                    totalBatches: networkBatchCount,
                     primaryBytes: cumulativePrimaryBytes
                 )
 
-                // Mirror Immich's cross-runtime/native-call boundary more
-                // closely: consume/log the finite batch, release its result graph,
-                // yield the executor, and give PhotoKit/Foundation a small idle
-                // window before the next native batch is created.
-                items.removeAll(keepingCapacity: false)
-                await Task.yield()
-                try? await Task.sleep(
-                    nanoseconds: HashPipelinePolicy.requestDataBatchDrainNanoseconds
+                var items = await HashService.shared.hashPrimaryBatchWithRequestData(
+                    assetIds: batch,
+                    allowNetworkAccess: true
                 )
 
                 guard self.isCurrentRun(runID),
                       !self.shouldStop,
                       !Task.isCancelled,
-                      !self.requestDataExperimentState.isAborted else {
+                      !self.requestDataPipelineState.isAborted else {
                     break
                 }
 
+                for item in items {
+                    if let hash = item.hash {
+                        cumulativePrimaryBytes += item.fileSize
+                        DatabaseManager.shared.saveMultiResourceHashCache(
+                            localIdentifier: item.localIdentifier,
+                            primaryHash: hash,
+                            rawHash: nil,
+                            hasRAW: false,
+                            modificationDate: item.modificationDate
+                        )
+
+                        logDebug(
+                            "requestData network hash persisted: asset=\(item.localIdentifier), bytes=\(item.fileSize), selectedIsRAW=\(item.selectedIsRAW), batch=\(batchIndex + 1)/\(networkBatchCount)",
+                            category: .hash
+                        )
+
+                        await MainActor.run {
+                            guard self.isCurrentRun(runID) else { return }
+                            self.processedAssetsCount += 1
+                            self.processingProgress =
+                                Double(self.processedAssetsCount)
+                                / Double(self.totalAssetsToProcess)
+                            self.statusMessage =
+                                "Downloading iCloud photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+                            self.syncStatusCache[item.localIdentifier] = .pending
+                            self.objectWillChange.send()
+                        }
+                    } else {
+                        logError(
+                            "requestData network hash failed: asset=\(item.localIdentifier), error=\(item.errorDescription ?? "unknown")",
+                            category: .hash
+                        )
+                        await MainActor.run {
+                            guard self.isCurrentRun(runID) else { return }
+                            self.processedAssetsCount += 1
+                            self.processingProgress =
+                                Double(self.processedAssetsCount)
+                                / Double(self.totalAssetsToProcess)
+                            self.syncStatusCache[item.localIdentifier] = .error
+                            self.objectWillChange.send()
+                        }
+                    }
+                }
+
+                items.removeAll(keepingCapacity: false)
+                await Task.yield()
+
                 self.logRequestDataMemory(
-                    stage: "batch-drain",
+                    stage: "network-batch-end",
                     batch: batchIndex + 1,
-                    totalBatches: totalBatches,
+                    totalBatches: networkBatchCount,
                     primaryBytes: cumulativePrimaryBytes
                 )
             }
@@ -876,9 +1015,9 @@ class HashManager: ObservableObject {
             await MainActor.run {
                 guard self.isCurrentRun(runID) else { return }
 
-                if self.requestDataExperimentState.isAborted {
+                if self.requestDataPipelineState.isAborted {
                     logError(
-                        "requestData experiment stopped after memory pressure; hash cache and server state intentionally unchanged",
+                        "requestData pipeline stopped after memory pressure; completed hashes remain persisted for resume",
                         category: .hash
                     )
                     self.finishProcessing(runID: runID)
@@ -889,11 +1028,8 @@ class HashManager: ObservableObject {
                         totalBatches: nil,
                         primaryBytes: cumulativePrimaryBytes
                     )
-                    logInfo(
-                        "Immich requestData experiment completed read-only: production hash cache, server state, and sync status were not modified",
-                        category: .hash
-                    )
-                    self.finishProcessing(runID: runID)
+                    self.statusMessage = "Checking cloud status..."
+                    self.startServerCheck(runID: runID)
                 } else {
                     self.finishProcessing(runID: runID)
                 }

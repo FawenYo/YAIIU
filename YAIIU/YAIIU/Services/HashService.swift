@@ -362,9 +362,9 @@ final class PreparedWorkRegistry: @unchecked Sendable {
 
 
 /// Result of hashing exactly one Immich-selected PhotoKit resource.
-/// This diagnostic type is intentionally separate from YAIIU's production
-/// multi-resource hash model and is never persisted.
-struct RequestDataExperimentItem: Sendable {
+/// The production pipeline persists successful hashes immediately and retries
+/// local misses through a separate network-enabled queue.
+struct RequestDataHashItem: Sendable {
     let localIdentifier: String
     let hash: String?
     let fileSize: Int64
@@ -421,19 +421,18 @@ class HashService {
         return rawIdentifiers.contains { uti.contains($0) }
     }
 
-    /// Controlled Immich comparison: each invocation owns one finite
-    /// 32-ID batch and hashes exactly one resource per PHAsset using the same
-    /// resource-selection order as Immich. No RAW companion or production
-    /// multi-resource work is added here.
+    /// Hashes one finite batch using Immich-compatible resource selection.
+    /// The caller chooses whether PhotoKit may use the network, allowing the
+    /// production pipeline to keep local and iCloud-backed work separate.
     func hashPrimaryBatchWithRequestData(
         assetIds: [String],
         allowNetworkAccess: Bool
-    ) async -> [RequestDataExperimentItem] {
+    ) async -> [RequestDataHashItem] {
         guard !assetIds.isEmpty else { return [] }
 
         let nativeTask = Task.detached(
             priority: .userInitiated
-        ) { [weak self] () -> [RequestDataExperimentItem] in
+        ) { [weak self] () -> [RequestDataHashItem] in
             guard let self else { return [] }
             return await self.hashPrimaryBatchWithRequestDataImpl(
                 assetIds: assetIds,
@@ -451,7 +450,7 @@ class HashService {
     private func hashPrimaryBatchWithRequestDataImpl(
         assetIds: [String],
         allowNetworkAccess: Bool
-    ) async -> [RequestDataExperimentItem] {
+    ) async -> [RequestDataHashItem] {
         var missingAssetIds = Set(assetIds)
         var assets: [PHAsset] = []
         assets.reserveCapacity(assetIds.count)
@@ -472,10 +471,10 @@ class HashService {
         guard !Task.isCancelled else { return [] }
 
         var items = await withTaskGroup(
-            of: RequestDataExperimentItem?.self,
-            returning: [RequestDataExperimentItem].self
+            of: RequestDataHashItem?.self,
+            returning: [RequestDataHashItem].self
         ) { group in
-            var results: [RequestDataExperimentItem] = []
+            var results: [RequestDataHashItem] = []
             results.reserveCapacity(assetIds.count)
 
             for asset in assets {
@@ -501,7 +500,7 @@ class HashService {
 
         for missing in missingAssetIds {
             items.append(
-                RequestDataExperimentItem(
+                RequestDataHashItem(
                     localIdentifier: missing,
                     hash: nil,
                     fileSize: 0,
@@ -518,7 +517,7 @@ class HashService {
     private func hashPrimaryAssetWithRequestData(
         _ asset: PHAsset,
         allowNetworkAccess: Bool
-    ) async -> RequestDataExperimentItem? {
+    ) async -> RequestDataHashItem? {
         final class RequestRef: @unchecked Sendable {
             private let lock = NSLock()
             private var id: PHAssetResourceDataRequestID?
@@ -557,7 +556,7 @@ class HashService {
             guard let selection = ImmichRequestDataResourceSelector.select(
                 for: asset
             ) else {
-                return RequestDataExperimentItem(
+                return RequestDataHashItem(
                     localIdentifier: asset.localIdentifier,
                     hash: nil,
                     fileSize: 0,
@@ -618,7 +617,7 @@ class HashService {
             guard !Task.isCancelled else { return nil }
 
             if let error = primary.error {
-                return RequestDataExperimentItem(
+                return RequestDataHashItem(
                     localIdentifier: asset.localIdentifier,
                     hash: nil,
                     fileSize: 0,
@@ -637,7 +636,7 @@ class HashService {
                 category: .hash
             )
 
-            return RequestDataExperimentItem(
+            return RequestDataHashItem(
                 localIdentifier: asset.localIdentifier,
                 hash: primary.hash,
                 fileSize: primary.size,

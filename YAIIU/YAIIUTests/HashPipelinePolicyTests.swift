@@ -23,19 +23,17 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
-    func testRequestDataExperimentUsesImmichBatchSize() {
-        XCTAssertEqual(HashPipelinePolicy.requestDataExperimentBatchSize, 32)
-    }
-
-    func testRequestDataExperimentIncludesBatchDrainBoundary() {
-        XCTAssertEqual(
-            HashPipelinePolicy.requestDataBatchDrainNanoseconds,
-            250_000_000
+    func testRequestDataPipelineUsesFiniteLocalAndSmallNetworkBatches() {
+        XCTAssertEqual(HashPipelinePolicy.requestDataLocalBatchSize, 32)
+        XCTAssertEqual(HashPipelinePolicy.requestDataNetworkBatchSize, 4)
+        XCTAssertLessThan(
+            HashPipelinePolicy.requestDataNetworkBatchSize,
+            HashPipelinePolicy.requestDataLocalBatchSize
         )
     }
 
-    func testRequestDataExperimentStateAbortsAndResets() {
-        let state = RequestDataExperimentState()
+    func testRequestDataPipelineStateAbortsAndResets() {
+        let state = RequestDataPipelineState()
 
         XCTAssertFalse(state.isAborted)
         state.abort()
