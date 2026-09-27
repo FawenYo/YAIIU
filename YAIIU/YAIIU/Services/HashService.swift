@@ -361,26 +361,17 @@ final class PreparedWorkRegistry: @unchecked Sendable {
 }
 
 
-/// Result of one asset in the requestData experiment. Primary bytes are
-/// streamed directly from PhotoKit; RAW companions (when present) are hashed
-/// through the existing temp-file path so database semantics remain unchanged.
-struct PrimaryHashBatchItem: Sendable {
+/// Result of hashing exactly one Immich-selected PhotoKit resource.
+/// This diagnostic type is intentionally separate from YAIIU's production
+/// multi-resource hash model and is never persisted.
+struct RequestDataExperimentItem: Sendable {
     let localIdentifier: String
-    let result: MultiResourceHashResult?
+    let hash: String?
+    let fileSize: Int64
     let modificationDate: Date?
+    let selectedIsRAW: Bool
     let errorDescription: String?
 }
-
-private struct RequestDataPrimaryItem: Sendable {
-    let localIdentifier: String
-    let primaryHash: String?
-    let primaryFileSize: Int64
-    let modificationDate: Date?
-    let hasRAWCompanion: Bool
-    let errorDescription: String?
-}
-
-
 
 class HashService {
     static let shared = HashService()
@@ -430,19 +421,19 @@ class HashService {
         return rawIdentifiers.contains { uti.contains($0) }
     }
 
-    /// Controlled primary hashing experiment: each invocation owns one finite
-    /// batch (32 IDs at the caller), fetches only those assets, starts one task
-    /// per asset, and fully awaits the batch before returning. Primary resource
-    /// bytes never touch disk; RAW companions keep the stable temp-file path.
+    /// Controlled Immich comparison: each invocation owns one finite
+    /// 32-ID batch and hashes exactly one resource per PHAsset using the same
+    /// resource-selection order as Immich. No RAW companion or production
+    /// multi-resource work is added here.
     func hashPrimaryBatchWithRequestData(
         assetIds: [String],
         allowNetworkAccess: Bool
-    ) async -> [PrimaryHashBatchItem] {
+    ) async -> [RequestDataExperimentItem] {
         guard !assetIds.isEmpty else { return [] }
 
         let nativeTask = Task.detached(
             priority: .userInitiated
-        ) { [weak self] () -> [PrimaryHashBatchItem] in
+        ) { [weak self] () -> [RequestDataExperimentItem] in
             guard let self else { return [] }
             return await self.hashPrimaryBatchWithRequestDataImpl(
                 assetIds: assetIds,
@@ -460,7 +451,7 @@ class HashService {
     private func hashPrimaryBatchWithRequestDataImpl(
         assetIds: [String],
         allowNetworkAccess: Bool
-    ) async -> [PrimaryHashBatchItem] {
+    ) async -> [RequestDataExperimentItem] {
         var missingAssetIds = Set(assetIds)
         var assets: [PHAsset] = []
         assets.reserveCapacity(assetIds.count)
@@ -480,13 +471,12 @@ class HashService {
 
         guard !Task.isCancelled else { return [] }
 
-        // Phase 1 is the actual experiment: all primary resources in the finite
-        // batch are streamed through requestData and fully awaited.
-        let primaryItems = await withTaskGroup(
-            of: RequestDataPrimaryItem?.self
+        var items = await withTaskGroup(
+            of: RequestDataExperimentItem?.self,
+            returning: [RequestDataExperimentItem].self
         ) { group in
-            var items: [RequestDataPrimaryItem] = []
-            items.reserveCapacity(assetIds.count)
+            var results: [RequestDataExperimentItem] = []
+            results.reserveCapacity(assetIds.count)
 
             for asset in assets {
                 if Task.isCancelled { break }
@@ -501,75 +491,34 @@ class HashService {
 
             for await item in group {
                 if let item {
-                    items.append(item)
+                    results.append(item)
                 }
             }
-            return items
+            return results
         }
 
         guard !Task.isCancelled else { return [] }
 
-        // Exact Immich comparison: native hashAssets hashes one selected
-        // resource per PHAsset. Do not hash RAW companions here; doing so adds
-        // extra PhotoKit writeData work that Immich's hashAssets does not do.
-        var finalItems: [PrimaryHashBatchItem] = []
-        finalItems.reserveCapacity(assetIds.count)
-
-        for item in primaryItems {
-            guard !Task.isCancelled else { break }
-
-            guard let primaryHash = item.primaryHash,
-                  item.errorDescription == nil else {
-                finalItems.append(
-                    PrimaryHashBatchItem(
-                        localIdentifier: item.localIdentifier,
-                        result: nil,
-                        modificationDate: item.modificationDate,
-                        errorDescription: item.errorDescription
-                            ?? "Primary requestData hash failed"
-                    )
-                )
-                continue
-            }
-
-            finalItems.append(
-                PrimaryHashBatchItem(
-                    localIdentifier: item.localIdentifier,
-                    result: MultiResourceHashResult(
-                        localIdentifier: item.localIdentifier,
-                        primaryHash: primaryHash,
-                        primaryFileSize: item.primaryFileSize,
-                        rawHash: nil,
-                        rawFileSize: nil,
-                        hasRAW: item.hasRAWCompanion,
-                        calculatedAt: Date()
-                    ),
-                    modificationDate: item.modificationDate,
-                    errorDescription: nil
+        for missing in missingAssetIds {
+            items.append(
+                RequestDataExperimentItem(
+                    localIdentifier: missing,
+                    hash: nil,
+                    fileSize: 0,
+                    modificationDate: nil,
+                    selectedIsRAW: false,
+                    errorDescription: "Asset not found in library"
                 )
             )
         }
 
-        if !Task.isCancelled {
-            for missing in missingAssetIds {
-                finalItems.append(
-                    PrimaryHashBatchItem(
-                        localIdentifier: missing,
-                        result: nil,
-                        modificationDate: nil,
-                        errorDescription: "Asset not found in library"
-                    )
-                )
-            }
-        }
-
-        return finalItems
+        return items
     }
 
     private func hashPrimaryAssetWithRequestData(
         _ asset: PHAsset,
         allowNetworkAccess: Bool
-    ) async -> RequestDataPrimaryItem? {
+    ) async -> RequestDataExperimentItem? {
         final class RequestRef: @unchecked Sendable {
             private let lock = NSLock()
             private var id: PHAssetResourceDataRequestID?
@@ -604,45 +553,28 @@ class HashService {
 
         return await withTaskCancellationHandler {
             guard !Task.isCancelled else { return nil }
-            guard let selection = ImmichRequestDataResourceSelector.select(for: asset) else {
-                return RequestDataPrimaryItem(
+
+            guard let selection = ImmichRequestDataResourceSelector.select(
+                for: asset
+            ) else {
+                return RequestDataExperimentItem(
                     localIdentifier: asset.localIdentifier,
-                    primaryHash: nil,
-                    primaryFileSize: 0,
+                    hash: nil,
+                    fileSize: 0,
                     modificationDate: asset.modificationDate,
-                    hasRAWCompanion: false,
+                    selectedIsRAW: false,
                     errorDescription: "Cannot get Immich-compatible asset resource"
                 )
             }
 
-            let safeResources = AssetResourceSelector.select(for: asset)
-            let hasRAWCompanion = safeResources?.rawResource != nil
-
+            // Immich hashes whichever single resource its selector chooses,
+            // including an alternate/RAW resource when that resource is current.
             let selectedIsRAW = HashService.isRAWResource(selection.resource)
 
             logDebug(
                 "Immich resource selection: asset=\(asset.localIdentifier), mediaType=\(asset.mediaType.rawValue), selectedType=\(selection.resource.type.rawValue), selectedCurrent=\(ImmichRequestDataResourceSelector.isCurrent(selection.resource)), selectedIsRAW=\(selectedIsRAW), selectedBytes=\(selection.selectedSize), candidates=[\(selection.candidateDescription)]",
                 category: .hash
             )
-
-            // We want Immich's selection decision in the diagnostics, but RAW
-            // must not contaminate the primary requestData memory experiment.
-            // If Immich would select a RAW/alternate resource as current, record
-            // that fact and skip this asset rather than streaming the RAW bytes.
-            if selectedIsRAW {
-                logWarning(
-                    "Immich resource selection chose RAW; skipping requestData primary experiment for asset=\(asset.localIdentifier), selectedType=\(selection.resource.type.rawValue), selectedBytes=\(selection.selectedSize)",
-                    category: .hash
-                )
-                return RequestDataPrimaryItem(
-                    localIdentifier: asset.localIdentifier,
-                    primaryHash: nil,
-                    primaryFileSize: 0,
-                    modificationDate: asset.modificationDate,
-                    hasRAWCompanion: true,
-                    errorDescription: "Immich selector chose RAW; excluded from requestData experiment"
-                )
-            }
 
             let options = PHAssetResourceRequestOptions()
             options.isNetworkAccessAllowed = allowNetworkAccess
@@ -686,12 +618,12 @@ class HashService {
             guard !Task.isCancelled else { return nil }
 
             if let error = primary.error {
-                return RequestDataPrimaryItem(
+                return RequestDataExperimentItem(
                     localIdentifier: asset.localIdentifier,
-                    primaryHash: nil,
-                    primaryFileSize: 0,
+                    hash: nil,
+                    fileSize: 0,
                     modificationDate: asset.modificationDate,
-                    hasRAWCompanion: hasRAWCompanion,
+                    selectedIsRAW: selectedIsRAW,
                     errorDescription: error
                 )
             }
@@ -701,16 +633,16 @@ class HashService {
             let throughput = elapsed > 0 ? mebibytes / elapsed : 0
 
             logDebug(
-                "requestData primary finished: asset=\(asset.localIdentifier), bytes=\(primary.size), elapsed=\(String(format: "%.3f", elapsed))s, throughput=\(String(format: "%.1f", throughput))MiB/s",
+                "requestData selected resource finished: asset=\(asset.localIdentifier), selectedIsRAW=\(selectedIsRAW), bytes=\(primary.size), elapsed=\(String(format: "%.3f", elapsed))s, throughput=\(String(format: "%.1f", throughput))MiB/s",
                 category: .hash
             )
 
-            return RequestDataPrimaryItem(
+            return RequestDataExperimentItem(
                 localIdentifier: asset.localIdentifier,
-                primaryHash: primary.hash,
-                primaryFileSize: primary.size,
+                hash: primary.hash,
+                fileSize: primary.size,
                 modificationDate: asset.modificationDate,
-                hasRAWCompanion: hasRAWCompanion,
+                selectedIsRAW: selectedIsRAW,
                 errorDescription: nil
             )
         } onCancel: {
