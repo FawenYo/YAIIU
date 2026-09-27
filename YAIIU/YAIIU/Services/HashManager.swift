@@ -1400,11 +1400,10 @@ class HashManager: ObservableObject {
         let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
         tasks.forEach { $0.cancel() }
 
-        // Keep RunState in .stopping until the cancelled requestData task graph
-        // has actually returned from all PhotoKit completion handlers. Starting
-        // a replacement run earlier would overlap two 32-request batches and
-        // invalidate the memory experiment.
-        isProcessing = false
+        // Keep both RunState and the public processing state active until
+        // every cancelled requestData completion handler has returned. This
+        // prevents scene/UI lifecycle code from attempting a replacement start
+        // during the drain window.
         isHashingActive = false
         isCheckingActive = false
         statusMessage = "Stopping..."
@@ -1421,7 +1420,11 @@ class HashManager: ObservableObject {
             self.shouldStop = false
             self.isStopping = false
             self.runState.finishStopping()
+            self.isProcessing = false
             self.statusMessage = ""
+            self.processingProgress = 0
+            self.processedAssetsCount = 0
+            self.totalAssetsToProcess = 0
             self.loadCachedStatus()
         }
     }
