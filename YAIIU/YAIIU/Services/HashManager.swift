@@ -577,59 +577,42 @@ class HashManager: ObservableObject {
         shouldClearCache: Bool = false
     ) {
         guard !isStopping && !isHashingActive && !isCheckingActive else { return }
-        guard let runID = HashPipelinePolicy.admitIfIdle(using: runState, performSideEffects: { _ in
-            if shouldClearCache {
-                DatabaseManager.shared.clearHashCache()
-                syncStatusCache.removeAll()
-            }
-            if let snapshotsToInvalidate {
-                DatabaseManager.shared.resetCacheForModifiedAssets(snapshots: snapshotsToInvalidate)
-            }
-        }) else { return }
+
+        // Diagnostic-only branch: deliberately ignore production cache
+        // invalidation and force-reprocess side effects. The experiment must be
+        // repeatable against the same library without changing YAIIU state.
+        _ = snapshotsToInvalidate
+        _ = shouldClearCache
+
+        guard let runID = HashPipelinePolicy.admitIfIdle(
+            using: runState,
+            performSideEffects: { _ in }
+        ) else { return }
+
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
         pendingICloudIdUpdates = []
-        statusMessage = "Preparing..."
-        logInfo("Hash pipeline started: identifiers=\(identifiers.count)", category: .hash)
+        statusMessage = "Preparing requestData experiment..."
+        processingProgress = 0
+        processedAssetsCount = 0
+        totalAssetsToProcess = identifiers.count
 
-        // identifiers-only path cannot compare modificationDate; no invalidation here
-        DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
-            guard let self = self else { return }
-            logInfo("Hash cache lookup complete: total=\(identifiers.count), needingHash=\(needingHash.count)", category: .hash)
+        logInfo(
+            "Immich requestData experiment started: identifiers=\(identifiers.count), productionCacheBypassed=true, invalidationBypassed=true, iCloudMatchingBypassed=true",
+            category: .hash
+        )
 
-            Task { @MainActor in
-                guard self.isCurrentRun(runID), !self.shouldStop else {
-                    self.finishProcessing(runID: runID)
-                    return
-                }
-                if needingHash.isEmpty {
-                    self.statusMessage = "Checking cloud status..."
-                    self.startServerCheck(runID: runID)
-                } else {
-                    self.tryICloudIdMatching(identifiers: needingHash, runID: runID) { remainingNeedingHash in
-                        guard self.isCurrentRun(runID), !self.shouldStop else {
-                            self.finishProcessing(runID: runID)
-                            return
-                        }
-                        if remainingNeedingHash.isEmpty {
-                            self.statusMessage = "Checking cloud status..."
-                            self.startServerCheck(runID: runID)
-                        } else {
-                            self.processingQueue = remainingNeedingHash
-                            self.totalAssetsToProcess = remainingNeedingHash.count
-                            self.processedAssetsCount = 0
-                            self.processingProgress = 0
-                            self.statusMessage = "Analyzing photos (0/\(remainingNeedingHash.count))..."
-
-                            self.processHashItems(runID: runID)
-                        }
-                    }
-                }
-            }
+        guard !identifiers.isEmpty else {
+            finishProcessing(runID: runID)
+            return
         }
+
+        processingQueue = identifiers
+        statusMessage = "Analyzing photos (0/\(identifiers.count))..."
+        processHashItems(runID: runID)
     }
-    
+
     private func tryICloudIdMatching(identifiers: [String], runID: UUID, completion: @escaping ([String]) -> Void) {
         guard #available(iOS 16, *) else {
             guard isCurrentRun(runID), !shouldStop else { return }
@@ -772,8 +755,7 @@ class HashManager: ObservableObject {
         }
 
         guard !processingQueue.isEmpty else {
-            statusMessage = "Checking cloud status..."
-            startServerCheck(runID: runID)
+            finishProcessing(runID: runID)
             return
         }
 
@@ -814,14 +796,6 @@ class HashManager: ObservableObject {
                 let upper = Swift.min(lower + batchSize, identifiers.count)
                 let batch = Array(identifiers[lower..<upper])
 
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    for identifier in batch {
-                        self.syncStatusCache[identifier] = .processing
-                    }
-                    self.objectWillChange.send()
-                }
-
                 self.logRequestDataMemory(
                     stage: "batch-start",
                     batch: batchIndex + 1,
@@ -843,15 +817,10 @@ class HashManager: ObservableObject {
                 }
 
                 for item in items {
-                    if let result = item.result {
-                        cumulativePrimaryBytes += result.primaryFileSize
-
-                        // Read-only experiment: never write an Immich-selected
-                        // checksum into YAIIU's production cache because the
-                        // selected resource may differ from the production
-                        // full-size resource used for server matching.
+                    if item.hash != nil {
+                        cumulativePrimaryBytes += item.fileSize
                         logDebug(
-                            "requestData experiment hash finished (not persisted): asset=\(result.localIdentifier), selectedBytes=\(result.primaryFileSize), rawCompanionPresent=\(result.hasRAW), batch=\(batchIndex + 1)/\(totalBatches)",
+                            "requestData experiment hash finished (not persisted): asset=\(item.localIdentifier), selectedBytes=\(item.fileSize), selectedIsRAW=\(item.selectedIsRAW), batch=\(batchIndex + 1)/\(totalBatches)",
                             category: .hash
                         )
                     } else if let error = item.errorDescription {
@@ -869,9 +838,6 @@ class HashManager: ObservableObject {
                             / Double(self.totalAssetsToProcess)
                         self.statusMessage =
                             "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
-                        self.syncStatusCache[item.localIdentifier] =
-                            item.result == nil ? .error : .pending
-                        self.objectWillChange.send()
                     }
                 }
 
@@ -924,7 +890,7 @@ class HashManager: ObservableObject {
                         primaryBytes: cumulativePrimaryBytes
                     )
                     logInfo(
-                        "Immich requestData experiment completed without persisting experimental hashes; server check intentionally skipped",
+                        "Immich requestData experiment completed read-only: production hash cache, server state, and sync status were not modified",
                         category: .hash
                     )
                     self.finishProcessing(runID: runID)
@@ -1434,16 +1400,30 @@ class HashManager: ObservableObject {
         let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
         tasks.forEach { $0.cancel() }
 
-        // PhotoKit writes cannot be cancelled. Let their detached run cleanup
-        // finish later while immediately retiring this run from the UI. The
-        // shared disk budget keeps a replacement run behind those writes.
+        // Keep RunState in .stopping until the cancelled requestData task graph
+        // has actually returned from all PhotoKit completion handlers. Starting
+        // a replacement run earlier would overlap two 32-request batches and
+        // invalidate the memory experiment.
         isProcessing = false
         isHashingActive = false
         isCheckingActive = false
-        isStopping = false
-        runState.finishStopping()
-        statusMessage = ""
-        loadCachedStatus()
+        statusMessage = "Stopping..."
+
+        Task { @MainActor [weak self] in
+            for task in tasks {
+                await task.value
+            }
+
+            guard let self else { return }
+            self.hashTask = nil
+            self.checkTask = nil
+            self.matchingTask = nil
+            self.shouldStop = false
+            self.isStopping = false
+            self.runState.finishStopping()
+            self.statusMessage = ""
+            self.loadCachedStatus()
+        }
     }
 
     private func isCurrentRun(_ runID: UUID) -> Bool {
