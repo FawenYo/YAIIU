@@ -2,6 +2,22 @@ import Foundation
 import Photos
 import SQLite3
 
+enum HashFailureRetryPolicy {
+    static let delays: [TimeInterval] = [
+        15 * 60,
+        60 * 60,
+        6 * 60 * 60,
+        24 * 60 * 60,
+        3 * 24 * 60 * 60,
+        7 * 24 * 60 * 60
+    ]
+
+    static func delay(afterFailureCount count: Int) -> TimeInterval {
+        let index = min(max(count - 1, 0), delays.count - 1)
+        return delays[index]
+    }
+}
+
 final class HashCacheRepository {
     private let connection: SQLiteConnection
     
@@ -71,7 +87,9 @@ final class HashCacheRepository {
                 sqlite3_bind_null(statement, 6)
             }
 
-            sqlite3_step(statement)
+            if sqlite3_step(statement) == SQLITE_DONE {
+                clearHashFailureInternal(localIdentifier: localIdentifier)
+            }
         }
 
         sqlite3_finalize(statement)
@@ -97,6 +115,84 @@ final class HashCacheRepository {
         }
     }
     
+    // MARK: - Hash Failure Backoff
+
+    func recordHashFailure(
+        localIdentifier: String,
+        errorMessage: String,
+        modificationDate: Date?
+    ) {
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return }
+
+            var retryCount = 0
+            var countStatement: OpaquePointer?
+            let countSql = "SELECT retry_count FROM hash_failures WHERE asset_id = ?;"
+            if sqlite3_prepare_v2(self.connection.db, countSql, -1, &countStatement, nil) == SQLITE_OK {
+                sqlite3_bind_text(countStatement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+                if sqlite3_step(countStatement) == SQLITE_ROW {
+                    retryCount = Int(sqlite3_column_int(countStatement, 0))
+                }
+            }
+            sqlite3_finalize(countStatement)
+
+            let nextRetryCount = retryCount + 1
+            let now = Date().timeIntervalSince1970
+            let retryAfter = now + HashFailureRetryPolicy.delay(
+                afterFailureCount: nextRetryCount
+            )
+
+            let sql = """
+                INSERT INTO hash_failures
+                    (asset_id, failed_at, retry_after, retry_count, error_message, asset_modification_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    failed_at = excluded.failed_at,
+                    retry_after = excluded.retry_after,
+                    retry_count = excluded.retry_count,
+                    error_message = excluded.error_message,
+                    asset_modification_date = excluded.asset_modification_date;
+            """
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                return
+            }
+
+            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(statement, 2, now)
+            sqlite3_bind_double(statement, 3, retryAfter)
+            sqlite3_bind_int(statement, 4, Int32(nextRetryCount))
+            sqlite3_bind_text(statement, 5, (errorMessage as NSString).utf8String, -1, nil)
+            if let modificationDate {
+                sqlite3_bind_double(statement, 6, modificationDate.timeIntervalSince1970)
+            } else {
+                sqlite3_bind_null(statement, 6)
+            }
+
+            if sqlite3_step(statement) != SQLITE_DONE {
+                logError(
+                    "Failed to persist hash failure backoff for \(localIdentifier)",
+                    category: .database
+                )
+            }
+            sqlite3_finalize(statement)
+        }
+    }
+
+    private func clearHashFailureInternal(localIdentifier: String) {
+        let sql = "DELETE FROM hash_failures WHERE asset_id = ?;"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return
+        }
+        sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_step(statement)
+        sqlite3_finalize(statement)
+    }
+
     // MARK: - Query Methods
     
     func getHashCache(localIdentifier: String) -> HashCacheRecord? {
@@ -335,6 +431,20 @@ final class HashCacheRepository {
                 }
             }
             sqlite3_finalize(statement)
+
+            let failureSql = "SELECT asset_id FROM hash_failures WHERE retry_after > ?;"
+            if sqlite3_prepare_v2(self.connection.db, failureSql, -1, &statement, nil) == SQLITE_OK {
+                sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        let identifier = String(cString: cString)
+                        if statusMap[identifier] == nil {
+                            statusMap[identifier] = .error
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
             
             DispatchQueue.main.async {
                 completion(statusMap)
@@ -361,8 +471,22 @@ final class HashCacheRepository {
                 }
             }
             sqlite3_finalize(statement)
+
+            var deferredFailureIds: Set<String> = []
+            let failureSql = "SELECT asset_id FROM hash_failures WHERE retry_after > ?;"
+            if sqlite3_prepare_v2(self.connection.db, failureSql, -1, &statement, nil) == SQLITE_OK {
+                sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        deferredFailureIds.insert(String(cString: cString))
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
             
-            let needingHash = allIdentifiers.filter { !existingIds.contains($0) }
+            let needingHash = allIdentifiers.filter {
+                !existingIds.contains($0) && !deferredFailureIds.contains($0)
+            }
             
             DispatchQueue.main.async {
                 completion(needingHash)
@@ -531,6 +655,8 @@ final class HashCacheRepository {
     }
 
     private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot]) {
+        resetModifiedFailureRecords(snapshots: snapshots)
+
         // Fetch all stored modification dates in one query; NULL means not yet recorded
         let sql = "SELECT asset_id, asset_modification_date FROM hash_cache;"
         var statement: OpaquePointer?
@@ -625,6 +751,60 @@ final class HashCacheRepository {
         logDebug("Invalidated assets: \(invalidatedIds.map { String($0.prefix(20)) })", category: .hash)
     }
 
+    private func resetModifiedFailureRecords(snapshots: [PhotoAssetSnapshot]) {
+        let sql = "SELECT asset_id, asset_modification_date FROM hash_failures;"
+        var statement: OpaquePointer?
+        var storedDates: [String: Double] = [:]
+        var nullDateIds: Set<String> = []
+
+        if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idCString = sqlite3_column_text(statement, 0) else { continue }
+                let assetId = String(cString: idCString)
+                if sqlite3_column_type(statement, 1) == SQLITE_NULL {
+                    nullDateIds.insert(assetId)
+                } else {
+                    storedDates[assetId] = sqlite3_column_double(statement, 1)
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        guard !storedDates.isEmpty || !nullDateIds.isEmpty else { return }
+
+        var toDelete: [String] = []
+        for snapshot in snapshots {
+            let identifier = snapshot.localIdentifier
+            if nullDateIds.contains(identifier), snapshot.modificationDate != nil {
+                toDelete.append(identifier)
+                continue
+            }
+            guard let oldTimestamp = storedDates[identifier],
+                  let currentDate = snapshot.modificationDate else {
+                continue
+            }
+            if abs(currentDate.timeIntervalSince1970 - oldTimestamp) > 1.0 {
+                toDelete.append(identifier)
+            }
+        }
+
+        guard !toDelete.isEmpty else { return }
+
+        let deleteSql = "DELETE FROM hash_failures WHERE asset_id = ?;"
+        guard sqlite3_prepare_v2(connection.db, deleteSql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        for assetId in toDelete {
+            sqlite3_bind_text(statement, 1, (assetId as NSString).utf8String, -1, nil)
+            sqlite3_step(statement)
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+        }
+    }
+
     private func backfillModificationDates(snapshots: [PhotoAssetSnapshot], assetIds: Set<String>) {
         let sql = "UPDATE hash_cache SET asset_modification_date = ? WHERE asset_id = ?;"
         var statement: OpaquePointer?
@@ -666,6 +846,7 @@ final class HashCacheRepository {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
             self.connection.executeStatement("DELETE FROM hash_cache;")
+            self.connection.executeStatement("DELETE FROM hash_failures;")
         }
     }
     

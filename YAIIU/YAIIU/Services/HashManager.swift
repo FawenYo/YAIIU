@@ -807,9 +807,10 @@ class HashManager: ObservableObject {
         hashTask = Task { [weak self] in
             guard let self else { return }
 
-            let identifiers = self.processingQueue
-            await MainActor.run {
+            let identifiers = await MainActor.run { () -> [String] in
+                let queued = self.processingQueue
                 self.processingQueue.removeAll(keepingCapacity: false)
+                return queued
             }
 
             var cumulativePrimaryBytes: Int64 = 0
@@ -838,7 +839,7 @@ class HashManager: ObservableObject {
                     primaryBytes: cumulativePrimaryBytes
                 )
 
-                var items = await HashService.shared.hashPrimaryBatchWithRequestData(
+                var items = await HashService.shared.hashBatchWithRequestData(
                     assetIds: batch,
                     allowNetworkAccess: false
                 )
@@ -851,18 +852,18 @@ class HashManager: ObservableObject {
                 }
 
                 for item in items {
-                    if let hash = item.hash {
-                        cumulativePrimaryBytes += item.fileSize
+                    if item.isComplete, let hash = item.primaryHash {
+                        cumulativePrimaryBytes += item.totalFileSize
                         DatabaseManager.shared.saveMultiResourceHashCache(
                             localIdentifier: item.localIdentifier,
                             primaryHash: hash,
-                            rawHash: nil,
-                            hasRAW: false,
+                            rawHash: item.rawHash,
+                            hasRAW: item.hasRAW,
                             modificationDate: item.modificationDate
                         )
 
                         logDebug(
-                            "requestData local hash persisted: asset=\(item.localIdentifier), bytes=\(item.fileSize), selectedIsRAW=\(item.selectedIsRAW), batch=\(batchIndex + 1)/\(localBatchCount)",
+                            "requestData local hash persisted: asset=\(item.localIdentifier), primaryBytes=\(item.primaryFileSize), rawBytes=\(item.rawFileSize ?? 0), hasRAW=\(item.hasRAW), batch=\(batchIndex + 1)/\(localBatchCount)",
                             category: .hash
                         )
 
@@ -945,7 +946,7 @@ class HashManager: ObservableObject {
                     primaryBytes: cumulativePrimaryBytes
                 )
 
-                var items = await HashService.shared.hashPrimaryBatchWithRequestData(
+                var items = await HashService.shared.hashBatchWithRequestData(
                     assetIds: batch,
                     allowNetworkAccess: true
                 )
@@ -958,18 +959,18 @@ class HashManager: ObservableObject {
                 }
 
                 for item in items {
-                    if let hash = item.hash {
-                        cumulativePrimaryBytes += item.fileSize
+                    if item.isComplete, let hash = item.primaryHash {
+                        cumulativePrimaryBytes += item.totalFileSize
                         DatabaseManager.shared.saveMultiResourceHashCache(
                             localIdentifier: item.localIdentifier,
                             primaryHash: hash,
-                            rawHash: nil,
-                            hasRAW: false,
+                            rawHash: item.rawHash,
+                            hasRAW: item.hasRAW,
                             modificationDate: item.modificationDate
                         )
 
                         logDebug(
-                            "requestData network hash persisted: asset=\(item.localIdentifier), bytes=\(item.fileSize), selectedIsRAW=\(item.selectedIsRAW), batch=\(batchIndex + 1)/\(networkBatchCount)",
+                            "requestData network hash persisted: asset=\(item.localIdentifier), primaryBytes=\(item.primaryFileSize), rawBytes=\(item.rawFileSize ?? 0), hasRAW=\(item.hasRAW), batch=\(batchIndex + 1)/\(networkBatchCount)",
                             category: .hash
                         )
 
@@ -985,9 +986,15 @@ class HashManager: ObservableObject {
                             self.objectWillChange.send()
                         }
                     } else {
+                        let failureReason = item.errorDescription ?? "unknown"
                         logError(
-                            "requestData network hash failed: asset=\(item.localIdentifier), error=\(item.errorDescription ?? "unknown")",
+                            "requestData network hash failed: asset=\(item.localIdentifier), error=\(failureReason)",
                             category: .hash
+                        )
+                        DatabaseManager.shared.recordHashFailure(
+                            localIdentifier: item.localIdentifier,
+                            errorMessage: failureReason,
+                            modificationDate: item.modificationDate
                         )
                         await MainActor.run {
                             guard self.isCurrentRun(runID) else { return }

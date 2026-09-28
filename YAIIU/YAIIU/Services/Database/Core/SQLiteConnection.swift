@@ -99,6 +99,7 @@ final class SQLiteConnection {
         createUploadedAssetsTable()
         createUploadJobsTable()
         createHashCacheTable()
+        createHashFailuresTable()
         createServerAssetsCacheTable()
         createSyncMetadataTable()
         createChangeTokensTable()
@@ -161,6 +162,20 @@ final class SQLiteConnection {
         executeStatement(sql)
     }
     
+    private func createHashFailuresTable() {
+        let sql = """
+        CREATE TABLE IF NOT EXISTS hash_failures (
+            asset_id TEXT PRIMARY KEY NOT NULL,
+            failed_at REAL NOT NULL,
+            retry_after REAL NOT NULL,
+            retry_count INTEGER DEFAULT 1,
+            error_message TEXT,
+            asset_modification_date REAL
+        );
+        """
+        executeStatement(sql)
+    }
+
     private func createServerAssetsCacheTable() {
         let sql = """
         CREATE TABLE IF NOT EXISTS server_assets_cache (
@@ -235,6 +250,7 @@ final class SQLiteConnection {
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_icloud_id ON server_assets_cache(icloud_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_asset ON hash_cache(asset_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_on_server ON hash_cache(is_on_server)")
+        executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_failures_retry_after ON hash_failures(retry_after)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_source_checksum ON server_assets_cache(source_checksum)")
     }
     

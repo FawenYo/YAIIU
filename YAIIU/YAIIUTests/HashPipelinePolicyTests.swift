@@ -32,6 +32,13 @@ final class HashPipelinePolicyTests: XCTestCase {
         )
     }
 
+    func testHashFailureRetryBackoffIncreasesAndCaps() {
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 1), 15 * 60)
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 2), 60 * 60)
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 3), 6 * 60 * 60)
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 99), 7 * 24 * 60 * 60)
+    }
+
     func testRequestDataPipelineStateAbortsAndResets() {
         let state = RequestDataPipelineState()
 
