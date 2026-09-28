@@ -144,7 +144,7 @@ enum AssetResourceSelector {
     }
 }
 
-final class RequestDataHashAccumulator:final class RequestDataHashAccumulator: @unchecked Sendable {
+final class RequestDataHashAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private var hasher = Insecure.SHA1()
     private var totalBytes = 0
