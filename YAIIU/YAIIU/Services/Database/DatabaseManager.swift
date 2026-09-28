@@ -174,6 +174,18 @@ final class DatabaseManager {
     func getAssetsNeedingHashAsync(allIdentifiers: [String], completion: @escaping ([String]) -> Void) {
         hashRepo.getAssetsNeedingHashAsync(allIdentifiers: allIdentifiers, completion: completion)
     }
+
+    func recordHashFailure(
+        localIdentifier: String,
+        errorMessage: String,
+        modificationDate: Date?
+    ) {
+        hashRepo.recordHashFailure(
+            localIdentifier: localIdentifier,
+            errorMessage: errorMessage,
+            modificationDate: modificationDate
+        )
+    }
     
     func getHashesNeedingCheckAsync(completion: @escaping ([(String, String)]) -> Void) {
         hashRepo.getHashesNeedingCheckAsync(completion: completion)

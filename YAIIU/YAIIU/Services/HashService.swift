@@ -1,6 +1,7 @@
 import Foundation
 import Photos
 import CommonCrypto
+import CryptoKit
 
 enum PhotoSyncStatus: String {
     case pending = "pending"
@@ -12,7 +13,7 @@ enum PhotoSyncStatus: String {
 }
 
 /// Result containing hashes for all resources of an asset (JPEG and RAW if present)
-struct MultiResourceHashResult {
+struct MultiResourceHashResult: Sendable {
     let localIdentifier: String
     let primaryHash: String
     let primaryFileSize: Int64
@@ -143,6 +144,31 @@ enum AssetResourceSelector {
     }
 }
 
+final class RequestDataHashAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasher = Insecure.SHA1()
+    private var totalBytes = 0
+
+    func append(_ data: Data) {
+        lock.lock()
+        totalBytes += data.count
+        hasher.update(data: data)
+        lock.unlock()
+    }
+
+    func finalize() -> (hash: String, size: Int64) {
+        lock.lock()
+        let digest = Data(hasher.finalize())
+        let bytes = totalBytes
+        lock.unlock()
+
+        return (
+            digest.map { String(format: "%02x", $0) }.joined(),
+            Int64(bytes)
+        )
+    }
+}
+
 /// Pre-downloaded temp files for one asset's planned resources.
 struct AssetTempFiles: Sendable {
     let plan: AssetResourcePlan
@@ -240,6 +266,28 @@ final class PreparedWorkRegistry: @unchecked Sendable {
 }
 
 
+/// Result of hashing the same primary/RAW resource set YAIIU uses for upload.
+/// A result is only complete when the primary and, when present, RAW companion
+/// have both been hashed successfully.
+struct RequestDataHashItem: Sendable {
+    let localIdentifier: String
+    let primaryHash: String?
+    let primaryFileSize: Int64
+    let rawHash: String?
+    let rawFileSize: Int64?
+    let hasRAW: Bool
+    let modificationDate: Date?
+    let errorDescription: String?
+
+    var totalFileSize: Int64 {
+        primaryFileSize + (rawFileSize ?? 0)
+    }
+
+    var isComplete: Bool {
+        primaryHash != nil && (!hasRAW || rawHash != nil) && errorDescription == nil
+    }
+}
+
 class HashService {
     static let shared = HashService()
 
@@ -288,7 +336,288 @@ class HashService {
         return rawIdentifiers.contains { uti.contains($0) }
     }
 
-    /// Downloads both planned resources to temp files (bounded by the caller's
+    private final class RequestDataRequestRef: @unchecked Sendable {
+        private let lock = NSLock()
+        private var id: PHAssetResourceDataRequestID?
+        private var cancelled = false
+
+        func install(_ id: PHAssetResourceDataRequestID) {
+            lock.lock()
+            if cancelled {
+                lock.unlock()
+                PHAssetResourceManager.default().cancelDataRequest(id)
+                return
+            }
+            self.id = id
+            lock.unlock()
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let requestID = id
+            id = nil
+            lock.unlock()
+
+            if let requestID {
+                PHAssetResourceManager.default().cancelDataRequest(requestID)
+            }
+        }
+    }
+
+    /// Hashes one finite batch using YAIIU's production resource selection.
+    /// Both the primary resource and a RAW companion (when present) are streamed
+    /// through requestData, avoiding the old writeData/temp-file RAW path.
+    func hashBatchWithRequestData(
+        assetIds: [String],
+        allowNetworkAccess: Bool
+    ) async -> [RequestDataHashItem] {
+        guard !assetIds.isEmpty else { return [] }
+
+        let nativeTask = Task.detached(
+            priority: .userInitiated
+        ) { [weak self] () -> [RequestDataHashItem] in
+            guard let self else { return [] }
+            return await self.hashBatchWithRequestDataImpl(
+                assetIds: assetIds,
+                allowNetworkAccess: allowNetworkAccess
+            )
+        }
+
+        return await withTaskCancellationHandler {
+            await nativeTask.value
+        } onCancel: {
+            nativeTask.cancel()
+        }
+    }
+
+    private func hashBatchWithRequestDataImpl(
+        assetIds: [String],
+        allowNetworkAccess: Bool
+    ) async -> [RequestDataHashItem] {
+        var missingAssetIds = Set(assetIds)
+        var assets: [PHAsset] = []
+        assets.reserveCapacity(assetIds.count)
+
+        let fetchResult = PHAsset.fetchAssets(
+            withLocalIdentifiers: assetIds,
+            options: nil
+        )
+        fetchResult.enumerateObjects { asset, _, stop in
+            if Task.isCancelled {
+                stop.pointee = true
+                return
+            }
+            missingAssetIds.remove(asset.localIdentifier)
+            assets.append(asset)
+        }
+
+        guard !Task.isCancelled else { return [] }
+
+        var items = await withTaskGroup(
+            of: RequestDataHashItem?.self,
+            returning: [RequestDataHashItem].self
+        ) { group in
+            var results: [RequestDataHashItem] = []
+            results.reserveCapacity(assetIds.count)
+
+            for asset in assets {
+                if Task.isCancelled { break }
+                group.addTask { [weak self] in
+                    guard let self else { return nil }
+                    return await self.hashAssetWithRequestData(
+                        asset,
+                        allowNetworkAccess: allowNetworkAccess
+                    )
+                }
+            }
+
+            for await item in group {
+                if let item {
+                    results.append(item)
+                }
+            }
+            return results
+        }
+
+        guard !Task.isCancelled else { return [] }
+
+        for missing in missingAssetIds {
+            items.append(
+                RequestDataHashItem(
+                    localIdentifier: missing,
+                    primaryHash: nil,
+                    primaryFileSize: 0,
+                    rawHash: nil,
+                    rawFileSize: nil,
+                    hasRAW: false,
+                    modificationDate: nil,
+                    errorDescription: "Asset not found in library"
+                )
+            )
+        }
+
+        return items
+    }
+
+    private func hashAssetWithRequestData(
+        _ asset: PHAsset,
+        allowNetworkAccess: Bool
+    ) async -> RequestDataHashItem? {
+        guard !Task.isCancelled else { return nil }
+
+        guard let resources = AssetResourceSelector.select(for: asset) else {
+            return RequestDataHashItem(
+                localIdentifier: asset.localIdentifier,
+                primaryHash: nil,
+                primaryFileSize: 0,
+                rawHash: nil,
+                rawFileSize: nil,
+                hasRAW: false,
+                modificationDate: asset.modificationDate,
+                errorDescription: "Cannot get production asset resources"
+            )
+        }
+
+        let hasRAW = !resources.plan.isRAWOnly && resources.rawResource != nil
+        let primaryLabel = resources.plan.isRAWOnly ? "raw-primary" : "primary"
+
+        let primary = await hashResourceWithRequestData(
+            resources.primaryResource,
+            assetIdentifier: asset.localIdentifier,
+            resourceLabel: primaryLabel,
+            allowNetworkAccess: allowNetworkAccess
+        )
+
+        guard !Task.isCancelled else { return nil }
+
+        guard let primaryHash = primary.hash else {
+            return RequestDataHashItem(
+                localIdentifier: asset.localIdentifier,
+                primaryHash: nil,
+                primaryFileSize: 0,
+                rawHash: nil,
+                rawFileSize: nil,
+                hasRAW: hasRAW,
+                modificationDate: asset.modificationDate,
+                errorDescription: "\(primaryLabel): \(primary.error ?? "requestData failed")"
+            )
+        }
+
+        var rawHash: String?
+        var rawSize: Int64?
+
+        if hasRAW, let rawResource = resources.rawResource {
+            let raw = await hashResourceWithRequestData(
+                rawResource,
+                assetIdentifier: asset.localIdentifier,
+                resourceLabel: "raw",
+                allowNetworkAccess: allowNetworkAccess
+            )
+
+            guard !Task.isCancelled else { return nil }
+
+            guard let completedRawHash = raw.hash else {
+                return RequestDataHashItem(
+                    localIdentifier: asset.localIdentifier,
+                    primaryHash: primaryHash,
+                    primaryFileSize: primary.size,
+                    rawHash: nil,
+                    rawFileSize: nil,
+                    hasRAW: true,
+                    modificationDate: asset.modificationDate,
+                    errorDescription: "raw: \(raw.error ?? "requestData failed")"
+                )
+            }
+
+            rawHash = completedRawHash
+            rawSize = raw.size
+        }
+
+        return RequestDataHashItem(
+            localIdentifier: asset.localIdentifier,
+            primaryHash: primaryHash,
+            primaryFileSize: primary.size,
+            rawHash: rawHash,
+            rawFileSize: rawSize,
+            hasRAW: hasRAW,
+            modificationDate: asset.modificationDate,
+            errorDescription: nil
+        )
+    }
+
+    private func hashResourceWithRequestData(
+        _ resource: PHAssetResource,
+        assetIdentifier: String,
+        resourceLabel: String,
+        allowNetworkAccess: Bool
+    ) async -> (hash: String?, size: Int64, error: String?) {
+        let requestRef = RequestDataRequestRef()
+
+        return await withTaskCancellationHandler {
+            guard !Task.isCancelled else {
+                return (nil, 0, "Task cancelled")
+            }
+
+            let options = PHAssetResourceRequestOptions()
+            options.isNetworkAccessAllowed = allowNetworkAccess
+            let startedAt = ProcessInfo.processInfo.systemUptime
+
+            let result: (hash: String?, size: Int64, error: String?) =
+                await withCheckedContinuation { continuation in
+                    let accumulator = RequestDataHashAccumulator()
+
+                    let requestID = PHAssetResourceManager.default().requestData(
+                        for: resource,
+                        options: options,
+                        dataReceivedHandler: { data in
+                            accumulator.append(data)
+                        },
+                        completionHandler: { error in
+                            switch error {
+                            case let photosError as PHPhotosError
+                                where photosError.code == .userCancelled:
+                                continuation.resume(
+                                    returning: (nil, 0, "PhotoKit request cancelled")
+                                )
+                            case let error?:
+                                continuation.resume(
+                                    returning: (nil, 0, error.localizedDescription)
+                                )
+                            case nil:
+                                let finalized = accumulator.finalize()
+                                continuation.resume(
+                                    returning: (finalized.hash, finalized.size, nil)
+                                )
+                            }
+                        }
+                    )
+                    requestRef.install(requestID)
+                }
+
+            guard !Task.isCancelled else {
+                return (nil, 0, "Task cancelled")
+            }
+
+            if let hash = result.hash {
+                let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+                let mebibytes = Double(result.size) / (1024.0 * 1024.0)
+                let throughput = elapsed > 0 ? mebibytes / elapsed : 0
+
+                logDebug(
+                    "requestData resource finished: asset=\(assetIdentifier), resource=\(resourceLabel), bytes=\(result.size), elapsed=\(String(format: "%.3f", elapsed))s, throughput=\(String(format: "%.1f", throughput))MiB/s",
+                    category: .hash
+                )
+                return (hash, result.size, nil)
+            }
+
+            return result
+        } onCancel: {
+            requestRef.cancel()
+        }
+    }
+
+    /// Downloads both planned resources to temp files (bounded by the caller's    /// Downloads both planned resources to temp files (bounded by the caller's
     /// byte budget). The caller owns the files and must delete them.
     func prepare(_ resources: AssetResources) async throws -> AssetTempFiles {
         let primaryFileURL = try await ResourceFileAccess.tempFile(for: resources.primaryResource)

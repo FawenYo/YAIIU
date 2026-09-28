@@ -522,8 +522,11 @@ struct PhotoGridView: View {
         let progress = hashManager.processedAssetsCount
         let total = hashManager.totalAssetsToProcess
         
-        if hashManager.statusMessage.contains("分析") || hashManager.statusMessage.contains("Analyzing") {
-            if total > 0 && progress > 0 {
+        if hashManager.statusMessage.contains("分析")
+            || hashManager.statusMessage.contains("Analyzing")
+            || hashManager.statusMessage.contains("下載")
+            || hashManager.statusMessage.contains("Downloading") {
+            if total > 0 {
                 return "\(progress)/\(total)"
             }
             return L10n.PhotoGrid.processingPreparing
