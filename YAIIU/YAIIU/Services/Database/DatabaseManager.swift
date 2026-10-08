@@ -82,6 +82,21 @@ final class DatabaseManager {
     
     // MARK: - Hash Cache Management
     
+    @discardableResult
+    func saveCurrentICloudIDMatch(
+        localIdentifier: String,
+        iCloudId: String,
+        expectedChecksum: String,
+        modificationDate: Date?
+    ) -> Bool {
+        hashRepo.saveCurrentICloudIDMatch(
+            localIdentifier: localIdentifier,
+            iCloudId: iCloudId,
+            expectedChecksum: expectedChecksum,
+            modificationDate: modificationDate
+        )
+    }
+
     func saveHashCache(localIdentifier: String, sha1Hash: String, fileSize: Int64 = 0, syncStatus: String = "pending") {
         hashRepo.saveHashCache(localIdentifier: localIdentifier, sha1Hash: sha1Hash)
     }
