@@ -402,9 +402,17 @@ final class ServerAssetRepository {
             
             let sql = "DELETE FROM server_assets_cache WHERE immich_id = ?;"
             var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            var historyStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK,
+                  sqlite3_prepare_v2(
+                    self.connection.db,
+                    "DELETE FROM uploaded_assets WHERE immich_id = ?;",
+                    -1, &historyStatement, nil
+                  ) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                sqlite3_finalize(historyStatement)
                 self.connection.rollbackTransaction()
-                logError("Failed to prepare server asset deletes: \(self.connection.lastErrorMessage)", category: .database)
+                logError("Failed to prepare server asset/history deletes: \(self.connection.lastErrorMessage)", category: .database)
                 return false
             }
 
@@ -418,11 +426,22 @@ final class ServerAssetRepository {
                     logError("Failed to delete server asset: \(self.connection.lastErrorMessage)", category: .database)
                     break
                 }
+                // A deleted server record invalidates previous upload-history
+                // evidence as well as the cached checksum verdict.
+                sqlite3_bind_text(historyStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                if sqlite3_step(historyStatement) != SQLITE_DONE {
+                    failed = true
+                    logError("Failed to remove deleted asset upload history: \(self.connection.lastErrorMessage)", category: .database)
+                    break
+                }
                 if let oldChecksum { checksumsToInvalidate.insert(oldChecksum) }
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
+                sqlite3_reset(historyStatement)
+                sqlite3_clear_bindings(historyStatement)
             }
             sqlite3_finalize(statement)
+            sqlite3_finalize(historyStatement)
 
             if failed || !self.invalidateChecks(for: checksumsToInvalidate) {
                 self.connection.rollbackTransaction()
