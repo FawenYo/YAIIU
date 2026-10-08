@@ -1481,12 +1481,16 @@ class HashManager: ObservableObject {
                 guard self.isCurrentRun(runID), !Task.isCancelled else { return }
                 
                 // Update database with multi-resource status
-                DatabaseManager.shared.updateMultiResourceHashCacheServerStatus(
+                guard DatabaseManager.shared.updateMultiResourceHashCacheServerStatusIfCurrent(
                     localIdentifier: localIdentifier,
                     primaryOnServer: primaryOnServer,
-                    rawOnServer: rawOnServer
-                )
-                
+                    rawOnServer: rawOnServer,
+                    expectedRevision: record.serverCheckRevision
+                ) else {
+                    logInfo("Discarded stale server verdict for \(localIdentifier) after server delta", category: .hash)
+                    continue
+                }
+
                 // Determine final upload status
                 // For JPEG+RAW: both must be on server
                 // For non-RAW: only primary needs to be on server
