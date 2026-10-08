@@ -349,6 +349,61 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'paired' AND raw_hash = 'raw-sum' AND has_raw = 1;"), 1)
     }
 
+    func testFullSnapshotReconcilesPrimaryAndRAWWithoutPerAssetRecheck() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "server-primary",
+            primaryHash: "server-sum", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "missing-primary",
+            primaryHash: "missing-sum", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "raw-partial",
+            primaryHash: "server-sum", rawHash: "raw-missing", hasRAW: true)
+        hashes.saveMultiResourceHashCache(localIdentifier: "raw-complete",
+            primaryHash: "server-sum", rawHash: "raw-present", hasRAW: true)
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1, raw_on_server = 1;")
+
+        XCTAssertTrue(repository.clearServerAssetsCache())
+        XCTAssertEqual(pendingCheckCount(), 4)
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "server-sum", iCloudId: nil),
+            ServerAssetRecord(immichId: "raw-1", checksum: "raw-present", ownerId: "owner-1")
+        ], syncType: "full"))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+
+        XCTAssertEqual(pendingCheckCount(), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE is_on_server = 1;"), 3)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'raw-partial' AND is_on_server = 1 AND raw_on_server = 0;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'raw-complete' AND is_on_server = 1 AND raw_on_server = 1;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue;"), 2)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE sha1_hash = 'missing-sum';"), 1)
+    }
+
+    func testEmptyFullSnapshotMarksOldChecksAsNotUploadedWithoutRecheck() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "former-server-photo",
+            primaryHash: "old-checksum", rawHash: nil, hasRAW: false)
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1;")
+        XCTAssertTrue(repository.clearServerAssetsCache())
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(pendingCheckCount(), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE is_on_server = 1;"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue;"), 1)
+    }
+
+    func testFullSnapshotMatchesSourceChecksumBeforeTranscodedChecksum() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "source",
+            primaryHash: "original-sum", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "transcode",
+            primaryHash: "server-sum", rawHash: nil, hasRAW: false)
+        XCTAssertTrue(repository.clearServerAssetsCache())
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "server-sum", sourceChecksum: "original-sum", iCloudId: nil)
+        ], syncType: "full"))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'source' AND is_on_server = 1;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'transcode' AND is_on_server = 0;"), 1)
+    }
+
     func testFullSnapshotPreservesValidHistoryAndClearsOrphans() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
@@ -377,7 +432,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'asset-1';"), 1)
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'deleted-server-id';"), 0)
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'unknown';"), 0)
-        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'previous-miss' AND checked_at IS NULL;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'previous-miss' AND checked_at IS NOT NULL AND is_on_server = 0;"), 1)
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'previous-miss' AND sha1_hash = 'missing-checksum';"), 1)
     }
 
