@@ -28,6 +28,7 @@ protocol ServerAssetSyncStore {
     func getServerAssetByImmichId(_ immichId: String) -> ServerAssetRecord?
     func getSyncMetadata() -> SyncMetadata?
     func clearServerAssetsCache() -> Bool
+    func finalizeFullServerSnapshot() -> Bool
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
     func deleteServerAssets(_ immichIds: [String]) -> Bool
     func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
