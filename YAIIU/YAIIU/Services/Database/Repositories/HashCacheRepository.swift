@@ -27,6 +27,57 @@ final class HashCacheRepository {
     
     // MARK: - Save Methods
     
+    /// Atomically verify the current server catalog and record a single-
+    /// resource iCloud match. A concurrent deletion/update cannot slip
+    /// between the checksum lookup and the cache write. Existing hash rows
+    /// (possibly holding RAW metadata) are never replaced.
+    @discardableResult
+    func saveCurrentICloudIDMatch(
+        localIdentifier: String,
+        iCloudId: String,
+        expectedChecksum: String,
+        modificationDate: Date?
+    ) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return false }
+            let sql = """
+                INSERT INTO hash_cache
+                    (asset_id, sha1_hash, is_on_server, calculated_at, checked_at,
+                     raw_hash, raw_on_server, has_raw, asset_modification_date)
+                SELECT ?, COALESCE(s.source_checksum, s.checksum), 1, ?, ?,
+                       NULL, 0, 0, ?
+                FROM server_assets_cache AS s
+                WHERE s.icloud_id = ?
+                  AND COALESCE(s.source_checksum, s.checksum) = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM hash_cache AS h WHERE h.asset_id = ?
+                  )
+                LIMIT 1;
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(stmt)
+                return false
+            }
+            defer { sqlite3_finalize(stmt) }
+            let timestamp = Date().timeIntervalSince1970
+            sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(stmt, 2, timestamp)
+            sqlite3_bind_double(stmt, 3, timestamp)
+            if let modificationDate {
+                sqlite3_bind_double(stmt, 4, modificationDate.timeIntervalSince1970)
+            } else {
+                sqlite3_bind_null(stmt, 4)
+            }
+            sqlite3_bind_text(stmt, 5, (iCloudId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 6, (expectedChecksum as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 7, (localIdentifier as NSString).utf8String, -1, nil)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
+            return sqlite3_changes(self.connection.db) == 1
+        }
+    }
+
     func saveHashCache(localIdentifier: String, sha1Hash: String) {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
