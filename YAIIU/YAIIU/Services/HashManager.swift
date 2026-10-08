@@ -734,27 +734,31 @@ class HashManager: ObservableObject {
                     // for a RAW asset would erase has_raw/raw_hash and make the primary
                     // result hide its RAW companion from background discovery.
                     let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-                    if let asset = fetch.firstObject,
-                       AssetResourceSelector.select(for: asset)?.rawResource != nil {
+                    guard let asset = fetch.firstObject,
+                          let selection = AssetResourceSelector.select(for: asset) else {
+                        remainingIdentifiers.append(identifier)
+                        continue
+                    }
+                    if selection.rawResource != nil {
                         remainingIdentifiers.append(identifier)
                         continue
                     }
 
-                    DatabaseManager.shared.saveMultiResourceHashCache(
-                        localIdentifier: identifier,
-                        primaryHash: checksum,
-                        rawHash: nil,
-                        hasRAW: false
-                    )
                     guard !Task.isCancelled, self.isCurrentRun(runID) else { return }
-                    
-                    DatabaseManager.shared.updateMultiResourceHashCacheServerStatus(
+                    // Verify the selected iCloud ID/checksum against the
+                    // current server catalog inside the same SQLite statement
+                    // that records the result. Do not publish an old snapshot.
+                    let persisted = DatabaseManager.shared.saveCurrentICloudIDMatch(
                         localIdentifier: identifier,
-                        primaryOnServer: true,
-                        rawOnServer: false
+                        iCloudId: iCloudId,
+                        expectedChecksum: checksum,
+                        modificationDate: asset.modificationDate
                     )
-                    
-                    matchCount += 1
+                    if persisted {
+                        matchCount += 1
+                    } else {
+                        remainingIdentifiers.append(identifier)
+                    }
                 } else {
                     remainingIdentifiers.append(identifier)
                 }
