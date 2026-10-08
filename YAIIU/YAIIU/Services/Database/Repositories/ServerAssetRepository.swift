@@ -736,6 +736,44 @@ final class ServerAssetRepository {
         }
     }
     
+    /// Called once after a complete server snapshot has been persisted and
+    /// unknown upload IDs have been backfilled, but BEFORE saving the new
+    /// sync acknowledgement. Preserve valid upload history, prune obsolete
+    /// entries and invalidate any check that ran during snapshot rebuilding.
+    @discardableResult
+    func finalizeFullServerSnapshot() -> Bool {
+        connection.dbQueue.sync { [weak self] in
+            guard let self, self.connection.beginTransaction() else { return false }
+            let commands = [
+                """
+                DELETE FROM uploaded_assets
+                WHERE immich_id = 'unknown'
+                   OR NOT EXISTS (
+                       SELECT 1 FROM server_assets_cache AS s
+                       WHERE s.immich_id = uploaded_assets.immich_id
+                   );
+                """,
+                """
+                UPDATE hash_cache
+                SET checked_at = NULL, is_on_server = 0, raw_on_server = 0,
+                    server_check_revision = server_check_revision + 1;
+                """
+            ]
+            for sql in commands {
+                guard sqlite3_exec(self.connection.db, sql, nil, nil, nil) == SQLITE_OK else {
+                    logError("Failed to finalize full server snapshot: \(self.connection.lastErrorMessage)", category: .database)
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return false
+            }
+            return true
+        }
+    }
+
     // MARK: - Sync Metadata
 
     @discardableResult
