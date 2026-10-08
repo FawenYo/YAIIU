@@ -298,6 +298,11 @@ final class DatabaseManager {
     func clearServerAssetsCache() -> Bool {
         serverRepo.clearServerAssetsCache()
     }
+
+    @discardableResult
+    func finalizeFullServerSnapshot() -> Bool {
+        serverRepo.finalizeFullServerSnapshot()
+    }
     
     @discardableResult
     func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, serverURL: String, totalAssets: Int, lastAck: String? = nil) -> Bool {
