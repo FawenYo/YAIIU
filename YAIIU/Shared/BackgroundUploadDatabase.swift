@@ -74,6 +74,23 @@ final class BackgroundUploadDatabase {
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
 
+        // This extension can launch before the host app runs migration v10.
+        // Ensure the shared hash cache supports the destination reset revision
+        // so an in-flight comparison cannot restore a previous-server verdict.
+        var hashColumns: Set<String> = []
+        var hashStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(hash_cache);", -1, &hashStatement, nil) == SQLITE_OK {
+            while sqlite3_step(hashStatement) == SQLITE_ROW {
+                if let column = sqlite3_column_text(hashStatement, 1) {
+                    hashColumns.insert(String(cString: column))
+                }
+            }
+        }
+        sqlite3_finalize(hashStatement)
+        if hashColumns.contains("asset_id") && !hashColumns.contains("server_check_revision") {
+            exec("ALTER TABLE hash_cache ADD COLUMN server_check_revision INTEGER NOT NULL DEFAULT 0")
+        }
+
         // Older extension builds created RAW jobs without updating has_raw. Repair
         // that durable resource-presence fact so a confirmed primary never hides a
         // failed RAW retry.
@@ -503,7 +520,7 @@ final class BackgroundUploadDatabase {
                 let destinationSpecificSql = [
                     "DELETE FROM uploaded_assets",
                     "DELETE FROM upload_jobs WHERE status = 'completed'",
-                    "UPDATE hash_cache SET is_on_server = 0, raw_on_server = 0, checked_at = NULL",
+                    "UPDATE hash_cache SET is_on_server = 0, raw_on_server = 0, checked_at = NULL, server_check_revision = server_check_revision + 1",
                 ]
                 for sql in destinationSpecificSql {
                     guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
@@ -804,6 +821,22 @@ final class BackgroundUploadDatabase {
 
     func getQueuedAssetIds(limit: Int) throws -> [String] {
         try queue.sync {
+            // Reap durable PhotoKit candidates that a foreground server check
+            // has since fully confirmed. Otherwise those permanently excluded
+            // rows would accumulate forever in the queue.
+            let cleanup = """
+                DELETE FROM background_upload_queue
+                WHERE EXISTS (
+                    SELECT 1 FROM hash_cache AS h
+                    WHERE h.asset_id = background_upload_queue.asset_id
+                      AND h.checked_at IS NOT NULL
+                      AND h.is_on_server = 1
+                      AND (h.has_raw = 0 OR h.raw_on_server = 1)
+                );
+            """
+            guard sqlite3_exec(db, cleanup, nil, nil, nil) == SQLITE_OK else {
+                throw sqliteError("Cleanup confirmed queued assets")
+            }
             let sql = """
                 SELECT q.asset_id
                 FROM background_upload_queue AS q
