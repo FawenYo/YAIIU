@@ -288,6 +288,49 @@ final class HashCacheRepository {
         sqlite3_finalize(statement)
     }
     
+    /// Do not overwrite a server delta with a verdict computed against an
+    /// earlier catalog revision.
+    @discardableResult
+    func updateMultiResourceHashCacheServerStatusIfCurrent(
+        localIdentifier: String,
+        primaryOnServer: Bool,
+        rawOnServer: Bool,
+        expectedRevision: Int64
+    ) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self, self.connection.beginTransaction() else { return false }
+            let sql = """
+                UPDATE hash_cache
+                SET is_on_server = ?, raw_on_server = ?, checked_at = ?
+                WHERE asset_id = ? AND checked_at IS NULL
+                  AND server_check_revision = ?;
+            """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                self.connection.rollbackTransaction()
+                return false
+            }
+            sqlite3_bind_int(statement, 1, primaryOnServer ? 1 : 0)
+            sqlite3_bind_int(statement, 2, rawOnServer ? 1 : 0)
+            sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+            sqlite3_bind_text(statement, 4, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(statement, 5, expectedRevision)
+            let updated = sqlite3_step(statement) == SQLITE_DONE
+                && sqlite3_changes(self.connection.db) == 1
+            sqlite3_finalize(statement)
+            if updated {
+                self.enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return false
+            }
+            return updated
+        }
+    }
+
     func updateMultiResourceHashCacheServerStatus(
         localIdentifier: String,
         primaryOnServer: Bool,
@@ -560,7 +603,7 @@ final class HashCacheRepository {
             }
             
             let sql = """
-                SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server
+                SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server, server_check_revision
                 FROM hash_cache
                 -- Previously checked misses remain cached until relevant server
                 -- checksum changes invalidate the server verdict.
@@ -579,14 +622,16 @@ final class HashCacheRepository {
                         let hasRAW = sqlite3_column_int(statement, 3) == 1
                         let primaryOnServer = sqlite3_column_int(statement, 4) == 1
                         let rawOnServer = sqlite3_column_int(statement, 5) == 1
-                        
+                        let revision = sqlite3_column_int64(statement, 6)
+
                         records.append(MultiResourceHashRecord(
                             assetId: assetId,
                             primaryHash: primaryHash,
                             rawHash: rawHash,
                             hasRAW: hasRAW,
                             primaryOnServer: primaryOnServer,
-                            rawOnServer: rawOnServer
+                            rawOnServer: rawOnServer,
+                            serverCheckRevision: revision
                         ))
                     }
                 }
