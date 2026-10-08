@@ -498,28 +498,27 @@ final class HashCacheRepository {
                         let hasUploadedNonRAW = !uploadedTypes.isEmpty && uploadedTypes.contains(where: { $0 != "raw" })
                         let hasUploadedRAW = uploadedTypes.contains("raw")
                         
-                        var isFullyUploaded = false
-                        
-                        if hasRAW {
-                            let primaryComplete = hasUploadedNonRAW || primaryOnServer
-                            let rawComplete = hasUploadedRAW || rawOnServer
-                            isFullyUploaded = primaryComplete && rawComplete
-                        } else {
-                            let hasUploadedPrimary = hasUploadedNonRAW || hasUploadedRAW
-                            isFullyUploaded = hasUploadedPrimary || primaryOnServer
-                        }
-                        
-                        if isFullyUploaded {
-                            statusMap[identifier] = .uploaded
-                        } else if hasBeenChecked {
-                            // Already checked - show as not uploaded
-                            statusMap[identifier] = .notUploaded
+                        // A completed server-catalog lookup is the current
+                        // upload verdict. Historical uploaded_assets rows are
+                        // NOT proof of existence after a server-side deletion.
+                        // checked_at controls rechecking, not the display label.
+                        if hasBeenChecked && hasServerCache {
+                            let fullyOnServer = primaryOnServer && (!hasRAW || rawOnServer)
+                            statusMap[identifier] = fullyOnServer ? .uploaded : .notUploaded
                         } else if hasServerCache {
-                            // Has server cache but not checked yet - show as pending
+                            // This photo is still awaiting a server verdict.
                             statusMap[identifier] = .pending
                         } else {
-                            // No server cache - assume not uploaded
-                            statusMap[identifier] = .notUploaded
+                            // Preserve the original offline/fallback behavior
+                            // until an authoritative server snapshot exists.
+                            let isFullyUploaded: Bool
+                            if hasRAW {
+                                isFullyUploaded = (hasUploadedNonRAW || primaryOnServer)
+                                    && (hasUploadedRAW || rawOnServer)
+                            } else {
+                                isFullyUploaded = hasUploadedNonRAW || hasUploadedRAW || primaryOnServer
+                            }
+                            statusMap[identifier] = isFullyUploaded ? .uploaded : .notUploaded
                         }
                     }
                 }
