@@ -263,6 +263,26 @@ final class ServerAssetRepositoryTests: XCTestCase {
         return Int(sqlite3_column_int(statement, 0))
     }
 
+    func testStaleVerdictCannotOverwriteServerDelta() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "one", primaryHash: "one-sum", rawHash: nil, hasRAW: false)
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "one-sum", iCloudId: nil)
+        ], syncType: "delta"))
+
+        // The delta incremented this row's revision from 0 to 1.
+        XCTAssertFalse(hashes.updateMultiResourceHashCacheServerStatusIfCurrent(
+            localIdentifier: "one", primaryOnServer: false,
+            rawOnServer: false, expectedRevision: 0
+        ))
+        XCTAssertTrue(isUnchecked("one"))
+        XCTAssertTrue(hashes.updateMultiResourceHashCacheServerStatusIfCurrent(
+            localIdentifier: "one", primaryOnServer: true,
+            rawOnServer: false, expectedRevision: 1
+        ))
+        XCTAssertFalse(isUnchecked("one"))
+    }
+
     private func installDeferredCommitFailure(triggerEvent: String) {
         execute("PRAGMA foreign_keys = ON;")
         execute("CREATE TABLE commit_failure_parent (id INTEGER PRIMARY KEY);")
