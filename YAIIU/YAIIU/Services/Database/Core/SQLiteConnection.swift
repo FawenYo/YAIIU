@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 9
+    private static let schemaVersion = 10
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -156,7 +156,8 @@ final class SQLiteConnection {
             checked_at REAL,
             raw_hash TEXT,
             raw_on_server INTEGER DEFAULT 0,
-            has_raw INTEGER DEFAULT 0
+            has_raw INTEGER DEFAULT 0,
+            server_check_revision INTEGER NOT NULL DEFAULT 0
         );
         """
         executeStatement(sql)
@@ -295,6 +296,7 @@ final class SQLiteConnection {
             if currentVersion < 7 { migrateToV7() }
             if currentVersion < 8 { migrateToV8() }
             if currentVersion < 9 { migrateToV9() }
+            if currentVersion < 10 { migrateToV10() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -489,12 +491,54 @@ final class SQLiteConnection {
     }
 
 
+    /// Reopen only old negative/partial verdicts that now match the cache.
+    /// This avoids a full-library recheck when upgrading from schema v9.
+    private func migrateToV10() {
+        logInfo("Migrating database to version 10: versioned server checks", category: .database)
+        if !tableColumns("hash_cache").contains("server_check_revision") {
+            guard sqlite3_exec(db,
+                "ALTER TABLE hash_cache ADD COLUMN server_check_revision INTEGER NOT NULL DEFAULT 0;",
+                nil, nil, nil
+            ) == SQLITE_OK else {
+                logError("Could not add server_check_revision: \(lastErrorMessage)", category: .database)
+                return
+            }
+        }
+        let reconcile = """
+            UPDATE hash_cache
+            SET checked_at = NULL,
+                is_on_server = 0,
+                raw_on_server = 0,
+                server_check_revision = server_check_revision + 1
+            WHERE checked_at IS NOT NULL
+              AND (
+                (is_on_server = 0 AND EXISTS (
+                    SELECT 1 FROM server_assets_cache s
+                    WHERE s.source_checksum = hash_cache.sha1_hash
+                       OR (s.source_checksum IS NULL AND s.checksum = hash_cache.sha1_hash)
+                ))
+                OR (has_raw = 1 AND raw_on_server = 0 AND raw_hash IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM server_assets_cache s
+                    WHERE s.source_checksum = hash_cache.raw_hash
+                       OR (s.source_checksum IS NULL AND s.checksum = hash_cache.raw_hash)
+                ))
+              );
+        """
+        guard sqlite3_exec(db, reconcile, nil, nil, nil) == SQLITE_OK else {
+            logError("Could not reconcile legacy verdicts: \(lastErrorMessage)", category: .database)
+            return
+        }
+        logInfo("Reopened \(sqlite3_changes(db)) stale legacy server checks", category: .database)
+    }
+
     private func hasSchemaColumnsForCurrentVersion() -> Bool {
+        let hashCacheColumns = tableColumns("hash_cache")
         let syncMetadataColumns = tableColumns("sync_metadata")
         let serverAssetColumns = tableColumns("server_assets_cache")
         let backgroundUploadQueueColumns = tableColumns("background_upload_queue")
         let backgroundUploadStateColumns = tableColumns("background_upload_state")
-        return ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
+        return hashCacheColumns.contains("server_check_revision")
+            && ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
             && serverAssetColumns.contains("source_checksum")
             && ["asset_id", "enqueued_at"].allSatisfy(backgroundUploadQueueColumns.contains)
             && ["bootstrap_token_data", "destination_identity", "updated_at"].allSatisfy(backgroundUploadStateColumns.contains)
