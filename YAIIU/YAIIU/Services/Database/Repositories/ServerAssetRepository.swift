@@ -687,20 +687,22 @@ final class ServerAssetRepository {
         return hasCache
     }
     
-    /// Internal method for use when already on dbQueue
+    /// A completed synchronization may legitimately contain zero Immich
+    /// assets. Its sync checkpoint, not its asset count, indicates whether
+    /// server verdicts are authoritative for UI display.
+    /// Internal method for use when already on dbQueue.
     func hasServerCacheInternal() -> Bool {
-        let sql = "SELECT COUNT(*) FROM server_assets_cache LIMIT 1;"
+        let sql = """
+            SELECT 1 FROM sync_metadata
+            WHERE id = 1 AND last_sync_time IS NOT NULL
+            LIMIT 1;
+        """
         var statement: OpaquePointer?
-        var hasCache = false
-        
-        if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            if sqlite3_step(statement) == SQLITE_ROW {
-                hasCache = sqlite3_column_int(statement, 0) > 0
-            }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
         }
-        sqlite3_finalize(statement)
-        
-        return hasCache
+        return sqlite3_step(statement) == SQLITE_ROW
     }
     
     // MARK: - Clear Methods
