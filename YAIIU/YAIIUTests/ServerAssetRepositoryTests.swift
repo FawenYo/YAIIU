@@ -349,6 +349,48 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'paired' AND raw_hash = 'raw-sum' AND has_raw = 1;"), 1)
     }
 
+    func testEmptyCompletedServerSnapshotIsAuthoritative() {
+        XCTAssertFalse(repository.hasServerCache())
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(), syncType: "full",
+            userId: "owner-1", serverURL: "https://immich.example",
+            totalAssets: 0, lastAck: "checkpoint"
+        ))
+        XCTAssertTrue(repository.hasServerCache())
+    }
+
+    func testCheckedUploadDisplayIgnoresStaleHistoricalUpload() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "deleted-on-server", primaryHash: "missing-sum",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "found-on-server", primaryHash: "present-sum",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "awaiting-check", primaryHash: "unknown-sum",
+            rawHash: nil, hasRAW: false
+        )
+        execute("""
+            UPDATE hash_cache SET
+              checked_at = CASE WHEN asset_id = 'awaiting-check' THEN NULL ELSE 100 END,
+              is_on_server = CASE WHEN asset_id = 'found-on-server' THEN 1 ELSE 0 END;
+        """)
+        let ready = expectation(description: "Status map reflects current verdicts")
+        hashes.getAllSyncStatusAsync(
+            uploadedResourceTypes: ["deleted-on-server": ["photo"]],
+            hasServerCache: true
+        ) { statuses in
+            XCTAssertEqual(statuses["deleted-on-server"], .notUploaded)
+            XCTAssertEqual(statuses["found-on-server"], .uploaded)
+            XCTAssertEqual(statuses["awaiting-check"], .pending)
+            ready.fulfill()
+        }
+        wait(for: [ready], timeout: 5)
+    }
+
     func testFullSnapshotReconcilesPrimaryAndRAWWithoutPerAssetRecheck() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "server-primary",
