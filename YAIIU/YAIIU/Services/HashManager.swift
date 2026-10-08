@@ -1397,8 +1397,9 @@ class HashManager: ObservableObject {
                 self.statusMessage = "Checking cloud status (0/\(validRecords.count))..."
             }
             
-            // Check if server assets cache has been synced
-            let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
+            // Sync metadata establishes whether the server cache is authoritative,
+            // even if a valid sync found ZERO server assets.
+            let hasServerCache = DatabaseManager.shared.getSyncMetadata() != nil
 
             // Preload localIdentifier → immichId map from upload records for iCloudId backfill
             let uploadedMappings = DatabaseManager.shared.getAllUploadedAssetMappings()
@@ -1435,17 +1436,19 @@ class HashManager: ObservableObject {
                 var primaryOnServer = record.primaryOnServer
                 var rawOnServer = record.rawOnServer
                 
-                // Check primary hash against server
-                if !primaryOnServer {
-                    if DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "primary") ||
-                       DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "photo") {
-                        primaryOnServer = true
-                    } else if !record.hasRAW &&
-                              DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "raw") {
-                        primaryOnServer = true
-                    } else if hasServerCache {
-                        primaryOnServer = DatabaseManager.shared.isAssetOnServer(checksum: record.primaryHash)
-                    }
+                // A completed server sync is authoritative. Historical uploads
+                // describe what once happened, not whether a deleted asset is
+                // still present in Immich after the newest delta.
+                if hasServerCache {
+                    primaryOnServer = DatabaseManager.shared.isAssetOnServer(checksum: record.primaryHash)
+                } else if !primaryOnServer {
+                    primaryOnServer = DatabaseManager.shared.isAssetUploaded(
+                        localIdentifier: localIdentifier, resourceType: "primary"
+                    ) || DatabaseManager.shared.isAssetUploaded(
+                        localIdentifier: localIdentifier, resourceType: "photo"
+                    ) || (!record.hasRAW && DatabaseManager.shared.isAssetUploaded(
+                        localIdentifier: localIdentifier, resourceType: "raw"
+                    ))
                 }
 
                 // Queue iCloudId update if asset is on server but server cache has no iCloudId
@@ -1471,11 +1474,15 @@ class HashManager: ObservableObject {
                 }
                 
                 // Check RAW hash against server if asset has RAW
-                if record.hasRAW && !rawOnServer {
-                    if DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "raw") {
-                        rawOnServer = true
-                    } else if hasServerCache, let rawHash = record.rawHash {
-                        rawOnServer = DatabaseManager.shared.isAssetOnServer(checksum: rawHash)
+                if record.hasRAW {
+                    if hasServerCache {
+                        rawOnServer = record.rawHash.map {
+                            DatabaseManager.shared.isAssetOnServer(checksum: $0)
+                        } ?? false
+                    } else if !rawOnServer {
+                        rawOnServer = DatabaseManager.shared.isAssetUploaded(
+                            localIdentifier: localIdentifier, resourceType: "raw"
+                        )
                     }
                 }
                 guard self.isCurrentRun(runID), !Task.isCancelled else { return }
