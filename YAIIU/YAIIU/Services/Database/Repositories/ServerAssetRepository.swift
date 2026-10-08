@@ -8,6 +8,70 @@ final class ServerAssetRepository {
         self.connection = connection
     }
     
+    // MARK: - Incremental server-check invalidation
+
+    /// The server-side matching key is source_checksum when available;
+    /// checksum only participates when there is no source checksum.
+    /// Callers already hold dbQueue and a transaction.
+    private func matchableChecksum(for immichId: String) -> String? {
+        let sql = "SELECT COALESCE(source_checksum, checksum) FROM server_assets_cache WHERE immich_id = ?;"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        sqlite3_bind_text(stmt, 1, (immichId as NSString).utf8String, -1, nil)
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let value = sqlite3_column_text(stmt, 0) else { return nil }
+        return String(cString: value)
+    }
+
+    /// The temporary table avoids a SQLite bind-variable limit and updates
+    /// only affected hash rows in a single scan. Runs inside the same
+    /// transaction as the server cache changes.
+    private func invalidateChecks(for checksums: Set<String>) -> Bool {
+        guard !checksums.isEmpty else { return true }
+        for sql in [
+            "CREATE TEMP TABLE IF NOT EXISTS yaiiu_changed_checksums (checksum TEXT PRIMARY KEY);",
+            "DELETE FROM yaiiu_changed_checksums;"
+        ] {
+            guard sqlite3_exec(connection.db, sql, nil, nil, nil) == SQLITE_OK else { return false }
+        }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            connection.db,
+            "INSERT OR IGNORE INTO yaiiu_changed_checksums (checksum) VALUES (?);",
+            -1, &stmt, nil
+        ) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            return false
+        }
+        var succeeded = true
+        for checksum in checksums where !checksum.isEmpty {
+            sqlite3_bind_text(stmt, 1, (checksum as NSString).utf8String, -1, nil)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                succeeded = false
+                break
+            }
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
+        sqlite3_finalize(stmt)
+        guard succeeded else { return false }
+
+        let update = """
+            UPDATE hash_cache
+            SET checked_at = NULL, is_on_server = 0, raw_on_server = 0
+            WHERE sha1_hash IN (SELECT checksum FROM yaiiu_changed_checksums)
+               OR raw_hash IN (SELECT checksum FROM yaiiu_changed_checksums);
+        """
+        guard sqlite3_exec(connection.db, update, nil, nil, nil) == SQLITE_OK else { return false }
+        logInfo(
+            "Server delta invalidated \(sqlite3_changes(connection.db)) local hash records for \(checksums.count) changed checksums",
+            category: .database
+        )
+        return true
+    }
+
     // MARK: - Save Methods
     
     @discardableResult
@@ -22,6 +86,7 @@ final class ServerAssetRepository {
                 return false
             }
             var failed = false
+            var checksumsToInvalidate: Set<String> = []
             
             let sql = """
             INSERT INTO server_assets_cache
@@ -47,6 +112,8 @@ final class ServerAssetRepository {
             let syncTime = Date().timeIntervalSince1970
 
             for asset in assets {
+                let oldChecksum = syncType == "delta"
+                    ? self.matchableChecksum(for: asset.immichId) : nil
                 sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
 
@@ -94,12 +161,19 @@ final class ServerAssetRepository {
                     break
                 }
 
+                if syncType == "delta" {
+                    let newChecksum = self.matchableChecksum(for: asset.immichId)
+                    if oldChecksum != newChecksum {
+                        if let oldChecksum { checksumsToInvalidate.insert(oldChecksum) }
+                        if let newChecksum { checksumsToInvalidate.insert(newChecksum) }
+                    }
+                }
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
             }
             sqlite3_finalize(statement)
 
-            if failed {
+            if failed || !self.invalidateChecks(for: checksumsToInvalidate) {
                 self.connection.rollbackTransaction()
                 return false
             }
@@ -228,6 +302,7 @@ final class ServerAssetRepository {
             let sql = "UPDATE server_assets_cache SET source_checksum = ? WHERE immich_id = ?;"
             var statement: OpaquePointer?
             var failed = false
+            var checksumsToInvalidate: Set<String> = []
 
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
                 self.connection.rollbackTransaction()
@@ -236,6 +311,7 @@ final class ServerAssetRepository {
             }
 
             for (immichId, sourceChecksum) in sourceChecksumsByImmichId {
+                let oldChecksum = self.matchableChecksum(for: immichId)
                 sqlite3_bind_text(statement, 1, (sourceChecksum as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
                 if sqlite3_step(statement) != SQLITE_DONE {
@@ -243,12 +319,17 @@ final class ServerAssetRepository {
                     logError("Failed to update source checksum: \(self.connection.lastErrorMessage)", category: .database)
                     break
                 }
+                let newChecksum = self.matchableChecksum(for: immichId)
+                if oldChecksum != newChecksum {
+                    if let oldChecksum { checksumsToInvalidate.insert(oldChecksum) }
+                    if let newChecksum { checksumsToInvalidate.insert(newChecksum) }
+                }
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
             }
 
             sqlite3_finalize(statement)
-            if failed {
+            if failed || !self.invalidateChecks(for: checksumsToInvalidate) {
                 self.connection.rollbackTransaction()
                 return false
             }
@@ -327,19 +408,22 @@ final class ServerAssetRepository {
             }
 
             var failed = false
+            var checksumsToInvalidate: Set<String> = []
             for immichId in immichIds {
+                let oldChecksum = self.matchableChecksum(for: immichId)
                 sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     failed = true
                     logError("Failed to delete server asset: \(self.connection.lastErrorMessage)", category: .database)
                     break
                 }
+                if let oldChecksum { checksumsToInvalidate.insert(oldChecksum) }
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
             }
             sqlite3_finalize(statement)
 
-            if failed {
+            if failed || !self.invalidateChecks(for: checksumsToInvalidate) {
                 self.connection.rollbackTransaction()
                 return false
             }
@@ -611,7 +695,12 @@ final class ServerAssetRepository {
                 return false
             }
 
-            let statements = ["DELETE FROM server_assets_cache;", "DELETE FROM sync_metadata;"]
+            let statements = [
+                "DELETE FROM server_assets_cache;",
+                "DELETE FROM sync_metadata;",
+                // The server can now differ completely. Retain SHA1s, not old verdicts.
+                "UPDATE hash_cache SET checked_at = NULL, is_on_server = 0, raw_on_server = 0;"
+            ]
             for sql in statements where sqlite3_exec(self.connection.db, sql, nil, nil, nil) != SQLITE_OK {
                 logError("Failed to clear server cache: \(self.connection.lastErrorMessage)", category: .database)
                 self.connection.rollbackTransaction()

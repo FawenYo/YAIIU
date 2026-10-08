@@ -182,6 +182,87 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(Set(ids), [videoId, rawId])
     }
 
+    func testCheckedMissingAssetsOnlyRecheckAfterMatchingDelta() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "matching", primaryHash: "new-sum", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "unrelated", primaryHash: "other-sum", rawHash: nil, hasRAW: false)
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 0;")
+        XCTAssertEqual(pendingCheckCount(), 0)
+
+        XCTAssertTrue(repository.saveServerAssets([], syncType: "delta"))
+        XCTAssertEqual(pendingCheckCount(), 0)
+
+        XCTAssertTrue(repository.saveServerAssets([record(checksum: "new-sum", iCloudId: nil)], syncType: "delta"))
+        XCTAssertEqual(pendingCheckCount(), 1)
+        XCTAssertTrue(isUnchecked("matching"))
+        XCTAssertFalse(isUnchecked("unrelated"))
+    }
+
+    func testChangedAndDeletedChecksumsInvalidatePrimaryAndRAW() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "old", primaryHash: "old-sum", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "new", primaryHash: "new-sum", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "paired", primaryHash: "jpeg-sum", rawHash: "old-sum", hasRAW: true)
+        hashes.saveMultiResourceHashCache(localIdentifier: "other", primaryHash: "other-sum", rawHash: nil, hasRAW: false)
+        XCTAssertTrue(repository.saveServerAssets([record(checksum: "old-sum", iCloudId: nil)]))
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1, raw_on_server = 1;")
+
+        XCTAssertTrue(repository.saveServerAssets([record(checksum: "new-sum", iCloudId: nil)], syncType: "delta"))
+        XCTAssertEqual(pendingCheckCount(), 3)
+        XCTAssertTrue(isUnchecked("old"))
+        XCTAssertTrue(isUnchecked("new"))
+        XCTAssertTrue(isUnchecked("paired"))
+        XCTAssertFalse(isUnchecked("other"))
+
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1, raw_on_server = 1;")
+        XCTAssertTrue(repository.deleteServerAssets(["asset-1"]))
+        XCTAssertTrue(isUnchecked("new"))
+        XCTAssertFalse(isUnchecked("other"))
+    }
+
+    func testSourceChecksumChangeInvalidatesBothOldAndNewMatches() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "old", primaryHash: "server-sum", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "new", primaryHash: "source-sum", rawHash: nil, hasRAW: false)
+        XCTAssertTrue(repository.saveServerAssets([record(checksum: "server-sum", iCloudId: nil)]))
+        execute("UPDATE hash_cache SET checked_at = 100;")
+        XCTAssertTrue(repository.updateSourceChecksums(["asset-1": "source-sum"]))
+        XCTAssertEqual(pendingCheckCount(), 2)
+    }
+
+    func testFullServerResetInvalidatesVerdictsWithoutDeletingHashes() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(localIdentifier: "a", primaryHash: "sum-a", rawHash: nil, hasRAW: false)
+        hashes.saveMultiResourceHashCache(localIdentifier: "b", primaryHash: "sum-b", rawHash: nil, hasRAW: false)
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1;")
+        XCTAssertEqual(pendingCheckCount(), 0)
+        XCTAssertTrue(repository.clearServerAssetsCache())
+        XCTAssertEqual(pendingCheckCount(), 2)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache;"), 2)
+    }
+
+    private func pendingCheckCount() -> Int {
+        count("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NULL;")
+    }
+
+    private func isUnchecked(_ id: String) -> Bool {
+        count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = '\(id)' AND checked_at IS NULL;") == 1
+    }
+
+    private func count(_ query: String) -> Int {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(connection.db, query, -1, &statement, nil) == SQLITE_OK else {
+            XCTFail("SQL prepare failed")
+            return -1
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            XCTFail("SQL query failed")
+            return -1
+        }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
     private func installDeferredCommitFailure(triggerEvent: String) {
         execute("PRAGMA foreign_keys = ON;")
         execute("CREATE TABLE commit_failure_parent (id INTEGER PRIMARY KEY);")
