@@ -808,6 +808,12 @@ final class BackgroundUploadDatabase {
                 SELECT q.asset_id
                 FROM background_upload_queue AS q
                 WHERE NOT EXISTS (
+                    SELECT 1 FROM hash_cache AS h
+                    WHERE h.asset_id = q.asset_id
+                      AND (h.checked_at IS NULL
+                           OR (h.is_on_server = 1 AND (h.has_raw = 0 OR h.raw_on_server = 1)))
+                )
+                AND NOT EXISTS (
                     SELECT 1 FROM upload_jobs AS j
                     WHERE j.asset_id = q.asset_id
                       AND j.status IN ('pending', 'uploading', 'failed')
@@ -948,7 +954,7 @@ final class BackgroundUploadDatabase {
             var ids = Set<String>()
             let sql = """
                 SELECT asset_id FROM hash_cache
-                WHERE is_on_server = 1 AND (has_raw = 0 OR raw_on_server = 1)
+                WHERE checked_at IS NOT NULL AND is_on_server = 1 AND (has_raw = 0 OR raw_on_server = 1)
             """
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
@@ -972,8 +978,9 @@ final class BackgroundUploadDatabase {
             let sql = """
                 SELECT asset_id, CASE WHEN is_on_server = 1 THEN 'p' ELSE 'r' END
                 FROM hash_cache
-                WHERE (is_on_server = 1 AND has_raw = 1 AND raw_on_server = 0)
-                   OR (raw_on_server = 1 AND is_on_server = 0)
+                WHERE checked_at IS NOT NULL
+                  AND ((is_on_server = 1 AND has_raw = 1 AND raw_on_server = 0)
+                       OR (raw_on_server = 1 AND is_on_server = 0))
             """
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
