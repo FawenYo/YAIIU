@@ -349,6 +349,38 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'paired' AND raw_hash = 'raw-sum' AND has_raw = 1;"), 1)
     }
 
+    func testFullSnapshotPreservesValidHistoryAndClearsOrphans() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "previous-miss", primaryHash: "missing-checksum",
+            rawHash: nil, hasRAW: false
+        )
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1;")
+
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "still-present", iCloudId: "cloud-1")
+        ], syncType: "full"))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "valid", resourceType: "photo",
+            filename: "valid.jpg", immichId: "asset-1"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "gone", resourceType: "photo",
+            filename: "gone.jpg", immichId: "deleted-server-id"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unresolved", resourceType: "photo",
+            filename: "unknown.jpg", immichId: "unknown"
+        )
+
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'asset-1';"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'deleted-server-id';"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'unknown';"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'previous-miss' AND checked_at IS NULL;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'previous-miss' AND sha1_hash = 'missing-checksum';"), 1)
+    }
+
     private func installDeferredCommitFailure(triggerEvent: String) {
         execute("PRAGMA foreign_keys = ON;")
         execute("CREATE TABLE commit_failure_parent (id INTEGER PRIMARY KEY);")
