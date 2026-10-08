@@ -286,6 +286,14 @@ class ServerAssetSyncService {
             throw SyncError.syncFailed(reason: "Failed to persist source checksum updates")
         }
 
+        // Before committing the new full-sync checkpoint, reconcile upload
+        // history against the complete server catalog and invalidate any
+        // comparisons that ran while the snapshot was being rebuilt.
+        let backfilledCount = dbManager.backfillImmichIdsFromServerCache()
+        if syncType == "full", !dbManager.finalizeFullServerSnapshot() {
+            throw SyncError.syncFailed(reason: "Failed to finalize full server snapshot")
+        }
+
         let acks = Array(Set(streamResult.acks + metadataResult.acks)).sorted()
         let newAck = acks.last
         guard dbManager.saveSyncMetadata(
@@ -303,7 +311,6 @@ class ServerAssetSyncService {
             try await apiService.sendSyncAck(acks: acks, serverURL: serverURL, apiKey: apiKey)
         }
 
-        let backfilledCount = dbManager.backfillImmichIdsFromServerCache()
         let total = dbManager.getServerAssetsCacheCount()
         logInfo(
             "Sync completed: type=\(syncType), total=\(total), assetUpserts=\(serverAssetRecords.count), "
