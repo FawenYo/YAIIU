@@ -114,6 +114,21 @@ final class DatabaseManager {
         hashRepo.updateHashCacheServerStatus(localIdentifier: localIdentifier, isOnServer: isOnServer)
     }
     
+    @discardableResult
+    func updateMultiResourceHashCacheServerStatusIfCurrent(
+        localIdentifier: String,
+        primaryOnServer: Bool,
+        rawOnServer: Bool,
+        expectedRevision: Int64
+    ) -> Bool {
+        hashRepo.updateMultiResourceHashCacheServerStatusIfCurrent(
+            localIdentifier: localIdentifier,
+            primaryOnServer: primaryOnServer,
+            rawOnServer: rawOnServer,
+            expectedRevision: expectedRevision
+        )
+    }
+
     func updateMultiResourceHashCacheServerStatus(
         localIdentifier: String,
         primaryOnServer: Bool,
