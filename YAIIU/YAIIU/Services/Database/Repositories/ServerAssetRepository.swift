@@ -736,10 +736,14 @@ final class ServerAssetRepository {
         }
     }
     
-    /// Called once after a complete server snapshot has been persisted and
-    /// unknown upload IDs have been backfilled, but BEFORE saving the new
-    /// sync acknowledgement. Preserve valid upload history, prune obsolete
-    /// entries and invalidate any check that ran during snapshot rebuilding.
+    /// Finalize a COMPLETE server snapshot without putting every existing
+    /// local photo back into the individual PhotoKit/hash comparison queue.
+    /// Reconcile local primary/RAW checksums against indexed server checksums
+    /// directly in SQLite, preserving all SHA1 values. The transaction also
+    /// discards obsolete upload history and updates durable upload candidates.
+    ///
+    /// Called after all full-sync assets and metadata have been saved, and
+    /// before the new sync acknowledgement is committed.
     @discardableResult
     func finalizeFullServerSnapshot() -> Bool {
         connection.dbQueue.sync { [weak self] in
@@ -755,13 +759,50 @@ final class ServerAssetRepository {
                 """,
                 """
                 UPDATE hash_cache
-                SET checked_at = NULL, is_on_server = 0, raw_on_server = 0,
+                SET is_on_server = CASE WHEN
+                    EXISTS (
+                        SELECT 1 FROM server_assets_cache AS s
+                        WHERE s.source_checksum = hash_cache.sha1_hash
+                    ) OR EXISTS (
+                        SELECT 1 FROM server_assets_cache AS s
+                        WHERE s.source_checksum IS NULL
+                          AND s.checksum = hash_cache.sha1_hash
+                    )
+                    THEN 1 ELSE 0 END,
+                    raw_on_server = CASE WHEN has_raw = 1 AND raw_hash IS NOT NULL
+                        AND (
+                            EXISTS (
+                                SELECT 1 FROM server_assets_cache AS s
+                                WHERE s.source_checksum = hash_cache.raw_hash
+                            ) OR EXISTS (
+                                SELECT 1 FROM server_assets_cache AS s
+                                WHERE s.source_checksum IS NULL
+                                  AND s.checksum = hash_cache.raw_hash
+                            )
+                        )
+                        THEN 1 ELSE 0 END,
+                    checked_at = CAST(strftime('%s', 'now') AS REAL),
                     server_check_revision = server_check_revision + 1;
+                """,
+                """
+                INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
+                SELECT asset_id, CAST(strftime('%s', 'now') AS REAL)
+                FROM hash_cache
+                WHERE is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0);
+                """,
+                """
+                DELETE FROM background_upload_queue
+                WHERE EXISTS (
+                    SELECT 1 FROM hash_cache AS h
+                    WHERE h.asset_id = background_upload_queue.asset_id
+                      AND h.is_on_server = 1
+                      AND (h.has_raw = 0 OR h.raw_on_server = 1)
+                );
                 """
             ]
             for sql in commands {
                 guard sqlite3_exec(self.connection.db, sql, nil, nil, nil) == SQLITE_OK else {
-                    logError("Failed to finalize full server snapshot: \(self.connection.lastErrorMessage)", category: .database)
+                    logError("Failed to reconcile full server snapshot: \(self.connection.lastErrorMessage)", category: .database)
                     self.connection.rollbackTransaction()
                     return false
                 }
@@ -770,6 +811,10 @@ final class ServerAssetRepository {
                 self.connection.rollbackTransaction()
                 return false
             }
+            logInfo(
+                "Full server snapshot reconciled using indexed checksums; no per-photo recheck scheduled",
+                category: .database
+            )
             return true
         }
     }
