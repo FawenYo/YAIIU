@@ -263,6 +263,24 @@ final class ServerAssetRepositoryTests: XCTestCase {
         return Int(sqlite3_column_int(statement, 0))
     }
 
+    func testServerDeletionRemovesObsoleteUploadHistory() {
+        let immichId = "asset-1"
+        let localId = "locally-uploaded-photo"
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "deleted-checksum", iCloudId: nil)
+        ]))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: localId,
+            resourceType: "photo",
+            filename: "deleted.jpg",
+            immichId: immichId
+        )
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'asset-1';"), 1)
+
+        XCTAssertTrue(repository.deleteServerAssets([immichId]))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'asset-1';"), 0)
+    }
+
     func testStaleVerdictCannotOverwriteServerDelta() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "one", primaryHash: "one-sum", rawHash: nil, hasRAW: false)
