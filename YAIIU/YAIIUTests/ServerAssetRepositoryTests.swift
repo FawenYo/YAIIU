@@ -301,6 +301,54 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertFalse(isUnchecked("one"))
     }
 
+    func testICloudShortcutRejectsDeletedAndChangedServerChecksums() {
+        let hashes = HashCacheRepository(connection: connection)
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "original-sum", iCloudId: "cloud-1")
+        ]))
+        XCTAssertTrue(hashes.saveCurrentICloudIDMatch(
+            localIdentifier: "first", iCloudId: "cloud-1",
+            expectedChecksum: "original-sum", modificationDate: nil
+        ))
+        XCTAssertFalse(isUnchecked("first"))
+
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "replacement-sum", iCloudId: "cloud-1")
+        ], syncType: "delta"))
+        XCTAssertFalse(hashes.saveCurrentICloudIDMatch(
+            localIdentifier: "stale", iCloudId: "cloud-1",
+            expectedChecksum: "original-sum", modificationDate: nil
+        ))
+        XCTAssertTrue(hashes.saveCurrentICloudIDMatch(
+            localIdentifier: "current", iCloudId: "cloud-1",
+            expectedChecksum: "replacement-sum", modificationDate: nil
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'stale';"), 0)
+
+        XCTAssertTrue(repository.deleteServerAssets(["asset-1"]))
+        XCTAssertFalse(hashes.saveCurrentICloudIDMatch(
+            localIdentifier: "deleted", iCloudId: "cloud-1",
+            expectedChecksum: "replacement-sum", modificationDate: nil
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'deleted';"), 0)
+    }
+
+    func testICloudShortcutNeverClobbersExistingRAWHashCache() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "paired", primaryHash: "jpeg-sum",
+            rawHash: "raw-sum", hasRAW: true
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "server-sum", iCloudId: "cloud-1")
+        ]))
+        XCTAssertFalse(hashes.saveCurrentICloudIDMatch(
+            localIdentifier: "paired", iCloudId: "cloud-1",
+            expectedChecksum: "server-sum", modificationDate: nil
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'paired' AND raw_hash = 'raw-sum' AND has_raw = 1;"), 1)
+    }
+
     private func installDeferredCommitFailure(triggerEvent: String) {
         execute("PRAGMA foreign_keys = ON;")
         execute("CREATE TABLE commit_failure_parent (id INTEGER PRIMARY KEY);")
