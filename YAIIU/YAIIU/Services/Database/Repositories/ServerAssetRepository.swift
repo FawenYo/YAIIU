@@ -60,7 +60,8 @@ final class ServerAssetRepository {
 
         let update = """
             UPDATE hash_cache
-            SET checked_at = NULL, is_on_server = 0, raw_on_server = 0
+            SET checked_at = NULL, is_on_server = 0, raw_on_server = 0,
+                server_check_revision = server_check_revision + 1
             WHERE sha1_hash IN (SELECT checksum FROM yaiiu_changed_checksums)
                OR raw_hash IN (SELECT checksum FROM yaiiu_changed_checksums);
         """
@@ -699,7 +700,7 @@ final class ServerAssetRepository {
                 "DELETE FROM server_assets_cache;",
                 "DELETE FROM sync_metadata;",
                 // The server can now differ completely. Retain SHA1s, not old verdicts.
-                "UPDATE hash_cache SET checked_at = NULL, is_on_server = 0, raw_on_server = 0;"
+                "UPDATE hash_cache SET checked_at = NULL, is_on_server = 0, raw_on_server = 0, server_check_revision = server_check_revision + 1;"
             ]
             for sql in statements where sqlite3_exec(self.connection.db, sql, nil, nil, nil) != SQLITE_OK {
                 logError("Failed to clear server cache: \(self.connection.lastErrorMessage)", category: .database)
