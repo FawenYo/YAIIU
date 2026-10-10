@@ -201,6 +201,18 @@ final class DatabaseManager {
         }
     }
     
+    /// Only photos lacking a confirmed complete SQLite upload verdict
+    /// should enter matching, hash calculation and server checking.
+    func getAssetsNotFullyUploadedAsync(
+        allIdentifiers: [String],
+        completion: @escaping ([String]) -> Void
+    ) {
+        hashRepo.getAssetsNotFullyUploadedAsync(
+            allIdentifiers: allIdentifiers,
+            completion: completion
+        )
+    }
+
     func getAssetsNeedingHashAsync(allIdentifiers: [String], completion: @escaping ([String]) -> Void) {
         hashRepo.getAssetsNeedingHashAsync(allIdentifiers: allIdentifiers, completion: completion)
     }
