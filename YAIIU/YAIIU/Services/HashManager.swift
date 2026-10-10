@@ -602,12 +602,13 @@ class HashManager: ObservableObject {
 
         logInfo("Hash pipeline started: identifiers=\(identifiers.count)", category: .hash)
 
-        // The cache is the first line of defence for large libraries: only new
-        // or invalidated assets should ever reach PhotoKit hashing.
-        DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
+        // First consult SQLite's persisted upload verdicts. Fully uploaded
+        // assets must never enter the expensive PhotoKit/iCloud/hash pipeline.
+        // Incomplete JPEG+RAW pairs, unchecked records, and new assets remain.
+        DatabaseManager.shared.getAssetsNotFullyUploadedAsync(allIdentifiers: identifiers) { [weak self] candidates in
             guard let self else { return }
             logInfo(
-                "Hash cache lookup complete: total=\(identifiers.count), needingHash=\(needingHash.count)",
+                "SQLite upload prefilter: total=\(identifiers.count), alreadyFullyUploaded=\(identifiers.count - candidates.count), candidates=\(candidates.count)",
                 category: .hash
             )
 
@@ -616,31 +617,52 @@ class HashManager: ObservableObject {
                     self.finishProcessing(runID: runID)
                     return
                 }
-
-                if needingHash.isEmpty {
-                    self.statusMessage = "Checking cloud status..."
-                    self.startServerCheck(runID: runID)
+                guard !candidates.isEmpty else {
+                    self.finishProcessing(runID: runID)
                     return
                 }
 
-                self.tryICloudIdMatching(identifiers: needingHash, runID: runID) { remainingNeedingHash in
-                    guard self.isCurrentRun(runID), !self.shouldStop else {
-                        self.finishProcessing(runID: runID)
-                        return
-                    }
+                // Then reuse existing local hashes. Only missing/invalidated
+                // hashes go through iCloud ID matching and requestData.
+                DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: candidates) { [weak self] needingHash in
+                    guard let self else { return }
+                    logInfo(
+                        "Hash cache lookup complete: candidates=\(candidates.count), needingHash=\(needingHash.count)",
+                        category: .hash
+                    )
 
-                    if remainingNeedingHash.isEmpty {
-                        self.statusMessage = "Checking cloud status..."
-                        self.startServerCheck(runID: runID)
-                        return
-                    }
+                    Task { @MainActor in
+                        guard self.isCurrentRun(runID), !self.shouldStop else {
+                            self.finishProcessing(runID: runID)
+                            return
+                        }
 
-                    self.processingQueue = remainingNeedingHash
-                    self.totalAssetsToProcess = remainingNeedingHash.count
-                    self.processedAssetsCount = 0
-                    self.processingProgress = 0
-                    self.statusMessage = "Analyzing local photos (0/\(remainingNeedingHash.count))..."
-                    self.processHashItems(runID: runID)
+                        if needingHash.isEmpty {
+                            self.statusMessage = "Checking cloud status..."
+                            self.startServerCheck(runID: runID)
+                            return
+                        }
+
+                        self.tryICloudIdMatching(identifiers: needingHash, runID: runID) { remainingNeedingHash in
+                            guard self.isCurrentRun(runID), !self.shouldStop else {
+                                self.finishProcessing(runID: runID)
+                                return
+                            }
+
+                            if remainingNeedingHash.isEmpty {
+                                self.statusMessage = "Checking cloud status..."
+                                self.startServerCheck(runID: runID)
+                                return
+                            }
+
+                            self.processingQueue = remainingNeedingHash
+                            self.totalAssetsToProcess = remainingNeedingHash.count
+                            self.processedAssetsCount = 0
+                            self.processingProgress = 0
+                            self.statusMessage = "Analyzing local photos (0/\(remainingNeedingHash.count))..."
+                            self.processHashItems(runID: runID)
+                        }
+                    }
                 }
             }
         }
