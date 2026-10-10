@@ -182,6 +182,77 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(Set(ids), [videoId, rawId])
     }
 
+    func testSQLitePrefilterSkipsOnlyConfirmedFullyUploadedAssets() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "uploaded", primaryHash: "sum-uploaded",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "missing", primaryHash: "sum-missing",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "paired-complete", primaryHash: "jpeg-complete",
+            rawHash: "raw-complete", hasRAW: true
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "paired-partial", primaryHash: "jpeg-partial",
+            rawHash: "raw-missing", hasRAW: true
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unchecked", primaryHash: "sum-unknown",
+            rawHash: nil, hasRAW: false
+        )
+        execute("""
+            UPDATE hash_cache
+            SET checked_at = 100, is_on_server = 1,
+                raw_on_server = CASE WHEN asset_id = 'paired-complete' THEN 1 ELSE 0 END
+            WHERE asset_id != 'unchecked';
+        """)
+        execute("UPDATE hash_cache SET is_on_server = 0 WHERE asset_id = 'missing';")
+        // A stale positive flag without checked_at is NOT a completed verdict.
+        execute("UPDATE hash_cache SET is_on_server = 1 WHERE asset_id = 'unchecked';")
+
+        let done = expectation(description: "SQLite upload prefilter")
+        let ids = [
+            "uploaded", "missing", "paired-complete",
+            "paired-partial", "unchecked", "no-hash"
+        ]
+        hashes.getAssetsNotFullyUploadedAsync(allIdentifiers: ids) { candidates in
+            XCTAssertEqual(candidates, [
+                "missing", "paired-partial", "unchecked", "no-hash"
+            ])
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
+    func testSQLitePrefilterReincludesAssetsAfterServerDeltaInvalidation() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "uploaded", primaryHash: "server-sum",
+            rawHash: nil, hasRAW: false
+        )
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1;")
+        let first = expectation(description: "Already uploaded skipped")
+        hashes.getAssetsNotFullyUploadedAsync(allIdentifiers: ["uploaded"]) { candidates in
+            XCTAssertTrue(candidates.isEmpty)
+            first.fulfill()
+        }
+        wait(for: [first], timeout: 5)
+
+        XCTAssertTrue(repository.saveServerAssets([
+            record(checksum: "server-sum", iCloudId: nil)
+        ], syncType: "delta"))
+        let second = expectation(description: "Server delta reopens candidate")
+        hashes.getAssetsNotFullyUploadedAsync(allIdentifiers: ["uploaded"]) { candidates in
+            XCTAssertEqual(candidates, ["uploaded"])
+            second.fulfill()
+        }
+        wait(for: [second], timeout: 5)
+    }
+
     func testCheckedMissingAssetsOnlyRecheckAfterMatchingDelta() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "matching", primaryHash: "new-sum", rawHash: nil, hasRAW: false)
