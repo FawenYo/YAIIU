@@ -545,6 +545,44 @@ final class HashCacheRepository {
         }
     }
     
+    /// The FIRST stage of normal sync: use the durable SQLite server verdict
+    /// to exclude assets that are already confirmed completely uploaded.
+    /// A JPEG+RAW pair is complete only when both resource flags are true.
+    /// Unknown/stale/unchecked records must remain eligible for verification.
+    /// Keep the caller's Photos ordering and fail open if SQLite cannot read.
+    func getAssetsNotFullyUploadedAsync(
+        allIdentifiers: [String],
+        completion: @escaping ([String]) -> Void
+    ) {
+        connection.dbQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion(allIdentifiers) }
+                return
+            }
+            let sql = """
+                SELECT asset_id FROM hash_cache
+                WHERE checked_at IS NOT NULL
+                  AND is_on_server = 1
+                  AND (has_raw = 0 OR raw_on_server = 1);
+            """
+            var statement: OpaquePointer?
+            var completedIds: Set<String> = []
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                DispatchQueue.main.async { completion(allIdentifiers) }
+                return
+            }
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let text = sqlite3_column_text(statement, 0) {
+                    completedIds.insert(String(cString: text))
+                }
+            }
+            sqlite3_finalize(statement)
+            let candidates = allIdentifiers.filter { !completedIds.contains($0) }
+            DispatchQueue.main.async { completion(candidates) }
+        }
+    }
+
     func getAssetsNeedingHashAsync(allIdentifiers: [String], completion: @escaping ([String]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
