@@ -60,6 +60,7 @@ struct MultiResourceHashRecord {
     let hasRAW: Bool
     let primaryOnServer: Bool
     let rawOnServer: Bool
+    let serverCheckRevision: Int64
 }
 
 struct UploadedAssetFavoriteInfo {

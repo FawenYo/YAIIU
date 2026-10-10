@@ -82,6 +82,21 @@ final class DatabaseManager {
     
     // MARK: - Hash Cache Management
     
+    @discardableResult
+    func saveCurrentICloudIDMatch(
+        localIdentifier: String,
+        iCloudId: String,
+        expectedChecksum: String,
+        modificationDate: Date?
+    ) -> Bool {
+        hashRepo.saveCurrentICloudIDMatch(
+            localIdentifier: localIdentifier,
+            iCloudId: iCloudId,
+            expectedChecksum: expectedChecksum,
+            modificationDate: modificationDate
+        )
+    }
+
     func saveHashCache(localIdentifier: String, sha1Hash: String, fileSize: Int64 = 0, syncStatus: String = "pending") {
         hashRepo.saveHashCache(localIdentifier: localIdentifier, sha1Hash: sha1Hash)
     }
@@ -114,6 +129,21 @@ final class DatabaseManager {
         hashRepo.updateHashCacheServerStatus(localIdentifier: localIdentifier, isOnServer: isOnServer)
     }
     
+    @discardableResult
+    func updateMultiResourceHashCacheServerStatusIfCurrent(
+        localIdentifier: String,
+        primaryOnServer: Bool,
+        rawOnServer: Bool,
+        expectedRevision: Int64
+    ) -> Bool {
+        hashRepo.updateMultiResourceHashCacheServerStatusIfCurrent(
+            localIdentifier: localIdentifier,
+            primaryOnServer: primaryOnServer,
+            rawOnServer: rawOnServer,
+            expectedRevision: expectedRevision
+        )
+    }
+
     func updateMultiResourceHashCacheServerStatus(
         localIdentifier: String,
         primaryOnServer: Bool,
@@ -171,8 +201,32 @@ final class DatabaseManager {
         }
     }
     
+    /// Only photos lacking a confirmed complete SQLite upload verdict
+    /// should enter matching, hash calculation and server checking.
+    func getAssetsNotFullyUploadedAsync(
+        allIdentifiers: [String],
+        completion: @escaping ([String]) -> Void
+    ) {
+        hashRepo.getAssetsNotFullyUploadedAsync(
+            allIdentifiers: allIdentifiers,
+            completion: completion
+        )
+    }
+
     func getAssetsNeedingHashAsync(allIdentifiers: [String], completion: @escaping ([String]) -> Void) {
         hashRepo.getAssetsNeedingHashAsync(allIdentifiers: allIdentifiers, completion: completion)
+    }
+
+    func recordHashFailure(
+        localIdentifier: String,
+        errorMessage: String,
+        modificationDate: Date?
+    ) {
+        hashRepo.recordHashFailure(
+            localIdentifier: localIdentifier,
+            errorMessage: errorMessage,
+            modificationDate: modificationDate
+        )
     }
     
     func getHashesNeedingCheckAsync(completion: @escaping ([(String, String)]) -> Void) {
@@ -255,6 +309,11 @@ final class DatabaseManager {
     @discardableResult
     func clearServerAssetsCache() -> Bool {
         serverRepo.clearServerAssetsCache()
+    }
+
+    @discardableResult
+    func finalizeFullServerSnapshot() -> Bool {
+        serverRepo.finalizeFullServerSnapshot()
     }
     
     @discardableResult

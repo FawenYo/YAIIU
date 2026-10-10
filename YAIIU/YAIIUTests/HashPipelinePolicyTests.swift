@@ -23,6 +23,32 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
+    func testRequestDataPipelineUsesFiniteLocalAndSmallNetworkBatches() {
+        XCTAssertEqual(HashPipelinePolicy.requestDataLocalBatchSize, 32)
+        XCTAssertEqual(HashPipelinePolicy.requestDataNetworkBatchSize, 4)
+        XCTAssertLessThan(
+            HashPipelinePolicy.requestDataNetworkBatchSize,
+            HashPipelinePolicy.requestDataLocalBatchSize
+        )
+    }
+
+    func testHashFailureRetryBackoffIncreasesAndCaps() {
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 1), 15 * 60)
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 2), 60 * 60)
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 3), 6 * 60 * 60)
+        XCTAssertEqual(HashFailureRetryPolicy.delay(afterFailureCount: 99), 7 * 24 * 60 * 60)
+    }
+
+    func testRequestDataPipelineStateAbortsAndResets() {
+        let state = RequestDataPipelineState()
+
+        XCTAssertFalse(state.isAborted)
+        state.abort()
+        XCTAssertTrue(state.isAborted)
+        state.reset()
+        XCTAssertFalse(state.isAborted)
+    }
+
     func testProcessesHashOperationsWithBoundedConcurrency() async {
         let probe = ConcurrencyProbe()
         let limit = 3

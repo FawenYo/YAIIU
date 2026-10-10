@@ -40,9 +40,10 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             "update-icloud-ids",
             "clear-icloud-ids",
             "update-source-checksums",
+            "backfill-immich-ids",
+            "finalize-full-snapshot",
             "save-sync-metadata",
             "send-acks",
-            "backfill-immich-ids",
         ])
         XCTAssertEqual(api.sentAcks, ["AssetMetadataV1|metadata-1", "AssetV2|asset-1"])
     }
@@ -76,6 +77,22 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             return XCTFail("Expected sync to fail")
         }
         XCTAssertEqual(operations.values, ["clear-cache"])
+        XCTAssertTrue(api.sentAcks.isEmpty)
+    }
+
+    func testFailedSnapshotReconciliationDoesNotAdvanceCheckpointOrAck() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        store.shouldFailFullSnapshotFinalization = true
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+
+        let result = await sync(service)
+        guard case .failure = result else {
+            return XCTFail("Expected full-sync finalization to fail")
+        }
+        XCTAssertTrue(operations.values.contains("finalize-full-snapshot"))
+        XCTAssertFalse(operations.values.contains("save-sync-metadata"))
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
@@ -232,6 +249,7 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
     var shouldFailAssetSave = false
     private(set) var savedAssets: [ServerAssetRecord] = []
     var shouldFailCacheClear = false
+    var shouldFailFullSnapshotFinalization = false
     var syncMetadata: SyncMetadata?
     var existingAsset: ServerAssetRecord?
 
@@ -247,6 +265,11 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
     func clearServerAssetsCache() -> Bool {
         operations.append("clear-cache")
         return !shouldFailCacheClear
+    }
+
+    func finalizeFullServerSnapshot() -> Bool {
+        operations.append("finalize-full-snapshot")
+        return !shouldFailFullSnapshotFinalization
     }
 
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool {

@@ -2,6 +2,22 @@ import Foundation
 import Photos
 import SQLite3
 
+enum HashFailureRetryPolicy {
+    static let delays: [TimeInterval] = [
+        15 * 60,
+        60 * 60,
+        6 * 60 * 60,
+        24 * 60 * 60,
+        3 * 24 * 60 * 60,
+        7 * 24 * 60 * 60
+    ]
+
+    static func delay(afterFailureCount count: Int) -> TimeInterval {
+        let index = min(max(count - 1, 0), delays.count - 1)
+        return delays[index]
+    }
+}
+
 final class HashCacheRepository {
     private let connection: SQLiteConnection
     
@@ -11,6 +27,57 @@ final class HashCacheRepository {
     
     // MARK: - Save Methods
     
+    /// Atomically verify the current server catalog and record a single-
+    /// resource iCloud match. A concurrent deletion/update cannot slip
+    /// between the checksum lookup and the cache write. Existing hash rows
+    /// (possibly holding RAW metadata) are never replaced.
+    @discardableResult
+    func saveCurrentICloudIDMatch(
+        localIdentifier: String,
+        iCloudId: String,
+        expectedChecksum: String,
+        modificationDate: Date?
+    ) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return false }
+            let sql = """
+                INSERT INTO hash_cache
+                    (asset_id, sha1_hash, is_on_server, calculated_at, checked_at,
+                     raw_hash, raw_on_server, has_raw, asset_modification_date)
+                SELECT ?, COALESCE(s.source_checksum, s.checksum), 1, ?, ?,
+                       NULL, 0, 0, ?
+                FROM server_assets_cache AS s
+                WHERE s.icloud_id = ?
+                  AND COALESCE(s.source_checksum, s.checksum) = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM hash_cache AS h WHERE h.asset_id = ?
+                  )
+                LIMIT 1;
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(stmt)
+                return false
+            }
+            defer { sqlite3_finalize(stmt) }
+            let timestamp = Date().timeIntervalSince1970
+            sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(stmt, 2, timestamp)
+            sqlite3_bind_double(stmt, 3, timestamp)
+            if let modificationDate {
+                sqlite3_bind_double(stmt, 4, modificationDate.timeIntervalSince1970)
+            } else {
+                sqlite3_bind_null(stmt, 4)
+            }
+            sqlite3_bind_text(stmt, 5, (iCloudId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 6, (expectedChecksum as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 7, (localIdentifier as NSString).utf8String, -1, nil)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
+            return sqlite3_changes(self.connection.db) == 1
+        }
+    }
+
     func saveHashCache(localIdentifier: String, sha1Hash: String) {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
@@ -71,7 +138,9 @@ final class HashCacheRepository {
                 sqlite3_bind_null(statement, 6)
             }
 
-            sqlite3_step(statement)
+            if sqlite3_step(statement) == SQLITE_DONE {
+                clearHashFailureInternal(localIdentifier: localIdentifier)
+            }
         }
 
         sqlite3_finalize(statement)
@@ -97,6 +166,84 @@ final class HashCacheRepository {
         }
     }
     
+    // MARK: - Hash Failure Backoff
+
+    func recordHashFailure(
+        localIdentifier: String,
+        errorMessage: String,
+        modificationDate: Date?
+    ) {
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return }
+
+            var retryCount = 0
+            var countStatement: OpaquePointer?
+            let countSql = "SELECT retry_count FROM hash_failures WHERE asset_id = ?;"
+            if sqlite3_prepare_v2(self.connection.db, countSql, -1, &countStatement, nil) == SQLITE_OK {
+                sqlite3_bind_text(countStatement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+                if sqlite3_step(countStatement) == SQLITE_ROW {
+                    retryCount = Int(sqlite3_column_int(countStatement, 0))
+                }
+            }
+            sqlite3_finalize(countStatement)
+
+            let nextRetryCount = retryCount + 1
+            let now = Date().timeIntervalSince1970
+            let retryAfter = now + HashFailureRetryPolicy.delay(
+                afterFailureCount: nextRetryCount
+            )
+
+            let sql = """
+                INSERT INTO hash_failures
+                    (asset_id, failed_at, retry_after, retry_count, error_message, asset_modification_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(asset_id) DO UPDATE SET
+                    failed_at = excluded.failed_at,
+                    retry_after = excluded.retry_after,
+                    retry_count = excluded.retry_count,
+                    error_message = excluded.error_message,
+                    asset_modification_date = excluded.asset_modification_date;
+            """
+
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                return
+            }
+
+            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(statement, 2, now)
+            sqlite3_bind_double(statement, 3, retryAfter)
+            sqlite3_bind_int(statement, 4, Int32(nextRetryCount))
+            sqlite3_bind_text(statement, 5, (errorMessage as NSString).utf8String, -1, nil)
+            if let modificationDate {
+                sqlite3_bind_double(statement, 6, modificationDate.timeIntervalSince1970)
+            } else {
+                sqlite3_bind_null(statement, 6)
+            }
+
+            if sqlite3_step(statement) != SQLITE_DONE {
+                logError(
+                    "Failed to persist hash failure backoff for \(localIdentifier)",
+                    category: .database
+                )
+            }
+            sqlite3_finalize(statement)
+        }
+    }
+
+    private func clearHashFailureInternal(localIdentifier: String) {
+        let sql = "DELETE FROM hash_failures WHERE asset_id = ?;"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return
+        }
+        sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_step(statement)
+        sqlite3_finalize(statement)
+    }
+
     // MARK: - Query Methods
     
     func getHashCache(localIdentifier: String) -> HashCacheRecord? {
@@ -192,6 +339,49 @@ final class HashCacheRepository {
         sqlite3_finalize(statement)
     }
     
+    /// Do not overwrite a server delta with a verdict computed against an
+    /// earlier catalog revision.
+    @discardableResult
+    func updateMultiResourceHashCacheServerStatusIfCurrent(
+        localIdentifier: String,
+        primaryOnServer: Bool,
+        rawOnServer: Bool,
+        expectedRevision: Int64
+    ) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self, self.connection.beginTransaction() else { return false }
+            let sql = """
+                UPDATE hash_cache
+                SET is_on_server = ?, raw_on_server = ?, checked_at = ?
+                WHERE asset_id = ? AND checked_at IS NULL
+                  AND server_check_revision = ?;
+            """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                self.connection.rollbackTransaction()
+                return false
+            }
+            sqlite3_bind_int(statement, 1, primaryOnServer ? 1 : 0)
+            sqlite3_bind_int(statement, 2, rawOnServer ? 1 : 0)
+            sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+            sqlite3_bind_text(statement, 4, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(statement, 5, expectedRevision)
+            let updated = sqlite3_step(statement) == SQLITE_DONE
+                && sqlite3_changes(self.connection.db) == 1
+            sqlite3_finalize(statement)
+            if updated {
+                self.enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return false
+            }
+            return updated
+        }
+    }
+
     func updateMultiResourceHashCacheServerStatus(
         localIdentifier: String,
         primaryOnServer: Bool,
@@ -308,28 +498,41 @@ final class HashCacheRepository {
                         let hasUploadedNonRAW = !uploadedTypes.isEmpty && uploadedTypes.contains(where: { $0 != "raw" })
                         let hasUploadedRAW = uploadedTypes.contains("raw")
                         
-                        var isFullyUploaded = false
-                        
-                        if hasRAW {
-                            let primaryComplete = hasUploadedNonRAW || primaryOnServer
-                            let rawComplete = hasUploadedRAW || rawOnServer
-                            isFullyUploaded = primaryComplete && rawComplete
-                        } else {
-                            let hasUploadedPrimary = hasUploadedNonRAW || hasUploadedRAW
-                            isFullyUploaded = hasUploadedPrimary || primaryOnServer
-                        }
-                        
-                        if isFullyUploaded {
-                            statusMap[identifier] = .uploaded
-                        } else if hasBeenChecked {
-                            // Already checked - show as not uploaded
-                            statusMap[identifier] = .notUploaded
+                        // A completed server-catalog lookup is the current
+                        // upload verdict. Historical uploaded_assets rows are
+                        // NOT proof of existence after a server-side deletion.
+                        // checked_at controls rechecking, not the display label.
+                        if hasBeenChecked && hasServerCache {
+                            let fullyOnServer = primaryOnServer && (!hasRAW || rawOnServer)
+                            statusMap[identifier] = fullyOnServer ? .uploaded : .notUploaded
                         } else if hasServerCache {
-                            // Has server cache but not checked yet - show as pending
+                            // This photo is still awaiting a server verdict.
                             statusMap[identifier] = .pending
                         } else {
-                            // No server cache - assume not uploaded
-                            statusMap[identifier] = .notUploaded
+                            // Preserve the original offline/fallback behavior
+                            // until an authoritative server snapshot exists.
+                            let isFullyUploaded: Bool
+                            if hasRAW {
+                                isFullyUploaded = (hasUploadedNonRAW || primaryOnServer)
+                                    && (hasUploadedRAW || rawOnServer)
+                            } else {
+                                isFullyUploaded = hasUploadedNonRAW || hasUploadedRAW || primaryOnServer
+                            }
+                            statusMap[identifier] = isFullyUploaded ? .uploaded : .notUploaded
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+
+            let failureSql = "SELECT asset_id FROM hash_failures WHERE retry_after > ?;"
+            if sqlite3_prepare_v2(self.connection.db, failureSql, -1, &statement, nil) == SQLITE_OK {
+                sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        let identifier = String(cString: cString)
+                        if statusMap[identifier] == nil {
+                            statusMap[identifier] = .error
                         }
                     }
                 }
@@ -342,6 +545,44 @@ final class HashCacheRepository {
         }
     }
     
+    /// The FIRST stage of normal sync: use the durable SQLite server verdict
+    /// to exclude assets that are already confirmed completely uploaded.
+    /// A JPEG+RAW pair is complete only when both resource flags are true.
+    /// Unknown/stale/unchecked records must remain eligible for verification.
+    /// Keep the caller's Photos ordering and fail open if SQLite cannot read.
+    func getAssetsNotFullyUploadedAsync(
+        allIdentifiers: [String],
+        completion: @escaping ([String]) -> Void
+    ) {
+        connection.dbQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion(allIdentifiers) }
+                return
+            }
+            let sql = """
+                SELECT asset_id FROM hash_cache
+                WHERE checked_at IS NOT NULL
+                  AND is_on_server = 1
+                  AND (has_raw = 0 OR raw_on_server = 1);
+            """
+            var statement: OpaquePointer?
+            var completedIds: Set<String> = []
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                DispatchQueue.main.async { completion(allIdentifiers) }
+                return
+            }
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let text = sqlite3_column_text(statement, 0) {
+                    completedIds.insert(String(cString: text))
+                }
+            }
+            sqlite3_finalize(statement)
+            let candidates = allIdentifiers.filter { !completedIds.contains($0) }
+            DispatchQueue.main.async { completion(candidates) }
+        }
+    }
+
     func getAssetsNeedingHashAsync(allIdentifiers: [String], completion: @escaping ([String]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
@@ -361,8 +602,22 @@ final class HashCacheRepository {
                 }
             }
             sqlite3_finalize(statement)
+
+            var deferredFailureIds: Set<String> = []
+            let failureSql = "SELECT asset_id FROM hash_failures WHERE retry_after > ?;"
+            if sqlite3_prepare_v2(self.connection.db, failureSql, -1, &statement, nil) == SQLITE_OK {
+                sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let cString = sqlite3_column_text(statement, 0) {
+                        deferredFailureIds.insert(String(cString: cString))
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
             
-            let needingHash = allIdentifiers.filter { !existingIds.contains($0) }
+            let needingHash = allIdentifiers.filter {
+                !existingIds.contains($0) && !deferredFailureIds.contains($0)
+            }
             
             DispatchQueue.main.async {
                 completion(needingHash)
@@ -436,9 +691,11 @@ final class HashCacheRepository {
             }
             
             let sql = """
-                SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server
+                SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server, server_check_revision
                 FROM hash_cache
-                WHERE is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0);
+                -- Previously checked misses remain cached until relevant server
+                -- checksum changes invalidate the server verdict.
+                WHERE checked_at IS NULL;
             """
             var statement: OpaquePointer?
             var records: [MultiResourceHashRecord] = []
@@ -453,14 +710,16 @@ final class HashCacheRepository {
                         let hasRAW = sqlite3_column_int(statement, 3) == 1
                         let primaryOnServer = sqlite3_column_int(statement, 4) == 1
                         let rawOnServer = sqlite3_column_int(statement, 5) == 1
-                        
+                        let revision = sqlite3_column_int64(statement, 6)
+
                         records.append(MultiResourceHashRecord(
                             assetId: assetId,
                             primaryHash: primaryHash,
                             rawHash: rawHash,
                             hasRAW: hasRAW,
                             primaryOnServer: primaryOnServer,
-                            rawOnServer: rawOnServer
+                            rawOnServer: rawOnServer,
+                            serverCheckRevision: revision
                         ))
                     }
                 }
@@ -531,6 +790,8 @@ final class HashCacheRepository {
     }
 
     private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot]) {
+        resetModifiedFailureRecords(snapshots: snapshots)
+
         // Fetch all stored modification dates in one query; NULL means not yet recorded
         let sql = "SELECT asset_id, asset_modification_date FROM hash_cache;"
         var statement: OpaquePointer?
@@ -625,6 +886,60 @@ final class HashCacheRepository {
         logDebug("Invalidated assets: \(invalidatedIds.map { String($0.prefix(20)) })", category: .hash)
     }
 
+    private func resetModifiedFailureRecords(snapshots: [PhotoAssetSnapshot]) {
+        let sql = "SELECT asset_id, asset_modification_date FROM hash_failures;"
+        var statement: OpaquePointer?
+        var storedDates: [String: Double] = [:]
+        var nullDateIds: Set<String> = []
+
+        if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let idCString = sqlite3_column_text(statement, 0) else { continue }
+                let assetId = String(cString: idCString)
+                if sqlite3_column_type(statement, 1) == SQLITE_NULL {
+                    nullDateIds.insert(assetId)
+                } else {
+                    storedDates[assetId] = sqlite3_column_double(statement, 1)
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        guard !storedDates.isEmpty || !nullDateIds.isEmpty else { return }
+
+        var toDelete: [String] = []
+        for snapshot in snapshots {
+            let identifier = snapshot.localIdentifier
+            if nullDateIds.contains(identifier), snapshot.modificationDate != nil {
+                toDelete.append(identifier)
+                continue
+            }
+            guard let oldTimestamp = storedDates[identifier],
+                  let currentDate = snapshot.modificationDate else {
+                continue
+            }
+            if abs(currentDate.timeIntervalSince1970 - oldTimestamp) > 1.0 {
+                toDelete.append(identifier)
+            }
+        }
+
+        guard !toDelete.isEmpty else { return }
+
+        let deleteSql = "DELETE FROM hash_failures WHERE asset_id = ?;"
+        guard sqlite3_prepare_v2(connection.db, deleteSql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        for assetId in toDelete {
+            sqlite3_bind_text(statement, 1, (assetId as NSString).utf8String, -1, nil)
+            sqlite3_step(statement)
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+        }
+    }
+
     private func backfillModificationDates(snapshots: [PhotoAssetSnapshot], assetIds: Set<String>) {
         let sql = "UPDATE hash_cache SET asset_modification_date = ? WHERE asset_id = ?;"
         var statement: OpaquePointer?
@@ -666,6 +981,7 @@ final class HashCacheRepository {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
             self.connection.executeStatement("DELETE FROM hash_cache;")
+            self.connection.executeStatement("DELETE FROM hash_failures;")
         }
     }
     
