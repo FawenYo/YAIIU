@@ -28,9 +28,10 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertTrue(PhotoFilterOption.all.includes(.pending))
 
         XCTAssertTrue(PhotoFilterOption.notUploaded.includes(.notUploaded))
-        for unresolvedStatus: PhotoSyncStatus in [
+        let unresolvedStatuses: [PhotoSyncStatus] = [
             .uploaded, .pending, .processing, .checking, .error
-        ] {
+        ]
+        for unresolvedStatus in unresolvedStatuses {
             XCTAssertFalse(
                 PhotoFilterOption.notUploaded.includes(unresolvedStatus),
                 "Unconfirmed status \(unresolvedStatus) must not appear as not uploaded"
