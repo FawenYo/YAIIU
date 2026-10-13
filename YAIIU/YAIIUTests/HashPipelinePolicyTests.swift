@@ -23,6 +23,21 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
+    func testNotUploadedFilterOnlyIncludesConfirmedMissingAssets() {
+        XCTAssertTrue(PhotoFilterOption.all.includes(.uploaded))
+        XCTAssertTrue(PhotoFilterOption.all.includes(.pending))
+
+        XCTAssertTrue(PhotoFilterOption.notUploaded.includes(.notUploaded))
+        for unresolvedStatus: PhotoSyncStatus in [
+            .uploaded, .pending, .processing, .checking, .error
+        ] {
+            XCTAssertFalse(
+                PhotoFilterOption.notUploaded.includes(unresolvedStatus),
+                "Unconfirmed status \(unresolvedStatus) must not appear as not uploaded"
+            )
+        }
+    }
+
     func testRequestDataPipelineUsesFiniteLocalAndSmallNetworkBatches() {
         XCTAssertEqual(HashPipelinePolicy.requestDataLocalBatchSize, 32)
         XCTAssertEqual(HashPipelinePolicy.requestDataNetworkBatchSize, 4)
