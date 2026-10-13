@@ -28,6 +28,17 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable {
             return "icloud.slash"
         }
     }
+
+    /// An unverified, processing, or failed check is not proof of absence.
+    /// Both the grid and bulk selection must use the same filter contract.
+    func includes(_ status: PhotoSyncStatus) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .notUploaded:
+            return status == .notUploaded
+        }
+    }
 }
 
 // MARK: - Preference Keys
@@ -857,7 +868,7 @@ struct PhotoGridView: View {
             notUploadedIndices.reserveCapacity(identifiers.count / 4)
             for (index, id) in identifiers.enumerated() {
                 if Task.isCancelled { return }
-                if statusCache[id] != .uploaded {
+                if PhotoFilterOption.notUploaded.includes(statusCache[id] ?? .pending) {
                     notUploadedIndices.append(index)
                 }
             }
@@ -1076,7 +1087,7 @@ struct PhotoGridView: View {
                     stop.pointee = true
                     return
                 }
-                if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
+                if PhotoFilterOption.notUploaded.includes(statusCache[asset.localIdentifier] ?? .pending) {
                     ids.insert(asset.localIdentifier)
                 }
             }
