@@ -877,8 +877,11 @@ class HashManager: ObservableObject {
                     break
                 }
 
+                var localSucceeded = 0
+                var localDeferred = 0
                 for item in items {
                     if item.isComplete, let hash = item.primaryHash {
+                        localSucceeded += 1
                         cumulativePrimaryBytes += item.totalFileSize
                         DatabaseManager.shared.saveMultiResourceHashCache(
                             localIdentifier: item.localIdentifier,
@@ -906,12 +909,14 @@ class HashManager: ObservableObject {
                         }
                     } else {
                         networkIdentifiers.append(item.localIdentifier)
-                        logDebug(
-                            "requestData local miss deferred to network queue: asset=\(item.localIdentifier), reason=\(item.errorDescription ?? "local resource unavailable")",
-                            category: .hash
-                        )
+                        localDeferred += 1
                     }
                 }
+
+                logDebug(
+                    "requestData local batch \(batchIndex + 1)/\(localBatchCount): succeeded=\(localSucceeded), networkDeferred=\(localDeferred)",
+                    category: .hash
+                )
 
                 items.removeAll(keepingCapacity: false)
                 await Task.yield()
