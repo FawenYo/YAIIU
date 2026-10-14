@@ -182,6 +182,39 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(Set(ids), [videoId, rawId])
     }
 
+    func testForegroundUploadsUpdateCachedVerdictsWithoutRehashing() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "foreground-pair", primaryHash: "jpeg-hash",
+            rawHash: "raw-hash", hasRAW: true
+        )
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 0, raw_on_server = 0 WHERE asset_id = 'foreground-pair';")
+
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "foreground-pair", resourceType: "jpeg",
+            filename: "image.jpg", immichId: "immich-jpeg"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'foreground-pair' AND is_on_server = 1
+              AND raw_on_server = 0 AND checked_at IS NOT NULL
+              AND server_check_revision = 1 AND sha1_hash = 'jpeg-hash'
+              AND raw_hash = 'raw-hash';
+        """), 1)
+
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "foreground-pair", resourceType: "raw",
+            filename: "image.dng", immichId: "immich-raw"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'foreground-pair' AND is_on_server = 1
+              AND raw_on_server = 1 AND server_check_revision = 2
+              AND sha1_hash = 'jpeg-hash' AND raw_hash = 'raw-hash';
+        """), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'foreground-pair';"), 2)
+    }
+
     func testSQLitePrefilterSkipsOnlyConfirmedFullyUploadedAssets() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

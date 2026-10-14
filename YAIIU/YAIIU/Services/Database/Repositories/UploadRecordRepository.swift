@@ -106,6 +106,9 @@ final class UploadRecordRepository {
         isDuplicate: Bool,
         isFavorite: Bool
     ) {
+        // The upload response proves this resource exists on the destination.
+        // Keep its positive verdict in the same SQLite transaction as history.
+        guard connection.beginTransaction() else { return }
         let sql = """
         INSERT OR REPLACE INTO uploaded_assets
         (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, is_favorite, uploaded_at)
@@ -113,7 +116,8 @@ final class UploadRecordRepository {
         """
         
         var statement: OpaquePointer?
-        
+        var saved = false
+
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
             sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
             sqlite3_bind_text(statement, 2, (resourceType as NSString).utf8String, -1, nil)
@@ -124,7 +128,8 @@ final class UploadRecordRepository {
             sqlite3_bind_int(statement, 7, isFavorite ? 1 : 0)
             sqlite3_bind_double(statement, 8, Date().timeIntervalSince1970)
             
-            if sqlite3_step(statement) != SQLITE_DONE {
+            saved = sqlite3_step(statement) == SQLITE_DONE
+            if !saved {
                 logError("Failed to record uploaded asset: \(connection.lastErrorMessage)", category: .database)
             }
         } else {
@@ -132,6 +137,38 @@ final class UploadRecordRepository {
         }
         
         sqlite3_finalize(statement)
+        guard saved else {
+            connection.rollbackTransaction()
+            return
+        }
+
+        // Preserve primary/RAW companion verdicts independently. Invalidate
+        // any in-flight older server comparison via server_check_revision.
+        let statusSQL = """
+            UPDATE hash_cache
+            SET is_on_server = CASE WHEN ? = 'raw' THEN is_on_server ELSE 1 END,
+                raw_on_server = CASE WHEN ? = 'raw' THEN 1 ELSE raw_on_server END,
+                checked_at = ?,
+                server_check_revision = server_check_revision + 1
+            WHERE asset_id = ?;
+        """
+        var statusStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, statusSQL, -1, &statusStmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(statusStmt)
+            connection.rollbackTransaction()
+            return
+        }
+        sqlite3_bind_text(statusStmt, 1, (resourceType as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statusStmt, 2, (resourceType as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statusStmt, 3, Date().timeIntervalSince1970)
+        sqlite3_bind_text(statusStmt, 4, (localIdentifier as NSString).utf8String, -1, nil)
+        let updated = sqlite3_step(statusStmt) == SQLITE_DONE
+        sqlite3_finalize(statusStmt)
+        guard updated, connection.commitTransaction() else {
+            connection.rollbackTransaction()
+            logError("Failed to persist foreground upload verdict: \(connection.lastErrorMessage)", category: .database)
+            return
+        }
     }
     
     // MARK: - Count Methods
