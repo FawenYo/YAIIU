@@ -103,6 +103,7 @@ final class SQLiteConnection {
         createHashFailuresTable()
         createServerAssetsCacheTable()
         createSyncMetadataTable()
+        createSyncSnapshotBoundariesTable()
         createChangeTokensTable()
         createBackgroundUploadQueueTable()
         createBackgroundUploadStateTable()
@@ -221,6 +222,18 @@ final class SQLiteConnection {
         executeStatement(sql)
     }
     
+    private func createSyncSnapshotBoundariesTable() {
+        // The capture time is not the completion/checkpoint time. Store it
+        // separately for uploads that finish while the full stream is in flight.
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS sync_snapshot_boundaries (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                snapshot_started_at REAL NOT NULL,
+                destination_identity TEXT
+            );
+        """)
+    }
+
     private func createChangeTokensTable() {
         let sql = """
         CREATE TABLE IF NOT EXISTS change_tokens (

@@ -161,6 +161,9 @@ final class HashCacheRepository {
             WHERE asset_id = ?
               AND destination_identity IS NOT NULL
               AND uploaded_at > COALESCE(
+                  (SELECT b.snapshot_started_at FROM sync_snapshot_boundaries b
+                   WHERE b.id = 1
+                     AND b.destination_identity = uploaded_assets.destination_identity),
                   (SELECT last_sync_time FROM sync_metadata WHERE id = 1), 0
               )
               AND (

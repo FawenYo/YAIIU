@@ -818,7 +818,16 @@ final class ServerAssetRepository {
             let obsoleteEvidence = escapedDestination.map {
                 "uploaded_at <= \(cutoff) OR destination_identity IS NULL OR destination_identity != '\($0)'"
             } ?? "1"
+            let snapshotIdentitySQL = escapedDestination.map { "'\($0)'" } ?? "NULL"
             let commands = [
+                """
+                INSERT INTO sync_snapshot_boundaries (
+                    id, snapshot_started_at, destination_identity
+                ) VALUES (1, \(cutoff), \(snapshotIdentitySQL))
+                ON CONFLICT(id) DO UPDATE SET
+                    snapshot_started_at = excluded.snapshot_started_at,
+                    destination_identity = excluded.destination_identity;
+                """,
                 """
                 DELETE FROM uploaded_assets
                 WHERE (\(obsoleteEvidence))

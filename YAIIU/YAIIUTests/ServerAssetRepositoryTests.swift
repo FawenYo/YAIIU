@@ -1281,6 +1281,60 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'early';"), 1)
     }
 
+    func testSnapshotCaptureBoundaryPreservesPreCheckpointUploadWithoutHash() {
+        let hashes = HashCacheRepository(connection: connection)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "captured-late", resourceType: "jpeg",
+            filename: "late.jpg", immichId: "late-server-id",
+            destinationIdentity: "active-destination"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "captured-early", resourceType: "jpeg",
+            filename: "early.jpg", immichId: "deleted-server-id",
+            destinationIdentity: "active-destination"
+        )
+        // The photo was uploaded after snapshot capture at 100, but before
+        // the final sync acknowledgement/checkpoint time at 200.
+        execute("""
+            UPDATE uploaded_assets
+            SET uploaded_at = CASE WHEN asset_id = 'captured-late' THEN 150 ELSE 50 END;
+        """)
+        XCTAssertTrue(repository.finalizeFullServerSnapshot(
+            snapshotStartedAt: Date(timeIntervalSince1970: 100),
+            destinationIdentity: "active-destination"
+        ))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 200),
+            syncType: "full", userId: "owner-1",
+            serverURL: "https://immich.example", totalAssets: 0,
+            lastAck: "checkpoint"
+        ))
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "captured-late", primaryHash: "hash-after-upload",
+            rawHash: nil, hasRAW: false
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'captured-late' AND sha1_hash = 'hash-after-upload'
+              AND is_on_server = 1 AND checked_at IS NOT NULL;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM sync_snapshot_boundaries
+            WHERE id = 1 AND snapshot_started_at = 100
+              AND destination_identity = 'active-destination';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'captured-early';
+        """), 0)
+        // The hash is calculated once and then reused on the next sync.
+        let done = expectation(description: "Captured late hash is still persisted")
+        hashes.getAssetsNeedingHashAsync(allIdentifiers: ["captured-late"]) { candidates in
+            XCTAssertTrue(candidates.isEmpty)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
     func testFullSnapshotRejectsLateUploadsFromOldDestination() {
         let hashes = HashCacheRepository(connection: connection)
         for id in ["current-late", "previous-late", "legacy-late"] {
