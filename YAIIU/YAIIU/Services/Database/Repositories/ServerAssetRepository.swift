@@ -842,6 +842,10 @@ final class ServerAssetRepository {
                         SELECT 1 FROM uploaded_assets AS u
                         WHERE u.asset_id = hash_cache.asset_id
                           AND (u.resource_type != 'raw' OR hash_cache.has_raw = 0)
+                          AND (u.resource_type != 'video' OR NOT EXISTS (
+                              SELECT 1 FROM live_photo_video_status v
+                              WHERE v.asset_id = hash_cache.asset_id
+                          ))
                           AND (
                               (\(lateEvidence))
                               OR EXISTS (

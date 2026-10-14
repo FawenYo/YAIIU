@@ -432,6 +432,58 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [after], timeout: 5)
     }
 
+    func testLivePhotoVideoFirstDoesNotConfirmMissingJPEG() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "video-first", primaryHash: "missing-jpeg-sha1",
+            rawHash: nil, hasRAW: false
+        )
+        uploadRepository.markLivePhotoVideoRequired(localIdentifier: "video-first")
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "video-first", resourceType: "video",
+            filename: "live.mov", immichId: "immich-live-video"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'video-first' AND is_on_server = 0
+              AND checked_at IS NOT NULL;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'video-first' AND video_on_server = 1;
+        """), 1)
+
+        let fallback = expectation(description: "Video-only does not complete JPEG")
+        hashes.getAllSyncStatusAsync(
+            uploadedResourceTypes: ["video-first": ["video"]],
+            hasServerCache: false
+        ) { statuses in
+            XCTAssertEqual(statuses["video-first"], .notUploaded)
+            fallback.fulfill()
+        }
+        wait(for: [fallback], timeout: 5)
+
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "immich-live-video", checksum: "video-checksum",
+                ownerId: "owner-1"
+            )
+        ]))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'video-first' AND is_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'video-first' AND video_on_server = 1;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM background_upload_queue
+            WHERE asset_id = 'video-first';
+        """), 1)
+    }
+
     func testLivePhotoRequirementIsRegisteredFromMetadataWithoutRehash() {
         let hashes = HashCacheRepository(connection: connection)
         let modDate = Date(timeIntervalSince1970: 1_700_000_000)

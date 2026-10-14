@@ -612,15 +612,20 @@ final class HashCacheRepository {
             var statusMap: [String: PhotoSyncStatus] = [:]
             var statement: OpaquePointer?
             
+            var livePhotoIds: Set<String> = []
             var missingLiveVideos: Set<String> = []
             if sqlite3_prepare_v2(
                 self.connection.db,
-                "SELECT asset_id FROM live_photo_video_status WHERE video_on_server = 0;",
+                "SELECT asset_id, video_on_server FROM live_photo_video_status;",
                 -1, &statement, nil
             ) == SQLITE_OK {
                 while sqlite3_step(statement) == SQLITE_ROW {
                     if let ptr = sqlite3_column_text(statement, 0) {
-                        missingLiveVideos.insert(String(cString: ptr))
+                        let id = String(cString: ptr)
+                        livePhotoIds.insert(id)
+                        if sqlite3_column_int(statement, 1) == 0 {
+                            missingLiveVideos.insert(id)
+                        }
                     }
                 }
             }
@@ -638,7 +643,10 @@ final class HashCacheRepository {
                         let rawOnServer = sqlite3_column_int(statement, 4) == 1
                         
                         let uploadedTypes = uploadedResourceTypes[identifier] ?? []
-                        let hasUploadedNonRAW = !uploadedTypes.isEmpty && uploadedTypes.contains(where: { $0 != "raw" })
+                        let isLivePhoto = livePhotoIds.contains(identifier)
+                        let hasUploadedNonRAW = uploadedTypes.contains {
+                            $0 != "raw" && (!isLivePhoto || $0 != "video")
+                        }
                         let hasUploadedRAW = uploadedTypes.contains("raw")
                         
                         // A completed server-catalog lookup is the current
@@ -660,7 +668,8 @@ final class HashCacheRepository {
                                 isFullyUploaded = (hasUploadedNonRAW || primaryOnServer)
                                     && (hasUploadedRAW || rawOnServer)
                             } else {
-                                isFullyUploaded = hasUploadedNonRAW || hasUploadedRAW || primaryOnServer
+                                isFullyUploaded = hasUploadedNonRAW
+                                    || (!isLivePhoto && hasUploadedRAW) || primaryOnServer
                             }
                             statusMap[identifier] = (isFullyUploaded
                                 && (!missingLiveVideos.contains(identifier) || uploadedTypes.contains("video")))
