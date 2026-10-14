@@ -578,6 +578,53 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE sha1_hash = 'missing-sum';"), 1)
     }
 
+    func testFullSnapshotPreservesUploadsCompletedAfterCapture() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "early", primaryHash: "early-hash",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "late", primaryHash: "late-hash",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "paired-late-raw", primaryHash: "missing-jpeg",
+            rawHash: "late-raw-hash", hasRAW: true
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "early", resourceType: "jpeg",
+            filename: "early.jpg", immichId: "early-server"
+        )
+        // The former upload predates the server capture and is not in its
+        // catalog; it must be invalidated.
+        execute("UPDATE uploaded_assets SET uploaded_at = 100 WHERE asset_id = 'early';")
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "late", resourceType: "jpeg",
+            filename: "late.jpg", immichId: "late-server"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "paired-late-raw", resourceType: "raw",
+            filename: "late.dng", immichId: "raw-server"
+        )
+
+        XCTAssertTrue(repository.finalizeFullServerSnapshot(
+            snapshotStartedAt: Date(timeIntervalSince1970: 200)
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'early';"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'late';"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'paired-late-raw';"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'late' AND is_on_server = 1;"), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'paired-late-raw'
+              AND is_on_server = 0 AND raw_on_server = 1;
+        """), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'early' AND is_on_server = 0;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'late';"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'early';"), 1)
+    }
+
     func testEmptyFullSnapshotMarksOldChecksAsNotUploadedWithoutRecheck() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "former-server-photo",

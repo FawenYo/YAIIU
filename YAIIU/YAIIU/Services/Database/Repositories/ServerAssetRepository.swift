@@ -747,17 +747,21 @@ final class ServerAssetRepository {
     /// Called after all full-sync assets and metadata have been saved, and
     /// before the new sync acknowledgement is committed.
     @discardableResult
-    func finalizeFullServerSnapshot() -> Bool {
+    func finalizeFullServerSnapshot(snapshotStartedAt: Date = Date()) -> Bool {
         connection.dbQueue.sync { [weak self] in
             guard let self, self.connection.beginTransaction() else { return false }
+            // The network snapshot was taken before some uploads could finish.
+            // Keep those upload confirmations until the next delta can see them.
+            let cutoff = snapshotStartedAt.timeIntervalSince1970
             let commands = [
                 """
                 DELETE FROM uploaded_assets
-                WHERE immich_id = 'unknown'
-                   OR NOT EXISTS (
-                       SELECT 1 FROM server_assets_cache AS s
-                       WHERE s.immich_id = uploaded_assets.immich_id
-                   );
+                WHERE uploaded_at <= \(cutoff)
+                  AND (immich_id = 'unknown'
+                       OR NOT EXISTS (
+                           SELECT 1 FROM server_assets_cache AS s
+                           WHERE s.immich_id = uploaded_assets.immich_id
+                       ));
                 """,
                 """
                 UPDATE hash_cache
@@ -769,6 +773,11 @@ final class ServerAssetRepository {
                         SELECT 1 FROM server_assets_cache AS s
                         WHERE s.source_checksum IS NULL
                           AND s.checksum = hash_cache.sha1_hash
+                    ) OR EXISTS (
+                        SELECT 1 FROM uploaded_assets AS u
+                        WHERE u.asset_id = hash_cache.asset_id
+                          AND u.resource_type != 'raw'
+                          AND u.uploaded_at > \(cutoff)
                     )
                     THEN 1 ELSE 0 END,
                     raw_on_server = CASE WHEN has_raw = 1 AND raw_hash IS NOT NULL
@@ -780,6 +789,11 @@ final class ServerAssetRepository {
                                 SELECT 1 FROM server_assets_cache AS s
                                 WHERE s.source_checksum IS NULL
                                   AND s.checksum = hash_cache.raw_hash
+                            ) OR EXISTS (
+                                SELECT 1 FROM uploaded_assets AS u
+                                WHERE u.asset_id = hash_cache.asset_id
+                                  AND u.resource_type = 'raw'
+                                  AND u.uploaded_at > \(cutoff)
                             )
                         )
                         THEN 1 ELSE 0 END,

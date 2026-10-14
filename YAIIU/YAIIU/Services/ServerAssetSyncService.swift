@@ -191,6 +191,9 @@ class ServerAssetSyncService {
 
         reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
 
+        // The full stream is a snapshot: uploads completed after this point
+        // must survive reconciliation even if the streamed catalog omitted them.
+        let snapshotStartedAt = Date()
         let metadataResult = try await apiService.fetchAssetMetadataStream(
             serverURL: serverURL,
             apiKey: apiKey
@@ -291,7 +294,7 @@ class ServerAssetSyncService {
         // history against the complete server catalog and invalidate any
         // comparisons that ran while the snapshot was being rebuilt.
         let backfilledCount = dbManager.backfillImmichIdsFromServerCache()
-        if syncType == "full", !dbManager.finalizeFullServerSnapshot() {
+        if syncType == "full", !dbManager.finalizeFullServerSnapshot(snapshotStartedAt: snapshotStartedAt) {
             throw SyncError.syncFailed(reason: "Failed to finalize full server snapshot")
         }
 
