@@ -1169,6 +1169,50 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testPersistentLivePhotoEditInvalidatesOldVideoConfirmation() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "modified-live-photo",
+            primaryHash: "original-jpeg", rawHash: nil, hasRAW: false
+        )
+        uploadRepository.markLivePhotoVideoRequired(localIdentifier: "modified-live-photo")
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "modified-live-photo", resourceType: "jpeg",
+            filename: "before.jpg", immichId: "server-old-jpeg"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "modified-live-photo", resourceType: "video",
+            filename: "before.mov", immichId: "server-old-video"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'modified-live-photo' AND video_on_server = 1;
+        """), 1)
+        let backgroundDB = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(backgroundDB.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: ["modified-live-photo"],
+            deletedAssetIds: [], tokenData: Data([2, 3, 4])
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'modified-live-photo';
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'modified-live-photo';
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'modified-live-photo';
+        """), 0)
+        backgroundDB.markLivePhotoVideoRequired(assetId: "modified-live-photo")
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'modified-live-photo' AND video_on_server = 0;
+        """), 1)
+        XCTAssertFalse(backgroundDB.isLivePhotoVideoConfirmed(assetId: "modified-live-photo"))
+    }
+
     func testPhotoKitDeletionRemovesCachedHashBeforeFullSnapshot() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

@@ -881,6 +881,9 @@ final class BackgroundUploadDatabase {
             let invalidationStatements = [
                 "DELETE FROM uploaded_assets WHERE asset_id = ?",
                 "DELETE FROM hash_cache WHERE asset_id = ?",
+                // A modified Live Photo's video is a new resource version.
+                // Discovery will re-register it with video_on_server = 0.
+                "DELETE FROM live_photo_video_status WHERE asset_id = ?",
                 "DELETE FROM upload_jobs WHERE asset_id = ? AND status = 'completed'",
             ]
             for sql in invalidationStatements {
