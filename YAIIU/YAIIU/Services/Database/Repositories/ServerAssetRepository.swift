@@ -405,15 +405,21 @@ final class ServerAssetRepository {
             var historyStatement: OpaquePointer?
             var unresolvedStatement: OpaquePointer?
             // Older background uploads can have immich_id='unknown'. Match
-            // their locally cached resource SHA1 to the deleted server checksum.
+            // their cached resource SHA1 to the deleted server checksum.
+            // RAW-only photos store their sole RAW hash in sha1_hash (has_raw=0);
+            // only JPEG+RAW companions use the separate raw_hash column.
             let unresolvedHistorySQL = """
                 DELETE FROM uploaded_assets
                 WHERE immich_id = 'unknown'
                   AND EXISTS (
                       SELECT 1 FROM hash_cache AS h
                       WHERE h.asset_id = uploaded_assets.asset_id
-                        AND ((uploaded_assets.resource_type = 'raw' AND h.raw_hash = ?)
-                          OR (uploaded_assets.resource_type != 'raw' AND h.sha1_hash = ?))
+                        AND (
+                            (uploaded_assets.resource_type = 'raw'
+                                AND h.has_raw = 1 AND h.raw_hash = ?)
+                            OR ((uploaded_assets.resource_type != 'raw' OR h.has_raw = 0)
+                                AND h.sha1_hash = ?)
+                        )
                   );
             """
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK,

@@ -515,6 +515,70 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NULL;"), 2)
     }
 
+    func testDeletingRAWOnlyServerAssetClearsUnknownRAWHistoryWithoutRehash() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "deleted-raw-only",
+            primaryHash: "original-raw-sha1", rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unrelated-raw-only",
+            primaryHash: "unrelated-raw-sha1", rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unrelated-pair",
+            primaryHash: "unrelated-jpeg-sha1",
+            rawHash: "unrelated-companion-sha1", hasRAW: true
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "deleted-raw-only", resourceType: "raw",
+            filename: "deleted.dng", immichId: "unknown"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unrelated-raw-only", resourceType: "raw",
+            filename: "other.dng", immichId: "unknown"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unrelated-pair", resourceType: "raw",
+            filename: "pair.dng", immichId: "unknown"
+        )
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1;")
+        // A rewritten server checksum must use the original source checksum
+        // to identify the missing RAW-only upload record.
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "deleted-raw-id",
+                checksum: "transcoded-raw-sha1",
+                sourceChecksum: "original-raw-sha1",
+                ownerId: "owner-1"
+            )
+        ]))
+        XCTAssertTrue(repository.deleteServerAssets(["deleted-raw-id"]))
+
+        XCTAssertFalse(uploadRepository.isAssetUploaded(
+            localIdentifier: "deleted-raw-only", resourceType: "raw"
+        ))
+        XCTAssertTrue(uploadRepository.isAssetUploaded(
+            localIdentifier: "unrelated-raw-only", resourceType: "raw"
+        ))
+        XCTAssertTrue(uploadRepository.isAssetUploaded(
+            localIdentifier: "unrelated-pair", resourceType: "raw"
+        ))
+        // Deletion invalidates the verdict, not the computed PhotoKit SHA1.
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'deleted-raw-only'
+              AND sha1_hash = 'original-raw-sha1'
+              AND raw_hash IS NULL AND has_raw = 0
+              AND checked_at IS NULL AND is_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id IN ('unrelated-raw-only', 'unrelated-pair')
+              AND checked_at IS NOT NULL;
+        """), 2)
+    }
+
     func testFullServerResetInvalidatesVerdictsWithoutDeletingHashes() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "a", primaryHash: "sum-a", rawHash: nil, hasRAW: false)
