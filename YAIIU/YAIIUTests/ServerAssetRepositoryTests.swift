@@ -228,6 +228,61 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testCachedMissingHashesAreNotRecomputedUntilPhotoChanges() {
+        let hashes = HashCacheRepository(connection: connection)
+        let originalDate = Date(timeIntervalSince1970: 1_700_000_000)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "cached-missing",
+            primaryHash: "missing-primary",
+            rawHash: nil,
+            hasRAW: false,
+            modificationDate: originalDate
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "cached-raw-pair",
+            primaryHash: "missing-jpeg",
+            rawHash: "missing-raw",
+            hasRAW: true,
+            modificationDate: originalDate
+        )
+        // Both assets have confirmed negative server verdicts. That does not
+        // invalidate their persisted SHA1 values or require another download.
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 0, raw_on_server = 0;")
+
+        let ids = ["cached-missing", "cached-raw-pair", "new-photo"]
+        func assertHashCandidates(_ expected: [String], description: String) {
+            let done = expectation(description: description)
+            hashes.getAssetsNeedingHashAsync(allIdentifiers: ids) { needingHash in
+                XCTAssertEqual(needingHash, expected)
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 5)
+        }
+
+        // Re-running the pipeline (including after relaunch) reuses both
+        // negative-verdict hashes; only a genuinely new asset needs hashing.
+        assertHashCandidates(["new-photo"], description: "Initial hash lookup")
+        assertHashCandidates(["new-photo"], description: "Repeated hash lookup")
+
+        hashes.resetCacheForModifiedAssets(snapshots: [
+            PhotoAssetSnapshot(localIdentifier: "cached-missing", modificationDate: originalDate),
+            PhotoAssetSnapshot(
+                localIdentifier: "cached-raw-pair",
+                modificationDate: originalDate.addingTimeInterval(5)
+            )
+        ])
+        // Changing a JPEG+RAW asset invalidates both hashes. An unchanged
+        // missing-on-server asset still skips the expensive PhotoKit read.
+        assertHashCandidates(
+            ["cached-raw-pair", "new-photo"],
+            description: "Only modified and new photos need hashing"
+        )
+        XCTAssertEqual(
+            count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'cached-missing';"),
+            1
+        )
+    }
+
     func testSQLitePrefilterReincludesAssetsAfterServerDeltaInvalidation() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
