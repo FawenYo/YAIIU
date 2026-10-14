@@ -1080,6 +1080,40 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testICloudMetadataBackfillIncludesRAWOnlyPartialPresence() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "raw-on-server-only",
+            primaryHash: "missing-jpeg-checksum",
+            rawHash: "present-raw-checksum", hasRAW: true
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "raw-existing", checksum: "present-raw-checksum",
+                ownerId: "owner-1"
+            )
+        ]))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(), syncType: "full",
+            userId: "owner-1", serverURL: "https://immich.example",
+            totalAssets: 1, lastAck: "checkpoint"
+        ))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'raw-on-server-only'
+              AND checked_at IS NOT NULL
+              AND is_on_server = 0 AND raw_on_server = 1;
+        """), 1)
+        let done = expectation(description: "Partial RAW still eligible for metadata backfill")
+        hashes.getMissingICloudIDBackfillCandidatesAsync { candidates in
+            XCTAssertEqual(candidates.map { $0.immichId }, ["raw-existing"])
+            XCTAssertEqual(candidates.first?.localIdentifier, "raw-on-server-only")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
     func testPhotoKitDeletionRemovesCachedHashBeforeFullSnapshot() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

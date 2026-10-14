@@ -573,15 +573,18 @@ final class HashCacheRepository {
                 SELECT h.asset_id, s.immich_id, s.source_checksum
                 FROM hash_cache AS h
                 JOIN server_assets_cache AS s
-                  ON s.source_checksum = h.sha1_hash
-                  OR (s.source_checksum IS NULL AND s.checksum = h.sha1_hash)
-                  OR (h.has_raw = 1 AND h.raw_hash IS NOT NULL
-                      AND (s.source_checksum = h.raw_hash
-                           OR (s.source_checksum IS NULL AND s.checksum = h.raw_hash)))
+                  ON (h.is_on_server = 1 AND (
+                      s.source_checksum = h.sha1_hash
+                      OR (s.source_checksum IS NULL AND s.checksum = h.sha1_hash)
+                  ))
+                  OR (h.has_raw = 1 AND h.raw_on_server = 1
+                      AND h.raw_hash IS NOT NULL AND (
+                          s.source_checksum = h.raw_hash
+                          OR (s.source_checksum IS NULL AND s.checksum = h.raw_hash)
+                      ))
                 JOIN sync_metadata AS m
                   ON m.id = 1 AND s.owner_id = m.user_id
                 WHERE h.checked_at IS NOT NULL
-                  AND h.is_on_server = 1
                   AND (s.icloud_id IS NULL OR s.icloud_id = '');
             """
             var statement: OpaquePointer?
