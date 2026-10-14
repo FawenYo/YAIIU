@@ -98,6 +98,12 @@ final class BackgroundUploadDatabase {
             )
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
+        exec("""
+            CREATE TABLE IF NOT EXISTS live_photo_video_status (
+                asset_id TEXT PRIMARY KEY NOT NULL,
+                video_on_server INTEGER NOT NULL DEFAULT 0
+            )
+        """)
 
         // Background PhotoKit upload may launch before the host's v11 migration.
         var uploadColumns: Set<String> = []
@@ -397,6 +403,43 @@ final class BackgroundUploadDatabase {
     
     // MARK: - Uploaded Assets
     
+    func markLivePhotoVideoRequired(assetId: String) {
+        queue.sync {
+            let sql = """
+                INSERT OR IGNORE INTO live_photo_video_status (asset_id, video_on_server)
+                VALUES (?, CASE WHEN EXISTS (
+                    SELECT 1 FROM uploaded_assets u
+                    WHERE u.asset_id = ? AND u.resource_type = 'video'
+                      AND (EXISTS (
+                          SELECT 1 FROM server_assets_cache s WHERE s.immich_id = u.immich_id
+                      ) OR (u.destination_identity IS NOT NULL
+                            AND u.uploaded_at > COALESCE(
+                                (SELECT last_sync_time FROM sync_metadata WHERE id = 1), 0
+                            )))
+                ) THEN 1 ELSE 0 END);
+            """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, assetId, -1, SQLITE_TRANSIENT)
+            sqlite3_step(stmt)
+        }
+    }
+
+    func isLivePhotoVideoConfirmed(assetId: String) -> Bool {
+        queue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(
+                db, "SELECT video_on_server FROM live_photo_video_status WHERE asset_id = ?",
+                -1, &stmt, nil
+            ) == SQLITE_OK else { return false }
+            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+            return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) == 1
+        }
+    }
+
     func recordUploadedAsset(assetId: String, resourceType: String, filename: String, immichId: String, fileSize: Int64, isDuplicate: Bool) {
         queue.sync {
             let sql = """
@@ -420,13 +463,29 @@ final class BackgroundUploadDatabase {
             sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
             
             sqlite3_step(stmt)
-            
+
+            if resourceType == "video" {
+                var videoStmt: OpaquePointer?
+                if sqlite3_prepare_v2(
+                    db, "UPDATE live_photo_video_status SET video_on_server = 1 WHERE asset_id = ?",
+                    -1, &videoStmt, nil
+                ) == SQLITE_OK {
+                    sqlite3_bind_text(videoStmt, 1, assetId, -1, SQLITE_TRANSIENT)
+                    sqlite3_step(videoStmt)
+                }
+                sqlite3_finalize(videoStmt)
+            }
+
             // A RAW-only asset keeps its sole RAW resource in the primary
             // hash column (has_raw = 0). JPEG+RAW companions use raw_on_server.
             let updateSql = """
                 UPDATE hash_cache
                 SET is_on_server = CASE
                         WHEN ? = 'raw' AND has_raw = 1 THEN is_on_server
+                        WHEN ? = 'video' AND EXISTS (
+                            SELECT 1 FROM live_photo_video_status v
+                            WHERE v.asset_id = hash_cache.asset_id
+                        ) THEN is_on_server
                         ELSE 1
                     END,
                     raw_on_server = CASE
@@ -443,8 +502,9 @@ final class BackgroundUploadDatabase {
             if sqlite3_prepare_v2(db, updateSql, -1, &updateStmt, nil) == SQLITE_OK {
                 sqlite3_bind_text(updateStmt, 1, resourceType, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_text(updateStmt, 2, resourceType, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_double(updateStmt, 3, Date().timeIntervalSince1970)
-                sqlite3_bind_text(updateStmt, 4, assetId, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(updateStmt, 3, resourceType, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_double(updateStmt, 4, Date().timeIntervalSince1970)
+                sqlite3_bind_text(updateStmt, 5, assetId, -1, SQLITE_TRANSIENT)
                 sqlite3_step(updateStmt)
             }
         }
@@ -583,6 +643,7 @@ final class BackgroundUploadDatabase {
                 // but require the new destination to reconfirm server presence.
                 let destinationSpecificSql = [
                     "DELETE FROM uploaded_assets",
+                    "UPDATE live_photo_video_status SET video_on_server = 0",
                     "DELETE FROM upload_jobs WHERE status = 'completed'",
                     "UPDATE hash_cache SET is_on_server = 0, raw_on_server = 0, checked_at = NULL, server_check_revision = server_check_revision + 1",
                 ]
@@ -846,7 +907,8 @@ final class BackgroundUploadDatabase {
             for deleteSql in [
                 "DELETE FROM background_upload_queue WHERE asset_id = ?",
                 "DELETE FROM hash_cache WHERE asset_id = ?",
-                "DELETE FROM uploaded_assets WHERE asset_id = ?"
+                "DELETE FROM uploaded_assets WHERE asset_id = ?",
+                "DELETE FROM live_photo_video_status WHERE asset_id = ?"
             ] {
                 var deleteStmt: OpaquePointer?
                 guard sqlite3_prepare_v2(db, deleteSql, -1, &deleteStmt, nil) == SQLITE_OK else {
@@ -905,6 +967,10 @@ final class BackgroundUploadDatabase {
                       AND h.checked_at IS NOT NULL
                       AND h.is_on_server = 1
                       AND (h.has_raw = 0 OR h.raw_on_server = 1)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM live_photo_video_status v
+                          WHERE v.asset_id = h.asset_id AND v.video_on_server = 0
+                      )
                 );
             """
             guard sqlite3_exec(db, cleanup, nil, nil, nil) == SQLITE_OK else {
@@ -917,7 +983,11 @@ final class BackgroundUploadDatabase {
                     SELECT 1 FROM hash_cache AS h
                     WHERE h.asset_id = q.asset_id
                       AND (h.checked_at IS NULL
-                           OR (h.is_on_server = 1 AND (h.has_raw = 0 OR h.raw_on_server = 1)))
+                           OR (h.is_on_server = 1 AND (h.has_raw = 0 OR h.raw_on_server = 1)
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM live_photo_video_status v
+                                   WHERE v.asset_id = h.asset_id AND v.video_on_server = 0
+                               )))
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM upload_jobs AS j
@@ -1059,8 +1129,13 @@ final class BackgroundUploadDatabase {
         queue.sync {
             var ids = Set<String>()
             let sql = """
-                SELECT asset_id FROM hash_cache
-                WHERE checked_at IS NOT NULL AND is_on_server = 1 AND (has_raw = 0 OR raw_on_server = 1)
+                SELECT h.asset_id FROM hash_cache h
+                WHERE h.checked_at IS NOT NULL AND h.is_on_server = 1
+                  AND (h.has_raw = 0 OR h.raw_on_server = 1)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM live_photo_video_status v
+                      WHERE v.asset_id = h.asset_id AND v.video_on_server = 0
+                  )
             """
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
@@ -1077,37 +1152,73 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    func getPartialServerCopyAssets() -> (primaryConfirmed: Set<String>, rawConfirmed: Set<String>) {
+    func getPartialServerCopyAssets() -> (
+        primaryConfirmed: Set<String>, rawConfirmed: Set<String>,
+        videoConfirmed: Set<String>
+    ) {
         queue.sync {
             var primaryConfirmed = Set<String>()
             var rawConfirmed = Set<String>()
+            var videoConfirmed = Set<String>()
             let sql = """
-                SELECT asset_id, CASE WHEN is_on_server = 1 THEN 'p' ELSE 'r' END
-                FROM hash_cache
-                WHERE checked_at IS NOT NULL
-                  AND ((is_on_server = 1 AND has_raw = 1 AND raw_on_server = 0)
-                       OR (raw_on_server = 1 AND is_on_server = 0))
+                SELECT h.asset_id, CASE WHEN h.is_on_server = 1 THEN 'p' ELSE 'r' END
+                FROM hash_cache h
+                WHERE h.checked_at IS NOT NULL
+                  AND ((h.is_on_server = 1 AND h.has_raw = 1 AND h.raw_on_server = 0)
+                       OR (h.raw_on_server = 1 AND h.is_on_server = 0)
+                       OR (h.is_on_server = 1 AND EXISTS (
+                           SELECT 1 FROM live_photo_video_status v
+                           WHERE v.asset_id = h.asset_id AND v.video_on_server = 0
+                       )));
             """
             var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-                if let db { print("[BackgroundUploadDatabase] getPartialServerCopyAssets: \(String(cString: sqlite3_errmsg(db)))") }
-                return (primaryConfirmed, rawConfirmed)
-            }
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                guard let idPtr = sqlite3_column_text(stmt, 0),
-                      let kindPtr = sqlite3_column_text(stmt, 1) else { continue }
-                let assetId = String(cString: idPtr)
-                if String(cString: kindPtr) == "p" {
-                    primaryConfirmed.insert(assetId)
-                } else {
-                    rawConfirmed.insert(assetId)
+            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    guard let idPtr = sqlite3_column_text(stmt, 0),
+                          let kindPtr = sqlite3_column_text(stmt, 1) else { continue }
+                    let assetId = String(cString: idPtr)
+                    if String(cString: kindPtr) == "p" {
+                        primaryConfirmed.insert(assetId)
+                    } else {
+                        rawConfirmed.insert(assetId)
+                    }
                 }
             }
-            return (primaryConfirmed, rawConfirmed)
+            sqlite3_finalize(stmt)
+            stmt = nil
+            if sqlite3_prepare_v2(
+                db, "SELECT asset_id FROM live_photo_video_status WHERE video_on_server = 1",
+                -1, &stmt, nil
+            ) == SQLITE_OK {
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let idPtr = sqlite3_column_text(stmt, 0) {
+                        videoConfirmed.insert(String(cString: idPtr))
+                    }
+                }
+            }
+            sqlite3_finalize(stmt)
+            stmt = nil
+            // A Live Photo with a missing video can still have a confirmed
+            // RAW companion; do not schedule the RAW resource again.
+            if sqlite3_prepare_v2(
+                db, """
+                    SELECT asset_id FROM hash_cache
+                    WHERE checked_at IS NOT NULL AND has_raw = 1
+                      AND raw_on_server = 1
+                """,
+                -1, &stmt, nil
+            ) == SQLITE_OK {
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let idPtr = sqlite3_column_text(stmt, 0) {
+                        rawConfirmed.insert(String(cString: idPtr))
+                    }
+                }
+            }
+            sqlite3_finalize(stmt)
+            return (primaryConfirmed, rawConfirmed, videoConfirmed)
         }
     }
-    
+
     // MARK: - Hash Cache
     
     func saveAssetHash(assetId: String, sha1Hash: String) {

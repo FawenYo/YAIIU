@@ -99,6 +99,7 @@ final class SQLiteConnection {
         createUploadedAssetsTable()
         createUploadJobsTable()
         createHashCacheTable()
+        createLivePhotoVideoStatusTable()
         createHashFailuresTable()
         createServerAssetsCacheTable()
         createSyncMetadataTable()
@@ -164,6 +165,17 @@ final class SQLiteConnection {
         executeStatement(sql)
     }
     
+    private func createLivePhotoVideoStatusTable() {
+        // Presence of a row means that the PhotoKit asset includes a separate
+        // Live Photo video. Its confirmation must not be conflated with JPEG.
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS live_photo_video_status (
+                asset_id TEXT PRIMARY KEY NOT NULL,
+                video_on_server INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+    }
+
     private func createHashFailuresTable() {
         let sql = """
         CREATE TABLE IF NOT EXISTS hash_failures (

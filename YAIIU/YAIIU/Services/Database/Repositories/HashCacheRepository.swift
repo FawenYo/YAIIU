@@ -178,12 +178,13 @@ final class HashCacheRepository {
         sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
         var primaryPresent = false
         var rawPresent = false
+        let hasLiveVideo = hasLivePhotoVideoRequirementInternal(localIdentifier: localIdentifier)
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let p = sqlite3_column_text(stmt, 0) else { continue }
             let resourceType = String(cString: p)
             if resourceType == "raw" && hasRAW {
                 rawPresent = true
-            } else {
+            } else if resourceType != "video" || !hasLiveVideo {
                 primaryPresent = true
             }
         }
@@ -396,7 +397,11 @@ final class HashCacheRepository {
         FROM hash_cache
         WHERE asset_id = ?
           AND checked_at IS NOT NULL
-          AND (is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0));
+          AND (is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0)
+               OR EXISTS (
+                   SELECT 1 FROM live_photo_video_status v
+                   WHERE v.asset_id = hash_cache.asset_id AND v.video_on_server = 0
+               ));
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
@@ -406,6 +411,17 @@ final class HashCacheRepository {
         sqlite3_finalize(statement)
     }
     
+    private func hasLivePhotoVideoRequirementInternal(localIdentifier: String) -> Bool {
+        let sql = "SELECT 1 FROM live_photo_video_status WHERE asset_id = ? LIMIT 1;"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            return false
+        }
+        sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+        return sqlite3_step(stmt) == SQLITE_ROW
+    }
+
     /// Do not overwrite a server delta with a verdict computed against an
     /// earlier catalog revision.
     @discardableResult
@@ -596,6 +612,21 @@ final class HashCacheRepository {
             var statusMap: [String: PhotoSyncStatus] = [:]
             var statement: OpaquePointer?
             
+            var missingLiveVideos: Set<String> = []
+            if sqlite3_prepare_v2(
+                self.connection.db,
+                "SELECT asset_id FROM live_photo_video_status WHERE video_on_server = 0;",
+                -1, &statement, nil
+            ) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let ptr = sqlite3_column_text(statement, 0) {
+                        missingLiveVideos.insert(String(cString: ptr))
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+            statement = nil
+
             let hashSql = "SELECT asset_id, is_on_server, checked_at, raw_hash, raw_on_server, has_raw FROM hash_cache;"
             if sqlite3_prepare_v2(self.connection.db, hashSql, -1, &statement, nil) == SQLITE_OK {
                 while sqlite3_step(statement) == SQLITE_ROW {
@@ -616,6 +647,7 @@ final class HashCacheRepository {
                         // checked_at controls rechecking, not the display label.
                         if hasBeenChecked && hasServerCache {
                             let fullyOnServer = primaryOnServer && (!hasRAW || rawOnServer)
+                                && !missingLiveVideos.contains(identifier)
                             statusMap[identifier] = fullyOnServer ? .uploaded : .notUploaded
                         } else if hasServerCache {
                             // This photo is still awaiting a server verdict.
@@ -630,7 +662,9 @@ final class HashCacheRepository {
                             } else {
                                 isFullyUploaded = hasUploadedNonRAW || hasUploadedRAW || primaryOnServer
                             }
-                            statusMap[identifier] = isFullyUploaded ? .uploaded : .notUploaded
+                            statusMap[identifier] = (isFullyUploaded
+                                && (!missingLiveVideos.contains(identifier) || uploadedTypes.contains("video")))
+                                ? .uploaded : .notUploaded
                         }
                     }
                 }
@@ -675,7 +709,11 @@ final class HashCacheRepository {
                 SELECT asset_id FROM hash_cache
                 WHERE checked_at IS NOT NULL
                   AND is_on_server = 1
-                  AND (has_raw = 0 OR raw_on_server = 1);
+                  AND (has_raw = 0 OR raw_on_server = 1)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM live_photo_video_status v
+                      WHERE v.asset_id = hash_cache.asset_id AND v.video_on_server = 0
+                  );
             """
             var statement: OpaquePointer?
             var completedIds: Set<String> = []
@@ -901,7 +939,82 @@ final class HashCacheRepository {
         }
     }
 
+    /// Update only Live Photo companion presence using lightweight PhotoKit
+    /// snapshots; do not request image/video bytes or recompute SHA1.
+    private func syncLivePhotoVideoRequirementsInternal(snapshots: [PhotoAssetSnapshot]) {
+        let known = Set(snapshots.map { $0.localIdentifier })
+        let required = Set(snapshots.filter { $0.hasVideoCompanion }.map { $0.localIdentifier })
+        var current: Set<String> = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(
+            connection.db, "SELECT asset_id FROM live_photo_video_status;",
+            -1, &stmt, nil
+        ) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let ptr = sqlite3_column_text(stmt, 0) {
+                    current.insert(String(cString: ptr))
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        let additions = required.subtracting(current)
+        let removals = current.intersection(known).subtracting(required)
+        guard !additions.isEmpty || !removals.isEmpty else { return }
+        guard connection.beginTransaction() else { return }
+        let insertSQL = """
+            INSERT OR IGNORE INTO live_photo_video_status (asset_id, video_on_server)
+            VALUES (?, CASE WHEN EXISTS (
+                SELECT 1 FROM uploaded_assets AS u
+                WHERE u.asset_id = ? AND u.resource_type = 'video'
+                  AND (EXISTS (
+                      SELECT 1 FROM server_assets_cache s WHERE s.immich_id = u.immich_id
+                  ) OR (u.destination_identity IS NOT NULL
+                        AND u.uploaded_at > COALESCE(
+                            (SELECT last_sync_time FROM sync_metadata WHERE id = 1), 0
+                        )))
+            ) THEN 1 ELSE 0 END);
+        """
+        var insertStmt: OpaquePointer?
+        var deleteStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, insertSQL, -1, &insertStmt, nil) == SQLITE_OK,
+              sqlite3_prepare_v2(
+                  connection.db, "DELETE FROM live_photo_video_status WHERE asset_id = ?;",
+                  -1, &deleteStmt, nil
+              ) == SQLITE_OK else {
+            sqlite3_finalize(insertStmt)
+            sqlite3_finalize(deleteStmt)
+            connection.rollbackTransaction()
+            return
+        }
+        var failed = false
+        for id in additions {
+            sqlite3_bind_text(insertStmt, 1, (id as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(insertStmt, 2, (id as NSString).utf8String, -1, nil)
+            if sqlite3_step(insertStmt) != SQLITE_DONE { failed = true; break }
+            sqlite3_reset(insertStmt)
+            sqlite3_clear_bindings(insertStmt)
+        }
+        if !failed {
+            for id in removals {
+                sqlite3_bind_text(deleteStmt, 1, (id as NSString).utf8String, -1, nil)
+                if sqlite3_step(deleteStmt) != SQLITE_DONE { failed = true; break }
+                sqlite3_reset(deleteStmt)
+                sqlite3_clear_bindings(deleteStmt)
+            }
+        }
+        sqlite3_finalize(insertStmt)
+        sqlite3_finalize(deleteStmt)
+        if failed || !connection.commitTransaction() {
+            connection.rollbackTransaction()
+            return
+        }
+        for id in additions {
+            enqueueIfMissingOnServerInternal(localIdentifier: id)
+        }
+    }
+
     private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot]) {
+        syncLivePhotoVideoRequirementsInternal(snapshots: snapshots)
         resetModifiedFailureRecords(snapshots: snapshots)
 
         // Fetch all stored modification dates in one query; NULL means not yet recorded
@@ -948,6 +1061,20 @@ final class HashCacheRepository {
         }
 
         guard !invalidatedIds.isEmpty else { return }
+
+        // A changed Live Photo video needs a new server confirmation too.
+        for identifier in invalidatedIds {
+            var videoStmt: OpaquePointer?
+            if sqlite3_prepare_v2(
+                connection.db,
+                "UPDATE live_photo_video_status SET video_on_server = 0 WHERE asset_id = ?;",
+                -1, &videoStmt, nil
+            ) == SQLITE_OK {
+                sqlite3_bind_text(videoStmt, 1, (identifier as NSString).utf8String, -1, nil)
+                sqlite3_step(videoStmt)
+            }
+            sqlite3_finalize(videoStmt)
+        }
 
         logInfo("Invalidating \(invalidatedIds.count) modified assets", category: .hash)
 

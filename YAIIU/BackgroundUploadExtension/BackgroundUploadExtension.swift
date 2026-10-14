@@ -750,7 +750,14 @@ final class BackgroundUploadExtensionCore {
                 return
             }
 
-            if fullyOnServer.contains(asset.localIdentifier) {
+            let isLivePhoto = asset.mediaType == .image
+                && asset.mediaSubtypes.contains(.photoLive)
+            if isLivePhoto {
+                self.database.markLivePhotoVideoRequired(assetId: asset.localIdentifier)
+            }
+            if fullyOnServer.contains(asset.localIdentifier)
+                && (!isLivePhoto
+                    || self.database.isLivePhotoVideoConfirmed(assetId: asset.localIdentifier)) {
                 self.database.removeQueuedAsset(asset.localIdentifier)
                 return
             }
@@ -767,9 +774,15 @@ final class BackgroundUploadExtensionCore {
                     continue
                 }
 
-                let copyOnServer = type == "raw"
-                    ? partial.rawConfirmed.contains(asset.localIdentifier)
-                    : partial.primaryConfirmed.contains(asset.localIdentifier)
+                let copyOnServer: Bool
+                if type == "video" && isLivePhoto {
+                    copyOnServer = partial.videoConfirmed.contains(asset.localIdentifier)
+                } else if type == "raw" {
+                    copyOnServer = partial.rawConfirmed.contains(asset.localIdentifier)
+                } else {
+                    copyOnServer = partial.primaryConfirmed.contains(asset.localIdentifier)
+                        || fullyOnServer.contains(asset.localIdentifier)
+                }
                 if copyOnServer {
                     continue
                 }
@@ -840,6 +853,11 @@ final class BackgroundUploadExtensionCore {
         // Logs BEFORE the per-asset PHAssetResource.assetResources call: a hung
         // fetch shows up as progress stopping at a specific scanned count.
         let collect: (PHAsset) -> Void = { asset in
+            let isLivePhoto = asset.mediaType == .image
+                && asset.mediaSubtypes.contains(.photoLive)
+            if isLivePhoto {
+                self.database.markLivePhotoVideoRequired(assetId: asset.localIdentifier)
+            }
             scanned += 1
             if Date().timeIntervalSince(lastProgressLog) >= 2 {
                 lastProgressLog = Date()
@@ -853,9 +871,15 @@ final class BackgroundUploadExtensionCore {
                 // Partially-synced assets (e.g. primary confirmed by checksum, raw
                 // never uploaded): filter each copy by its own server state so the
                 // missing copy is (re)scheduled without reuploading the confirmed one.
-                let copyOnServer = type == "raw"
-                    ? partial.rawConfirmed.contains(asset.localIdentifier)
-                    : partial.primaryConfirmed.contains(asset.localIdentifier)
+                let copyOnServer: Bool
+                if type == "video" && isLivePhoto {
+                    copyOnServer = partial.videoConfirmed.contains(asset.localIdentifier)
+                } else if type == "raw" {
+                    copyOnServer = partial.rawConfirmed.contains(asset.localIdentifier)
+                } else {
+                    copyOnServer = partial.primaryConfirmed.contains(asset.localIdentifier)
+                        || skip.contains(asset.localIdentifier)
+                }
                 if copyOnServer { continue }
                 if !self.database.isResourceUploaded(
                     assetId: asset.localIdentifier,
@@ -873,7 +897,12 @@ final class BackgroundUploadExtensionCore {
                     stop.pointee = true
                     return
                 }
-                guard !skip.contains(asset.localIdentifier) else { return }
+                let live = asset.mediaType == .image
+                    && asset.mediaSubtypes.contains(.photoLive)
+                if skip.contains(asset.localIdentifier)
+                    && (!live || self.database.isLivePhotoVideoConfirmed(
+                        assetId: asset.localIdentifier
+                    )) { return }
                 collect(asset)
             }
         }

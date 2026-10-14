@@ -416,6 +416,13 @@ class UploadManager: ObservableObject {
 
         logDebug("Uploading \(totalResources) resource(s) for: \(item.filename)", category: .upload)
 
+        // The Live Photo video is a separate Immich resource. Register
+        // this requirement before an individual JPEG upload may succeed.
+        if asset.mediaType == .image
+            && resources.contains(where: { Self.getResourceType(for: $0) == "video" }) {
+            DatabaseManager.shared.markLivePhotoVideoRequired(localIdentifier: localIdentifier)
+        }
+
         // Use continuation to wait for all responses
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let responseTracker = ResponseTracker(totalCount: totalResources) { [weak item] in

@@ -483,6 +483,19 @@ final class ServerAssetRepository {
                 self.connection.rollbackTransaction()
                 return false
             }
+            // Deleting a remote video removes its upload-history evidence.
+            guard sqlite3_exec(self.connection.db, """
+                UPDATE live_photo_video_status
+                SET video_on_server = 0
+                WHERE video_on_server = 1 AND NOT EXISTS (
+                    SELECT 1 FROM uploaded_assets u
+                    WHERE u.asset_id = live_photo_video_status.asset_id
+                      AND u.resource_type = 'video'
+                );
+            """, nil, nil, nil) == SQLITE_OK else {
+                self.connection.rollbackTransaction()
+                return false
+            }
 
             guard self.connection.commitTransaction() else {
                 logError("Failed to commit server asset deletes: \(self.connection.lastErrorMessage)", category: .database)
@@ -757,7 +770,8 @@ final class ServerAssetRepository {
                 "DELETE FROM server_assets_cache;",
                 "DELETE FROM sync_metadata;",
                 // The server can now differ completely. Retain SHA1s, not old verdicts.
-                "UPDATE hash_cache SET checked_at = NULL, is_on_server = 0, raw_on_server = 0, server_check_revision = server_check_revision + 1;"
+                "UPDATE hash_cache SET checked_at = NULL, is_on_server = 0, raw_on_server = 0, server_check_revision = server_check_revision + 1;",
+                "UPDATE live_photo_video_status SET video_on_server = 0;"
             ]
             for sql in statements where sqlite3_exec(self.connection.db, sql, nil, nil, nil) != SQLITE_OK {
                 logError("Failed to clear server cache: \(self.connection.lastErrorMessage)", category: .database)
@@ -864,10 +878,26 @@ final class ServerAssetRepository {
                     server_check_revision = server_check_revision + 1;
                 """,
                 """
+                UPDATE live_photo_video_status
+                SET video_on_server = CASE WHEN EXISTS (
+                    SELECT 1 FROM uploaded_assets u
+                    WHERE u.asset_id = live_photo_video_status.asset_id
+                      AND u.resource_type = 'video'
+                      AND ((\(lateEvidence)) OR EXISTS (
+                          SELECT 1 FROM server_assets_cache s
+                          WHERE s.immich_id = u.immich_id
+                      ))
+                ) THEN 1 ELSE 0 END;
+                """,
+                """
                 INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
-                SELECT asset_id, CAST(strftime('%s', 'now') AS REAL)
-                FROM hash_cache
-                WHERE is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0);
+                SELECT h.asset_id, CAST(strftime('%s', 'now') AS REAL)
+                FROM hash_cache h
+                WHERE h.is_on_server = 0 OR (h.has_raw = 1 AND h.raw_on_server = 0)
+                   OR EXISTS (
+                       SELECT 1 FROM live_photo_video_status v
+                       WHERE v.asset_id = h.asset_id AND v.video_on_server = 0
+                   );
                 """,
                 """
                 DELETE FROM background_upload_queue
@@ -876,6 +906,10 @@ final class ServerAssetRepository {
                     WHERE h.asset_id = background_upload_queue.asset_id
                       AND h.is_on_server = 1
                       AND (h.has_raw = 0 OR h.raw_on_server = 1)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM live_photo_video_status v
+                          WHERE v.asset_id = h.asset_id AND v.video_on_server = 0
+                      )
                 );
                 """
             ]

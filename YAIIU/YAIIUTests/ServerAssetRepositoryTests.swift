@@ -370,6 +370,142 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
     }
 
+    func testLivePhotoJPEGAloneRemainsIncompleteUntilVideoUpload() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "live-photo", primaryHash: "live-jpeg-sha",
+            rawHash: nil, hasRAW: false
+        )
+        uploadRepository.markLivePhotoVideoRequired(localIdentifier: "live-photo")
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "live-photo", resourceType: "jpeg",
+            filename: "photo.jpg", immichId: "remote-live-jpeg"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'live-photo' AND is_on_server = 1
+              AND checked_at IS NOT NULL;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'live-photo' AND video_on_server = 0;
+        """), 1)
+        let backgroundDB = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertFalse(backgroundDB.getAllAssetsOnServer().contains("live-photo"))
+        XCTAssertTrue(backgroundDB.getPartialServerCopyAssets().primaryConfirmed.contains("live-photo"))
+        XCTAssertFalse(backgroundDB.getPartialServerCopyAssets().videoConfirmed.contains("live-photo"))
+
+        let pending = expectation(description: "Live video remains eligible")
+        hashes.getAssetsNotFullyUploadedAsync(allIdentifiers: ["live-photo"]) { candidates in
+            XCTAssertEqual(candidates, ["live-photo"])
+            pending.fulfill()
+        }
+        wait(for: [pending], timeout: 5)
+
+        let before = expectation(description: "Only JPEG is uploaded")
+        hashes.getAllSyncStatusAsync(
+            uploadedResourceTypes: ["live-photo": ["jpeg"]],
+            hasServerCache: true
+        ) { statuses in
+            XCTAssertEqual(statuses["live-photo"], .notUploaded)
+            before.fulfill()
+        }
+        wait(for: [before], timeout: 5)
+
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "live-photo", resourceType: "video",
+            filename: "photo.mov", immichId: "remote-live-video"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'live-photo' AND video_on_server = 1;
+        """), 1)
+        XCTAssertTrue(backgroundDB.getAllAssetsOnServer().contains("live-photo"))
+        let after = expectation(description: "Live Photo now fully uploaded")
+        hashes.getAllSyncStatusAsync(
+            uploadedResourceTypes: ["live-photo": ["jpeg", "video"]],
+            hasServerCache: true
+        ) { statuses in
+            XCTAssertEqual(statuses["live-photo"], .uploaded)
+            after.fulfill()
+        }
+        wait(for: [after], timeout: 5)
+    }
+
+    func testLivePhotoRequirementIsRegisteredFromMetadataWithoutRehash() {
+        let hashes = HashCacheRepository(connection: connection)
+        let modDate = Date(timeIntervalSince1970: 1_700_000_000)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "metadata-live-photo",
+            primaryHash: "persisted-sha1", rawHash: nil, hasRAW: false,
+            modificationDate: modDate
+        )
+        execute("""
+            UPDATE hash_cache SET is_on_server = 1, checked_at = 100
+            WHERE asset_id = 'metadata-live-photo';
+        """)
+        hashes.resetCacheForModifiedAssets(snapshots: [
+            PhotoAssetSnapshot(
+                localIdentifier: "metadata-live-photo",
+                modificationDate: modDate, hasVideoCompanion: true
+            )
+        ])
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'metadata-live-photo' AND video_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'metadata-live-photo'
+              AND sha1_hash = 'persisted-sha1' AND checked_at IS NOT NULL;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM background_upload_queue
+            WHERE asset_id = 'metadata-live-photo';
+        """), 1)
+        let done = expectation(description: "Still requires video, not new SHA1")
+        hashes.getAssetsNeedingHashAsync(allIdentifiers: ["metadata-live-photo"]) { ids in
+            XCTAssertTrue(ids.isEmpty)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
+    func testServerVideoDeletionReopensOnlyLivePhotoCompanion() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "remote-live-photo", primaryHash: "photo-checksum",
+            rawHash: nil, hasRAW: false
+        )
+        uploadRepository.markLivePhotoVideoRequired(localIdentifier: "remote-live-photo")
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "remote-live-photo", resourceType: "jpeg",
+            filename: "photo.jpg", immichId: "server-photo"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "remote-live-photo", resourceType: "video",
+            filename: "photo.mov", immichId: "server-video"
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "server-photo", checksum: "photo-checksum", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "server-video", checksum: "video-checksum", ownerId: "owner-1")
+        ]))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'remote-live-photo' AND video_on_server = 1;
+        """), 1)
+        XCTAssertTrue(repository.deleteServerAssets(["server-video"]))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'remote-live-photo' AND video_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'remote-live-photo' AND sha1_hash = 'photo-checksum';
+        """), 1)
+    }
+
     func testSQLitePrefilterSkipsOnlyConfirmedFullyUploadedAssets() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

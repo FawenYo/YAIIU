@@ -5,6 +5,13 @@ import UIKit
 struct PhotoAssetSnapshot: Sendable {
     let localIdentifier: String
     let modificationDate: Date?
+    let hasVideoCompanion: Bool
+
+    init(localIdentifier: String, modificationDate: Date?, hasVideoCompanion: Bool = false) {
+        self.localIdentifier = localIdentifier
+        self.modificationDate = modificationDate
+        self.hasVideoCompanion = hasVideoCompanion
+    }
 }
 
 
@@ -280,7 +287,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 snapshots.append(
                     PhotoAssetSnapshot(
                         localIdentifier: asset.localIdentifier,
-                        modificationDate: asset.modificationDate
+                        modificationDate: asset.modificationDate,
+                        hasVideoCompanion: asset.mediaType == .image
+                            && asset.mediaSubtypes.contains(.photoLive)
                     )
                 )
             }

@@ -69,6 +69,50 @@ final class UploadRecordRepository {
         return isUploaded
     }
     
+    /// The Live Photo JPEG and its video are distinct Immich resources.
+    /// Recording video presence before uploads prevents partial successes
+    /// from being misclassified as fully uploaded.
+    func markLivePhotoVideoRequired(localIdentifier: String) {
+        connection.ensureInitialized()
+        connection.dbQueue.sync {
+            let sql = """
+                INSERT OR IGNORE INTO live_photo_video_status (asset_id, video_on_server)
+                VALUES (?, CASE WHEN EXISTS (
+                    SELECT 1 FROM uploaded_assets u
+                    WHERE u.asset_id = ? AND u.resource_type = 'video'
+                      AND (EXISTS (
+                          SELECT 1 FROM server_assets_cache s WHERE s.immich_id = u.immich_id
+                      ) OR (u.destination_identity IS NOT NULL
+                            AND u.uploaded_at > COALESCE(
+                                (SELECT last_sync_time FROM sync_metadata WHERE id = 1), 0
+                            )))
+                ) THEN 1 ELSE 0 END);
+            """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (localIdentifier as NSString).utf8String, -1, nil)
+            if sqlite3_step(stmt) == SQLITE_DONE {
+                let queueSQL = """
+                    INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
+                    SELECT h.asset_id, ?
+                    FROM hash_cache h JOIN live_photo_video_status v
+                      ON v.asset_id = h.asset_id
+                    WHERE h.asset_id = ? AND h.checked_at IS NOT NULL
+                      AND v.video_on_server = 0;
+                """
+                var queueStmt: OpaquePointer?
+                if sqlite3_prepare_v2(connection.db, queueSQL, -1, &queueStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_double(queueStmt, 1, Date().timeIntervalSince1970)
+                    sqlite3_bind_text(queueStmt, 2, (localIdentifier as NSString).utf8String, -1, nil)
+                    sqlite3_step(queueStmt)
+                }
+                sqlite3_finalize(queueStmt)
+            }
+        }
+    }
+
     // MARK: - Insert/Update Methods
     
     func recordUploadedAsset(
@@ -150,6 +194,42 @@ final class UploadRecordRepository {
             return
         }
 
+        // Persist video companion completion separately from the primary
+        // JPEG/RAW hash. A standalone video (no live-photo requirement)
+        // is still a primary resource.
+        if resourceType == "video" {
+            let videoSQL = """
+                UPDATE live_photo_video_status
+                SET video_on_server = 1
+                WHERE asset_id = ?
+                  AND (? IS NULL OR ? = (
+                      SELECT destination_identity FROM background_upload_state WHERE id = 1
+                  ) OR NOT EXISTS (
+                      SELECT 1 FROM background_upload_state WHERE id = 1
+                  ));
+            """
+            var videoStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(connection.db, videoSQL, -1, &videoStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(videoStmt)
+                connection.rollbackTransaction()
+                return
+            }
+            sqlite3_bind_text(videoStmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            if let destinationIdentity {
+                sqlite3_bind_text(videoStmt, 2, (destinationIdentity as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(videoStmt, 3, (destinationIdentity as NSString).utf8String, -1, nil)
+            } else {
+                sqlite3_bind_null(videoStmt, 2)
+                sqlite3_bind_null(videoStmt, 3)
+            }
+            let videoUpdated = sqlite3_step(videoStmt) == SQLITE_DONE
+            sqlite3_finalize(videoStmt)
+            guard videoUpdated else {
+                connection.rollbackTransaction()
+                return
+            }
+        }
+
         // RAW-only PhotoKit assets store their RAW hash as the primary
         // resource (has_raw = 0). Only a JPEG+RAW companion (has_raw = 1)
         // should update raw_on_server rather than is_on_server.
@@ -158,6 +238,10 @@ final class UploadRecordRepository {
             UPDATE hash_cache
             SET is_on_server = CASE
                     WHEN ? = 'raw' AND has_raw = 1 THEN is_on_server
+                    WHEN ? = 'video' AND EXISTS (
+                        SELECT 1 FROM live_photo_video_status v
+                        WHERE v.asset_id = hash_cache.asset_id
+                    ) THEN is_on_server
                     ELSE 1
                 END,
                 raw_on_server = CASE
@@ -181,14 +265,15 @@ final class UploadRecordRepository {
         }
         sqlite3_bind_text(statusStmt, 1, (resourceType as NSString).utf8String, -1, nil)
         sqlite3_bind_text(statusStmt, 2, (resourceType as NSString).utf8String, -1, nil)
-        sqlite3_bind_double(statusStmt, 3, Date().timeIntervalSince1970)
-        sqlite3_bind_text(statusStmt, 4, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statusStmt, 3, (resourceType as NSString).utf8String, -1, nil)
+        sqlite3_bind_double(statusStmt, 4, Date().timeIntervalSince1970)
+        sqlite3_bind_text(statusStmt, 5, (localIdentifier as NSString).utf8String, -1, nil)
         if let destinationIdentity {
-            sqlite3_bind_text(statusStmt, 5, (destinationIdentity as NSString).utf8String, -1, nil)
             sqlite3_bind_text(statusStmt, 6, (destinationIdentity as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statusStmt, 7, (destinationIdentity as NSString).utf8String, -1, nil)
         } else {
-            sqlite3_bind_null(statusStmt, 5)
             sqlite3_bind_null(statusStmt, 6)
+            sqlite3_bind_null(statusStmt, 7)
         }
         let updated = sqlite3_step(statusStmt) == SQLITE_DONE
         let affectedHashRows = sqlite3_changes(connection.db)

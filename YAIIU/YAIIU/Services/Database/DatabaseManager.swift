@@ -22,6 +22,10 @@ final class DatabaseManager {
         logInfo("DatabaseManager initialized", category: .database)
     }
     
+    func markLivePhotoVideoRequired(localIdentifier: String) {
+        uploadRepo.markLivePhotoVideoRequired(localIdentifier: localIdentifier)
+    }
+
     // MARK: - Upload Record Management
     
     func isAssetUploaded(localIdentifier: String, resourceType: String = "primary") -> Bool {
