@@ -476,7 +476,8 @@ final class HashCacheRepository {
     
     /// Metadata backfill is independent of the hash/server-presence check.
     /// A complete server snapshot can mark hashes checked without losing
-    /// iCloud-ID backfill for owned assets that still have missing metadata.
+    /// iCloud-ID backfill for owned primary and RAW companion assets that still
+    /// have missing metadata.
     func getMissingICloudIDBackfillCandidatesAsync(
         completion: @escaping ([(localIdentifier: String, immichId: String, sourceChecksum: String?)]) -> Void
     ) {
@@ -491,6 +492,9 @@ final class HashCacheRepository {
                 JOIN server_assets_cache AS s
                   ON s.source_checksum = h.sha1_hash
                   OR (s.source_checksum IS NULL AND s.checksum = h.sha1_hash)
+                  OR (h.has_raw = 1 AND h.raw_hash IS NOT NULL
+                      AND (s.source_checksum = h.raw_hash
+                           OR (s.source_checksum IS NULL AND s.checksum = h.raw_hash)))
                 JOIN sync_metadata AS m
                   ON m.id = 1 AND s.owner_id = m.user_id
                 WHERE h.checked_at IS NOT NULL

@@ -787,6 +787,45 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testICloudMetadataBackfillIncludesOwnedRAWCompanion() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "paired-backfill", primaryHash: "local-jpeg",
+            rawHash: "local-raw", hasRAW: true
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "server-jpeg", checksum: "transcoded-jpeg",
+                sourceChecksum: "local-jpeg", ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "server-raw", checksum: "local-raw",
+                ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "other-owner-raw", checksum: "other-hash",
+                ownerId: "owner-2"
+            )
+        ]))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(), syncType: "full", userId: "owner-1",
+            serverURL: "https://immich.example", totalAssets: 3,
+            lastAck: "checkpoint"
+        ))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        let done = expectation(description: "Owned primary and RAW metadata backfill")
+        hashes.getMissingICloudIDBackfillCandidatesAsync { candidates in
+            XCTAssertEqual(Set(candidates.map { $0.immichId }), ["server-jpeg", "server-raw"])
+            XCTAssertEqual(Set(candidates.map { $0.localIdentifier }), ["paired-backfill"])
+            XCTAssertEqual(
+                candidates.first(where: { $0.immichId == "server-jpeg" })?.sourceChecksum,
+                "local-jpeg"
+            )
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
     func testPhotoKitDeletionRemovesCachedHashBeforeFullSnapshot() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
