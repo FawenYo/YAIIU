@@ -262,8 +262,10 @@ class UploadManager: ObservableObject {
         let settingsManager = SettingsManager()
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
+        // Use the configured external URL as the stable account identity.
+        // activeServerURL may transparently switch to the internal route.
         let uploadDestinationIdentity = UploadDestinationIdentity.make(
-            serverURL: serverURL, apiKey: apiKey
+            serverURL: settingsManager.serverURL, apiKey: apiKey
         )
 
         guard !serverURL.isEmpty && !apiKey.isEmpty else {
@@ -476,7 +478,7 @@ class UploadManager: ObservableObject {
                                 // not create local presence evidence after a switch.
                                 let currentSettings = SettingsManager()
                                 guard destinationIdentity == UploadDestinationIdentity.make(
-                                    serverURL: currentSettings.activeServerURL,
+                                    serverURL: currentSettings.serverURL,
                                     apiKey: currentSettings.apiKey
                                 ) else {
                                     responseTracker.markCompleted()

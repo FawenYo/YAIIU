@@ -281,6 +281,30 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
     }
 
+    func testDestinationIdentityRemainsStableAcrossInternalExternalRouting() {
+        let external = "https://my-immich.example"
+        let internalURL = "http://192.168.1.12:2283"
+        let key = "same-api-key"
+        let externalIdentity = UploadDestinationIdentity.make(
+            serverURL: external, apiKey: key
+        )
+        // With the internal route selected, the configured external URL is
+        // still the stable server/account identity, not the active endpoint.
+        let identityWhileOnInternalRoute = UploadDestinationIdentity.make(
+            serverURL: external, apiKey: key
+        )
+        XCTAssertNotNil(externalIdentity)
+        XCTAssertEqual(identityWhileOnInternalRoute, externalIdentity)
+        XCTAssertNotEqual(
+            UploadDestinationIdentity.make(serverURL: internalURL, apiKey: key),
+            externalIdentity
+        )
+        XCTAssertNotEqual(
+            UploadDestinationIdentity.make(serverURL: external, apiKey: "different-account-key"),
+            externalIdentity
+        )
+    }
+
     func testRawOnlyForegroundUploadMarksPrimaryComplete() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

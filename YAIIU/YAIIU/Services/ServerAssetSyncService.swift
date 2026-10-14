@@ -297,7 +297,9 @@ class ServerAssetSyncService {
         if syncType == "full", !dbManager.finalizeFullServerSnapshot(
             snapshotStartedAt: snapshotStartedAt,
             destinationIdentity: UploadDestinationIdentity.make(
-                serverURL: serverURL, apiKey: apiKey
+                serverURL: SharedSettings.shared.serverURL.isEmpty
+                    ? serverURL : SharedSettings.shared.serverURL,
+                apiKey: apiKey
             )
         ) {
             throw SyncError.syncFailed(reason: "Failed to finalize full server snapshot")
