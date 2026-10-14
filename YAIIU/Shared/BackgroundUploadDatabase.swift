@@ -21,8 +21,9 @@ final class BackgroundUploadDatabase {
             return
         }
         sqlite3_busy_timeout(db, 5000)
+        repairKnownRAWCompanions()
     }
-    
+
     deinit {
         if db != nil {
             sqlite3_close(db)
@@ -100,17 +101,19 @@ final class BackgroundUploadDatabase {
             exec("ALTER TABLE hash_cache ADD COLUMN server_check_revision INTEGER NOT NULL DEFAULT 0")
         }
 
-        // Older extension builds created RAW jobs without updating has_raw. Repair
-        // that durable resource-presence fact so a confirmed primary never hides a
-        // failed RAW retry.
-        exec("""
-            UPDATE hash_cache SET has_raw = 1
-            WHERE asset_id IN (
-                SELECT DISTINCT asset_id FROM upload_jobs WHERE resource_type = 'raw'
-            )
-        """)
+        // A RAW job alone does not imply a JPEG+RAW pair. RAW-only assets
+        // are deliberately represented by sha1_hash with has_raw = 0.
+        // Repair companion presence only when a separate RAW hash exists.
+        repairKnownRAWCompanions()
     }
     
+    private func repairKnownRAWCompanions() {
+        exec("""
+            UPDATE hash_cache SET has_raw = 1
+            WHERE has_raw = 0 AND raw_hash IS NOT NULL
+        """)
+    }
+
     private func exec(_ sql: String) {
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
@@ -166,7 +169,13 @@ final class BackgroundUploadDatabase {
     func markResourcePresent(assetId: String, resourceType: String) {
         guard resourceType == "raw" else { return }
         queue.sync {
-            let sql = "UPDATE hash_cache SET has_raw = 1 WHERE asset_id = ?"
+            // Do not turn RAW-only into a phantom JPEG+RAW pair merely
+            // because PhotoKit created an upload job for its RAW resource.
+            // A genuine companion has its own separately cached raw_hash.
+            let sql = """
+                UPDATE hash_cache SET has_raw = 1
+                WHERE asset_id = ? AND raw_hash IS NOT NULL
+            """
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }

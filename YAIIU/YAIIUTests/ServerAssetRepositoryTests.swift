@@ -260,7 +260,25 @@ final class ServerAssetRepositoryTests: XCTestCase {
             localIdentifier: "background-pair", primaryHash: "jpeg-hash",
             rawHash: "companion-raw-hash", hasRAW: true
         )
+        // Emulate extension discovery before the upload completes. Neither
+        // repair nor the new-job marker may turn RAW-only into a companion.
+        execute("""
+            INSERT INTO upload_jobs
+                (asset_id, resource_type, filename, status, created_at, updated_at)
+            VALUES ('background-raw-only', 'raw', 'photo.dng', 'uploading', 100, 100);
+        """)
         let backgroundDB = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        backgroundDB.markResourcePresent(
+            assetId: "background-raw-only", resourceType: "raw"
+        )
+        backgroundDB.markResourcePresent(
+            assetId: "background-pair", resourceType: "raw"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'background-raw-only' AND has_raw = 0
+              AND raw_hash IS NULL;
+        """), 1)
         backgroundDB.recordUploadedAsset(
             assetId: "background-raw-only", resourceType: "raw",
             filename: "photo.dng", immichId: "remote-raw-only",
