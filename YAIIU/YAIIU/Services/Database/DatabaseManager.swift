@@ -201,6 +201,12 @@ final class DatabaseManager {
         }
     }
     
+    func getMissingICloudIDBackfillCandidatesAsync(
+        completion: @escaping ([(localIdentifier: String, immichId: String, sourceChecksum: String?)]) -> Void
+    ) {
+        hashRepo.getMissingICloudIDBackfillCandidatesAsync(completion: completion)
+    }
+
     /// Only photos lacking a confirmed complete SQLite upload verdict
     /// should enter matching, hash calculation and server checking.
     func getAssetsNotFullyUploadedAsync(

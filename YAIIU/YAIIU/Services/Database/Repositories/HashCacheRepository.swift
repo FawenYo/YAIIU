@@ -474,6 +474,47 @@ final class HashCacheRepository {
         }
     }
     
+    /// Metadata backfill is independent of the hash/server-presence check.
+    /// A complete server snapshot can mark hashes checked without losing
+    /// iCloud-ID backfill for owned assets that still have missing metadata.
+    func getMissingICloudIDBackfillCandidatesAsync(
+        completion: @escaping ([(localIdentifier: String, immichId: String, sourceChecksum: String?)]) -> Void
+    ) {
+        connection.dbQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion([]) }
+                return
+            }
+            let sql = """
+                SELECT h.asset_id, s.immich_id, s.source_checksum
+                FROM hash_cache AS h
+                JOIN server_assets_cache AS s
+                  ON s.source_checksum = h.sha1_hash
+                  OR (s.source_checksum IS NULL AND s.checksum = h.sha1_hash)
+                JOIN sync_metadata AS m
+                  ON m.id = 1 AND s.owner_id = m.user_id
+                WHERE h.checked_at IS NOT NULL
+                  AND h.is_on_server = 1
+                  AND (s.icloud_id IS NULL OR s.icloud_id = '');
+            """
+            var statement: OpaquePointer?
+            var candidates: [(localIdentifier: String, immichId: String, sourceChecksum: String?)] = []
+            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    guard let localPtr = sqlite3_column_text(statement, 0),
+                          let remotePtr = sqlite3_column_text(statement, 1) else { continue }
+                    candidates.append((
+                        localIdentifier: String(cString: localPtr),
+                        immichId: String(cString: remotePtr),
+                        sourceChecksum: sqlite3_column_text(statement, 2).map { String(cString: $0) }
+                    ))
+                }
+            }
+            sqlite3_finalize(statement)
+            DispatchQueue.main.async { completion(candidates) }
+        }
+    }
+
     func getAllSyncStatusAsync(uploadedResourceTypes: [String: Set<String>], hasServerCache: Bool, completion: @escaping ([String: PhotoSyncStatus]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {

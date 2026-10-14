@@ -587,6 +587,53 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [ready], timeout: 5)
     }
 
+    func testFullSnapshotStillOffersOwnedMissingICloudIDBackfill() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "owned-missing", primaryHash: "source-owned",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "already-backfilled", primaryHash: "known-hash",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "partner", primaryHash: "partner-hash",
+            rawHash: nil, hasRAW: false
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "owned-remote", checksum: "transcoded",
+                sourceChecksum: "source-owned", ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "known-remote", checksum: "known-hash",
+                iCloudId: "cloud-already", ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "partner-remote", checksum: "partner-hash",
+                ownerId: "owner-2"
+            )
+        ]))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(), syncType: "full",
+            userId: "owner-1", serverURL: "https://immich.example",
+            totalAssets: 3, lastAck: "checkpoint"
+        ))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(pendingCheckCount(), 0)
+
+        let done = expectation(description: "Backfill still selectable after checked verdict")
+        hashes.getMissingICloudIDBackfillCandidatesAsync { candidates in
+            XCTAssertEqual(candidates.count, 1)
+            XCTAssertEqual(candidates.first?.localIdentifier, "owned-missing")
+            XCTAssertEqual(candidates.first?.immichId, "owned-remote")
+            XCTAssertEqual(candidates.first?.sourceChecksum, "source-owned")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
     func testPhotoKitDeletionRemovesCachedHashBeforeFullSnapshot() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

@@ -797,50 +797,76 @@ struct PhotoGridView: View {
     }
 
     private func syncPendingICloudIds() {
-        let updates = hashManager.pendingICloudIdUpdates
-        guard !updates.isEmpty else { return }
-
+        let existingUpdates = hashManager.pendingICloudIdUpdates
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
         guard !serverURL.isEmpty && !apiKey.isEmpty else { return }
 
-        logInfo("Syncing \(updates.count) pending iCloud ID updates to server", category: .api)
+        // Full-snapshot reconciliation marks hashes checked without entering
+        // the old per-asset server-check path. Find missing metadata in SQLite,
+        // then ask PhotoKit only for cloud identifiers (no original downloads).
+        DatabaseManager.shared.getMissingICloudIDBackfillCandidatesAsync { candidates in
+            Task.detached(priority: .utility) {
+                var updates = existingUpdates
+                var scheduled = Set(existingUpdates.map { $0.immichId })
+                let lookupBatchSize = 500
+                for start in stride(from: 0, to: candidates.count, by: lookupBatchSize) {
+                    if Task.isCancelled { return }
+                    let batch = Array(candidates[start..<min(start + lookupBatchSize, candidates.count)])
+                    let identifiers = batch.map { $0.localIdentifier }
+                    let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(
+                        forLocalIdentifiers: identifiers
+                    )
+                    for candidate in batch {
+                        guard !scheduled.contains(candidate.immichId),
+                              let result = mappings[candidate.localIdentifier],
+                              let cloudId = try? result.get(),
+                              !cloudId.stringValue.hasSuffix(":") else { continue }
+                        updates.append((
+                            immichId: candidate.immichId,
+                            iCloudId: cloudId.stringValue,
+                            sourceChecksum: candidate.sourceChecksum
+                        ))
+                        scheduled.insert(candidate.immichId)
+                    }
+                }
 
-        Task {
-            let batchSize = 500
-            var successCount = 0
-            var skipCount = 0
+                guard !updates.isEmpty else { return }
+                logInfo("Syncing \(updates.count) pending iCloud ID updates to server", category: .api)
 
-            for batchStart in stride(from: 0, to: updates.count, by: batchSize) {
-                let batch = Array(updates[batchStart..<min(batchStart + batchSize, updates.count)])
-                let items = batch.map { update in
-                    MetadataUpdateItem(
-                        assetId: update.immichId,
-                        key: RemoteAssetMetadataItem.mobileAppKey,
-                        value: MobileAppMetadata(
-                            iCloudId: update.iCloudId,
-                            createdAt: nil,
-                            sourceChecksum: update.sourceChecksum
+                let batchSize = 500
+                var successCount = 0
+                var skipCount = 0
+                for batchStart in stride(from: 0, to: updates.count, by: batchSize) {
+                    let batch = Array(updates[batchStart..<min(batchStart + batchSize, updates.count)])
+                    let items = batch.map { update in
+                        MetadataUpdateItem(
+                            assetId: update.immichId,
+                            key: RemoteAssetMetadataItem.mobileAppKey,
+                            value: MobileAppMetadata(
+                                iCloudId: update.iCloudId,
+                                createdAt: nil,
+                                sourceChecksum: update.sourceChecksum
+                            )
                         )
-                    )
+                    }
+                    do {
+                        try await ImmichAPIService.shared.updateBulkAssetMetadata(
+                            items: items, serverURL: serverURL, apiKey: apiKey
+                        )
+                        successCount += batch.count
+                    } catch ImmichAPIError.serverError(let statusCode, _)
+                        where statusCode == 400 || statusCode == 403 {
+                        skipCount += batch.count
+                    } catch {
+                        logWarning("Failed to update iCloud ID batch: \(error.localizedDescription)", category: .api)
+                    }
                 }
-
-                do {
-                    try await ImmichAPIService.shared.updateBulkAssetMetadata(
-                        items: items,
-                        serverURL: serverURL,
-                        apiKey: apiKey
-                    )
-                    successCount += batch.count
-                } catch ImmichAPIError.serverError(let statusCode, _) where statusCode == 400 || statusCode == 403 {
-                    // Skip batch containing partner assets we don't own
-                    skipCount += batch.count
-                } catch {
-                    logWarning("Failed to update iCloud ID batch: \(error.localizedDescription)", category: .api)
-                }
+                logInfo(
+                    "iCloud ID sync done: \(successCount) updated, \(skipCount) skipped (no access)",
+                    category: .api
+                )
             }
-
-            logInfo("iCloud ID sync done: \(successCount) updated, \(skipCount) skipped (no access)", category: .api)
         }
     }
 
