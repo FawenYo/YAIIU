@@ -1,5 +1,20 @@
 import Foundation
 import SQLite3
+import CryptoKit
+
+enum UploadDestinationIdentity {
+    // The same destination material as PhotoKit background uploads;
+    // persist only its SHA-256 digest, never the API key itself.
+    static func make(serverURL: String, apiKey: String) -> String? {
+        guard !serverURL.isEmpty, !apiKey.isEmpty,
+              let url = URL(string: "\(serverURL)/api/assets/background") else {
+            return nil
+        }
+        let material = "\(url.absoluteString)\u{0}\(apiKey)"
+        return SHA256.hash(data: Data(material.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+}
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -83,6 +98,21 @@ final class BackgroundUploadDatabase {
             )
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
+
+        // Background PhotoKit upload may launch before the host's v11 migration.
+        var uploadColumns: Set<String> = []
+        var uploadStatement: OpaquePointer?
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(uploaded_assets);", -1, &uploadStatement, nil) == SQLITE_OK {
+            while sqlite3_step(uploadStatement) == SQLITE_ROW {
+                if let column = sqlite3_column_text(uploadStatement, 1) {
+                    uploadColumns.insert(String(cString: column))
+                }
+            }
+        }
+        sqlite3_finalize(uploadStatement)
+        if uploadColumns.contains("asset_id") && !uploadColumns.contains("destination_identity") {
+            exec("ALTER TABLE uploaded_assets ADD COLUMN destination_identity TEXT")
+        }
 
         // This extension can launch before the host app runs migration v10.
         // Ensure the shared hash cache supports the destination reset revision
@@ -371,8 +401,9 @@ final class BackgroundUploadDatabase {
         queue.sync {
             let sql = """
                 INSERT OR REPLACE INTO uploaded_assets
-                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at, destination_identity)
+                VALUES (?, ?, ?, ?, ?, ?, ?,
+                    (SELECT destination_identity FROM background_upload_state WHERE id = 1))
             """
             
             var stmt: OpaquePointer?

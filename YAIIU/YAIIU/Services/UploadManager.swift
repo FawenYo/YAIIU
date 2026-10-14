@@ -262,7 +262,10 @@ class UploadManager: ObservableObject {
         let settingsManager = SettingsManager()
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
-        
+        let uploadDestinationIdentity = UploadDestinationIdentity.make(
+            serverURL: serverURL, apiKey: apiKey
+        )
+
         guard !serverURL.isEmpty && !apiKey.isEmpty else {
             logError("Cannot process upload queue: server URL or API key is empty", category: .upload)
             await MainActor.run {
@@ -309,7 +312,10 @@ class UploadManager: ObservableObject {
                     
                     group.addTask {
                         do {
-                            try await self.uploadItem(item, serverURL: serverURL, apiKey: apiKey)
+                            try await self.uploadItem(
+                                item, serverURL: serverURL, apiKey: apiKey,
+                                destinationIdentity: uploadDestinationIdentity
+                            )
                             return (item, true)
                         } catch {
                             logError("Upload failed for \(item.filename): \(error.localizedDescription)", category: .upload)
@@ -380,7 +386,10 @@ class UploadManager: ObservableObject {
         }
     }
     
-    private func uploadItem(_ item: UploadItem, serverURL: String, apiKey: String) async throws {
+    private func uploadItem(
+        _ item: UploadItem, serverURL: String, apiKey: String,
+        destinationIdentity: String?
+    ) async throws {
         let asset = item.asset
         let localIdentifier = item.localIdentifier
         let metadata = await Task.detached(priority: .userInitiated) {
@@ -456,6 +465,16 @@ class UploadManager: ObservableObject {
                         } responseHandler: { result, uploadedFileSize in
                             switch result {
                             case .success(let response):
+                                // Uploads started for a previous server/account must
+                                // not create local presence evidence after a switch.
+                                let currentSettings = SettingsManager()
+                                guard destinationIdentity == UploadDestinationIdentity.make(
+                                    serverURL: currentSettings.activeServerURL,
+                                    apiKey: currentSettings.apiKey
+                                ) else {
+                                    responseTracker.markCompleted()
+                                    return
+                                }
                                 DatabaseManager.shared.recordUploadedAsset(
                                     localIdentifier: localIdentifier,
                                     resourceType: resourceType,
@@ -463,7 +482,8 @@ class UploadManager: ObservableObject {
                                     immichId: response.id,
                                     fileSize: uploadedFileSize,
                                     isDuplicate: response.duplicate ?? false,
-                                    isFavorite: metadata.isFavorite
+                                    isFavorite: metadata.isFavorite,
+                                    destinationIdentity: destinationIdentity
                                 )
                                 responseTracker.markCompleted()
                             case .failure(let error):

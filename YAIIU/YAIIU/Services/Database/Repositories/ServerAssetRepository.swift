@@ -783,7 +783,10 @@ final class ServerAssetRepository {
     /// Called after all full-sync assets and metadata have been saved, and
     /// before the new sync acknowledgement is committed.
     @discardableResult
-    func finalizeFullServerSnapshot(snapshotStartedAt: Date = Date()) -> Bool {
+    func finalizeFullServerSnapshot(
+        snapshotStartedAt: Date = Date(),
+        destinationIdentity: String? = nil
+    ) -> Bool {
         connection.dbQueue.sync { [weak self] in
             guard let self, self.connection.beginTransaction() else { return false }
             // The network snapshot was taken before some uploads could finish.
@@ -791,10 +794,20 @@ final class ServerAssetRepository {
             // Older history is also valid if its Immich ID is in this exact
             // snapshot, even when server transcoding prevents SHA1 matching.
             let cutoff = snapshotStartedAt.timeIntervalSince1970
+            // Only uploads completed for THIS destination after capture are
+            // accepted without a matching Immich ID in the server catalog.
+            let escapedDestination = destinationIdentity?
+                .replacingOccurrences(of: "'", with: "''")
+            let lateEvidence = escapedDestination.map {
+                "u.uploaded_at > \(cutoff) AND u.destination_identity = '\($0)'"
+            } ?? "0"
+            let obsoleteEvidence = escapedDestination.map {
+                "uploaded_at <= \(cutoff) OR destination_identity IS NULL OR destination_identity != '\($0)'"
+            } ?? "1"
             let commands = [
                 """
                 DELETE FROM uploaded_assets
-                WHERE uploaded_at <= \(cutoff)
+                WHERE (\(obsoleteEvidence))
                   AND (immich_id = 'unknown'
                        OR NOT EXISTS (
                            SELECT 1 FROM server_assets_cache AS s
@@ -816,7 +829,7 @@ final class ServerAssetRepository {
                         WHERE u.asset_id = hash_cache.asset_id
                           AND (u.resource_type != 'raw' OR hash_cache.has_raw = 0)
                           AND (
-                              u.uploaded_at > \(cutoff)
+                              (\(lateEvidence))
                               OR EXISTS (
                                   SELECT 1 FROM server_assets_cache AS s
                                   WHERE s.immich_id = u.immich_id
@@ -838,7 +851,7 @@ final class ServerAssetRepository {
                                 WHERE u.asset_id = hash_cache.asset_id
                                   AND u.resource_type = 'raw'
                                   AND (
-                                      u.uploaded_at > \(cutoff)
+                                      (\(lateEvidence))
                                       OR EXISTS (
                                           SELECT 1 FROM server_assets_cache AS s
                                           WHERE s.immich_id = u.immich_id

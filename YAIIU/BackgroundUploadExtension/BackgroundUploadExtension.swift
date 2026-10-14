@@ -894,10 +894,9 @@ final class BackgroundUploadExtensionCore {
     }
 
     private func currentDestinationIdentity() -> String? {
-        guard let url = currentUploadURL(), !settings.apiKey.isEmpty else { return nil }
-        let material = "\(url.absoluteString)\u{0}\(settings.apiKey)"
-        let digest = SHA256.hash(data: Data(material.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        UploadDestinationIdentity.make(
+            serverURL: settings.serverURL, apiKey: settings.apiKey
+        )
     }
 
     private func jobTargetsCurrentDestination(_ job: PHAssetResourceUploadJob) -> Bool {

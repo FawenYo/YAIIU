@@ -78,7 +78,8 @@ final class UploadRecordRepository {
         immichId: String,
         fileSize: Int64 = 0,
         isDuplicate: Bool = false,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        destinationIdentity: String? = nil
     ) {
         connection.ensureInitialized()
         logDebug("Recording uploaded asset: \(filename) (type: \(resourceType), immichId: \(immichId), favorite: \(isFavorite))", category: .database)
@@ -92,7 +93,8 @@ final class UploadRecordRepository {
                 immichId: immichId,
                 fileSize: fileSize,
                 isDuplicate: isDuplicate,
-                isFavorite: isFavorite
+                isFavorite: isFavorite,
+                destinationIdentity: destinationIdentity
             )
         }
     }
@@ -104,15 +106,16 @@ final class UploadRecordRepository {
         immichId: String,
         fileSize: Int64,
         isDuplicate: Bool,
-        isFavorite: Bool
+        isFavorite: Bool,
+        destinationIdentity: String?
     ) {
         // The upload response proves this resource exists on the destination.
         // Keep its positive verdict in the same SQLite transaction as history.
         guard connection.beginTransaction() else { return }
         let sql = """
         INSERT OR REPLACE INTO uploaded_assets
-        (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, is_favorite, uploaded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, is_favorite, uploaded_at, destination_identity)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         
         var statement: OpaquePointer?
@@ -127,7 +130,12 @@ final class UploadRecordRepository {
             sqlite3_bind_int(statement, 6, isDuplicate ? 1 : 0)
             sqlite3_bind_int(statement, 7, isFavorite ? 1 : 0)
             sqlite3_bind_double(statement, 8, Date().timeIntervalSince1970)
-            
+            if let destinationIdentity {
+                sqlite3_bind_text(statement, 9, (destinationIdentity as NSString).utf8String, -1, nil)
+            } else {
+                sqlite3_bind_null(statement, 9)
+            }
+
             saved = sqlite3_step(statement) == SQLITE_DONE
             if !saved {
                 logError("Failed to record uploaded asset: \(connection.lastErrorMessage)", category: .database)
@@ -158,7 +166,12 @@ final class UploadRecordRepository {
                 END,
                 checked_at = ?,
                 server_check_revision = server_check_revision + 1
-            WHERE asset_id = ?;
+            WHERE asset_id = ?
+              AND (? IS NULL OR ? = (
+                  SELECT destination_identity FROM background_upload_state WHERE id = 1
+              ) OR NOT EXISTS (
+                  SELECT 1 FROM background_upload_state WHERE id = 1
+              ));
         """
         var statusStmt: OpaquePointer?
         guard sqlite3_prepare_v2(connection.db, statusSQL, -1, &statusStmt, nil) == SQLITE_OK else {
@@ -170,6 +183,13 @@ final class UploadRecordRepository {
         sqlite3_bind_text(statusStmt, 2, (resourceType as NSString).utf8String, -1, nil)
         sqlite3_bind_double(statusStmt, 3, Date().timeIntervalSince1970)
         sqlite3_bind_text(statusStmt, 4, (localIdentifier as NSString).utf8String, -1, nil)
+        if let destinationIdentity {
+            sqlite3_bind_text(statusStmt, 5, (destinationIdentity as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statusStmt, 6, (destinationIdentity as NSString).utf8String, -1, nil)
+        } else {
+            sqlite3_bind_null(statusStmt, 5)
+            sqlite3_bind_null(statusStmt, 6)
+        }
         let updated = sqlite3_step(statusStmt) == SQLITE_DONE
         sqlite3_finalize(statusStmt)
         guard updated, connection.commitTransaction() else {

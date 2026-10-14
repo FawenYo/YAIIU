@@ -911,15 +911,18 @@ final class ServerAssetRepositoryTests: XCTestCase {
         execute("UPDATE uploaded_assets SET uploaded_at = 100 WHERE asset_id = 'early';")
         uploadRepository.recordUploadedAsset(
             localIdentifier: "late", resourceType: "jpeg",
-            filename: "late.jpg", immichId: "late-server"
+            filename: "late.jpg", immichId: "late-server",
+            destinationIdentity: "same-destination"
         )
         uploadRepository.recordUploadedAsset(
             localIdentifier: "paired-late-raw", resourceType: "raw",
-            filename: "late.dng", immichId: "raw-server"
+            filename: "late.dng", immichId: "raw-server",
+            destinationIdentity: "same-destination"
         )
 
         XCTAssertTrue(repository.finalizeFullServerSnapshot(
-            snapshotStartedAt: Date(timeIntervalSince1970: 200)
+            snapshotStartedAt: Date(timeIntervalSince1970: 200),
+            destinationIdentity: "same-destination"
         ))
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'early';"), 0)
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'late';"), 1)
@@ -933,6 +936,46 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'early' AND is_on_server = 0;"), 1)
         XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'late';"), 0)
         XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'early';"), 1)
+    }
+
+    func testFullSnapshotRejectsLateUploadsFromOldDestination() {
+        let hashes = HashCacheRepository(connection: connection)
+        for id in ["current-late", "previous-late", "legacy-late"] {
+            hashes.saveMultiResourceHashCache(
+                localIdentifier: id, primaryHash: "hash-\(id)",
+                rawHash: nil, hasRAW: false
+            )
+        }
+        for (id, destination) in [
+            ("current-late", "destination-B"),
+            ("previous-late", "destination-A"),
+            ("legacy-late", "")
+        ] {
+            uploadRepository.recordUploadedAsset(
+                localIdentifier: id, resourceType: "jpeg",
+                filename: "\(id).jpg", immichId: "immich-\(id)",
+                destinationIdentity: destination.isEmpty ? nil : destination
+            )
+        }
+        XCTAssertTrue(repository.finalizeFullServerSnapshot(
+            snapshotStartedAt: Date(timeIntervalSince1970: 200),
+            destinationIdentity: "destination-B"
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'current-late' AND destination_identity = 'destination-B';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'current-late' AND is_on_server = 1;
+        """), 1)
+        for id in ["previous-late", "legacy-late"] {
+            XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = '\(id)';"), 0)
+            XCTAssertEqual(count("""
+                SELECT COUNT(*) FROM hash_cache
+                WHERE asset_id = '\(id)' AND is_on_server = 0;
+            """), 1)
+        }
     }
 
     func testFullSnapshotHonorsRetainedUploadIDsForTranscodedResources() {

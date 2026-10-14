@@ -28,7 +28,7 @@ protocol ServerAssetSyncStore {
     func getServerAssetByImmichId(_ immichId: String) -> ServerAssetRecord?
     func getSyncMetadata() -> SyncMetadata?
     func clearServerAssetsCache() -> Bool
-    func finalizeFullServerSnapshot(snapshotStartedAt: Date) -> Bool
+    func finalizeFullServerSnapshot(snapshotStartedAt: Date, destinationIdentity: String?) -> Bool
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
     func deleteServerAssets(_ immichIds: [String]) -> Bool
     func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
@@ -294,7 +294,12 @@ class ServerAssetSyncService {
         // history against the complete server catalog and invalidate any
         // comparisons that ran while the snapshot was being rebuilt.
         let backfilledCount = dbManager.backfillImmichIdsFromServerCache()
-        if syncType == "full", !dbManager.finalizeFullServerSnapshot(snapshotStartedAt: snapshotStartedAt) {
+        if syncType == "full", !dbManager.finalizeFullServerSnapshot(
+            snapshotStartedAt: snapshotStartedAt,
+            destinationIdentity: UploadDestinationIdentity.make(
+                serverURL: serverURL, apiKey: apiKey
+            )
+        ) {
             throw SyncError.syncFailed(reason: "Failed to finalize full server snapshot")
         }
 

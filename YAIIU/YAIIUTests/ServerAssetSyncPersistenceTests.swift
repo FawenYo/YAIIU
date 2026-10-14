@@ -267,7 +267,7 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
         return !shouldFailCacheClear
     }
 
-    func finalizeFullServerSnapshot(snapshotStartedAt: Date) -> Bool {
+    func finalizeFullServerSnapshot(snapshotStartedAt: Date, destinationIdentity: String?) -> Bool {
         operations.append("finalize-full-snapshot")
         return !shouldFailFullSnapshotFinalization
     }

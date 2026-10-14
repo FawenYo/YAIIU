@@ -318,8 +318,14 @@ final class DatabaseManager {
     }
 
     @discardableResult
-    func finalizeFullServerSnapshot(snapshotStartedAt: Date = Date()) -> Bool {
-        serverRepo.finalizeFullServerSnapshot(snapshotStartedAt: snapshotStartedAt)
+    func finalizeFullServerSnapshot(
+        snapshotStartedAt: Date = Date(),
+        destinationIdentity: String? = nil
+    ) -> Bool {
+        serverRepo.finalizeFullServerSnapshot(
+            snapshotStartedAt: snapshotStartedAt,
+            destinationIdentity: destinationIdentity
+        )
     }
     
     @discardableResult

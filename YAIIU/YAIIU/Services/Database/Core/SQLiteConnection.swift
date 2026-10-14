@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 10
+    private static let schemaVersion = 11
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -120,6 +120,7 @@ final class SQLiteConnection {
             is_duplicate INTEGER DEFAULT 0,
             is_favorite INTEGER DEFAULT 0,
             uploaded_at REAL NOT NULL,
+            destination_identity TEXT,
             UNIQUE(asset_id, resource_type)
         );
         """
@@ -297,6 +298,7 @@ final class SQLiteConnection {
             if currentVersion < 8 { migrateToV8() }
             if currentVersion < 9 { migrateToV9() }
             if currentVersion < 10 { migrateToV10() }
+            if currentVersion < 11 { migrateToV11() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -531,13 +533,29 @@ final class SQLiteConnection {
         logInfo("Reopened \(sqlite3_changes(db)) stale legacy server checks", category: .database)
     }
 
+    private func migrateToV11() {
+        // Legacy history stays untagged, so it cannot be accepted by a
+        // timestamp-only exception during a destination switch.
+        if !tableColumns("uploaded_assets").contains("destination_identity") {
+            guard sqlite3_exec(
+                db, "ALTER TABLE uploaded_assets ADD COLUMN destination_identity TEXT;",
+                nil, nil, nil
+            ) == SQLITE_OK else {
+                logError("Failed adding uploaded_assets.destination_identity: \(lastErrorMessage)", category: .database)
+                return
+            }
+        }
+    }
+
     private func hasSchemaColumnsForCurrentVersion() -> Bool {
+        let uploadedAssetsColumns = tableColumns("uploaded_assets")
         let hashCacheColumns = tableColumns("hash_cache")
         let syncMetadataColumns = tableColumns("sync_metadata")
         let serverAssetColumns = tableColumns("server_assets_cache")
         let backgroundUploadQueueColumns = tableColumns("background_upload_queue")
         let backgroundUploadStateColumns = tableColumns("background_upload_state")
-        return hashCacheColumns.contains("server_check_revision")
+        return uploadedAssetsColumns.contains("destination_identity")
+            && hashCacheColumns.contains("server_check_revision")
             && ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
             && serverAssetColumns.contains("source_checksum")
             && ["asset_id", "enqueued_at"].allSatisfy(backgroundUploadQueueColumns.contains)
