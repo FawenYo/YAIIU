@@ -743,6 +743,80 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'early';"), 1)
     }
 
+    func testFullSnapshotHonorsRetainedUploadIDsForTranscodedResources() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "legacy-primary", primaryHash: "original-primary",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "legacy-pair", primaryHash: "original-jpeg",
+            rawHash: "original-raw", hasRAW: true
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "old-gone", primaryHash: "no-longer-on-server",
+            rawHash: nil, hasRAW: false
+        )
+        // Immich rewrote the payloads; neither server checksum matches a
+        // local SHA1, but these exact Immich IDs still exist in the snapshot.
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "server-primary", checksum: "rewritten-primary",
+                ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "server-jpeg", checksum: "rewritten-jpeg",
+                ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "server-raw", checksum: "rewritten-raw",
+                ownerId: "owner-1"
+            )
+        ], syncType: "full"))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy-primary", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "server-primary"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy-pair", resourceType: "jpeg",
+            filename: "pair.jpg", immichId: "server-jpeg"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy-pair", resourceType: "raw",
+            filename: "pair.dng", immichId: "server-raw"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "old-gone", resourceType: "jpeg",
+            filename: "deleted.jpg", immichId: "deleted-server-id"
+        )
+        // Make every upload predate the snapshot boundary.
+        execute("UPDATE uploaded_assets SET uploaded_at = 100;")
+
+        XCTAssertTrue(repository.finalizeFullServerSnapshot(
+            snapshotStartedAt: Date(timeIntervalSince1970: 200)
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy-primary' AND is_on_server = 1
+              AND checked_at IS NOT NULL AND sha1_hash = 'original-primary';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy-pair'
+              AND is_on_server = 1 AND raw_on_server = 1
+              AND raw_hash = 'original-raw';
+        """), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'legacy-pair';"), 2)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'legacy-pair';"), 0)
+        // An older upload absent from this same snapshot is still stale.
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'old-gone';"), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'old-gone' AND is_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'old-gone';"), 1)
+    }
+
     func testEmptyFullSnapshotMarksOldChecksAsNotUploadedWithoutRecheck() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "former-server-photo",

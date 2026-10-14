@@ -782,6 +782,8 @@ final class ServerAssetRepository {
             guard let self, self.connection.beginTransaction() else { return false }
             // The network snapshot was taken before some uploads could finish.
             // Keep those upload confirmations until the next delta can see them.
+            // Older history is also valid if its Immich ID is in this exact
+            // snapshot, even when server transcoding prevents SHA1 matching.
             let cutoff = snapshotStartedAt.timeIntervalSince1970
             let commands = [
                 """
@@ -807,7 +809,13 @@ final class ServerAssetRepository {
                         SELECT 1 FROM uploaded_assets AS u
                         WHERE u.asset_id = hash_cache.asset_id
                           AND u.resource_type != 'raw'
-                          AND u.uploaded_at > \(cutoff)
+                          AND (
+                              u.uploaded_at > \(cutoff)
+                              OR EXISTS (
+                                  SELECT 1 FROM server_assets_cache AS s
+                                  WHERE s.immich_id = u.immich_id
+                              )
+                          )
                     )
                     THEN 1 ELSE 0 END,
                     raw_on_server = CASE WHEN has_raw = 1 AND raw_hash IS NOT NULL
@@ -823,7 +831,13 @@ final class ServerAssetRepository {
                                 SELECT 1 FROM uploaded_assets AS u
                                 WHERE u.asset_id = hash_cache.asset_id
                                   AND u.resource_type = 'raw'
-                                  AND u.uploaded_at > \(cutoff)
+                                  AND (
+                                      u.uploaded_at > \(cutoff)
+                                      OR EXISTS (
+                                          SELECT 1 FROM server_assets_cache AS s
+                                          WHERE s.immich_id = u.immich_id
+                                      )
+                                  )
                             )
                         )
                         THEN 1 ELSE 0 END,
