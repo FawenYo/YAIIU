@@ -523,7 +523,8 @@ class UploadManager: ObservableObject {
             return "raw"
         }
         if uti.contains("video") || uti.contains("movie") || uti.contains("mp4") || uti.contains("quicktime")
-            || resource.type == .video || resource.type == .fullSizeVideo {
+            || resource.type == .video || resource.type == .fullSizeVideo
+            || resource.type == .pairedVideo || resource.type == .fullSizePairedVideo {
             return "video"
         }
         if resource.type == .photo || resource.type == .fullSizePhoto {

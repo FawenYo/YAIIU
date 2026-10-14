@@ -1,4 +1,5 @@
 import Foundation
+import Photos
 
 /// Network state used to decide whether the extension may create new upload jobs.
 public enum BackgroundUploadNetworkInterface: Equatable {
@@ -10,6 +11,18 @@ public enum BackgroundUploadNetworkInterface: Equatable {
 }
 
 public enum BackgroundUploadPolicy {
+    /// Live Photos use .pairedVideo / .fullSizePairedVideo for their movie
+    /// companions. They are separate uploadable resources from the still.
+    public static func isUploadableResourceType(_ type: PHAssetResourceType) -> Bool {
+        switch type {
+        case .photo, .fullSizePhoto, .video, .fullSizeVideo,
+             .pairedVideo, .fullSizePairedVideo, .alternatePhoto:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Existing retry and acknowledgement jobs are not subject to this policy.
     public static func canCreateNewJobs(
         allowCellular: Bool,

@@ -1,7 +1,17 @@
 import XCTest
+import Photos
 @testable import YAIIU
 
 final class BackgroundUploadPolicyTests: XCTestCase {
+    func testLivePhotoPairedVideoResourcesAreUploadable() {
+        XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.pairedVideo))
+        XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.fullSizePairedVideo))
+        XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.photo))
+        XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.fullSizePhoto))
+        XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.alternatePhoto))
+    }
+
+
     func testDisallowingCellularOnlyAllowsWiFi() {
         XCTAssertTrue(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: false, interface: .wifi))
         XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: false, interface: .cellular))
