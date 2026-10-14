@@ -381,15 +381,30 @@ final class BackgroundUploadDatabase {
             
             sqlite3_step(stmt)
             
-            // Per-resource server flags: raw uploads confirm only the raw copy.
-            let flagColumn = resourceType == "raw" ? "raw_on_server" : "is_on_server"
-            let updateSql = "UPDATE hash_cache SET \(flagColumn) = 1, checked_at = ? WHERE asset_id = ?"
+            // A RAW-only asset keeps its sole RAW resource in the primary
+            // hash column (has_raw = 0). JPEG+RAW companions use raw_on_server.
+            let updateSql = """
+                UPDATE hash_cache
+                SET is_on_server = CASE
+                        WHEN ? = 'raw' AND has_raw = 1 THEN is_on_server
+                        ELSE 1
+                    END,
+                    raw_on_server = CASE
+                        WHEN ? = 'raw' AND has_raw = 1 THEN 1
+                        ELSE raw_on_server
+                    END,
+                    checked_at = ?,
+                    server_check_revision = server_check_revision + 1
+                WHERE asset_id = ?;
+            """
             var updateStmt: OpaquePointer?
             defer { sqlite3_finalize(updateStmt) }
 
             if sqlite3_prepare_v2(db, updateSql, -1, &updateStmt, nil) == SQLITE_OK {
-                sqlite3_bind_double(updateStmt, 1, Date().timeIntervalSince1970)
-                sqlite3_bind_text(updateStmt, 2, assetId, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(updateStmt, 1, resourceType, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(updateStmt, 2, resourceType, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_double(updateStmt, 3, Date().timeIntervalSince1970)
+                sqlite3_bind_text(updateStmt, 4, assetId, -1, SQLITE_TRANSIENT)
                 sqlite3_step(updateStmt)
             }
         }

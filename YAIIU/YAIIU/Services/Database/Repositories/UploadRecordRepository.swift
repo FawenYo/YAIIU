@@ -142,12 +142,20 @@ final class UploadRecordRepository {
             return
         }
 
-        // Preserve primary/RAW companion verdicts independently. Invalidate
-        // any in-flight older server comparison via server_check_revision.
+        // RAW-only PhotoKit assets store their RAW hash as the primary
+        // resource (has_raw = 0). Only a JPEG+RAW companion (has_raw = 1)
+        // should update raw_on_server rather than is_on_server.
+        // Invalidate older in-flight checks with server_check_revision.
         let statusSQL = """
             UPDATE hash_cache
-            SET is_on_server = CASE WHEN ? = 'raw' THEN is_on_server ELSE 1 END,
-                raw_on_server = CASE WHEN ? = 'raw' THEN 1 ELSE raw_on_server END,
+            SET is_on_server = CASE
+                    WHEN ? = 'raw' AND has_raw = 1 THEN is_on_server
+                    ELSE 1
+                END,
+                raw_on_server = CASE
+                    WHEN ? = 'raw' AND has_raw = 1 THEN 1
+                    ELSE raw_on_server
+                END,
                 checked_at = ?,
                 server_check_revision = server_check_revision + 1
             WHERE asset_id = ?;

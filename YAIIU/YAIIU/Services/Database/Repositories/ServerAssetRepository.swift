@@ -808,7 +808,7 @@ final class ServerAssetRepository {
                     ) OR EXISTS (
                         SELECT 1 FROM uploaded_assets AS u
                         WHERE u.asset_id = hash_cache.asset_id
-                          AND u.resource_type != 'raw'
+                          AND (u.resource_type != 'raw' OR hash_cache.has_raw = 0)
                           AND (
                               u.uploaded_at > \(cutoff)
                               OR EXISTS (

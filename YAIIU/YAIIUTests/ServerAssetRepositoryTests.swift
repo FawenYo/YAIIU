@@ -215,6 +215,77 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'foreground-pair';"), 2)
     }
 
+    func testRawOnlyForegroundUploadMarksPrimaryComplete() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "foreground-raw-only", primaryHash: "raw-primary-hash",
+            rawHash: nil, hasRAW: false
+        )
+        execute("""
+            UPDATE hash_cache SET checked_at = 100, is_on_server = 0,
+                raw_on_server = 0 WHERE asset_id = 'foreground-raw-only';
+        """)
+
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "foreground-raw-only", resourceType: "raw",
+            filename: "photo.dng", immichId: "remote-raw-only"
+        )
+
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'foreground-raw-only'
+              AND sha1_hash = 'raw-primary-hash'
+              AND raw_hash IS NULL AND has_raw = 0
+              AND is_on_server = 1 AND raw_on_server = 0
+              AND checked_at IS NOT NULL AND server_check_revision = 1;
+        """), 1)
+        let done = expectation(description: "RAW-only upload appears as uploaded")
+        hashes.getAllSyncStatusAsync(
+            uploadedResourceTypes: ["foreground-raw-only": ["raw"]],
+            hasServerCache: true
+        ) { statuses in
+            XCTAssertEqual(statuses["foreground-raw-only"], .uploaded)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+    }
+
+    func testBackgroundRAWUploadDistinguishesOnlyFromCompanion() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "background-raw-only", primaryHash: "raw-only-hash",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "background-pair", primaryHash: "jpeg-hash",
+            rawHash: "companion-raw-hash", hasRAW: true
+        )
+        let backgroundDB = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        backgroundDB.recordUploadedAsset(
+            assetId: "background-raw-only", resourceType: "raw",
+            filename: "photo.dng", immichId: "remote-raw-only",
+            fileSize: 120, isDuplicate: false
+        )
+        backgroundDB.recordUploadedAsset(
+            assetId: "background-pair", resourceType: "raw",
+            filename: "paired.dng", immichId: "remote-raw-companion",
+            fileSize: 130, isDuplicate: false
+        )
+
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'background-raw-only'
+              AND is_on_server = 1 AND raw_on_server = 0
+              AND has_raw = 0 AND server_check_revision = 1;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'background-pair'
+              AND is_on_server = 0 AND raw_on_server = 1
+              AND has_raw = 1 AND server_check_revision = 1;
+        """), 1)
+    }
+
     func testSQLitePrefilterSkipsOnlyConfirmedFullyUploadedAssets() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
@@ -757,6 +828,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
             localIdentifier: "old-gone", primaryHash: "no-longer-on-server",
             rawHash: nil, hasRAW: false
         )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "legacy-raw-only", primaryHash: "original-raw-only",
+            rawHash: nil, hasRAW: false
+        )
         // Immich rewrote the payloads; neither server checksum matches a
         // local SHA1, but these exact Immich IDs still exist in the snapshot.
         XCTAssertTrue(repository.saveServerAssets([
@@ -770,6 +845,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
             ),
             ServerAssetRecord(
                 immichId: "server-raw", checksum: "rewritten-raw",
+                ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "server-raw-only", checksum: "rewritten-raw-only",
                 ownerId: "owner-1"
             )
         ], syncType: "full"))
@@ -788,6 +867,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
         uploadRepository.recordUploadedAsset(
             localIdentifier: "old-gone", resourceType: "jpeg",
             filename: "deleted.jpg", immichId: "deleted-server-id"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy-raw-only", resourceType: "raw",
+            filename: "raw-only.dng", immichId: "server-raw-only"
         )
         // Make every upload predate the snapshot boundary.
         execute("UPDATE uploaded_assets SET uploaded_at = 100;")
@@ -808,6 +891,13 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'legacy-pair';"), 2)
         XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'legacy-pair';"), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy-raw-only' AND has_raw = 0
+              AND is_on_server = 1 AND raw_on_server = 0
+              AND sha1_hash = 'original-raw-only';
+        """), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'legacy-raw-only';"), 0)
         // An older upload absent from this same snapshot is still stale.
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'old-gone';"), 0)
         XCTAssertEqual(count("""
