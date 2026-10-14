@@ -628,6 +628,37 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testHashFailureBackoffDoesNotBlockMetadataMatchingCandidates() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.recordHashFailure(
+            localIdentifier: "backed-off-photo",
+            errorMessage: "PhotoKit original unavailable",
+            modificationDate: nil
+        )
+        let ids = ["backed-off-photo", "fresh-photo"]
+        let metadata = expectation(description: "Metadata matching is not rate limited")
+        hashes.getAssetsNeedingHashAsync(allIdentifiers: ids) { candidates in
+            XCTAssertEqual(candidates, ids)
+            metadata.fulfill()
+        }
+        wait(for: [metadata], timeout: 5)
+
+        let hashing = expectation(description: "Expensive hashing observes retry backoff")
+        hashes.getAssetsEligibleForHashRetryAsync(allIdentifiers: ids) { candidates in
+            XCTAssertEqual(candidates, ["fresh-photo"])
+            hashing.fulfill()
+        }
+        wait(for: [hashing], timeout: 5)
+
+        execute("UPDATE hash_failures SET retry_after = 0 WHERE asset_id = 'backed-off-photo';")
+        let retry = expectation(description: "Hashing allowed after backoff expires")
+        hashes.getAssetsEligibleForHashRetryAsync(allIdentifiers: ids) { candidates in
+            XCTAssertEqual(candidates, ids)
+            retry.fulfill()
+        }
+        wait(for: [retry], timeout: 5)
+    }
+
     func testCachedMissingHashesAreNotRecomputedUntilPhotoChanges() {
         let hashes = HashCacheRepository(connection: connection)
         let originalDate = Date(timeIntervalSince1970: 1_700_000_000)

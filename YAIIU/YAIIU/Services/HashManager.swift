@@ -655,12 +655,28 @@ class HashManager: ObservableObject {
                                 return
                             }
 
-                            self.processingQueue = remainingNeedingHash
-                            self.totalAssetsToProcess = remainingNeedingHash.count
-                            self.processedAssetsCount = 0
-                            self.processingProgress = 0
-                            self.statusMessage = "Analyzing local photos (0/\(remainingNeedingHash.count))..."
-                            self.processHashItems(runID: runID)
+                            DatabaseManager.shared.getAssetsEligibleForHashRetryAsync(
+                                allIdentifiers: remainingNeedingHash
+                            ) { [weak self] eligible in
+                                guard let self else { return }
+                                Task { @MainActor in
+                                    guard self.isCurrentRun(runID), !self.shouldStop else {
+                                        self.finishProcessing(runID: runID)
+                                        return
+                                    }
+                                    guard !eligible.isEmpty else {
+                                        self.statusMessage = "Checking cloud status..."
+                                        self.startServerCheck(runID: runID)
+                                        return
+                                    }
+                                    self.processingQueue = eligible
+                                    self.totalAssetsToProcess = eligible.count
+                                    self.processedAssetsCount = 0
+                                    self.processingProgress = 0
+                                    self.statusMessage = "Analyzing local photos (0/\(eligible.count))..."
+                                    self.processHashItems(runID: runID)
+                                }
+                            }
                         }
                     }
                 }

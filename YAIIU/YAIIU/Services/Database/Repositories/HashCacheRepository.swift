@@ -765,21 +765,9 @@ final class HashCacheRepository {
             }
             sqlite3_finalize(statement)
 
-            var deferredFailureIds: Set<String> = []
-            let failureSql = "SELECT asset_id FROM hash_failures WHERE retry_after > ?;"
-            if sqlite3_prepare_v2(self.connection.db, failureSql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
-                while sqlite3_step(statement) == SQLITE_ROW {
-                    if let cString = sqlite3_column_text(statement, 0) {
-                        deferredFailureIds.insert(String(cString: cString))
-                    }
-                }
-            }
-            sqlite3_finalize(statement)
-            
-            let needingHash = allIdentifiers.filter {
-                !existingIds.contains($0) && !deferredFailureIds.contains($0)
-            }
+            // Every uncached asset can still use the metadata-only iCloud ID
+            // shortcut, even when a past requestData hashing failure is backed off.
+            let needingHash = allIdentifiers.filter { !existingIds.contains($0) }
             
             DispatchQueue.main.async {
                 completion(needingHash)
@@ -787,6 +775,34 @@ final class HashCacheRepository {
         }
     }
     
+    /// Apply expensive PhotoKit requestData retry backoff ONLY after iCloud
+    /// matching has had a chance to resolve the asset without a download.
+    func getAssetsEligibleForHashRetryAsync(
+        allIdentifiers: [String], completion: @escaping ([String]) -> Void
+    ) {
+        connection.dbQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion([]) }
+                return
+            }
+            var deferred: Set<String> = []
+            var stmt: OpaquePointer?
+            let sql = "SELECT asset_id FROM hash_failures WHERE retry_after > ?;"
+            if sqlite3_prepare_v2(self.connection.db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_double(stmt, 1, Date().timeIntervalSince1970)
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let ptr = sqlite3_column_text(stmt, 0) {
+                        deferred.insert(String(cString: ptr))
+                    }
+                }
+            }
+            sqlite3_finalize(stmt)
+            DispatchQueue.main.async {
+                completion(allIdentifiers.filter { !deferred.contains($0) })
+            }
+        }
+    }
+
     func getHashesNeedingCheckAsync(completion: @escaping ([(String, String)]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {

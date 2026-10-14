@@ -229,6 +229,14 @@ final class DatabaseManager {
         hashRepo.getAssetsNeedingHashAsync(allIdentifiers: allIdentifiers, completion: completion)
     }
 
+    func getAssetsEligibleForHashRetryAsync(
+        allIdentifiers: [String], completion: @escaping ([String]) -> Void
+    ) {
+        hashRepo.getAssetsEligibleForHashRetryAsync(
+            allIdentifiers: allIdentifiers, completion: completion
+        )
+    }
+
     func recordHashFailure(
         localIdentifier: String,
         errorMessage: String,
