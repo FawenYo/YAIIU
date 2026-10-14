@@ -39,7 +39,8 @@ final class DatabaseManager {
         immichId: String,
         fileSize: Int64 = 0,
         isDuplicate: Bool = false,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        destinationIdentity: String? = nil
     ) {
         uploadRepo.recordUploadedAsset(
             localIdentifier: localIdentifier,
@@ -48,7 +49,8 @@ final class DatabaseManager {
             immichId: immichId,
             fileSize: fileSize,
             isDuplicate: isDuplicate,
-            isFavorite: isFavorite
+            isFavorite: isFavorite,
+            destinationIdentity: destinationIdentity
         )
     }
     
