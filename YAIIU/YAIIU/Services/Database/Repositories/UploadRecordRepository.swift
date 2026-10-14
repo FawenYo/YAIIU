@@ -191,7 +191,14 @@ final class UploadRecordRepository {
             sqlite3_bind_null(statusStmt, 6)
         }
         let updated = sqlite3_step(statusStmt) == SQLITE_DONE
+        let affectedHashRows = sqlite3_changes(connection.db)
         sqlite3_finalize(statusStmt)
+        // A zero-row UPDATE means the upload finished before hashing. Its
+        // destination-tagged history is the durable pending verdict; the new
+        // hash writer will reconcile it when PhotoKit eventually succeeds.
+        if updated && affectedHashRows == 0 {
+            logDebug("Deferring upload verdict until hash row exists: \(localIdentifier)", category: .database)
+        }
         guard updated, connection.commitTransaction() else {
             connection.rollbackTransaction()
             logError("Failed to persist foreground upload verdict: \(connection.lastErrorMessage)", category: .database)

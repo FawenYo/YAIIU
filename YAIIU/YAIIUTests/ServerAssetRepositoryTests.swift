@@ -215,6 +215,72 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'foreground-pair';"), 2)
     }
 
+    func testUploadBeforeHashReusesFreshDestinationTaggedHistory() {
+        let hashes = HashCacheRepository(connection: connection)
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 100),
+            syncType: "full", userId: "owner-1",
+            serverURL: "https://immich.example", totalAssets: 0,
+            lastAck: "checkpoint"
+        ))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "upload-before-hash",
+            resourceType: "jpeg", filename: "fresh.jpg",
+            immichId: "remote-fresh",
+            destinationIdentity: "current-destination"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'upload-before-hash';
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'upload-before-hash';
+        """), 1)
+
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "upload-before-hash",
+            primaryHash: "cached-original-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'upload-before-hash'
+              AND sha1_hash = 'cached-original-sha1'
+              AND is_on_server = 1 AND checked_at IS NOT NULL;
+        """), 1)
+
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy-upload", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "remote-old"
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "legacy-upload",
+            primaryHash: "legacy-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy-upload'
+              AND is_on_server = 0 AND checked_at IS NULL;
+        """), 1)
+    }
+
+    func testPendingRawPairUploadBeforeHashPreservesPartialVerdict() {
+        let hashes = HashCacheRepository(connection: connection)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "raw-after-upload", resourceType: "raw",
+            filename: "pair.dng", immichId: "remote-pair-raw",
+            destinationIdentity: "destination"
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "raw-after-upload",
+            primaryHash: "primary-sha", rawHash: "raw-sha", hasRAW: true
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'raw-after-upload' AND is_on_server = 0
+              AND raw_on_server = 1 AND checked_at IS NOT NULL
+              AND sha1_hash = 'primary-sha' AND raw_hash = 'raw-sha';
+        """), 1)
+    }
+
     func testRawOnlyForegroundUploadMarksPrimaryComplete() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

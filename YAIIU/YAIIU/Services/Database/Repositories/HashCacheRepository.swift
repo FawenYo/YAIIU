@@ -140,10 +140,77 @@ final class HashCacheRepository {
 
             if sqlite3_step(statement) == SQLITE_DONE {
                 clearHashFailureInternal(localIdentifier: localIdentifier)
+                reconcileRecentUploadsForNewHashInternal(
+                    localIdentifier: localIdentifier, hasRAW: hasRAW
+                )
             }
         }
 
         sqlite3_finalize(statement)
+    }
+
+    /// A resource may upload before PhotoKit SHA1 was available. Retain its
+    /// locally confirmed upload in uploaded_assets, then restore that evidence
+    /// when its hash is first persisted. Only current-destination, post-sync
+    /// upload records count; older history is not authoritative.
+    private func reconcileRecentUploadsForNewHashInternal(
+        localIdentifier: String, hasRAW: Bool
+    ) {
+        let sql = """
+            SELECT resource_type FROM uploaded_assets
+            WHERE asset_id = ?
+              AND destination_identity IS NOT NULL
+              AND uploaded_at > COALESCE(
+                  (SELECT last_sync_time FROM sync_metadata WHERE id = 1), 0
+              )
+              AND (
+                  NOT EXISTS (SELECT 1 FROM background_upload_state WHERE id = 1)
+                  OR destination_identity = (
+                      SELECT destination_identity FROM background_upload_state WHERE id = 1
+                  )
+              );
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            return
+        }
+        sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+        var primaryPresent = false
+        var rawPresent = false
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let p = sqlite3_column_text(stmt, 0) else { continue }
+            let resourceType = String(cString: p)
+            if resourceType == "raw" && hasRAW {
+                rawPresent = true
+            } else {
+                primaryPresent = true
+            }
+        }
+        sqlite3_finalize(stmt)
+        guard primaryPresent || rawPresent else { return }
+
+        let updateSQL = """
+            UPDATE hash_cache
+            SET is_on_server = ?,
+                raw_on_server = ?,
+                checked_at = ?,
+                server_check_revision = server_check_revision + 1
+            WHERE asset_id = ?;
+        """
+        guard sqlite3_prepare_v2(connection.db, updateSQL, -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            return
+        }
+        sqlite3_bind_int(stmt, 1, primaryPresent ? 1 : 0)
+        sqlite3_bind_int(stmt, 2, rawPresent ? 1 : 0)
+        sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
+        sqlite3_bind_text(stmt, 4, (localIdentifier as NSString).utf8String, -1, nil)
+        let updated = sqlite3_step(stmt) == SQLITE_DONE
+        sqlite3_finalize(stmt)
+        if updated {
+            enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
+        }
     }
     
     func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) {
