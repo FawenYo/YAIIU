@@ -456,6 +456,40 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [after], timeout: 5)
     }
 
+    func testICloudShortcutQueuesMissingLivePhotoVideo() {
+        let hashes = HashCacheRepository(connection: connection)
+        uploadRepository.markLivePhotoVideoRequired(localIdentifier: "cloud-live")
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "server-live-jpeg",
+                checksum: "original-jpeg",
+                iCloudId: "cloud-live-identifier",
+                ownerId: "owner-1"
+            )
+        ]))
+        XCTAssertTrue(hashes.saveCurrentICloudIDMatch(
+            localIdentifier: "cloud-live",
+            iCloudId: "cloud-live-identifier",
+            expectedChecksum: "original-jpeg",
+            modificationDate: Date(timeIntervalSince1970: 1_700_000_000)
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'cloud-live' AND sha1_hash = 'original-jpeg'
+              AND is_on_server = 1 AND checked_at IS NOT NULL;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'cloud-live' AND video_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM background_upload_queue
+            WHERE asset_id = 'cloud-live';
+        """), 1)
+        let db = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertFalse(db.getAllAssetsOnServer().contains("cloud-live"))
+    }
+
     func testLivePhotoVideoFirstDoesNotConfirmMissingJPEG() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

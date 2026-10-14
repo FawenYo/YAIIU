@@ -74,7 +74,15 @@ final class HashCacheRepository {
             sqlite3_bind_text(stmt, 6, (expectedChecksum as NSString).utf8String, -1, nil)
             sqlite3_bind_text(stmt, 7, (localIdentifier as NSString).utf8String, -1, nil)
             guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
-            return sqlite3_changes(self.connection.db) == 1
+            let inserted = sqlite3_changes(self.connection.db) == 1
+            if inserted {
+                // iCloud ID is sufficient to confirm the primary, but a
+                // separately required Live Photo video may still be missing.
+                // Unlike the normal hash writer, this shortcut has checked_at
+                // set immediately and will not enter the per-asset server check.
+                self.enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
+            }
+            return inserted
         }
     }
 
