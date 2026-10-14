@@ -403,14 +403,32 @@ final class ServerAssetRepository {
             let sql = "DELETE FROM server_assets_cache WHERE immich_id = ?;"
             var statement: OpaquePointer?
             var historyStatement: OpaquePointer?
+            var unresolvedStatement: OpaquePointer?
+            // Older background uploads can have immich_id='unknown'. Match
+            // their locally cached resource SHA1 to the deleted server checksum.
+            let unresolvedHistorySQL = """
+                DELETE FROM uploaded_assets
+                WHERE immich_id = 'unknown'
+                  AND EXISTS (
+                      SELECT 1 FROM hash_cache AS h
+                      WHERE h.asset_id = uploaded_assets.asset_id
+                        AND ((uploaded_assets.resource_type = 'raw' AND h.raw_hash = ?)
+                          OR (uploaded_assets.resource_type != 'raw' AND h.sha1_hash = ?))
+                  );
+            """
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK,
                   sqlite3_prepare_v2(
                     self.connection.db,
                     "DELETE FROM uploaded_assets WHERE immich_id = ?;",
                     -1, &historyStatement, nil
+                  ) == SQLITE_OK,
+                  sqlite3_prepare_v2(
+                    self.connection.db, unresolvedHistorySQL,
+                    -1, &unresolvedStatement, nil
                   ) == SQLITE_OK else {
                 sqlite3_finalize(statement)
                 sqlite3_finalize(historyStatement)
+                sqlite3_finalize(unresolvedStatement)
                 self.connection.rollbackTransaction()
                 logError("Failed to prepare server asset/history deletes: \(self.connection.lastErrorMessage)", category: .database)
                 return false
@@ -434,7 +452,18 @@ final class ServerAssetRepository {
                     logError("Failed to remove deleted asset upload history: \(self.connection.lastErrorMessage)", category: .database)
                     break
                 }
-                if let oldChecksum { checksumsToInvalidate.insert(oldChecksum) }
+                if let oldChecksum {
+                    sqlite3_bind_text(unresolvedStatement, 1, (oldChecksum as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(unresolvedStatement, 2, (oldChecksum as NSString).utf8String, -1, nil)
+                    if sqlite3_step(unresolvedStatement) != SQLITE_DONE {
+                        failed = true
+                        logError("Failed to remove unresolved deleted asset history: \(self.connection.lastErrorMessage)", category: .database)
+                        break
+                    }
+                    checksumsToInvalidate.insert(oldChecksum)
+                    sqlite3_reset(unresolvedStatement)
+                    sqlite3_clear_bindings(unresolvedStatement)
+                }
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
                 sqlite3_reset(historyStatement)
@@ -442,6 +471,7 @@ final class ServerAssetRepository {
             }
             sqlite3_finalize(statement)
             sqlite3_finalize(historyStatement)
+            sqlite3_finalize(unresolvedStatement)
 
             if failed || !self.invalidateChecks(for: checksumsToInvalidate) {
                 self.connection.rollbackTransaction()

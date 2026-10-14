@@ -389,6 +389,43 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(pendingCheckCount(), 2)
     }
 
+    func testDeletingServerAssetClearsMatchingUnknownUploadHistory() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unresolved-primary", primaryHash: "gone-checksum",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "paired-resource", primaryHash: "surviving-jpeg",
+            rawHash: "gone-raw", hasRAW: true
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unresolved-primary", resourceType: "jpeg",
+            filename: "gone.jpg", immichId: "unknown"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "paired-resource", resourceType: "jpeg",
+            filename: "pair.jpg", immichId: "still-on-server"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "paired-resource", resourceType: "raw",
+            filename: "pair.dng", immichId: "unknown"
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "deleted", checksum: "gone-checksum", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "deleted-raw", checksum: "gone-raw", ownerId: "owner-1")
+        ]))
+        XCTAssertTrue(repository.deleteServerAssets(["deleted", "deleted-raw"]))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'unknown';"), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'paired-resource' AND resource_type = 'jpeg';
+        """), 1)
+        // Server disappearance invalidates presence only, not the local hashes.
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'paired-resource' AND raw_hash = 'gone-raw';"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NULL;"), 2)
+    }
+
     func testFullServerResetInvalidatesVerdictsWithoutDeletingHashes() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "a", primaryHash: "sum-a", rawHash: nil, hasRAW: false)
