@@ -13,6 +13,15 @@ final class BackgroundUploadDatabase {
     private init() {
         openDatabase()
     }
+
+    /// Open the same SQLite schema in tests without requiring an App Group.
+    init(testingDatabasePath: String) {
+        guard sqlite3_open(testingDatabasePath, &db) == SQLITE_OK else {
+            db = nil
+            return
+        }
+        sqlite3_busy_timeout(db, 5000)
+    }
     
     deinit {
         if db != nil {
@@ -776,20 +785,29 @@ final class BackgroundUploadDatabase {
                 sqlite3_finalize(stmt)
             }
 
-            let deleteSql = "DELETE FROM background_upload_queue WHERE asset_id = ?"
-            var deleteStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, deleteSql, -1, &deleteStmt, nil) == SQLITE_OK else {
-                sqlite3_finalize(deleteStmt)
-                return false
-            }
-            defer { sqlite3_finalize(deleteStmt) }
-            for assetId in deletedAssetIds {
-                sqlite3_reset(deleteStmt)
-                sqlite3_clear_bindings(deleteStmt)
-                guard sqlite3_bind_text(deleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                      sqlite3_step(deleteStmt) == SQLITE_DONE else {
+            // A PhotoKit deletion must remove the local hash as well as its
+            // candidate row. Otherwise full-snapshot reconciliation sees the
+            // orphan hash and endlessly requeues an asset that no longer exists.
+            for deleteSql in [
+                "DELETE FROM background_upload_queue WHERE asset_id = ?",
+                "DELETE FROM hash_cache WHERE asset_id = ?",
+                "DELETE FROM uploaded_assets WHERE asset_id = ?"
+            ] {
+                var deleteStmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, deleteSql, -1, &deleteStmt, nil) == SQLITE_OK else {
+                    sqlite3_finalize(deleteStmt)
                     return false
                 }
+                for assetId in deletedAssetIds {
+                    sqlite3_reset(deleteStmt)
+                    sqlite3_clear_bindings(deleteStmt)
+                    guard sqlite3_bind_text(deleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                          sqlite3_step(deleteStmt) == SQLITE_DONE else {
+                        sqlite3_finalize(deleteStmt)
+                        return false
+                    }
+                }
+                sqlite3_finalize(deleteStmt)
             }
 
             let tokenSql = """

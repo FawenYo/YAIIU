@@ -587,6 +587,40 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [ready], timeout: 5)
     }
 
+    func testPhotoKitDeletionRemovesCachedHashBeforeFullSnapshot() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "deleted-locally", primaryHash: "orphan-sum",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "still-local", primaryHash: "live-sum",
+            rawHash: nil, hasRAW: false
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "deleted-locally", resourceType: "jpeg",
+            filename: "orphan.jpg", immichId: "old-server-id"
+        )
+        execute("""
+            INSERT INTO background_upload_queue (asset_id, enqueued_at)
+            VALUES ('deleted-locally', 100);
+        """)
+
+        let backgroundDB = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(backgroundDB.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [],
+            deletedAssetIds: ["deleted-locally"],
+            tokenData: Data([1, 2, 3])
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'deleted-locally';"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'deleted-locally';"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'deleted-locally';"), 0)
+
+        XCTAssertTrue(repository.finalizeFullServerSnapshot())
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'deleted-locally';"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'still-local';"), 1)
+    }
+
     func testFullSnapshotReconcilesPrimaryAndRAWWithoutPerAssetRecheck() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "server-primary",
