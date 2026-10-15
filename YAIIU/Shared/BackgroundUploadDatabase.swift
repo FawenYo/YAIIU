@@ -104,6 +104,16 @@ final class BackgroundUploadDatabase {
                 video_on_server INTEGER NOT NULL DEFAULT 0
             )
         """)
+        // The extension can launch before the host creates this v11 helper.
+        // Destination switches and delta-boundary cleanup must not fail just
+        // because the host has not opened the shared SQLite file yet.
+        exec("""
+            CREATE TABLE IF NOT EXISTS sync_snapshot_boundaries (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                snapshot_started_at REAL NOT NULL,
+                destination_identity TEXT
+            )
+        """)
 
         // Background PhotoKit upload may launch before the host's v11 migration.
         var uploadColumns: Set<String> = []
