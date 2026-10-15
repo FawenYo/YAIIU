@@ -625,8 +625,29 @@ final class BackgroundUploadDatabase {
                 }
             }
 
-            // A checkpoint created without a destination identity cannot be trusted
-            // across an upgrade, so initialization also restarts persistent discovery.
+            // Persisted discovery and the server catalog are destination-specific.
+            // Any prior state row (including a legacy NULL identity) or a
+            // pre-background-upload server catalog without an identity must be
+            // treated as untrusted. Cached local SHA1s are NOT deleted.
+            var legacyCatalogExists = false
+            var legacyStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db,
+                """
+                SELECT EXISTS (SELECT 1 FROM server_assets_cache LIMIT 1)
+                    OR EXISTS (SELECT 1 FROM sync_metadata LIMIT 1);
+                """,
+                -1, &legacyStmt, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(legacyStmt)
+                throw sqliteError("Read legacy catalog presence")
+            }
+            if sqlite3_step(legacyStmt) == SQLITE_ROW {
+                legacyCatalogExists = sqlite3_column_int(legacyStmt, 0) != 0
+            }
+            sqlite3_finalize(legacyStmt)
+
+            let destinationChanged = hadStateRow || legacyCatalogExists
             let checkpointResetSql = [
                 "DELETE FROM change_tokens",
                 "DELETE FROM background_upload_queue",
@@ -637,12 +658,6 @@ final class BackgroundUploadDatabase {
                 }
             }
 
-            // A pre-v11 row with a NULL identity is not evidence for the
-            // current account. Treat it as an untrusted previous destination,
-            // while preserving new-destination uploads tagged by the host.
-            // Only an entirely absent state row is safe to initialize without
-            // discarding legacy presence claims.
-            let destinationChanged = hadStateRow
             if destinationChanged {
                 // These flags describe the previous server/account. Preserve hashes,
                 // but require the new destination to reconfirm server presence.
@@ -665,6 +680,11 @@ final class BackgroundUploadDatabase {
                 // Restore only flags confirmed by surviving new-destination
                 // history; never copy an old account's checksum verdict.
                 let destinationSpecificSql = [
+                    // Do not let HashManager read old-server checksums or
+                    // iCloud IDs if the new destination's first sync fails.
+                    "DELETE FROM server_assets_cache",
+                    "DELETE FROM sync_metadata",
+                    "DELETE FROM sync_snapshot_boundaries",
                     "DELETE FROM upload_jobs WHERE status = 'completed'",
                     """
                     UPDATE live_photo_video_status

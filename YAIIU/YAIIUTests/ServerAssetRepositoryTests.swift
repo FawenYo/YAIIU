@@ -1508,6 +1508,49 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testDestinationSwitchInvalidatesOldServerCatalogWithoutDeletingHashes() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "cached-photo", primaryHash: "cached-local-sha1",
+            rawHash: nil, hasRAW: false
+        )
+        let bg = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(try bg.ensureDestinationIdentity("destination-old"))
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "old-server-id", checksum: "cached-local-sha1",
+                iCloudId: "old-cloud-id", ownerId: "old-owner"
+            )
+        ]))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 100),
+            syncType: "full", userId: "old-owner",
+            serverURL: "https://old-immich.example", totalAssets: 1,
+            lastAck: "old-ack"
+        ))
+        XCTAssertTrue(repository.finalizeFullServerSnapshot(
+            snapshotStartedAt: Date(timeIntervalSince1970: 80),
+            destinationIdentity: "destination-old"
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM server_assets_cache;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_metadata;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_snapshot_boundaries;"), 1)
+
+        XCTAssertTrue(try bg.ensureDestinationIdentity("destination-new"))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM server_assets_cache;"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_metadata;"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_snapshot_boundaries;"), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'cached-photo'
+              AND sha1_hash = 'cached-local-sha1'
+              AND checked_at IS NULL AND is_on_server = 0;
+        """), 1)
+        XCTAssertTrue(repository.getChecksumsByICloudIds(["old-cloud-id"]).isEmpty)
+        XCTAssertFalse(repository.hasServerCache())
+        XCTAssertFalse(try bg.ensureDestinationIdentity("destination-new"))
+    }
+
     func testLegacyNullDestinationStateRevokesOldServerVerdicts() throws {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
@@ -1559,6 +1602,33 @@ final class ServerAssetRepositoryTests: XCTestCase {
               AND sha1_hash = 'cached-new-sha';
         """), 1)
         XCTAssertFalse(try bg.ensureDestinationIdentity("new-account"))
+    }
+
+    func testFirstDestinationInitializationDoesNotTrustLegacyServerCatalog() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "legacy-no-state",
+            primaryHash: "local-kept-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "unscoped-server-id", checksum: "local-kept-sha1",
+                ownerId: "unknown-previous-account"
+            )
+        ]))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 100),
+            syncType: "full", userId: "unknown-previous-account",
+            serverURL: "https://previous.example", totalAssets: 1
+        ))
+        let bg = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(try bg.ensureDestinationIdentity("configured-account"))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM server_assets_cache;"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_metadata;"), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy-no-state' AND sha1_hash = 'local-kept-sha1';
+        """), 1)
     }
 
     func testSwitchingDestinationPreservesNewAccountUploadBeforeExtensionReset() throws {
