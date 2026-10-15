@@ -637,7 +637,12 @@ final class BackgroundUploadDatabase {
                 }
             }
 
-            let destinationChanged = hadStateRow && existingIdentity != nil
+            // A pre-v11 row with a NULL identity is not evidence for the
+            // current account. Treat it as an untrusted previous destination,
+            // while preserving new-destination uploads tagged by the host.
+            // Only an entirely absent state row is safe to initialize without
+            // discarding legacy presence claims.
+            let destinationChanged = hadStateRow
             if destinationChanged {
                 // These flags describe the previous server/account. Preserve hashes,
                 // but require the new destination to reconfirm server presence.

@@ -1464,6 +1464,59 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testLegacyNullDestinationStateRevokesOldServerVerdicts() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "legacy-positive",
+            primaryHash: "cached-old-sha", rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "newly-uploaded",
+            primaryHash: "cached-new-sha", rawHash: nil, hasRAW: false
+        )
+        // Existing pre-v11 background state has a row but no identity.
+        execute("""
+            INSERT INTO background_upload_state (id, destination_identity, updated_at)
+            VALUES (1, NULL, 100);
+        """)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy-positive", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "old-remote-id"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "newly-uploaded", resourceType: "jpeg",
+            filename: "new.jpg", immichId: "new-remote-id",
+            destinationIdentity: "new-account"
+        )
+        execute("""
+            UPDATE hash_cache SET checked_at = 150, is_on_server = 1;
+        """)
+        let bg = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(try bg.ensureDestinationIdentity("new-account"))
+
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'legacy-positive';
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'newly-uploaded'
+              AND destination_identity = 'new-account';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy-positive'
+              AND is_on_server = 0 AND checked_at IS NULL
+              AND sha1_hash = 'cached-old-sha';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'newly-uploaded'
+              AND is_on_server = 1 AND checked_at IS NOT NULL
+              AND sha1_hash = 'cached-new-sha';
+        """), 1)
+        XCTAssertFalse(try bg.ensureDestinationIdentity("new-account"))
+    }
+
     func testSwitchingDestinationPreservesNewAccountUploadBeforeExtensionReset() throws {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
