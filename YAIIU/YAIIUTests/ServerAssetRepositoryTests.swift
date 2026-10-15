@@ -426,9 +426,13 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertFalse(background.getAllAssetsOnServer().contains("partial-foreground"))
         XCTAssertTrue(background.getPartialServerCopyAssets().primaryConfirmed.contains("partial-foreground"))
         XCTAssertFalse(background.getPartialServerCopyAssets().rawConfirmed.contains("partial-foreground"))
+        XCTAssertTrue(try background.getQueuedAssetIds(limit: 10).contains("partial-foreground"))
+        let noRehash = expectation(description: "Partial foreground success reuses saved SHA1")
         hashes.getAssetsNeedingHashAsync(allIdentifiers: ["partial-foreground"]) { ids in
             XCTAssertTrue(ids.isEmpty)
+            noRehash.fulfill()
         }
+        wait(for: [noRehash], timeout: 5)
     }
 
     func testRawOnlyForegroundUploadMarksPrimaryComplete() {
