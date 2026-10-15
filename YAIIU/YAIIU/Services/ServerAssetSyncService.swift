@@ -92,7 +92,10 @@ class ServerAssetSyncService {
     private let apiService: ServerAssetSyncAPI
     private let dbManager: ServerAssetSyncStore
 
-    private var isSyncing = false
+    // Only one sync per destination generation. When the account changes,
+    // a new generation may proceed while the old network request winds down.
+    // An older task must never clear a newer generation's active slot.
+    private var activeSyncRevision: UInt64?
     private let syncQueue = DispatchQueue(label: "com.yaiiu.serverassetsync", qos: .userInitiated)
 
     init(
@@ -147,21 +150,33 @@ class ServerAssetSyncService {
                 return
             }
 
-            let shouldProceed = self.syncQueue.sync { () -> Bool in
-                guard !self.isSyncing else {
-                    logWarning("Sync already in progress, skipping", category: .sync)
-                    return false
+            let admissionError = self.syncQueue.sync { () -> SyncError? in
+                guard Self.isCurrentDestination(destinationRevision) else {
+                    return .syncFailed(reason: "Immich destination changed during sync")
                 }
-                self.isSyncing = true
-                return true
+                guard self.activeSyncRevision != destinationRevision else {
+                    logWarning("Sync already in progress for current destination", category: .sync)
+                    return .syncInProgress
+                }
+                // Supersede the old generation even if its async network
+                // request has not returned. It cannot persist old results:
+                // every catalog write is protected by withCurrentDestination.
+                self.activeSyncRevision = destinationRevision
+                return nil
             }
 
-            guard shouldProceed else {
-                await MainActor.run { completion(.failure(SyncError.syncInProgress)) }
+            if let admissionError {
+                await MainActor.run { completion(.failure(admissionError)) }
                 return
             }
 
-            defer { self.syncQueue.sync { self.isSyncing = false } }
+            defer {
+                self.syncQueue.sync {
+                    if self.activeSyncRevision == destinationRevision {
+                        self.activeSyncRevision = nil
+                    }
+                }
+            }
 
             // The host can fetch large server catalogs for longer than the
             // extension's 30-minute crash-recovery lease. Refresh that lease

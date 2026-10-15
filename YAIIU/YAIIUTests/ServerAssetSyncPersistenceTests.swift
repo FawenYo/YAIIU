@@ -79,6 +79,75 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
+    func testNewDestinationSyncCanSupersedeOldBlockedNetworkSync() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        let gate = SyncTestGate()
+        let oldFetchStarted = expectation(description: "Old destination is waiting for network")
+        api.beforeMetadataFetch = {
+            if await gate.claimFirst() {
+                oldFetchStarted.fulfill()
+                await gate.wait()
+            }
+        }
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+        let old = Task { await sync(service) }
+        await fulfillment(of: [oldFetchStarted], timeout: 5)
+
+        // Destination switch invalidates the old task while its network
+        // continuation remains suspended. A new sync must NOT return
+        // syncInProgress, and the old task must NOT write after it resumes.
+        ServerAssetSyncService.invalidateInFlightSync()
+        let fresh = await sync(service)
+        guard case .success = fresh else {
+            await gate.release()
+            _ = await old.value
+            return XCTFail("New destination must supersede an old in-flight sync")
+        }
+        XCTAssertEqual(operations.values.filter { $0 == "save-assets" }.count, 1)
+
+        await gate.release()
+        let oldResult = await old.value
+        guard case .failure = oldResult else {
+            return XCTFail("Invalidated old sync unexpectedly succeeded")
+        }
+        XCTAssertEqual(operations.values.filter { $0 == "save-assets" }.count, 1)
+        XCTAssertEqual(operations.values.filter { $0 == "send-acks" }.count, 1)
+
+        // An old generation's defer cannot clear the current sync slot.
+        let subsequent = await sync(service)
+        guard case .success = subsequent else {
+            return XCTFail("New destination became stuck after old sync completed")
+        }
+    }
+
+    func testDuplicateSyncForSameDestinationStillReturnsInProgress() async throws {
+        let api = APIStub(operations: OperationRecorder())
+        let gate = SyncTestGate()
+        let firstFetchStarted = expectation(description: "First sync is in progress")
+        api.beforeMetadataFetch = {
+            if await gate.claimFirst() {
+                firstFetchStarted.fulfill()
+                await gate.wait()
+            }
+        }
+        let store = StoreStub(operations: OperationRecorder())
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+        let first = Task { await sync(service) }
+        await fulfillment(of: [firstFetchStarted], timeout: 5)
+        let duplicate = await sync(service)
+        guard case .failure(let error) = duplicate,
+              let syncError = error as? SyncError,
+              case .syncInProgress = syncError else {
+            await gate.release()
+            _ = await first.value
+            return XCTFail("Duplicate current-destination sync must be rejected")
+        }
+        await gate.release()
+        _ = await first.value
+    }
+
     func testRebuildBarrierReleasedAfterFailedFullSnapshot() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations)
@@ -222,7 +291,14 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
 }
 
 private actor SyncTestGate {
+    private var firstClaimed = false
     private var released = false
+
+    func claimFirst() -> Bool {
+        guard !firstClaimed else { return false }
+        firstClaimed = true
+        return true
+    }
     private var waiting: CheckedContinuation<Void, Never>?
 
     func wait() async {

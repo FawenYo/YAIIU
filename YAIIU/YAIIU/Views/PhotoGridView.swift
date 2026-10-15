@@ -279,6 +279,8 @@ struct PhotoGridView: View {
     @State private var hasAppeared = false
     @State private var lastPrefetchedRange: Range<Int>?
     @State private var isSyncing = false
+    @State private var activeSyncRequestID: UUID?
+    @State private var activeSyncDestinationIdentity: String?
     @State private var currentFilter: PhotoFilterOption = .all
     
     @State private var filteredIndices: [Int] = []
@@ -424,6 +426,18 @@ struct PhotoGridView: View {
                 performAutoSync()
             }
         }
+        .onChange(of: configuredSyncDestinationIdentity) { _, newIdentity in
+            // The configured account changed even if the old task is still
+            // awaiting network I/O. The new destination may start immediately.
+            if newIdentity != nil {
+                performAutoSync()
+            } else {
+                activeSyncRequestID = nil
+                activeSyncDestinationIdentity = nil
+                isSyncing = false
+                hashManager.clearPreparingState()
+            }
+        }
         .onDisappear {
             selectionTask?.cancel()
             selectionTask = nil
@@ -554,6 +568,16 @@ struct PhotoGridView: View {
     }
     
     private func startBackgroundProcessing() {
+        // A destination switch clears the old catalog. Do not schedule new
+        // hash/upload discovery while a sync is active, or before the new
+        // destination has a committed server checkpoint.
+        if isSyncing || (
+            configuredSyncDestinationIdentity != nil
+            && ServerAssetSyncService.shared.getLastSyncInfo() == nil
+        ) {
+            logDebug("Deferring local processing until server catalog sync completes", category: .sync)
+            return
+        }
         guard photoLibraryManager.assetCount > 0 else {
             if hashManager.isProcessing {
                 hashManager.clearPreparingState()
@@ -1161,47 +1185,76 @@ struct PhotoGridView: View {
     
     // MARK: - Auto Sync
     
+    private var configuredSyncDestinationIdentity: String? {
+        UploadDestinationIdentity.make(
+            serverURL: settingsManager.serverURL,
+            apiKey: settingsManager.apiKey
+        )
+    }
+
     private func performAutoSync() {
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
+        let destinationIdentity = configuredSyncDestinationIdentity
 
         if !hashManager.isProcessing {
             hashManager.setPreparingState()
         }
-        
+
         guard !serverURL.isEmpty && !apiKey.isEmpty else {
             logDebug("Server sync skipped: server not configured", category: .sync)
             startBackgroundProcessing()
             return
         }
-        
-        guard !isSyncing else {
-            logDebug("Server sync skipped: sync already in progress", category: .sync)
+
+        // Same-destination reentry is unnecessary; different-destination
+        // syncs supersede old requests without waiting for old network I/O.
+        guard !isSyncing || activeSyncDestinationIdentity != destinationIdentity else {
+            logDebug("Server sync skipped: current destination already syncing", category: .sync)
             return
         }
-        
+
+        let requestID = UUID()
+        activeSyncRequestID = requestID
+        activeSyncDestinationIdentity = destinationIdentity
         isSyncing = true
-        
+
         ServerAssetSyncService.shared.syncServerAssets(
             serverURL: serverURL,
             apiKey: apiKey
         ) { [self] result in
             DispatchQueue.main.async {
+                // Superseded responses must never clear the new sync's state
+                // or launch hash/background discovery for the wrong account.
+                guard self.activeSyncRequestID == requestID else { return }
+                guard self.configuredSyncDestinationIdentity == destinationIdentity else {
+                    self.isSyncing = false
+                    self.activeSyncRequestID = nil
+                    self.performAutoSync()
+                    return
+                }
                 self.isSyncing = false
+                self.activeSyncRequestID = nil
                 self.handleSyncResult(result)
             }
         }
     }
-    
+
     private func handleSyncResult(_ result: Result<SyncResult, Error>) {
         switch result {
         case .success(let syncResult):
             logInfo("Auto sync completed: \(syncResult.syncType), total: \(syncResult.totalAssets), upserted: \(syncResult.upsertedCount), deleted: \(syncResult.deletedCount)", category: .sync)
-            
             hashManager.refreshStatusCache()
-            
+
         case .failure(let error):
             logError("Auto sync failed: \(error.localizedDescription)", category: .sync)
+            if let syncError = error as? SyncError,
+               case .syncInProgress = syncError {
+                // Do not start background processing against a catalog still
+                // being rebuilt by the active sync.
+                hashManager.clearPreparingState()
+                return
+            }
         }
         startBackgroundProcessing()
     }
