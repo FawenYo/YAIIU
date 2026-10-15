@@ -71,6 +71,7 @@ class SettingsManager: ObservableObject {
     }
     
     func login(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) {
+        ServerAssetSyncService.invalidateInFlightSync()
         AlbumSyncService.invalidateInFlightSync()
         self.serverURL = serverURL
         self.internalServerURL = internalServerURL ?? ""
@@ -92,6 +93,7 @@ class SettingsManager: ObservableObject {
 
     func updateServerURL(_ url: String) {
         guard url != self.serverURL else { return }
+        ServerAssetSyncService.invalidateInFlightSync()
         AlbumSyncService.invalidateInFlightSync()
         self.serverURL = url
         UserDefaults.standard.set(url, forKey: serverURLKey)
@@ -184,6 +186,7 @@ class SettingsManager: ObservableObject {
     }
 
     func logout() {
+        ServerAssetSyncService.invalidateInFlightSync()
         AlbumSyncService.invalidateInFlightSync()
         self.serverURL = ""
         self.internalServerURL = ""

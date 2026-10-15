@@ -56,6 +56,38 @@ class ServerAssetSyncService {
 
     static let shared = ServerAssetSyncService()
 
+    // This gate serializes destination changes with synchronous catalog
+    // persistence. A switch waits for any current SQLite write to finish,
+    // then invalidates ALL old syncs before resetting the new destination.
+    // Without this gate a detached old sync could write after the reset.
+    private static let destinationWriteQueue = DispatchQueue(
+        label: "com.yaiiu.serverassetsync.destination-writes"
+    )
+    private static var destinationRevision: UInt64 = 0
+
+    static func invalidateInFlightSync() {
+        destinationWriteQueue.sync { destinationRevision &+= 1 }
+    }
+
+    private static func capturedDestinationRevision() -> UInt64 {
+        destinationWriteQueue.sync { destinationRevision }
+    }
+
+    private static func isCurrentDestination(_ revision: UInt64) -> Bool {
+        destinationWriteQueue.sync { destinationRevision == revision }
+    }
+
+    private static func withCurrentDestination<T>(
+        _ revision: UInt64, _ body: () throws -> T
+    ) throws -> T {
+        try destinationWriteQueue.sync {
+            guard destinationRevision == revision else {
+                throw SyncError.syncFailed(reason: "Immich destination changed during sync")
+            }
+            return try body()
+        }
+    }
+
     private let apiService: ServerAssetSyncAPI
     private let dbManager: ServerAssetSyncStore
 
@@ -105,6 +137,9 @@ class ServerAssetSyncService {
         progressHandler: ((SyncProgress) -> Void)? = nil,
         completion: @escaping (Result<SyncResult, Error>) -> Void
     ) {
+        let destinationRevision = Self.capturedDestinationRevision()
+        // Capture the configured public URL, not the variable Wi-Fi route.
+        let configuredServerURL = settingsServerURL(serverURL: serverURL)
         Task.detached(priority: .utility) { [weak self] in
             guard let self = self else {
                 await MainActor.run { completion(.failure(SyncError.syncFailed(reason: "Service deallocated"))) }
@@ -131,11 +166,21 @@ class ServerAssetSyncService {
                 let result = try await self.performSync(
                     serverURL: serverURL,
                     apiKey: apiKey,
-                    progressHandler: progressHandler
+                    progressHandler: progressHandler,
+                    destinationRevision: destinationRevision,
+                    configuredServerURL: configuredServerURL
                 )
-                await MainActor.run { completion(.success(result)) }
-                if result.upsertedCount > 0 || result.backfilledCount > 0 {
-                    Task { await AlbumSyncService.shared.syncIfEnabled() }
+                await MainActor.run {
+                    if Self.isCurrentDestination(destinationRevision) {
+                        completion(.success(result))
+                        if result.upsertedCount > 0 || result.backfilledCount > 0 {
+                            Task { await AlbumSyncService.shared.syncIfEnabled() }
+                        }
+                    } else {
+                        completion(.failure(SyncError.syncFailed(
+                            reason: "Immich destination changed during sync"
+                        )))
+                    }
                 }
             } catch {
                 logError("Sync failed: \(error.localizedDescription)", category: .sync)
@@ -174,12 +219,19 @@ class ServerAssetSyncService {
         serverURL: String,
         apiKey: String,
         progressHandler: ((SyncProgress) -> Void)?,
-        resetRetryRemaining: Bool = true
+        resetRetryRemaining: Bool = true,
+        destinationRevision: UInt64,
+        configuredServerURL: String
     ) async throws -> SyncResult {
         var rebuildBarrierActive = false
         defer {
-            if rebuildBarrierActive && !dbManager.setServerSnapshotRebuilding(false) {
-                logError("Could not release server snapshot rebuild barrier", category: .sync)
+            if rebuildBarrierActive {
+                // Old syncs must never clear a new destination's rebuild gate.
+                if let released = try? Self.withCurrentDestination(destinationRevision, {
+                    dbManager.setServerSnapshotRebuilding(false)
+                }), !released {
+                    logError("Could not release server snapshot rebuild barrier", category: .sync)
+                }
             }
         }
         logInfo("Starting server assets sync", category: .sync)
@@ -187,10 +239,11 @@ class ServerAssetSyncService {
         reportProgress(SyncProgress(phase: .fetchingUserInfo, fetchedCount: 0, message: ""), handler: progressHandler)
 
         let userInfo = try await apiService.getCurrentUser(serverURL: serverURL, apiKey: apiKey)
+        try Self.withCurrentDestination(destinationRevision) {}
         let userId = userInfo.id
 
         let syncMetadata = dbManager.getSyncMetadata()
-        let normalizedServerURL = Self.canonicalServerURL(settingsServerURL(serverURL: serverURL))
+        let normalizedServerURL = Self.canonicalServerURL(configuredServerURL)
         let cacheMatchesSession = syncMetadata?.userId == userId
             && (syncMetadata?.serverURL == nil
                 || syncMetadata?.serverURL.map(Self.canonicalServerURL) == normalizedServerURL)
@@ -209,6 +262,7 @@ class ServerAssetSyncService {
             serverURL: serverURL,
             apiKey: apiKey
         )
+        try Self.withCurrentDestination(destinationRevision) {}
 
         let resetAcks = [metadataResult.resetAck, streamResult.resetAck].compactMap { $0 }
         if !resetAcks.isEmpty {
@@ -216,12 +270,14 @@ class ServerAssetSyncService {
                 throw SyncError.repeatedServerReset
             }
 
-            guard dbManager.setServerSnapshotRebuilding(true) else {
-                throw SyncError.syncFailed(reason: "Failed to mark reset snapshot as rebuilding")
-            }
-            rebuildBarrierActive = true
-            guard clearCache() else {
-                throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
+            try Self.withCurrentDestination(destinationRevision) {
+                guard dbManager.setServerSnapshotRebuilding(true) else {
+                    throw SyncError.syncFailed(reason: "Failed to mark reset snapshot as rebuilding")
+                }
+                rebuildBarrierActive = true
+                guard clearCache() else {
+                    throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
+                }
             }
             try await apiService.sendSyncAck(
                 acks: Array(Set(resetAcks)).sorted(),
@@ -232,7 +288,9 @@ class ServerAssetSyncService {
                 serverURL: serverURL,
                 apiKey: apiKey,
                 progressHandler: progressHandler,
-                resetRetryRemaining: false
+                resetRetryRemaining: false,
+                destinationRevision: destinationRevision,
+                configuredServerURL: configuredServerURL
             )
         }
 
@@ -277,6 +335,12 @@ class ServerAssetSyncService {
         )
 
 
+        let acks = Array(Set(streamResult.acks + metadataResult.acks)).sorted()
+        let newAck = acks.last
+        // No awaits inside this block: switching accounts and every catalog
+        // mutation are mutually exclusive, so old credentials cannot write
+        // after the new destination has reset its state.
+        let backfilledCount = try Self.withCurrentDestination(destinationRevision) { () throws -> Int in
         if syncType == "full" {
             guard dbManager.setServerSnapshotRebuilding(true) else {
                 throw SyncError.syncFailed(reason: "Failed to mark full snapshot as rebuilding")
@@ -322,8 +386,6 @@ class ServerAssetSyncService {
             throw SyncError.syncFailed(reason: "Failed to finalize full server snapshot")
         }
 
-        let acks = Array(Set(streamResult.acks + metadataResult.acks)).sorted()
-        let newAck = acks.last
         guard dbManager.saveSyncMetadata(
             lastSyncTime: Date(),
             syncType: syncType,
@@ -335,8 +397,13 @@ class ServerAssetSyncService {
             throw SyncError.syncFailed(reason: "Failed to persist sync metadata")
         }
 
+        return backfilledCount
+        }
+
+        try Self.withCurrentDestination(destinationRevision) {}
         if !acks.isEmpty {
             try await apiService.sendSyncAck(acks: acks, serverURL: serverURL, apiKey: apiKey)
+            try Self.withCurrentDestination(destinationRevision) {}
         }
 
         let total = dbManager.getServerAssetsCacheCount()

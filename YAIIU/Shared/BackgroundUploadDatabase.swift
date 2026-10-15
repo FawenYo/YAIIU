@@ -725,6 +725,7 @@ final class BackgroundUploadDatabase {
                     "DELETE FROM server_assets_cache",
                     "DELETE FROM sync_metadata",
                     "DELETE FROM sync_snapshot_boundaries",
+                    "DELETE FROM server_catalog_rebuild_state",
                     "DELETE FROM upload_jobs WHERE status = 'completed'",
                     """
                     UPDATE live_photo_video_status

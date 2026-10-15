@@ -50,6 +50,35 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         XCTAssertEqual(api.sentAcks, ["AssetMetadataV1|metadata-1", "AssetV2|asset-1"])
     }
 
+    func testOldSyncCannotPersistAfterDestinationInvalidation() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        let gate = SyncTestGate()
+        let reachedMetadata = expectation(description: "Old sync reached metadata fetch")
+        api.beforeMetadataFetch = {
+            reachedMetadata.fulfill()
+            await gate.wait()
+        }
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+        let ongoing = Task { await sync(service) }
+        await fulfillment(of: [reachedMetadata], timeout: 5)
+
+        // Matches SettingsManager.login/updateServerURL/logout: invalidate
+        // before the new destination resets SQLite.
+        ServerAssetSyncService.invalidateInFlightSync()
+        await gate.release()
+        let result = await ongoing.value
+        guard case .failure = result else {
+            return XCTFail("Old sync must fail after destination change")
+        }
+        XCTAssertFalse(operations.values.contains("clear-cache"))
+        XCTAssertFalse(operations.values.contains("save-assets"))
+        XCTAssertFalse(operations.values.contains("save-sync-metadata"))
+        XCTAssertFalse(operations.values.contains("send-acks"))
+        XCTAssertTrue(api.sentAcks.isEmpty)
+    }
+
     func testRebuildBarrierReleasedAfterFailedFullSnapshot() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations)
@@ -192,6 +221,24 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
     }
 }
 
+private actor SyncTestGate {
+    private var released = false
+    private var waiting: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            waiting = continuation
+        }
+    }
+
+    func release() {
+        released = true
+        waiting?.resume()
+        waiting = nil
+    }
+}
+
 private final class OperationRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String] = []
@@ -214,6 +261,7 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
     private let resetAck: String?
     private let sourceChecksum: String?
     private(set) var sentAcks: [String] = []
+    var beforeMetadataFetch: (() async -> Void)?
 
     init(operations: OperationRecorder, resetAck: String? = nil, sourceChecksum: String? = nil) {
         self.operations = operations
@@ -226,7 +274,8 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
     }
 
     func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> AssetMetadataStreamResult {
-        AssetMetadataStreamResult(
+        if let beforeMetadataFetch { await beforeMetadataFetch() }
+        return AssetMetadataStreamResult(
             iCloudIdUpserts: resetAck == nil ? ["asset-1": "cloud-1"] : [:],
             sourceChecksumUpserts: sourceChecksum.map { ["asset-1": $0] } ?? [:],
             iCloudIdDeletes: resetAck == nil ? ["asset-2"] : [],
