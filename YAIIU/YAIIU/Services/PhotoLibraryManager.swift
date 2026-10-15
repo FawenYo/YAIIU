@@ -356,9 +356,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     rawResource = resource
                 }
             } else if isVideo {
-                if videoResource == nil
-                    || resource.type == .fullSizeVideo
-                    || resource.type == .fullSizePairedVideo {
+                if let currentVideo = videoResource {
+                    if BackgroundUploadPolicy.livePhotoVideoPriority(resource.type)
+                        > BackgroundUploadPolicy.livePhotoVideoPriority(currentVideo.type) {
+                        videoResource = resource
+                    }
+                } else {
                     videoResource = resource
                 }
             } else if isMainPhoto {

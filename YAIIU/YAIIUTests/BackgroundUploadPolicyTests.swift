@@ -24,6 +24,29 @@ final class BackgroundUploadPolicyTests: XCTestCase {
         ]))
     }
 
+    func testForegroundPriorityAlwaysPrefersFullSizePairedVideo() {
+        // PhotoKit may enumerate generic full-size video either before or
+        // after the actual Live Photo paired companion.
+        XCTAssertGreaterThan(
+            BackgroundUploadPolicy.livePhotoVideoPriority(.fullSizePairedVideo),
+            BackgroundUploadPolicy.livePhotoVideoPriority(.fullSizeVideo)
+        )
+        XCTAssertGreaterThan(
+            BackgroundUploadPolicy.livePhotoVideoPriority(.pairedVideo),
+            BackgroundUploadPolicy.livePhotoVideoPriority(.fullSizeVideo)
+        )
+        XCTAssertEqual(
+            BackgroundUploadPolicy.preferredLivePhotoVideoIndex(types: [
+                .fullSizePairedVideo, .fullSizeVideo
+            ]), 0
+        )
+        XCTAssertEqual(
+            BackgroundUploadPolicy.preferredLivePhotoVideoIndex(types: [
+                .fullSizeVideo, .fullSizePairedVideo
+            ]), 1
+        )
+    }
+
     func testLivePhotoPairedVideoResourcesAreUploadable() {
         XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.pairedVideo))
         XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.fullSizePairedVideo))

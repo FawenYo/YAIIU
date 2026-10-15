@@ -23,7 +23,8 @@ public enum BackgroundUploadPolicy {
         }
     }
 
-    private static func livePhotoVideoPriority(_ type: PHAssetResourceType) -> Int {
+    // Shared by foreground and extension to avoid order-dependent video choice.
+    static func livePhotoVideoPriority(_ type: PHAssetResourceType) -> Int {
         switch type {
         case .fullSizePairedVideo: return 4
         case .pairedVideo: return 3
