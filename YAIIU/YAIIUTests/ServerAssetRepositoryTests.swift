@@ -2039,6 +2039,50 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
     }
 
+    func testStaleExtensionCannotRevertHostDestinationDuringSettingsPublication() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "current-account-asset",
+            primaryHash: "kept-primary-sha1", rawHash: nil, hasRAW: false
+        )
+        let bg = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(try bg.ensureDestinationIdentity("old-account"))
+        XCTAssertTrue(try bg.ensureDestinationIdentity("new-account"))
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "current-asset-id", checksum: "kept-primary-sha1",
+                ownerId: "new-owner"
+            )
+        ]))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 100),
+            syncType: "full", userId: "new-owner",
+            serverURL: "https://new.example", totalAssets: 1
+        ))
+        XCTAssertThrowsError(try bg.ensureDestinationIdentity(
+            "old-account", allowDestinationReset: false
+        ))
+        XCTAssertThrowsError(try bg.ensureDestinationIdentity(
+            "hybrid-settings", allowDestinationReset: false
+        ))
+        XCTAssertFalse(try bg.ensureDestinationIdentity(
+            "new-account", allowDestinationReset: false
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM background_upload_state
+            WHERE id = 1 AND destination_identity = 'new-account';
+        """), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM server_assets_cache;"), 1)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_metadata;"), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'current-account-asset'
+              AND sha1_hash = 'kept-primary-sha1';
+        """), 1)
+        // Legitimate future account changes remain permitted via the host.
+        XCTAssertTrue(try bg.ensureDestinationIdentity("later-host-account"))
+    }
+
     func testSwitchingDestinationPreservesNewAccountUploadBeforeExtensionReset() throws {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

@@ -103,7 +103,9 @@ final class BackgroundUploadExtensionCore {
             logWarning("Skipping run: upload destination is unavailable")
             return .completed
         }
-        if try database.ensureDestinationIdentity(destinationIdentity) {
+        if try database.ensureDestinationIdentity(
+            destinationIdentity, allowDestinationReset: false
+        ) {
             log("Upload destination identity changed or was initialized; restarting PhotoKit bootstrap discovery")
         }
         if database.isServerCatalogRebuilding() {

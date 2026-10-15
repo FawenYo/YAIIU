@@ -653,7 +653,9 @@ final class BackgroundUploadDatabase {
     /// forces a new bootstrap, while first-time initialization preserves existing
     /// upload/hash cache data from pre-delta builds.
     @discardableResult
-    func ensureDestinationIdentity(_ identity: String) throws -> Bool {
+    func ensureDestinationIdentity(
+        _ identity: String, allowDestinationReset: Bool = true
+    ) throws -> Bool {
         try queue.sync {
             guard let db else { throw sqliteError("Destination state database unavailable") }
 
@@ -681,6 +683,20 @@ final class BackgroundUploadDatabase {
             }
             guard selectResult == SQLITE_ROW || selectResult == SQLITE_DONE else {
                 throw sqliteError("Read destination identity")
+            }
+            // The host always registers the newly configured destination
+            // BEFORE publishing the URL/key to app-group settings. A running
+            // extension can observe stale (or partially published) settings.
+            // Only the host may authorize switching an existing SQLite
+            // destination; an extension must defer instead of resetting
+            // catalog, verdicts, and upload history back to old credentials.
+            if !allowDestinationReset && hadStateRow {
+                throw NSError(
+                    domain: "com.fawenyo.yaiiu.background-upload.destination",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Extension destination is stale; waiting for host settings publication"]
+                )
             }
 
             guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
