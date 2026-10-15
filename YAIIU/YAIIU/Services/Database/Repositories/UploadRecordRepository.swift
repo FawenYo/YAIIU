@@ -587,6 +587,13 @@ final class UploadRecordRepository {
             JOIN server_assets_cache sac ON sac.source_checksum = hc.sha1_hash
             WHERE ua.immich_id = 'unknown'
               AND NOT (
+                  ua.resource_type = 'video'
+                  AND EXISTS (
+                      SELECT 1 FROM live_photo_video_status AS v
+                      WHERE v.asset_id = ua.asset_id
+                  )
+              )
+              AND NOT (
                   ua.resource_type IN ('raw', 'video')
                   AND EXISTS (
                       SELECT 1 FROM uploaded_assets ua2
@@ -601,6 +608,13 @@ final class UploadRecordRepository {
             JOIN server_assets_cache sac ON sac.checksum = hc.sha1_hash
             WHERE sac.source_checksum IS NULL
               AND ua.immich_id = 'unknown'
+              AND NOT (
+                  ua.resource_type = 'video'
+                  AND EXISTS (
+                      SELECT 1 FROM live_photo_video_status AS v
+                      WHERE v.asset_id = ua.asset_id
+                  )
+              )
               AND NOT (
                   ua.resource_type IN ('raw', 'video')
                   AND EXISTS (
@@ -659,6 +673,13 @@ final class UploadRecordRepository {
                 let sql = """
                 UPDATE uploaded_assets SET immich_id = ?
                 WHERE asset_id = ? AND immich_id = 'unknown'
+                  AND NOT (
+                      resource_type = 'video'
+                      AND EXISTS (
+                          SELECT 1 FROM live_photo_video_status AS v
+                          WHERE v.asset_id = uploaded_assets.asset_id
+                      )
+                  )
                   AND NOT (
                       resource_type IN ('raw', 'video')
                       AND EXISTS (

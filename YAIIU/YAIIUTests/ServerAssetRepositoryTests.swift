@@ -164,6 +164,50 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(resolved[livePhotoAssetId], livePhotoId)
     }
 
+    func testUnknownLivePhotoVideoCannotBackfillFromStillChecksum() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "live-video-only-history",
+            primaryHash: "still-primary-sha", rawHash: nil, hasRAW: false
+        )
+        uploadRepository.markLivePhotoVideoRequired(
+            localIdentifier: "live-video-only-history"
+        )
+        // Its still image exists remotely but has no local upload-history row.
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "remote-still",
+                checksum: "still-primary-sha", ownerId: "owner-1"
+            ),
+            ServerAssetRecord(
+                immichId: "other-video",
+                checksum: "actual-video-sha", ownerId: "owner-1"
+            )
+        ]))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "live-video-only-history",
+            resourceType: "video", filename: "paired.mov", immichId: "unknown"
+        )
+        let mappings = uploadRepository.getResolvedImmichIdsFromServerCache()
+        XCTAssertNil(mappings["live-video-only-history"])
+
+        // Also guard the batch-update path against mappings produced by an
+        // older build or by a separately resolved primary resource.
+        uploadRepository.batchUpdateImmichIds([
+            "live-video-only-history": "remote-still"
+        ])
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'live-video-only-history'
+              AND resource_type = 'video' AND immich_id = 'unknown';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'live-video-only-history'
+              AND resource_type = 'video' AND immich_id = 'remote-still';
+        """), 0)
+    }
+
     func testAlbumAssetIdsIncludesStandaloneVideoAndRawUploadRecords() throws {
         let videoId = "77777777-7777-4777-8777-777777777777"
         let rawId = "88888888-8888-4888-8888-888888888888"
