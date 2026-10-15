@@ -762,7 +762,9 @@ final class BackgroundUploadExtensionCore {
                 return
             }
 
-            let resources = PHAssetResource.assetResources(for: asset).filter(self.shouldUpload)
+            let resources = BackgroundUploadPolicy.selectUploadableResources(
+                PHAssetResource.assetResources(for: asset), isLivePhoto: isLivePhoto
+            )
             var assetHasOutstandingWork = false
 
             for resource in resources {
@@ -863,8 +865,10 @@ final class BackgroundUploadExtensionCore {
                 lastProgressLog = Date()
                 self.log("Discovery progress: scanned \(scanned), found \(pending.count) pending")
             }
-            let resources = PHAssetResource.assetResources(for: asset)
-            for r in resources where self.shouldUpload(r) {
+            let resources = BackgroundUploadPolicy.selectUploadableResources(
+                PHAssetResource.assetResources(for: asset), isLivePhoto: isLivePhoto
+            )
+            for r in resources {
                 let type = self.resourceTypeString(for: r)
                 let key = "\(asset.localIdentifier)||\(type)"
                 if inflightKeys.contains(key) { continue }

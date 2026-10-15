@@ -3,6 +3,27 @@ import Photos
 @testable import YAIIU
 
 final class BackgroundUploadPolicyTests: XCTestCase {
+    func testLivePhotoVideoSelectionPrefersEditedVersionOnce() {
+        XCTAssertEqual(
+            BackgroundUploadPolicy.preferredLivePhotoVideoIndex(types: [
+                .photo, .pairedVideo, .fullSizePairedVideo
+            ]), 2
+        )
+        XCTAssertEqual(
+            BackgroundUploadPolicy.preferredLivePhotoVideoIndex(types: [
+                .fullSizePairedVideo, .pairedVideo, .photo
+            ]), 0
+        )
+        XCTAssertEqual(
+            BackgroundUploadPolicy.preferredLivePhotoVideoIndex(types: [
+                .photo, .pairedVideo
+            ]), 1
+        )
+        XCTAssertNil(BackgroundUploadPolicy.preferredLivePhotoVideoIndex(types: [
+            .photo, .alternatePhoto
+        ]))
+    }
+
     func testLivePhotoPairedVideoResourcesAreUploadable() {
         XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.pairedVideo))
         XCTAssertTrue(BackgroundUploadPolicy.isUploadableResourceType(.fullSizePairedVideo))
