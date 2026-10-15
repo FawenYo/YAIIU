@@ -571,11 +571,19 @@ struct PhotoGridView: View {
         // A destination switch clears the old catalog. Do not schedule new
         // hash/upload discovery while a sync is active, or before the new
         // destination has a committed server checkpoint.
-        if isSyncing || (
-            configuredSyncDestinationIdentity != nil
-            && ServerAssetSyncService.shared.getLastSyncInfo() == nil
-        ) {
+        if isSyncing {
+            logDebug("Deferring local processing while server sync is running", category: .sync)
+            return
+        }
+        if configuredSyncDestinationIdentity != nil
+            && ServerAssetSyncService.shared.getLastSyncInfo() == nil {
             logDebug("Deferring local processing until server catalog sync completes", category: .sync)
+            // performAutoSync() sets this before the initial fetch. A failed
+            // first sync leaves no catalog, so no hash run can start; clear
+            // only the UI-only Preparing state (not a running hash pipeline).
+            if hashManager.statusMessage == "Preparing..." {
+                hashManager.clearPreparingState()
+            }
             return
         }
         guard photoLibraryManager.assetCount > 0 else {
