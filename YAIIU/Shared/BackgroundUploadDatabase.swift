@@ -548,7 +548,39 @@ final class BackgroundUploadDatabase {
     
     func isResourceUploaded(assetId: String, resourceType: String) -> Bool {
         queue.sync {
-            let sql = "SELECT 1 FROM uploaded_assets WHERE asset_id = ? AND resource_type = ? LIMIT 1"
+            // A legacy upload with unknown remote ID is not authoritative
+            // after a completed server checksum check has explicitly found
+            // that resource missing. Keep the row for diagnostics, but do not
+            // let it suppress the retry of a remotely deleted asset.
+            // Known-ID history is cleared by server deletion handling.
+            let sql = """
+                SELECT 1 FROM uploaded_assets u
+                WHERE u.asset_id = ? AND u.resource_type = ?
+                  AND (
+                    u.immich_id != 'unknown'
+                    OR NOT EXISTS (
+                        SELECT 1 FROM hash_cache h
+                        WHERE h.asset_id = u.asset_id AND h.checked_at IS NOT NULL
+                          AND (
+                            (u.resource_type = 'raw' AND h.has_raw = 1
+                                AND h.raw_on_server = 0)
+                            OR (u.resource_type = 'video'
+                                AND EXISTS (
+                                    SELECT 1 FROM live_photo_video_status v
+                                    WHERE v.asset_id = h.asset_id
+                                      AND v.video_on_server = 0
+                                ))
+                            OR (NOT (u.resource_type = 'raw' AND h.has_raw = 1)
+                                AND NOT (u.resource_type = 'video' AND EXISTS (
+                                    SELECT 1 FROM live_photo_video_status v
+                                    WHERE v.asset_id = h.asset_id
+                                ))
+                                AND h.is_on_server = 0)
+                          )
+                    )
+                  )
+                LIMIT 1;
+            """
             
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }

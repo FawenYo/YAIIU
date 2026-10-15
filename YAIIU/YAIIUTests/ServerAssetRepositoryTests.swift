@@ -164,6 +164,53 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(resolved[livePhotoAssetId], livePhotoId)
     }
 
+    func testNegativeServerVerdictOverridesOldUnknownUploadHistory() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unknown-primary", primaryHash: "not-on-server",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unknown-raw", primaryHash: "existing-jpeg",
+            rawHash: "missing-raw", hasRAW: true
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unknown-primary", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "unknown"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unknown-raw", resourceType: "raw",
+            filename: "old.dng", immichId: "unknown"
+        )
+        // Simulate a later authoritative server check following a delta that
+        // removed the unknown-ID remote resources.
+        execute("""
+            UPDATE hash_cache SET checked_at = 200, is_on_server = 0
+            WHERE asset_id = 'unknown-primary';
+        """)
+        execute("""
+            UPDATE hash_cache
+            SET checked_at = 200, is_on_server = 1, raw_on_server = 0
+            WHERE asset_id = 'unknown-raw';
+        """)
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertFalse(background.isResourceUploaded(
+            assetId: "unknown-primary", resourceType: "jpeg"
+        ))
+        XCTAssertFalse(background.isResourceUploaded(
+            assetId: "unknown-raw", resourceType: "raw"
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id IN ('unknown-primary', 'unknown-raw');
+        """), 2)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'unknown-raw' AND sha1_hash = 'existing-jpeg'
+              AND raw_hash = 'missing-raw';
+        """), 1)
+    }
+
     func testUnknownLivePhotoVideoCannotBackfillFromStillChecksum() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
