@@ -1084,8 +1084,14 @@ final class HashCacheRepository {
 
         guard !storedDates.isEmpty else { return }
 
-        // Compare current modificationDate against stored date
+        // Compare current modificationDate against stored date. PhotoKit
+        // metadata changes can affect many assets at once; keep bounded
+        // diagnostics so unexpected mass rehashes can be identified without
+        // logging thousands of asset IDs.
         var invalidatedIds: [String] = []
+        var newerCount = 0
+        var olderCount = 0
+        var dateChangeSamples: [String] = []
 
         for snapshot in snapshots {
             let identifier = snapshot.localIdentifier
@@ -1094,8 +1100,15 @@ final class HashCacheRepository {
 
             let currentTimestamp = currentDate.timeIntervalSince1970
             // Use 1-second tolerance to avoid floating point noise
-            if abs(currentTimestamp - storedTimestamp) > 1.0 {
+            let difference = currentTimestamp - storedTimestamp
+            if abs(difference) > 1.0 {
                 invalidatedIds.append(identifier)
+                if difference > 0 { newerCount += 1 } else { olderCount += 1 }
+                if dateChangeSamples.count < 5 {
+                    dateChangeSamples.append(
+                        "\(String(identifier.prefix(12))):deltaSeconds=\(Int(difference))"
+                    )
+                }
             }
         }
 
@@ -1116,6 +1129,12 @@ final class HashCacheRepository {
         }
 
         logInfo("Invalidating \(invalidatedIds.count) modified assets", category: .hash)
+        if invalidatedIds.count >= 100 {
+            logWarning(
+                "Bulk modificationDate invalidation: count=\(invalidatedIds.count), newer=\(newerCount), older=\(olderCount), sample=\(dateChangeSamples). These are timestamp changes, not proof that image bytes changed.",
+                category: .hash
+            )
+        }
 
         // Delete both hash_cache and uploaded_assets for each invalidated asset
         connection.beginTransaction()
@@ -1161,7 +1180,10 @@ final class HashCacheRepository {
             connection.commitTransaction()
         }
 
-        logDebug("Invalidated assets: \(invalidatedIds.map { String($0.prefix(20)) })", category: .hash)
+        logDebug(
+            "Invalidated assets: count=\(invalidatedIds.count), first12=\(invalidatedIds.prefix(12).map { String($0.prefix(20)) })",
+            category: .hash
+        )
     }
 
     private func resetModifiedFailureRecords(snapshots: [PhotoAssetSnapshot]) {
