@@ -44,6 +44,20 @@ protocol ServerAssetSyncStore {
 extension ImmichAPIService: ServerAssetSyncAPI {}
 extension DatabaseManager: ServerAssetSyncStore {}
 
+/// Scope captured when starting asynchronous metadata backfill. A destination
+/// switch invalidates the revision before replacing account-scoped SQLite
+/// data; a stable external URL + API-key identity also prevents accidentally
+/// sending candidates to a different account or network route.
+struct MetadataBackfillDestinationScope {
+    let revision: UInt64
+    let identity: String
+
+    func isCurrent(currentIdentity: String?) -> Bool {
+        identity == currentIdentity
+            && ServerAssetSyncService.isCurrentDestination(revision)
+    }
+}
+
 class ServerAssetSyncService {
 
     // MARK: - Checksum Conversion
@@ -70,11 +84,11 @@ class ServerAssetSyncService {
         destinationWriteQueue.sync { destinationRevision &+= 1 }
     }
 
-    private static func capturedDestinationRevision() -> UInt64 {
+    static func capturedDestinationRevision() -> UInt64 {
         destinationWriteQueue.sync { destinationRevision }
     }
 
-    private static func isCurrentDestination(_ revision: UInt64) -> Bool {
+    static func isCurrentDestination(_ revision: UInt64) -> Bool {
         destinationWriteQueue.sync { destinationRevision == revision }
     }
 

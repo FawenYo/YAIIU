@@ -824,18 +824,39 @@ struct PhotoGridView: View {
         let existingUpdates = hashManager.pendingICloudIdUpdates
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
-        guard !serverURL.isEmpty && !apiKey.isEmpty else { return }
+        guard !serverURL.isEmpty && !apiKey.isEmpty,
+              let stableIdentity = UploadDestinationIdentity.make(
+                  serverURL: settingsManager.serverURL, apiKey: apiKey
+              ) else { return }
+
+        // Metadata candidates and existingUpdates are both account-scoped.
+        // The revision guard rejects tasks started before login/URL/logout
+        // changes, while stable identity remains unchanged across Wi-Fi
+        // internal/external endpoint routing switches.
+        let destination = MetadataBackfillDestinationScope(
+            revision: ServerAssetSyncService.capturedDestinationRevision(),
+            identity: stableIdentity
+        )
 
         // Full-snapshot reconciliation marks hashes checked without entering
         // the old per-asset server-check path. Find missing metadata in SQLite,
         // then ask PhotoKit only for cloud identifiers (no original downloads).
         DatabaseManager.shared.getMissingICloudIDBackfillCandidatesAsync { candidates in
             Task.detached(priority: .utility) {
+                // Do not mix candidates fetched before or after an account
+                // change with the server URL/key captured by this task.
+                func stillTargetsCurrentDestination() -> Bool {
+                    destination.isCurrent(currentIdentity: UploadDestinationIdentity.make(
+                        serverURL: SharedSettings.shared.serverURL,
+                        apiKey: SharedSettings.shared.apiKey
+                    ))
+                }
+                guard stillTargetsCurrentDestination() else { return }
                 var updates = existingUpdates
                 var scheduled = Set(existingUpdates.map { $0.immichId })
                 let lookupBatchSize = 500
                 for start in stride(from: 0, to: candidates.count, by: lookupBatchSize) {
-                    if Task.isCancelled { return }
+                    if Task.isCancelled || !stillTargetsCurrentDestination() { return }
                     let batch = Array(candidates[start..<min(start + lookupBatchSize, candidates.count)])
                     let identifiers = batch.map { $0.localIdentifier }
                     let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(
@@ -862,6 +883,10 @@ struct PhotoGridView: View {
                 var successCount = 0
                 var skipCount = 0
                 for batchStart in stride(from: 0, to: updates.count, by: batchSize) {
+                    // A different account might have taken over while the
+                    // previous PhotoKit lookup or API request was awaiting.
+                    // Never submit another batch from the old catalog.
+                    if Task.isCancelled || !stillTargetsCurrentDestination() { return }
                     let batch = Array(updates[batchStart..<min(batchStart + batchSize, updates.count)])
                     let items = batch.map { update in
                         MetadataUpdateItem(

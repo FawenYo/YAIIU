@@ -79,6 +79,28 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
+    func testMetadataBackfillDestinationScopeRejectsStaleAccountOrRevision() {
+        let oldRevision = ServerAssetSyncService.capturedDestinationRevision()
+        let scope = MetadataBackfillDestinationScope(
+            revision: oldRevision, identity: "immich-account-A"
+        )
+        XCTAssertTrue(scope.isCurrent(currentIdentity: "immich-account-A"))
+        XCTAssertFalse(scope.isCurrent(currentIdentity: "immich-account-B"))
+        XCTAssertFalse(scope.isCurrent(currentIdentity: nil))
+
+        // Changing the actual configured server/credential invalidates
+        // previously captured candidate lookup and metadata upload batches.
+        ServerAssetSyncService.invalidateInFlightSync()
+        XCTAssertFalse(scope.isCurrent(currentIdentity: "immich-account-A"))
+
+        let next = MetadataBackfillDestinationScope(
+            revision: ServerAssetSyncService.capturedDestinationRevision(),
+            identity: "immich-account-B"
+        )
+        XCTAssertTrue(next.isCurrent(currentIdentity: "immich-account-B"))
+        XCTAssertFalse(next.isCurrent(currentIdentity: "immich-account-A"))
+    }
+
     func testNewDestinationSyncCanSupersedeOldBlockedNetworkSync() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations)
