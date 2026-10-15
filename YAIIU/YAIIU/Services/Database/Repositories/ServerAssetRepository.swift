@@ -249,7 +249,11 @@ final class ServerAssetRepository {
                 logError("Failed to begin iCloud ID delete transaction: \(self.connection.lastErrorMessage)", category: .database)
                 return false
             }
-            let sql = "UPDATE server_assets_cache SET icloud_id = NULL WHERE immich_id = ?;"
+            // AssetMetadataDeleteV1 removes the *entire* mobile-app metadata
+            // value, including the original/source SHA1. Keeping the old
+            // source_checksum would mask a later AssetV2 checksum change.
+            let sql = "UPDATE server_assets_cache SET icloud_id = NULL, source_checksum = NULL WHERE immich_id = ?;"
+            var checksumsToInvalidate = Set<String>()
             var statement: OpaquePointer?
             var failed = false
 
@@ -260,18 +264,24 @@ final class ServerAssetRepository {
             }
 
             for immichId in immichIds {
+                let before = self.matchableChecksum(for: immichId)
                 sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     failed = true
-                    logError("Failed to clear iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
+                    logError("Failed to clear iCloud ID and source checksum: \(self.connection.lastErrorMessage)", category: .database)
                     break
+                }
+                let after = self.matchableChecksum(for: immichId)
+                if before != after {
+                    if let before { checksumsToInvalidate.insert(before) }
+                    if let after { checksumsToInvalidate.insert(after) }
                 }
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
             }
 
             sqlite3_finalize(statement)
-            if failed {
+            if failed || !self.invalidateChecks(for: checksumsToInvalidate) {
                 self.connection.rollbackTransaction()
                 return false
             }

@@ -1154,6 +1154,61 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets WHERE immich_id = 'asset-1';"), 0)
     }
 
+    func testMobileMetadataDeletionClearsSourceChecksumAndInvalidatesChecks() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "previous-source-match",
+            primaryHash: "old-source-sha1", rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "new-asset-checksum",
+            primaryHash: "new-server-sha1", rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unrelated-source",
+            primaryHash: "unrelated-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "metadata-removed", checksum: "old-server-sha1",
+                sourceChecksum: "old-source-sha1", iCloudId: "cloud-old",
+                ownerId: "owner-1"
+            )
+        ]))
+        execute("UPDATE hash_cache SET checked_at = 100, is_on_server = 1;")
+        XCTAssertTrue(repository.clearICloudIds(for: ["metadata-removed"]))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM server_assets_cache
+            WHERE immich_id = 'metadata-removed'
+              AND icloud_id IS NULL AND source_checksum IS NULL;
+        """), 1)
+        XCTAssertTrue(isUnchecked("previous-source-match"))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'unrelated-source'
+              AND checked_at IS NOT NULL AND sha1_hash = 'unrelated-sha1';
+        """), 1)
+
+        // The subsequent AssetV2 event has a new server checksum and no
+        // mobile metadata. It must not resurrect the deleted source checksum.
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "metadata-removed", checksum: "new-server-sha1",
+                ownerId: "owner-1"
+            )
+        ], syncType: "delta"))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM server_assets_cache
+            WHERE immich_id = 'metadata-removed'
+              AND checksum = 'new-server-sha1' AND source_checksum IS NULL;
+        """), 1)
+        XCTAssertTrue(isUnchecked("new-asset-checksum"))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'unrelated-source' AND checked_at IS NOT NULL;
+        """), 1)
+    }
+
     func testStaleVerdictCannotOverwriteServerDelta() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "one", primaryHash: "one-sum", rawHash: nil, hasRAW: false)
