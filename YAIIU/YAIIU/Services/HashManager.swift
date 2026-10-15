@@ -1388,7 +1388,16 @@ class HashManager: ObservableObject {
             finishProcessing(runID: runID)
             return
         }
-        
+        // A full/reset sync replaces the server catalog in multiple steps.
+        // Never derive negative verdicts or queue uploads from an incomplete
+        // catalog, including the failed-first-sync case without a checkpoint.
+        guard DatabaseManager.shared.getSyncMetadata() != nil,
+              !BackgroundUploadDatabase.shared.isServerCatalogRebuilding() else {
+            logInfo("Deferring server checks until an authoritative catalog is available", category: .hash)
+            finishProcessing(runID: runID)
+            return
+        }
+
         isCheckingActive = true
         
         // Get all multi-resource hashes that are not fully on server
@@ -1485,9 +1494,14 @@ class HashManager: ObservableObject {
                 self.statusMessage = "Checking cloud status (0/\(validRecords.count))..."
             }
             
-            // Sync metadata establishes whether the server cache is authoritative,
-            // even if a valid sync found ZERO server assets.
-            let hasServerCache = DatabaseManager.shared.getSyncMetadata() != nil
+            // A catalog reset might have started after startServerCheck().
+            // Abort rather than fall back to upload-history negatives.
+            guard DatabaseManager.shared.getSyncMetadata() != nil,
+                  !BackgroundUploadDatabase.shared.isServerCatalogRebuilding() else {
+                await MainActor.run { self.finishProcessing(runID: runID) }
+                return
+            }
+            let hasServerCache = true
 
             // Preload localIdentifier → immichId map from upload records for iCloudId backfill
             let uploadedMappings = DatabaseManager.shared.getAllUploadedAssetMappings()
@@ -1511,6 +1525,11 @@ class HashManager: ObservableObject {
             
             for record in validRecords {
                 guard self.isCurrentRun(runID), !self.shouldStop else { break }
+                if BackgroundUploadDatabase.shared.isServerCatalogRebuilding()
+                    || DatabaseManager.shared.getSyncMetadata() == nil {
+                    await MainActor.run { self.finishProcessing(runID: runID) }
+                    return
+                }
                 
                 let localIdentifier = record.assetId
                 

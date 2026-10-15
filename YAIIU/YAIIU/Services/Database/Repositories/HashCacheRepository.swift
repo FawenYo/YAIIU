@@ -450,7 +450,12 @@ final class HashCacheRepository {
                 UPDATE hash_cache
                 SET is_on_server = ?, raw_on_server = ?, checked_at = ?
                 WHERE asset_id = ? AND checked_at IS NULL
-                  AND server_check_revision = ?;
+                  AND server_check_revision = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM server_catalog_rebuild_state b
+                      WHERE b.id = 1
+                        AND b.started_at > (julianday('now') - 2440587.5) * 86400.0 - 1800
+                  );
             """
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {

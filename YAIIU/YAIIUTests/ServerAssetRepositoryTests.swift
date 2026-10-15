@@ -1209,6 +1209,43 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
     }
 
+    func testServerVerdictCannotCommitDuringFullCatalogRebuild() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "inflight-server-check",
+            primaryHash: "existing-local-sha1", rawHash: nil, hasRAW: false
+        )
+        let bg = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(true))
+        XCTAssertTrue(bg.isServerCatalogRebuilding())
+        XCTAssertFalse(hashes.updateMultiResourceHashCacheServerStatusIfCurrent(
+            localIdentifier: "inflight-server-check",
+            primaryOnServer: false, rawOnServer: false, expectedRevision: 0
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'inflight-server-check'
+              AND sha1_hash = 'existing-local-sha1'
+              AND checked_at IS NULL;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM background_upload_queue
+            WHERE asset_id = 'inflight-server-check';
+        """), 0)
+
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(false))
+        XCTAssertTrue(hashes.updateMultiResourceHashCacheServerStatusIfCurrent(
+            localIdentifier: "inflight-server-check",
+            primaryOnServer: true, rawOnServer: false, expectedRevision: 0
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'inflight-server-check'
+              AND is_on_server = 1 AND checked_at IS NOT NULL
+              AND sha1_hash = 'existing-local-sha1';
+        """), 1)
+    }
+
     func testStaleVerdictCannotOverwriteServerDelta() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(localIdentifier: "one", primaryHash: "one-sum", rawHash: nil, hasRAW: false)
