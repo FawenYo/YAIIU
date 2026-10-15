@@ -349,6 +349,41 @@ final class ServerAssetRepositoryTests: XCTestCase {
         )
     }
 
+    func testPartialForegroundJPEGUploadQueuesMissingRAWWithoutRehash() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "partial-foreground", primaryHash: "jpeg-saved",
+            rawHash: "raw-still-missing", hasRAW: true
+        )
+        // Simulate a known SHA1 that has not yet been checked against
+        // the current server; the JPEG succeeds but RAW upload fails.
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'partial-foreground' AND checked_at IS NULL;
+        """), 1)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "partial-foreground", resourceType: "jpeg",
+            filename: "partial.jpg", immichId: "remote-jpeg"
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'partial-foreground' AND checked_at IS NOT NULL
+              AND is_on_server = 1 AND raw_on_server = 0
+              AND sha1_hash = 'jpeg-saved' AND raw_hash = 'raw-still-missing';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM background_upload_queue
+            WHERE asset_id = 'partial-foreground';
+        """), 1)
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertFalse(background.getAllAssetsOnServer().contains("partial-foreground"))
+        XCTAssertTrue(background.getPartialServerCopyAssets().primaryConfirmed.contains("partial-foreground"))
+        XCTAssertFalse(background.getPartialServerCopyAssets().rawConfirmed.contains("partial-foreground"))
+        hashes.getAssetsNeedingHashAsync(allIdentifiers: ["partial-foreground"]) { ids in
+            XCTAssertTrue(ids.isEmpty)
+        }
+    }
+
     func testRawOnlyForegroundUploadMarksPrimaryComplete() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

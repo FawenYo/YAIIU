@@ -284,9 +284,40 @@ final class UploadRecordRepository {
         if updated && affectedHashRows == 0 {
             logDebug("Deferring upload verdict until hash row exists: \(localIdentifier)", category: .database)
         }
-        guard updated, connection.commitTransaction() else {
+        guard updated else {
             connection.rollbackTransaction()
             logError("Failed to persist foreground upload verdict: \(connection.lastErrorMessage)", category: .database)
+            return
+        }
+
+        // A foreground JPEG may complete while its RAW (or Live Photo video)
+        // companion fails. Record the still-missing copy durably even when
+        // checked_at is now non-NULL and the checksum-check query skips it.
+        // The extension will select only missing resources using per-copy flags.
+        let queueSQL = """
+            INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
+            SELECT h.asset_id, ?
+            FROM hash_cache h
+            WHERE h.asset_id = ? AND h.checked_at IS NOT NULL
+              AND (h.is_on_server = 0 OR (h.has_raw = 1 AND h.raw_on_server = 0)
+                   OR EXISTS (
+                       SELECT 1 FROM live_photo_video_status v
+                       WHERE v.asset_id = h.asset_id AND v.video_on_server = 0
+                   ));
+        """
+        var queueStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, queueSQL, -1, &queueStmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(queueStmt)
+            connection.rollbackTransaction()
+            return
+        }
+        sqlite3_bind_double(queueStmt, 1, Date().timeIntervalSince1970)
+        sqlite3_bind_text(queueStmt, 2, (localIdentifier as NSString).utf8String, -1, nil)
+        let queued = sqlite3_step(queueStmt) == SQLITE_DONE
+        sqlite3_finalize(queueStmt)
+        guard queued, connection.commitTransaction() else {
+            connection.rollbackTransaction()
+            logError("Failed to persist foreground upload or enqueue missing companion: \(connection.lastErrorMessage)", category: .database)
             return
         }
     }
