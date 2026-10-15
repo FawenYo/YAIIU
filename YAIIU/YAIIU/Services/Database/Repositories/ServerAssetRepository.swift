@@ -806,6 +806,21 @@ final class ServerAssetRepository {
             let statements = [
                 "DELETE FROM server_assets_cache;",
                 "DELETE FROM sync_metadata;",
+                // Once the previous catalog/checkpoint is cleared, its old
+                // full-snapshot capture time is no longer authoritative.
+                // A fresh barrier prevents pre-clear uploads (especially
+                // 'unknown' jobs without SHA1) from being treated as new.
+                // A successful full snapshot replaces this barrier with its
+                // actual capture time during finalization.
+                """
+                INSERT OR REPLACE INTO sync_snapshot_boundaries
+                    (id, snapshot_started_at, destination_identity)
+                VALUES (
+                    1,
+                    (julianday('now') - 2440587.5) * 86400.0,
+                    (SELECT destination_identity FROM background_upload_state WHERE id = 1)
+                );
+                """,
                 // The server can now differ completely. Retain SHA1s, not old verdicts.
                 "UPDATE hash_cache SET checked_at = NULL, is_on_server = 0, raw_on_server = 0, server_check_revision = server_check_revision + 1;",
                 "UPDATE live_photo_video_status SET video_on_server = 0;"

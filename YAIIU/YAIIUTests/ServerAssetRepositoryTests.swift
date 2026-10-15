@@ -1515,6 +1515,72 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
     }
 
+    func testClearedServerCatalogReplacesStaleBoundaryAndKeepsLocalHashes() {
+        let hashes = HashCacheRepository(connection: connection)
+        // A completed upload has no SHA1 yet; the last full snapshot could
+        // not verify a subsequent remote deletion without that SHA1.
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "old-unhashed",
+            resourceType: "jpeg", filename: "old.jpg",
+            immichId: "unknown", destinationIdentity: "same-destination"
+        )
+        execute("""
+            UPDATE uploaded_assets SET uploaded_at = 150
+            WHERE asset_id = 'old-unhashed';
+        """)
+        XCTAssertTrue(repository.finalizeFullServerSnapshot(
+            snapshotStartedAt: Date(timeIntervalSince1970: 100),
+            destinationIdentity: "same-destination"
+        ))
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 200),
+            syncType: "full", userId: "owner",
+            serverURL: "https://immich.example", totalAssets: 0,
+            lastAck: "full-checkpoint"
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM sync_snapshot_boundaries
+            WHERE snapshot_started_at = 100;
+        """), 1)
+
+        // A full/reset sync starts and clears the old cache, then fails.
+        XCTAssertTrue(repository.clearServerAssetsCache())
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_metadata;"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM server_assets_cache;"), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM sync_snapshot_boundaries
+            WHERE snapshot_started_at > 200 AND destination_identity IS NULL;
+        """), 1)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "old-unhashed",
+            primaryHash: "keep-original-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'old-unhashed'
+              AND sha1_hash = 'keep-original-sha1'
+              AND is_on_server = 0 AND checked_at IS NULL;
+        """), 1)
+
+        // New uploads after the reset can still confirm their own resource
+        // without needing to download/hash the older photos again.
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "after-reset",
+            resourceType: "jpeg", filename: "new.jpg",
+            immichId: "fresh-remote", destinationIdentity: "same-destination"
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "after-reset",
+            primaryHash: "new-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'after-reset'
+              AND sha1_hash = 'new-sha1'
+              AND is_on_server = 1 AND checked_at IS NOT NULL;
+        """), 1)
+    }
+
     func testSnapshotCaptureBoundaryPreservesPreCheckpointUploadWithoutHash() {
         let hashes = HashCacheRepository(connection: connection)
         uploadRepository.recordUploadedAsset(
