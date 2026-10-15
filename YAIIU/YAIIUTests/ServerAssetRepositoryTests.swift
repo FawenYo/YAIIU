@@ -1454,6 +1454,67 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'early';"), 1)
     }
 
+    func testDeltaSyncRetiresOldSnapshotBoundaryBeforeLateHashReconciliation() {
+        let hashes = HashCacheRepository(connection: connection)
+        // Both uploads finished after the old full snapshot captured at 100,
+        // but a later authoritative delta completed at 300.
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "remotely-deleted-unhashed",
+            resourceType: "jpeg", filename: "deleted.jpg",
+            immichId: "unknown", destinationIdentity: "same-destination"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "fresh-after-delta",
+            resourceType: "jpeg", filename: "new.jpg",
+            immichId: "unknown", destinationIdentity: "same-destination"
+        )
+        execute("""
+            UPDATE uploaded_assets SET uploaded_at =
+                CASE WHEN asset_id = 'remotely-deleted-unhashed'
+                     THEN 200 ELSE 400 END;
+        """)
+        execute("""
+            INSERT INTO sync_snapshot_boundaries
+                (id, snapshot_started_at, destination_identity)
+            VALUES (1, 100, 'same-destination');
+        """)
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 150),
+            syncType: "full", userId: "owner-1",
+            serverURL: "https://immich.example", totalAssets: 0,
+            lastAck: "old-full-ack"
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_snapshot_boundaries;"), 1)
+        // The delta has applied the remote deletion and is now authoritative.
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(timeIntervalSince1970: 300),
+            syncType: "delta", userId: "owner-1",
+            serverURL: "https://immich.example", totalAssets: 0,
+            lastAck: "new-delta-ack"
+        ))
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_snapshot_boundaries;"), 0)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "remotely-deleted-unhashed",
+            primaryHash: "still-cached-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'remotely-deleted-unhashed'
+              AND sha1_hash = 'still-cached-sha1'
+              AND checked_at IS NULL AND is_on_server = 0;
+        """), 1)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "fresh-after-delta",
+            primaryHash: "fresh-sha1", rawHash: nil, hasRAW: false
+        )
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'fresh-after-delta'
+              AND sha1_hash = 'fresh-sha1'
+              AND checked_at IS NOT NULL AND is_on_server = 1;
+        """), 1)
+    }
+
     func testSnapshotCaptureBoundaryPreservesPreCheckpointUploadWithoutHash() {
         let hashes = HashCacheRepository(connection: connection)
         uploadRepository.recordUploadedAsset(

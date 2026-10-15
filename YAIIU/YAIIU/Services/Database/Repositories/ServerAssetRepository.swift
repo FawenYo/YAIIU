@@ -995,6 +995,11 @@ final class ServerAssetRepository {
     ) -> Bool {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return false }
+            // Keep the sync checkpoint and its late-upload cutoff atomic.
+            // A new authoritative delta supersedes the earlier full snapshot:
+            // retaining that capture boundary would confirm uploads remotely
+            // deleted during the delta when their SHA1 was not yet available.
+            guard self.connection.beginTransaction() else { return false }
 
             let sql = """
             INSERT OR REPLACE INTO sync_metadata
@@ -1005,6 +1010,7 @@ final class ServerAssetRepository {
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
                 logError("Failed to prepare sync metadata save: \(self.connection.lastErrorMessage)", category: .database)
+                self.connection.rollbackTransaction()
                 return false
             }
 
@@ -1023,9 +1029,30 @@ final class ServerAssetRepository {
             if sqlite3_step(statement) != SQLITE_DONE {
                 logError("Failed to save sync metadata: \(self.connection.lastErrorMessage)", category: .database)
                 sqlite3_finalize(statement)
+                self.connection.rollbackTransaction()
                 return false
             }
             sqlite3_finalize(statement)
+
+            if syncType == "delta" {
+                // After this completed delta, late uploads must be newer than
+                // its authoritative checkpoint. Never re-use the capture time
+                // from an older full sync. The conservative cutoff may retry an
+                // upload concurrent with the delta, but cannot silently skip
+                // an asset deleted from the remote during that delta.
+                if sqlite3_exec(
+                    self.connection.db, "DELETE FROM sync_snapshot_boundaries;",
+                    nil, nil, nil
+                ) != SQLITE_OK {
+                    logError("Failed to retire obsolete full-sync upload boundary: \(self.connection.lastErrorMessage)", category: .database)
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return false
+            }
             return true
         }
     }
