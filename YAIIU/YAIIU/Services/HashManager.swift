@@ -461,6 +461,28 @@ final class HashMemoryPressureThrottle: @unchecked Sendable {
     }
 }
 
+/// A hash result must belong to the Immich destination that admitted its run.
+/// This lock-backed scope can be checked from requestData worker tasks, not
+/// only from the SwiftUI main actor.
+final class HashRunDestinationScope: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeRunID: UUID?
+    private var admittedRevision: UInt64?
+
+    func admit(runID: UUID, revision: UInt64) {
+        lock.lock()
+        activeRunID = runID
+        admittedRevision = revision
+        lock.unlock()
+    }
+
+    func isCurrent(runID: UUID, revision: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeRunID == runID && admittedRevision == revision
+    }
+}
+
 class HashManager: ObservableObject {
     static let shared = HashManager()
     
@@ -503,6 +525,7 @@ class HashManager: ObservableObject {
     private var checkTask: Task<Void, Never>?
     private var matchingTask: Task<Void, Never>?
     private let runState = HashPipelinePolicy.RunState()
+    private let destinationScope = HashRunDestinationScope()
     private let photoKitRateLimiter = PhotoKitRateLimiter(
         bytesPerSecond: HashPipelinePolicy.photoKitTargetBytesPerSecond
     )
@@ -598,6 +621,13 @@ class HashManager: ObservableObject {
             }
         }) else { return }
 
+        // Admission captures the same revision invalidated by
+        // SettingsManager.login/updateServerURL/logout before SQLite reset.
+        // Every worker-side isCurrentRun check rejects old destination work.
+        destinationScope.admit(
+            runID: runID,
+            revision: ServerAssetSyncService.capturedDestinationRevision()
+        )
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
@@ -1603,6 +1633,17 @@ class HashManager: ObservableObject {
         loadCachedStatus()
     }
     
+    /// Account changes invalidate the destination revision synchronously.
+    /// Cancel the old network/PhotoKit tasks and release its UI run state.
+    @MainActor
+    func cancelForDestinationChange() {
+        if isProcessing {
+            stopProcessing()
+        } else {
+            clearPreparingState()
+        }
+    }
+
     @MainActor
     func stopProcessing() {
         guard runState.beginStopping() else { return }
@@ -1643,6 +1684,10 @@ class HashManager: ObservableObject {
 
     private func isCurrentRun(_ runID: UUID) -> Bool {
         runState.owns(runID)
+            && destinationScope.isCurrent(
+                runID: runID,
+                revision: ServerAssetSyncService.capturedDestinationRevision()
+            )
     }
     
     func getSyncStatus(for localIdentifier: String) -> PhotoSyncStatus {

@@ -3,6 +3,20 @@ import XCTest
 @testable import YAIIU
 
 final class HashPipelinePolicyTests: XCTestCase {
+    func testHashRunDestinationScopeRejectsStaleGenerationAndRunID() {
+        let scope = HashRunDestinationScope()
+        let admitted = UUID()
+        let newer = UUID()
+        scope.admit(runID: admitted, revision: 40)
+        XCTAssertTrue(scope.isCurrent(runID: admitted, revision: 40))
+        XCTAssertFalse(scope.isCurrent(runID: admitted, revision: 41))
+        XCTAssertFalse(scope.isCurrent(runID: newer, revision: 40))
+        scope.admit(runID: newer, revision: 41)
+        XCTAssertFalse(scope.isCurrent(runID: admitted, revision: 41))
+        XCTAssertTrue(scope.isCurrent(runID: newer, revision: 41))
+    }
+
+
     func testSingleICloudChecksumShortcutRejectsLiveAndRAWCompanions() {
         XCTAssertTrue(HashPipelinePolicy.canUseSingleChecksumMatch(
             hasRAWCompanion: false, isLivePhoto: false
