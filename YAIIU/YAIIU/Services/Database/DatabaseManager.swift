@@ -332,6 +332,11 @@ final class DatabaseManager {
     }
 
     @discardableResult
+    func setServerSnapshotRebuilding(_ rebuilding: Bool) -> Bool {
+        serverRepo.setServerSnapshotRebuilding(rebuilding)
+    }
+
+    @discardableResult
     func finalizeFullServerSnapshot(
         snapshotStartedAt: Date = Date(),
         destinationIdentity: String? = nil

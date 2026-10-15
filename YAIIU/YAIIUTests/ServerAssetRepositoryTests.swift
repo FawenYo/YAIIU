@@ -1515,6 +1515,34 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
     }
 
+    func testSnapshotRebuildBarrierSuppressesPhotoKitSchedulingAndExpiresAfterCrash() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "already-hashed", primaryHash: "preserved-sha1",
+            rawHash: nil, hasRAW: false
+        )
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertFalse(background.isServerCatalogRebuilding())
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(true))
+        XCTAssertTrue(background.isServerCatalogRebuilding())
+        XCTAssertTrue(repository.clearServerAssetsCache())
+        XCTAssertTrue(background.isServerCatalogRebuilding())
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'already-hashed' AND sha1_hash = 'preserved-sha1';
+        """), 1)
+        XCTAssertTrue(repository.finalizeFullServerSnapshot(
+            snapshotStartedAt: Date(), destinationIdentity: nil
+        ))
+        XCTAssertTrue(background.isServerCatalogRebuilding())
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(false))
+        XCTAssertFalse(background.isServerCatalogRebuilding())
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(true))
+        execute("UPDATE server_catalog_rebuild_state SET started_at = 1 WHERE id = 1;")
+        XCTAssertFalse(background.isServerCatalogRebuilding())
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(false))
+    }
+
     func testClearedServerCatalogReplacesStaleBoundaryAndKeepsLocalHashes() {
         let hashes = HashCacheRepository(connection: connection)
         // A completed upload has no SHA1 yet; the last full snapshot could

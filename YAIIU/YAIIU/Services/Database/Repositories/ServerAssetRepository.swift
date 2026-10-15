@@ -997,6 +997,24 @@ final class ServerAssetRepository {
         }
     }
 
+    /// Cross-process gate for a full/reset server catalog rebuild.
+    /// This never clears the local SHA1 cache.
+    func setServerSnapshotRebuilding(_ rebuilding: Bool) -> Bool {
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return false }
+            let sql = rebuilding ? """
+                INSERT INTO server_catalog_rebuild_state (id, started_at)
+                VALUES (1, (julianday('now') - 2440587.5) * 86400.0)
+                ON CONFLICT(id) DO UPDATE SET started_at = excluded.started_at;
+                """ : "DELETE FROM server_catalog_rebuild_state WHERE id = 1;"
+            let ok = sqlite3_exec(self.connection.db, sql, nil, nil, nil) == SQLITE_OK
+            if !ok {
+                logError("Failed to update server snapshot rebuild barrier: \(self.connection.lastErrorMessage)", category: .database)
+            }
+            return ok
+        }
+    }
+
     // MARK: - Sync Metadata
 
     @discardableResult

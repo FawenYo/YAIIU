@@ -28,6 +28,7 @@ protocol ServerAssetSyncStore {
     func getServerAssetByImmichId(_ immichId: String) -> ServerAssetRecord?
     func getSyncMetadata() -> SyncMetadata?
     func clearServerAssetsCache() -> Bool
+    func setServerSnapshotRebuilding(_ rebuilding: Bool) -> Bool
     func finalizeFullServerSnapshot(snapshotStartedAt: Date, destinationIdentity: String?) -> Bool
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
     func deleteServerAssets(_ immichIds: [String]) -> Bool
@@ -175,6 +176,12 @@ class ServerAssetSyncService {
         progressHandler: ((SyncProgress) -> Void)?,
         resetRetryRemaining: Bool = true
     ) async throws -> SyncResult {
+        var rebuildBarrierActive = false
+        defer {
+            if rebuildBarrierActive && !dbManager.setServerSnapshotRebuilding(false) {
+                logError("Could not release server snapshot rebuild barrier", category: .sync)
+            }
+        }
         logInfo("Starting server assets sync", category: .sync)
         reportProgress(SyncProgress(phase: .connecting, fetchedCount: 0, message: ""), handler: progressHandler)
         reportProgress(SyncProgress(phase: .fetchingUserInfo, fetchedCount: 0, message: ""), handler: progressHandler)
@@ -209,6 +216,10 @@ class ServerAssetSyncService {
                 throw SyncError.repeatedServerReset
             }
 
+            guard dbManager.setServerSnapshotRebuilding(true) else {
+                throw SyncError.syncFailed(reason: "Failed to mark reset snapshot as rebuilding")
+            }
+            rebuildBarrierActive = true
             guard clearCache() else {
                 throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
             }
@@ -266,8 +277,14 @@ class ServerAssetSyncService {
         )
 
 
-        if syncType == "full", !clearCache() {
-            throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
+        if syncType == "full" {
+            guard dbManager.setServerSnapshotRebuilding(true) else {
+                throw SyncError.syncFailed(reason: "Failed to mark full snapshot as rebuilding")
+            }
+            rebuildBarrierActive = true
+            guard clearCache() else {
+                throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
+            }
         }
 
         if !serverAssetRecords.isEmpty,

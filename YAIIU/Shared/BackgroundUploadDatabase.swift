@@ -115,6 +115,13 @@ final class BackgroundUploadDatabase {
             )
         """)
 
+        exec("""
+            CREATE TABLE IF NOT EXISTS server_catalog_rebuild_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                started_at REAL NOT NULL
+            )
+        """)
+
         // Background PhotoKit upload may launch before the host's v11 migration.
         var uploadColumns: Set<String> = []
         var uploadStatement: OpaquePointer?
@@ -182,6 +189,25 @@ final class BackgroundUploadDatabase {
         }
     }
     
+    /// A full/reset sync replaces the catalog across several transactions.
+    /// Prevent PhotoKit uploads based on intermediate, unverified verdicts.
+    /// The age limit avoids a permanent block if the host app is terminated.
+    func isServerCatalogRebuilding(now: Date = Date()) -> Bool {
+        queue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(
+                db,
+                """
+                SELECT 1 FROM server_catalog_rebuild_state
+                WHERE id = 1 AND started_at > ? LIMIT 1;
+                """, -1, &stmt, nil
+            ) == SQLITE_OK else { return false }
+            sqlite3_bind_double(stmt, 1, now.timeIntervalSince1970 - 30 * 60)
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
     // MARK: - Upload Jobs
     
     func createOrUpdateJob(assetId: String, resourceType: String, filename: String, status: UploadJobStatus = .pending) {

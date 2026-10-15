@@ -34,6 +34,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             return XCTFail("Expected sync to succeed")
         }
         XCTAssertEqual(operations.values, [
+            "begin-rebuild",
             "clear-cache",
             "save-assets",
             "delete-assets",
@@ -44,8 +45,23 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             "finalize-full-snapshot",
             "save-sync-metadata",
             "send-acks",
+            "end-rebuild",
         ])
         XCTAssertEqual(api.sentAcks, ["AssetMetadataV1|metadata-1", "AssetV2|asset-1"])
+    }
+
+    func testRebuildBarrierReleasedAfterFailedFullSnapshot() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        store.shouldFailFullSnapshotFinalization = true
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+        let result = await sync(service)
+        guard case .failure = result else { return XCTFail("Expected sync failure") }
+        XCTAssertFalse(store.rebuildBarrierActive)
+        XCTAssertTrue(operations.values.contains("begin-rebuild"))
+        XCTAssertTrue(operations.values.contains("end-rebuild"))
+        XCTAssertFalse(operations.values.contains("send-acks"))
     }
 
     func testSyncDoesNotAcknowledgeWhenPersistenceFails() async throws {
@@ -76,7 +92,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         guard case .failure = result else {
             return XCTFail("Expected sync to fail")
         }
-        XCTAssertEqual(operations.values, ["clear-cache"])
+        XCTAssertEqual(operations.values, ["begin-rebuild", "clear-cache", "end-rebuild"])
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
@@ -107,7 +123,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         guard case .success = result else {
             return XCTFail("Expected sync to succeed")
         }
-        XCTAssertEqual(Array(operations.values.prefix(2)), ["clear-cache", "save-assets"])
+        XCTAssertEqual(Array(operations.values.prefix(3)), ["begin-rebuild", "clear-cache", "save-assets"])
     }
 
     func testFullSyncDoesNotAcknowledgeWhenCacheClearFails() async throws {
@@ -122,7 +138,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         guard case .failure = result else {
             return XCTFail("Expected sync to fail")
         }
-        XCTAssertEqual(operations.values, ["clear-cache"])
+        XCTAssertEqual(operations.values, ["begin-rebuild", "clear-cache", "end-rebuild"])
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
@@ -265,6 +281,12 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
     func clearServerAssetsCache() -> Bool {
         operations.append("clear-cache")
         return !shouldFailCacheClear
+    }
+    private(set) var rebuildBarrierActive = false
+    func setServerSnapshotRebuilding(_ rebuilding: Bool) -> Bool {
+        rebuildBarrierActive = rebuilding
+        operations.append(rebuilding ? "begin-rebuild" : "end-rebuild")
+        return true
     }
 
     func finalizeFullServerSnapshot(snapshotStartedAt: Date, destinationIdentity: String?) -> Bool {

@@ -104,6 +104,7 @@ final class SQLiteConnection {
         createServerAssetsCacheTable()
         createSyncMetadataTable()
         createSyncSnapshotBoundariesTable()
+        createServerCatalogRebuildStateTable()
         createChangeTokensTable()
         createBackgroundUploadQueueTable()
         createBackgroundUploadStateTable()
@@ -230,6 +231,15 @@ final class SQLiteConnection {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 snapshot_started_at REAL NOT NULL,
                 destination_identity TEXT
+            );
+        """)
+    }
+
+    private func createServerCatalogRebuildStateTable() {
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS server_catalog_rebuild_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                started_at REAL NOT NULL
             );
         """)
     }
