@@ -470,7 +470,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
-    func testBackgroundRAWUploadDistinguishesOnlyFromCompanion() {
+    func testBackgroundRAWUploadDistinguishesOnlyFromCompanion() throws {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(
             localIdentifier: "background-raw-only", primaryHash: "raw-only-hash",
@@ -488,6 +488,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             VALUES ('background-raw-only', 'raw', 'photo.dng', 'uploading', 100, 100);
         """)
         let backgroundDB = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        try backgroundDB.ensureDestinationIdentity("test-destination")
         backgroundDB.markResourcePresent(
             assetId: "background-raw-only", resourceType: "raw"
         )
@@ -502,12 +503,14 @@ final class ServerAssetRepositoryTests: XCTestCase {
         backgroundDB.recordUploadedAsset(
             assetId: "background-raw-only", resourceType: "raw",
             filename: "photo.dng", immichId: "remote-raw-only",
-            fileSize: 120, isDuplicate: false
+            fileSize: 120, isDuplicate: false,
+            destinationIdentity: "test-destination"
         )
         backgroundDB.recordUploadedAsset(
             assetId: "background-pair", resourceType: "raw",
             filename: "paired.dng", immichId: "remote-raw-companion",
-            fileSize: 130, isDuplicate: false
+            fileSize: 130, isDuplicate: false,
+            destinationIdentity: "test-destination"
         )
 
         XCTAssertEqual(count("""
@@ -522,6 +525,94 @@ final class ServerAssetRepositoryTests: XCTestCase {
               AND is_on_server = 0 AND raw_on_server = 1
               AND has_raw = 1 AND server_check_revision = 1;
         """), 1)
+    }
+
+    func testBackgroundUploadCompletionRejectsPreviousDestinationAtomically() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "stale-primary", primaryHash: "primary-checksum",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "stale-pair", primaryHash: "jpeg-checksum",
+            rawHash: "raw-checksum", hasRAW: true
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "stale-live", primaryHash: "live-checksum",
+            rawHash: nil, hasRAW: false
+        )
+        uploadRepository.markLivePhotoVideoRequired(localIdentifier: "stale-live")
+
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        try background.ensureDestinationIdentity("old-destination")
+        try background.ensureDestinationIdentity("new-destination")
+
+        for (asset, type) in [
+            ("stale-primary", "jpeg"), ("stale-pair", "raw"), ("stale-live", "video")
+        ] {
+            XCTAssertEqual(background.recordUploadedAsset(
+                assetId: asset, resourceType: type, filename: "old-file",
+                immichId: "old-immich-id", fileSize: 1, isDuplicate: false,
+                destinationIdentity: "old-destination"
+            ), .staleDestination)
+        }
+
+        // Neither upload history nor individual resource flags may be
+        // marked on the new account by the old account's response.
+        XCTAssertEqual(count("SELECT COUNT(*) FROM uploaded_assets;"), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE is_on_server = 1 OR raw_on_server = 1
+               OR checked_at IS NOT NULL OR server_check_revision != 1;
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'stale-live' AND video_on_server = 1;
+        """), 0)
+
+        XCTAssertEqual(background.recordUploadedAsset(
+            assetId: "stale-primary", resourceType: "jpeg",
+            filename: "new-file", immichId: "new-immich-id",
+            fileSize: 2, isDuplicate: false,
+            destinationIdentity: "new-destination"
+        ), .recorded)
+        XCTAssertEqual(background.recordUploadedAsset(
+            assetId: "stale-live", resourceType: "video",
+            filename: "new-video", immichId: "new-video-id",
+            fileSize: 2, isDuplicate: false,
+            destinationIdentity: "new-destination"
+        ), .recorded)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE destination_identity = 'new-destination';
+        """), 2)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'stale-primary' AND is_on_server = 1
+              AND checked_at IS NOT NULL;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'stale-live' AND video_on_server = 1;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'stale-live' AND is_on_server = 0;
+        """), 1)
+    }
+
+    func testJobDestinationIdentityMatchesConfiguredDestinationIdentity() {
+        let url = URL(string: "https://immich.example/api/assets/background")!
+        XCTAssertEqual(
+            UploadDestinationIdentity.make(
+                serverURL: "https://immich.example", apiKey: "token"
+            ),
+            UploadDestinationIdentity.make(uploadURL: url, apiKey: "token")
+        )
+        XCTAssertNotEqual(
+            UploadDestinationIdentity.make(uploadURL: url, apiKey: "old-token"),
+            UploadDestinationIdentity.make(uploadURL: url, apiKey: "new-token")
+        )
     }
 
     func testLivePhotoJPEGAloneRemainsIncompleteUntilVideoUpload() {

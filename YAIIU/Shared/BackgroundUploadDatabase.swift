@@ -6,14 +6,27 @@ enum UploadDestinationIdentity {
     // The same destination material as PhotoKit background uploads;
     // persist only its SHA-256 digest, never the API key itself.
     static func make(serverURL: String, apiKey: String) -> String? {
-        guard !serverURL.isEmpty, !apiKey.isEmpty,
+        guard !serverURL.isEmpty,
               let url = URL(string: "\(serverURL)/api/assets/background") else {
             return nil
         }
-        let material = "\(url.absoluteString)\u{0}\(apiKey)"
+        return make(uploadURL: url, apiKey: apiKey)
+    }
+
+    // Capture the completed PhotoKit job's destination rather than mutable
+    // settings that might already refer to a different Immich account.
+    static func make(uploadURL: URL, apiKey: String) -> String? {
+        guard !apiKey.isEmpty else { return nil }
+        let material = "\(uploadURL.absoluteString)\u{0}\(apiKey)"
         return SHA256.hash(data: Data(material.utf8))
             .map { String(format: "%02x", $0) }.joined()
     }
+}
+
+enum BackgroundUploadRecordResult: Equatable {
+    case recorded
+    case staleDestination
+    case failed
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -503,45 +516,83 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    func recordUploadedAsset(assetId: String, resourceType: String, filename: String, immichId: String, fileSize: Int64, isDuplicate: Bool) {
+    // Prevent a late completion from the previous Immich destination from
+    // writing a positive verdict into a newly selected destination. The host
+    // reset takes the same SQLite writer lock, so none of these writes can
+    // interleave with an account switch.
+    func recordUploadedAsset(
+        assetId: String, resourceType: String, filename: String,
+        immichId: String, fileSize: Int64, isDuplicate: Bool,
+        destinationIdentity: String
+    ) -> BackgroundUploadRecordResult {
         queue.sync {
-            let sql = """
-                INSERT OR REPLACE INTO uploaded_assets
-                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at, destination_identity)
-                VALUES (?, ?, ?, ?, ?, ?, ?,
-                    (SELECT destination_identity FROM background_upload_state WHERE id = 1))
-            """
-            
-            var stmt: OpaquePointer?
-            defer { sqlite3_finalize(stmt) }
-            
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-            
-            sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 2, resourceType, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 3, filename, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 4, immichId, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 5, fileSize)
-            sqlite3_bind_int(stmt, 6, isDuplicate ? 1 : 0)
-            sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
-            
-            sqlite3_step(stmt)
-
-            if resourceType == "video" {
-                var videoStmt: OpaquePointer?
-                if sqlite3_prepare_v2(
-                    db, "UPDATE live_photo_video_status SET video_on_server = 1 WHERE asset_id = ?",
-                    -1, &videoStmt, nil
-                ) == SQLITE_OK {
-                    sqlite3_bind_text(videoStmt, 1, assetId, -1, SQLITE_TRANSIENT)
-                    sqlite3_step(videoStmt)
+            guard let db,
+                  sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK
+            else { return .failed }
+            var committed = false
+            defer {
+                if !committed {
+                    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
                 }
-                sqlite3_finalize(videoStmt)
             }
 
-            // A RAW-only asset keeps its sole RAW resource in the primary
-            // hash column (has_raw = 0). JPEG+RAW companions use raw_on_server.
-            let updateSql = """
+            var identityStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db, "SELECT destination_identity FROM background_upload_state WHERE id = 1",
+                -1, &identityStmt, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(identityStmt)
+                return .failed
+            }
+            let state = sqlite3_step(identityStmt)
+            let storedIdentity = state == SQLITE_ROW
+                ? sqlite3_column_text(identityStmt, 0).map { String(cString: $0) }
+                : nil
+            sqlite3_finalize(identityStmt)
+            guard state == SQLITE_ROW || state == SQLITE_DONE else { return .failed }
+            guard storedIdentity == destinationIdentity else { return .staleDestination }
+
+            func execute(_ sql: String, bind: (OpaquePointer?) -> Void) -> Bool {
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                    sqlite3_finalize(stmt)
+                    return false
+                }
+                defer { sqlite3_finalize(stmt) }
+                bind(stmt)
+                return sqlite3_step(stmt) == SQLITE_DONE
+            }
+
+            let inserted = execute("""
+                INSERT OR REPLACE INTO uploaded_assets
+                (asset_id, resource_type, filename, immich_id, file_size,
+                 is_duplicate, uploaded_at, destination_identity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """) { stmt in
+                sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 2, resourceType, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 3, filename, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 4, immichId, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(stmt, 5, fileSize)
+                sqlite3_bind_int(stmt, 6, isDuplicate ? 1 : 0)
+                sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
+                sqlite3_bind_text(stmt, 8, destinationIdentity, -1, SQLITE_TRANSIENT)
+            }
+            guard inserted else { return .failed }
+
+            if resourceType == "video" {
+                let updatedVideo = execute("""
+                    UPDATE live_photo_video_status
+                    SET video_on_server = 1 WHERE asset_id = ?
+                """) { stmt in
+                    sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT)
+                }
+                guard updatedVideo else { return .failed }
+            }
+
+            // RAW-only files use the primary hash; a JPEG+RAW companion updates
+            // only raw_on_server. A Live Photo video never completes its JPEG.
+            let updatedHash = execute("""
                 UPDATE hash_cache
                 SET is_on_server = CASE
                         WHEN ? = 'raw' AND has_raw = 1 THEN is_on_server
@@ -557,22 +608,26 @@ final class BackgroundUploadDatabase {
                     END,
                     checked_at = ?,
                     server_check_revision = server_check_revision + 1
-                WHERE asset_id = ?;
-            """
-            var updateStmt: OpaquePointer?
-            defer { sqlite3_finalize(updateStmt) }
-
-            if sqlite3_prepare_v2(db, updateSql, -1, &updateStmt, nil) == SQLITE_OK {
-                sqlite3_bind_text(updateStmt, 1, resourceType, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(updateStmt, 2, resourceType, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(updateStmt, 3, resourceType, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_double(updateStmt, 4, Date().timeIntervalSince1970)
-                sqlite3_bind_text(updateStmt, 5, assetId, -1, SQLITE_TRANSIENT)
-                sqlite3_step(updateStmt)
+                WHERE asset_id = ?
+            """) { stmt in
+                sqlite3_bind_text(stmt, 1, resourceType, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 2, resourceType, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 3, resourceType, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_double(stmt, 4, Date().timeIntervalSince1970)
+                sqlite3_bind_text(stmt, 5, assetId, -1, SQLITE_TRANSIENT)
             }
+            guard updatedHash else { return .failed }
+
+            // If hashing has not succeeded yet, destination-tagged upload
+            // history remains durable until the later hash reconciliation.
+            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                return .failed
+            }
+            committed = true
+            return .recorded
         }
     }
-    
+
     func isResourceUploaded(assetId: String, resourceType: String) -> Bool {
         queue.sync {
             // A legacy upload with unknown remote ID is not authoritative

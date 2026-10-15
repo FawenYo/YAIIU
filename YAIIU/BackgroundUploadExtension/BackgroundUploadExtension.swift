@@ -362,7 +362,7 @@ final class BackgroundUploadExtensionCore {
                 logWarning("Could not resolve identity for completed job \(job.localIdentifier); acknowledging without recording")
             }
 
-            let currentVersionSucceeded: Bool
+            var currentVersionSucceeded: Bool
             if succeeded, let identity {
                 currentVersionSucceeded = jobMatchesCurrentAssetState(job, identity: identity)
                 if !currentVersionSucceeded {
@@ -387,15 +387,34 @@ final class BackgroundUploadExtensionCore {
             // is idempotent, while a termination between commit and record would lose
             // the upload's durable record.
             if currentVersionSucceeded, let identity {
-                database.recordUploadedAsset(
+                // Job URL and authorization are immutable; App Group settings
+                // may already belong to another account by this point.
+                guard let jobDestination = jobDestinationIdentity(for: job) else {
+                    logError("Completed job has no valid destination identity; deferring acknowledgement")
+                    continue
+                }
+                switch database.recordUploadedAsset(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
                     filename: identity.filename,
                     immichId: immichId ?? "unknown",
                     fileSize: 0,
-                    isDuplicate: false
-                )
-                SharedSettings.shared.lastBackgroundUploadAt = Date()
+                    isDuplicate: false,
+                    destinationIdentity: jobDestination
+                ) {
+                case .recorded:
+                    SharedSettings.shared.lastBackgroundUploadAt = Date()
+                case .staleDestination:
+                    // Acknowledge this obsolete job but do not confirm any
+                    // local resource for the newly selected Immich account.
+                    currentVersionSucceeded = false
+                    logWarning("Ignoring completed upload to previous Immich destination")
+                case .failed:
+                    // Avoid acknowledging a successful PhotoKit job whose
+                    // persistent completion evidence could not be saved.
+                    logError("Could not persist completed upload; will retry acknowledgement")
+                    continue
+                }
             }
 
             var requested = false
@@ -944,6 +963,15 @@ final class BackgroundUploadExtensionCore {
     private func currentDestinationIdentity() -> String? {
         UploadDestinationIdentity.make(
             serverURL: settings.serverURL, apiKey: settings.apiKey
+        )
+    }
+
+    private func jobDestinationIdentity(for job: PHAssetResourceUploadJob) -> String? {
+        guard let url = job.destination.url,
+              let authorization = job.destination.value(forHTTPHeaderField: "Authorization"),
+              authorization.hasPrefix("Bearer ") else { return nil }
+        return UploadDestinationIdentity.make(
+            uploadURL: url, apiKey: String(authorization.dropFirst(7))
         )
     }
 
