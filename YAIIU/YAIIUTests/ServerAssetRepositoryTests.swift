@@ -858,6 +858,57 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NULL;"), 2)
     }
 
+    func testDeletingServerLiveVideoRevokesUnknownCompanionHistory() {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "deleted-live-video", primaryHash: "live-photo-jpeg",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "unrelated-live-video", primaryHash: "other-jpeg",
+            rawHash: nil, hasRAW: false
+        )
+        for id in ["deleted-live-video", "unrelated-live-video"] {
+            uploadRepository.markLivePhotoVideoRequired(localIdentifier: id)
+        }
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "deleted-live-video", resourceType: "video",
+            filename: "IMG_4444.MOV", immichId: "unknown"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unrelated-live-video", resourceType: "video",
+            filename: "IMG_5555.MOV", immichId: "unknown"
+        )
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(
+                immichId: "deleted-video-id", checksum: "not-the-jpeg-hash",
+                originalFilename: "IMG_4444.MOV", assetType: "VIDEO",
+                ownerId: "owner-1"
+            )
+        ]))
+        XCTAssertTrue(repository.deleteServerAssets(["deleted-video-id"]))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'deleted-live-video' AND resource_type = 'video';
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'deleted-live-video' AND video_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'unrelated-live-video' AND resource_type = 'video';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM live_photo_video_status
+            WHERE asset_id = 'unrelated-live-video' AND video_on_server = 1;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'deleted-live-video' AND sha1_hash = 'live-photo-jpeg';
+        """), 1)
+    }
+
     func testDeletingRAWOnlyServerAssetClearsUnknownRAWHistoryWithoutRehash() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

@@ -404,6 +404,26 @@ final class ServerAssetRepository {
             var statement: OpaquePointer?
             var historyStatement: OpaquePointer?
             var unresolvedStatement: OpaquePointer?
+            var unresolvedVideoStatement: OpaquePointer?
+            // A legacy PhotoKit upload may have no Immich ID. Live Photo
+            // video has no locally cached SHA1, so use the server's original
+            // video filename to revoke its matching unresolved history before
+            // removing that server cache record. This can conservatively
+            // invalidate similarly named videos, but must not silently keep a
+            // deleted companion marked complete.
+            let unresolvedVideoSQL = """
+                DELETE FROM uploaded_assets
+                WHERE immich_id = 'unknown' AND resource_type = 'video'
+                  AND EXISTS (
+                      SELECT 1 FROM live_photo_video_status v
+                      WHERE v.asset_id = uploaded_assets.asset_id
+                  )
+                  AND filename COLLATE NOCASE = (
+                      SELECT original_filename FROM server_assets_cache
+                      WHERE immich_id = ?
+                        AND LOWER(asset_type) = 'video'
+                  );
+            """
             // Older background uploads can have immich_id='unknown'. Match
             // their cached resource SHA1 to the deleted server checksum.
             // RAW-only photos store their sole RAW hash in sha1_hash (has_raw=0);
@@ -431,10 +451,15 @@ final class ServerAssetRepository {
                   sqlite3_prepare_v2(
                     self.connection.db, unresolvedHistorySQL,
                     -1, &unresolvedStatement, nil
+                  ) == SQLITE_OK,
+                  sqlite3_prepare_v2(
+                    self.connection.db, unresolvedVideoSQL,
+                    -1, &unresolvedVideoStatement, nil
                   ) == SQLITE_OK else {
                 sqlite3_finalize(statement)
                 sqlite3_finalize(historyStatement)
                 sqlite3_finalize(unresolvedStatement)
+                sqlite3_finalize(unresolvedVideoStatement)
                 self.connection.rollbackTransaction()
                 logError("Failed to prepare server asset/history deletes: \(self.connection.lastErrorMessage)", category: .database)
                 return false
@@ -444,6 +469,17 @@ final class ServerAssetRepository {
             var checksumsToInvalidate: Set<String> = []
             for immichId in immichIds {
                 let oldChecksum = self.matchableChecksum(for: immichId)
+                // The filename/type is still available here; deleting the
+                // catalog entry first would make unresolved video history
+                // impossible to associate with the removed resource.
+                sqlite3_bind_text(unresolvedVideoStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                if sqlite3_step(unresolvedVideoStatement) != SQLITE_DONE {
+                    failed = true
+                    logError("Failed to remove unresolved deleted Live Photo video history: \(self.connection.lastErrorMessage)", category: .database)
+                    break
+                }
+                sqlite3_reset(unresolvedVideoStatement)
+                sqlite3_clear_bindings(unresolvedVideoStatement)
                 sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     failed = true
@@ -478,6 +514,7 @@ final class ServerAssetRepository {
             sqlite3_finalize(statement)
             sqlite3_finalize(historyStatement)
             sqlite3_finalize(unresolvedStatement)
+            sqlite3_finalize(unresolvedVideoStatement)
 
             if failed || !self.invalidateChecks(for: checksumsToInvalidate) {
                 self.connection.rollbackTransaction()
