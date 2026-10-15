@@ -20,6 +20,31 @@ final class SyncStreamParserTests: XCTestCase {
         XCTAssertEqual(result.acksByType, ["AssetMetadataV1": "AssetMetadataV1|ack-1"])
     }
 
+    func testMetadataDeleteAfterUpsertRemovesBothProperties() {
+        let hash = "0123456789abcdef0123456789abcdef01234567"
+        let data = Data("""
+        {"type":"AssetMetadataV1","ack":"AssetMetadataV1|upsert","data":{"assetId":"asset-1","key":"mobile-app","value":{"iCloudId":"cloud-1","sourceChecksum":"\(hash)"}}}
+        {"type":"AssetMetadataDeleteV1","ack":"AssetMetadataDeleteV1|delete","data":{"assetId":"asset-1","key":"mobile-app"}}
+        """.utf8)
+
+        let result = ImmichAPIService.parseAssetMetadataStream(data)
+        XCTAssertTrue(result.iCloudIdUpserts.isEmpty)
+        XCTAssertTrue(result.sourceChecksumUpserts.isEmpty)
+        XCTAssertEqual(result.iCloudIdDeletes, ["asset-1"])
+    }
+
+    func testMetadataSourceChecksumUpsertAfterDeleteRestoresLatestVersion() {
+        let hash = "0123456789abcdef0123456789abcdef01234567"
+        let data = Data("""
+        {"type":"AssetMetadataDeleteV1","ack":"AssetMetadataDeleteV1|delete","data":{"assetId":"asset-1","key":"mobile-app"}}
+        {"type":"AssetMetadataV1","ack":"AssetMetadataV1|upsert","data":{"assetId":"asset-1","key":"mobile-app","value":{"sourceChecksum":"\(hash)"}}}
+        """.utf8)
+
+        let result = ImmichAPIService.parseAssetMetadataStream(data)
+        XCTAssertEqual(result.sourceChecksumUpserts, ["asset-1": hash])
+        XCTAssertTrue(result.iCloudIdDeletes.isEmpty)
+    }
+
     func testMetadataUpdateItemEncodesSourceChecksum() throws {
         // The server replaces the whole mobile-app value on PUT; an update that
         // omits sourceChecksum silently deletes it, so it must be serialized.

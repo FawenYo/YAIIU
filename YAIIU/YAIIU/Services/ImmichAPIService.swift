@@ -1007,6 +1007,9 @@ class ImmichAPIService: NSObject {
                 guard iCloudIdUpserts[assetId] != nil || sourceChecksumUpserts[assetId] != nil else {
                     continue
                 }
+                // A newer upsert wins over an earlier deletion even when
+                // its value contains only sourceChecksum (no iCloud ID).
+                iCloudIdDeletes.remove(assetId)
                 collectLatestAck(from: object, into: &acksByType)
             case "AssetMetadataDeleteV1":
                 guard let eventData = object["data"] as? [String: Any],
@@ -1021,6 +1024,10 @@ class ImmichAPIService: NSObject {
                 }
                 iCloudIdDeletes.insert(assetId)
                 iCloudIdUpserts.removeValue(forKey: assetId)
+                // A later metadata deletion supersedes BOTH properties from
+                // earlier upserts in this same incremental stream. Otherwise
+                // performSync may write the deleted source checksum back.
+                sourceChecksumUpserts.removeValue(forKey: assetId)
                 collectLatestAck(from: object, into: &acksByType)
             case "SyncAckV1":
                 collectLatestAck(from: object, into: &acksByType)
