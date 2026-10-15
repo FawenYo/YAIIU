@@ -294,11 +294,23 @@ class ServerAssetSyncService {
         reportProgress(SyncProgress(phase: .connecting, fetchedCount: 0, message: ""), handler: progressHandler)
         reportProgress(SyncProgress(phase: .fetchingUserInfo, fetchedCount: 0, message: ""), handler: progressHandler)
 
+        // On a new/reset destination there is no authoritative catalog.
+        // Engage the persistent gate BEFORE the first network await, including
+        // the user-info request; this does not depend on remote identity.
+        let syncMetadata = try Self.withCurrentDestination(destinationRevision) {
+            let metadata = dbManager.getSyncMetadata()
+            if metadata == nil {
+                guard dbManager.setServerSnapshotRebuilding(true) else {
+                    throw SyncError.syncFailed(reason: "Failed to guard initial server-user fetch")
+                }
+                rebuildBarrierActive = true
+            }
+            return metadata
+        }
+
         let userInfo = try await apiService.getCurrentUser(serverURL: serverURL, apiKey: apiKey)
         try Self.withCurrentDestination(destinationRevision) {}
         let userId = userInfo.id
-
-        let syncMetadata = dbManager.getSyncMetadata()
         let normalizedServerURL = Self.canonicalServerURL(configuredServerURL)
         let cacheMatchesSession = syncMetadata?.userId == userId
             && (syncMetadata?.serverURL == nil
@@ -310,7 +322,7 @@ class ServerAssetSyncService {
         // metadata and asset streams are still being fetched (potentially
         // minutes before the later full-snapshot persistence transaction).
         // The deferred cleanup releases this gate on BOTH success and error.
-        if lastAck == nil {
+        if lastAck == nil && !rebuildBarrierActive {
             try Self.withCurrentDestination(destinationRevision) {
                 guard dbManager.setServerSnapshotRebuilding(true) else {
                     throw SyncError.syncFailed(reason: "Failed to guard initial full snapshot fetch")

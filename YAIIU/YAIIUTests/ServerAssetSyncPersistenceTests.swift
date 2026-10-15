@@ -170,6 +170,29 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         _ = await first.value
     }
 
+    func testInitialFullSyncGuardsCatalogBeforeSlowUserFetch() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        let gate = SyncTestGate()
+        let fetchingUser = expectation(description: "User-info request in progress")
+        api.beforeUserFetch = {
+            fetchingUser.fulfill()
+            await gate.wait()
+        }
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+        let task = Task { await sync(service) }
+        await fulfillment(of: [fetchingUser], timeout: 5)
+        XCTAssertTrue(store.rebuildBarrierActive)
+        XCTAssertEqual(operations.values, ["begin-rebuild"])
+        await gate.release()
+        guard case .success = await task.value else {
+            return XCTFail("Sync must succeed after user-info request resumes")
+        }
+        XCTAssertFalse(store.rebuildBarrierActive)
+        XCTAssertEqual(operations.values.filter { $0 == "begin-rebuild" }.count, 1)
+    }
+
     func testInitialFullSyncGuardsServerCatalogDuringNetworkFetch() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations)
@@ -391,6 +414,7 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
     private let sourceChecksum: String?
     private(set) var sentAcks: [String] = []
     var beforeMetadataFetch: (() async -> Void)?
+    var beforeUserFetch: (() async -> Void)?
 
     init(operations: OperationRecorder, resetAck: String? = nil, sourceChecksum: String? = nil) {
         self.operations = operations
@@ -399,7 +423,8 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
     }
 
     func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo {
-        UserInfo(id: "owner-1", email: "user@example.com", name: "User")
+        if let beforeUserFetch { await beforeUserFetch() }
+        return UserInfo(id: "owner-1", email: "user@example.com", name: "User")
     }
 
     func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> AssetMetadataStreamResult {
