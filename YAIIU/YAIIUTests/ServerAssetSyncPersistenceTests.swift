@@ -148,6 +148,37 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         _ = await first.value
     }
 
+    func testInitialFullSyncGuardsServerCatalogDuringNetworkFetch() async throws {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        let gate = SyncTestGate()
+        let fetching = expectation(description: "Metadata fetch has started")
+        api.beforeMetadataFetch = {
+            fetching.fulfill()
+            await gate.wait()
+        }
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+        let task = Task { await sync(service) }
+        await fulfillment(of: [fetching], timeout: 5)
+
+        // While no server list has arrived, the extension-facing gate must
+        // already be active. No SQLite catalog mutations or ACKs can happen
+        // before remote data is available.
+        XCTAssertTrue(store.rebuildBarrierActive)
+        XCTAssertEqual(operations.values, ["begin-rebuild"])
+
+        await gate.release()
+        let result = await task.value
+        guard case .success = result else {
+            return XCTFail("Full sync should succeed once metadata fetch resumes")
+        }
+        XCTAssertFalse(store.rebuildBarrierActive)
+        XCTAssertEqual(operations.values.filter { $0 == "begin-rebuild" }.count, 1)
+        XCTAssertTrue(operations.values.contains("finalize-full-snapshot"))
+        XCTAssertTrue(operations.values.contains("end-rebuild"))
+    }
+
     func testRebuildBarrierReleasedAfterFailedFullSnapshot() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations)

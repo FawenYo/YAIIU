@@ -291,6 +291,20 @@ class ServerAssetSyncService {
                 || syncMetadata?.serverURL.map(Self.canonicalServerURL) == normalizedServerURL)
         let lastAck = cacheMatchesSession ? syncMetadata?.lastAck : nil
 
+        // A fresh account/full sync starts with an empty or untrusted remote
+        // catalog. The extension must not bootstrap uploads while the initial
+        // metadata and asset streams are still being fetched (potentially
+        // minutes before the later full-snapshot persistence transaction).
+        // The deferred cleanup releases this gate on BOTH success and error.
+        if lastAck == nil {
+            try Self.withCurrentDestination(destinationRevision) {
+                guard dbManager.setServerSnapshotRebuilding(true) else {
+                    throw SyncError.syncFailed(reason: "Failed to guard initial full snapshot fetch")
+                }
+                rebuildBarrierActive = true
+            }
+        }
+
         reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
 
         // The full stream is a snapshot: uploads completed after this point
@@ -313,10 +327,12 @@ class ServerAssetSyncService {
             }
 
             try Self.withCurrentDestination(destinationRevision) {
-                guard dbManager.setServerSnapshotRebuilding(true) else {
-                    throw SyncError.syncFailed(reason: "Failed to mark reset snapshot as rebuilding")
+                if !rebuildBarrierActive {
+                    guard dbManager.setServerSnapshotRebuilding(true) else {
+                        throw SyncError.syncFailed(reason: "Failed to mark reset snapshot as rebuilding")
+                    }
+                    rebuildBarrierActive = true
                 }
-                rebuildBarrierActive = true
                 guard clearCache() else {
                     throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
                 }
@@ -384,10 +400,14 @@ class ServerAssetSyncService {
         // after the new destination has reset its state.
         let backfilledCount = try Self.withCurrentDestination(destinationRevision) { () throws -> Int in
         if syncType == "full" {
-            guard dbManager.setServerSnapshotRebuilding(true) else {
-                throw SyncError.syncFailed(reason: "Failed to mark full snapshot as rebuilding")
+            // Normally activated BEFORE fetching. Keep this fallback for an
+            // unexpected transition to a full sync after receiving reset data.
+            if !rebuildBarrierActive {
+                guard dbManager.setServerSnapshotRebuilding(true) else {
+                    throw SyncError.syncFailed(reason: "Failed to mark full snapshot as rebuilding")
+                }
+                rebuildBarrierActive = true
             }
-            rebuildBarrierActive = true
             guard clearCache() else {
                 throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
             }
