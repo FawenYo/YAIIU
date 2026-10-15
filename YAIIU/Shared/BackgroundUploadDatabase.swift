@@ -641,15 +641,60 @@ final class BackgroundUploadDatabase {
             if destinationChanged {
                 // These flags describe the previous server/account. Preserve hashes,
                 // but require the new destination to reconfirm server presence.
+                // A foreground upload can complete for the new account
+                // before the extension opens and updates this state. Preserve
+                // that new-destination evidence while discarding old history.
+                let pruneSQL = """
+                    DELETE FROM uploaded_assets
+                    WHERE destination_identity IS NULL OR destination_identity != ?;
+                """
+                var pruneStmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, pruneSQL, -1, &pruneStmt, nil) == SQLITE_OK else {
+                    throw sqliteError("Prepare destination-specific history pruning")
+                }
+                sqlite3_bind_text(pruneStmt, 1, identity, -1, SQLITE_TRANSIENT)
+                let pruned = sqlite3_step(pruneStmt) == SQLITE_DONE
+                sqlite3_finalize(pruneStmt)
+                guard pruned else { throw sqliteError("Prune previous destination upload history") }
+
+                // Restore only flags confirmed by surviving new-destination
+                // history; never copy an old account's checksum verdict.
                 let destinationSpecificSql = [
-                    "DELETE FROM uploaded_assets",
-                    "UPDATE live_photo_video_status SET video_on_server = 0",
                     "DELETE FROM upload_jobs WHERE status = 'completed'",
-                    "UPDATE hash_cache SET is_on_server = 0, raw_on_server = 0, checked_at = NULL, server_check_revision = server_check_revision + 1",
+                    """
+                    UPDATE live_photo_video_status
+                    SET video_on_server = CASE WHEN EXISTS (
+                        SELECT 1 FROM uploaded_assets u
+                        WHERE u.asset_id = live_photo_video_status.asset_id
+                          AND u.resource_type = 'video'
+                    ) THEN 1 ELSE 0 END
+                    """,
+                    """
+                    UPDATE hash_cache
+                    SET is_on_server = CASE WHEN EXISTS (
+                        SELECT 1 FROM uploaded_assets u
+                        WHERE u.asset_id = hash_cache.asset_id
+                          AND (u.resource_type != 'raw' OR hash_cache.has_raw = 0)
+                          AND (u.resource_type != 'video' OR NOT EXISTS (
+                              SELECT 1 FROM live_photo_video_status v
+                              WHERE v.asset_id = hash_cache.asset_id
+                          ))
+                    ) THEN 1 ELSE 0 END,
+                    raw_on_server = CASE WHEN EXISTS (
+                        SELECT 1 FROM uploaded_assets u
+                        WHERE u.asset_id = hash_cache.asset_id
+                          AND u.resource_type = 'raw' AND hash_cache.has_raw = 1
+                    ) THEN 1 ELSE 0 END,
+                    checked_at = CASE WHEN EXISTS (
+                        SELECT 1 FROM uploaded_assets u
+                        WHERE u.asset_id = hash_cache.asset_id
+                    ) THEN CAST(strftime('%s', 'now') AS REAL) ELSE NULL END,
+                    server_check_revision = server_check_revision + 1
+                    """,
                 ]
                 for sql in destinationSpecificSql {
                     guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
-                        throw sqliteError("Reset destination-specific upload state")
+                        throw sqliteError("Reset and restore destination-specific upload state")
                     }
                 }
             }

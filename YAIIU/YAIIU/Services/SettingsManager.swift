@@ -137,6 +137,17 @@ class SettingsManager: ObservableObject {
 
     
     private func syncToSharedSettings() {
+        // The host may upload before the extension starts. Switch SQLite's
+        // destination before new foreground completions are persisted.
+        if let identity = UploadDestinationIdentity.make(
+            serverURL: serverURL, apiKey: apiKey
+        ) {
+            do {
+                try BackgroundUploadDatabase.shared.ensureDestinationIdentity(identity)
+            } catch {
+                logError("Failed to synchronize upload destination: \(error)", category: .database)
+            }
+        }
         if #available(iOS 26.1, *) {
             BackgroundUploadManager.shared.syncSettings(
                 serverURL: serverURL,

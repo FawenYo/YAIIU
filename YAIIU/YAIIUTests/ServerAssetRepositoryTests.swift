@@ -1413,6 +1413,56 @@ final class ServerAssetRepositoryTests: XCTestCase {
         wait(for: [done], timeout: 5)
     }
 
+    func testSwitchingDestinationPreservesNewAccountUploadBeforeExtensionReset() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "new-account-upload", primaryHash: "source-sha",
+            rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "previous-account-upload", primaryHash: "old-sha",
+            rawHash: nil, hasRAW: false
+        )
+        let bg = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        try bg.ensureDestinationIdentity("destination-A")
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "previous-account-upload",
+            resourceType: "jpeg", filename: "old.jpg",
+            immichId: "old-remote", destinationIdentity: "destination-A"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "new-account-upload", resourceType: "jpeg",
+            filename: "new.jpg", immichId: "new-remote",
+            destinationIdentity: "destination-B"
+        )
+        // The stale background identity rejects the immediate positive
+        // foreground verdict, but the properly tagged upload is durable.
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'new-account-upload' AND is_on_server = 0;
+        """), 1)
+        XCTAssertTrue(try bg.ensureDestinationIdentity("destination-B"))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'new-account-upload'
+              AND destination_identity = 'destination-B';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'previous-account-upload';
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'new-account-upload' AND is_on_server = 1
+              AND checked_at IS NOT NULL AND sha1_hash = 'source-sha';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'previous-account-upload' AND is_on_server = 0
+              AND checked_at IS NULL AND sha1_hash = 'old-sha';
+        """), 1)
+    }
+
     func testFullSnapshotRejectsLateUploadsFromOldDestination() {
         let hashes = HashCacheRepository(connection: connection)
         for id in ["current-late", "previous-late", "legacy-late"] {
