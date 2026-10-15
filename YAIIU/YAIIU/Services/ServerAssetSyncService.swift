@@ -29,6 +29,7 @@ protocol ServerAssetSyncStore {
     func getSyncMetadata() -> SyncMetadata?
     func clearServerAssetsCache() -> Bool
     func setServerSnapshotRebuilding(_ rebuilding: Bool) -> Bool
+    func refreshServerSnapshotRebuildLease() -> Bool
     func finalizeFullServerSnapshot(snapshotStartedAt: Date, destinationIdentity: String?) -> Bool
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
     func deleteServerAssets(_ immichIds: [String]) -> Bool
@@ -161,6 +162,32 @@ class ServerAssetSyncService {
             }
 
             defer { self.syncQueue.sync { self.isSyncing = false } }
+
+            // The host can fetch large server catalogs for longer than the
+            // extension's 30-minute crash-recovery lease. Refresh that lease
+            // every minute while this sync generation is still running.
+            let heartbeat = Task.detached(priority: .utility) { [weak self] in
+                guard let self else { return }
+                while !Task.isCancelled {
+                    do {
+                        try await Task.sleep(nanoseconds: 60_000_000_000)
+                    } catch {
+                        break
+                    }
+                    guard !Task.isCancelled else { break }
+                    do {
+                        let refreshed = try Self.withCurrentDestination(destinationRevision) {
+                            self.dbManager.refreshServerSnapshotRebuildLease()
+                        }
+                        if !refreshed {
+                            logWarning("Failed to refresh server catalog rebuild lease", category: .sync)
+                        }
+                    } catch {
+                        break // Destination changed; never extend an old lease.
+                    }
+                }
+            }
+            defer { heartbeat.cancel() }
 
             do {
                 let result = try await self.performSync(

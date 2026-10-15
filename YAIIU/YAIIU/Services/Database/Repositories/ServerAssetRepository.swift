@@ -1015,6 +1015,25 @@ final class ServerAssetRepository {
         }
     }
 
+    /// Renew the cross-process lease while the host performs a large or slow
+    /// full/reset sync. This is an UPDATE only: an old/stopped sync can never
+    /// recreate a barrier that has already been removed.
+    func refreshServerSnapshotRebuildLease() -> Bool {
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return false }
+            let sql = """
+                UPDATE server_catalog_rebuild_state
+                SET started_at = (julianday('now') - 2440587.5) * 86400.0
+                WHERE id = 1;
+            """
+            let ok = sqlite3_exec(self.connection.db, sql, nil, nil, nil) == SQLITE_OK
+            if !ok {
+                logError("Could not refresh server snapshot rebuild lease: \(self.connection.lastErrorMessage)", category: .database)
+            }
+            return ok
+        }
+    }
+
     // MARK: - Sync Metadata
 
     @discardableResult

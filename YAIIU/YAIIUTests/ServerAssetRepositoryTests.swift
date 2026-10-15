@@ -1515,6 +1515,32 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """), 1)
     }
 
+    func testLiveSnapshotLeaseRenewsBeforeTimeoutAndStillExpiresAfterCrash() {
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(true))
+        // Simulate a 29-minute old snapshot that is STILL being fetched.
+        let aged = Date().timeIntervalSince1970 - 29 * 60
+        execute("""
+            UPDATE server_catalog_rebuild_state SET started_at = \(aged)
+            WHERE id = 1;
+        """)
+        XCTAssertTrue(background.isServerCatalogRebuilding())
+        XCTAssertTrue(repository.refreshServerSnapshotRebuildLease())
+        // Refreshed lease covers another 29 minutes from now.
+        XCTAssertTrue(background.isServerCatalogRebuilding(
+            now: Date().addingTimeInterval(29 * 60)
+        ))
+        // A terminated host stops heartbeating; the existing expiry resumes
+        // uploads after 30 minutes, rather than blocking forever.
+        XCTAssertFalse(background.isServerCatalogRebuilding(
+            now: Date().addingTimeInterval(31 * 60)
+        ))
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(false))
+        // Heartbeat does not resurrect a completed snapshot marker.
+        XCTAssertTrue(repository.refreshServerSnapshotRebuildLease())
+        XCTAssertEqual(count("SELECT COUNT(*) FROM server_catalog_rebuild_state;"), 0)
+    }
+
     func testSnapshotRebuildBarrierSuppressesPhotoKitSchedulingAndExpiresAfterCrash() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

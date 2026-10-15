@@ -337,6 +337,10 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
         operations.append(rebuilding ? "begin-rebuild" : "end-rebuild")
         return true
     }
+    func refreshServerSnapshotRebuildLease() -> Bool {
+        operations.append("refresh-rebuild")
+        return true
+    }
 
     func finalizeFullServerSnapshot(snapshotStartedAt: Date, destinationIdentity: String?) -> Bool {
         operations.append("finalize-full-snapshot")
