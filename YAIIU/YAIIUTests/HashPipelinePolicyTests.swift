@@ -3,6 +3,21 @@ import XCTest
 @testable import YAIIU
 
 final class HashPipelinePolicyTests: XCTestCase {
+    func testSingleICloudChecksumShortcutRejectsLiveAndRAWCompanions() {
+        XCTAssertTrue(HashPipelinePolicy.canUseSingleChecksumMatch(
+            hasRAWCompanion: false, isLivePhoto: false
+        ))
+        XCTAssertFalse(HashPipelinePolicy.canUseSingleChecksumMatch(
+            hasRAWCompanion: false, isLivePhoto: true
+        ))
+        XCTAssertFalse(HashPipelinePolicy.canUseSingleChecksumMatch(
+            hasRAWCompanion: true, isLivePhoto: false
+        ))
+        XCTAssertFalse(HashPipelinePolicy.canUseSingleChecksumMatch(
+            hasRAWCompanion: true, isLivePhoto: true
+        ))
+    }
+
     actor ConcurrencyProbe {
         private(set) var activeCount = 0
         private(set) var maximumActiveCount = 0

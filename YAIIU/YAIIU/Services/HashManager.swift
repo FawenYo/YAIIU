@@ -184,6 +184,13 @@ final class ResourceBudget: @unchecked Sendable {
 }
 
 enum HashPipelinePolicy {
+    // A Live Photo can have multiple Immich resources sharing a single
+    // iCloud ID. The unordered checksum dictionary cannot identify which
+    // SHA1 is the still image, so only simple assets use this shortcut.
+    static func canUseSingleChecksumMatch(hasRAWCompanion: Bool, isLivePhoto: Bool) -> Bool {
+        !hasRAWCompanion && !isLivePhoto
+    }
+
     /// Keep the local-only requestData pass finite while allowing enough
     /// concurrency to amortize PhotoKit overhead.
     static let requestDataLocalBatchSize = 32
@@ -777,7 +784,11 @@ class HashManager: ObservableObject {
                         remainingIdentifiers.append(identifier)
                         continue
                     }
-                    if selection.rawResource != nil {
+                    if !HashPipelinePolicy.canUseSingleChecksumMatch(
+                        hasRAWCompanion: selection.rawResource != nil,
+                        isLivePhoto: asset.mediaType == .image
+                            && asset.mediaSubtypes.contains(.photoLive)
+                    ) {
                         remainingIdentifiers.append(identifier)
                         continue
                     }
