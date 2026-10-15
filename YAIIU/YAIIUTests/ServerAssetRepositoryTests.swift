@@ -1719,6 +1719,33 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(count("SELECT COUNT(*) FROM server_catalog_rebuild_state;"), 0)
     }
 
+    func testBackgroundRequiresCompletedCatalogEvenAfterFailedFullSyncLeaseEnds() {
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertFalse(background.isServerCatalogReady())
+
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(true))
+        XCTAssertFalse(background.isServerCatalogReady())
+        XCTAssertTrue(repository.clearServerAssetsCache())
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(false))
+        // The temporary lease is gone, but no authoritative checkpoint was
+        // committed; the extension must not trust the empty/partial catalog.
+        XCTAssertFalse(background.isServerCatalogReady())
+        XCTAssertFalse(background.isServerCatalogReady(
+            now: Date().addingTimeInterval(31 * 60)
+        ))
+
+        XCTAssertTrue(repository.saveSyncMetadata(
+            lastSyncTime: Date(), syncType: "full", userId: "owner",
+            serverURL: "https://immich.example", totalAssets: 0,
+            lastAck: "completed-checkpoint"
+        ))
+        XCTAssertTrue(background.isServerCatalogReady())
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(true))
+        XCTAssertFalse(background.isServerCatalogReady())
+        XCTAssertTrue(repository.setServerSnapshotRebuilding(false))
+        XCTAssertTrue(background.isServerCatalogReady())
+    }
+
     func testSnapshotRebuildBarrierSuppressesPhotoKitSchedulingAndExpiresAfterCrash() {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

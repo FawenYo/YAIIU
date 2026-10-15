@@ -108,8 +108,8 @@ final class BackgroundUploadExtensionCore {
         ) {
             log("Upload destination identity changed or was initialized; restarting PhotoKit bootstrap discovery")
         }
-        if database.isServerCatalogRebuilding() {
-            logDebug("Full server snapshot rebuilding; deferring PhotoKit job scheduling")
+        if !database.isServerCatalogReady() {
+            logDebug("Server catalog unavailable or rebuilding; deferring PhotoKit job scheduling")
             return .deferred
         }
 
@@ -118,7 +118,7 @@ final class BackgroundUploadExtensionCore {
         var madeProgress = timeStage("reconcile") { reconcileTrackedJobs() > 0 }
         guard !isCancelled else { return .deferred }
 
-        if database.isServerCatalogRebuilding() { return .deferred }
+        if !database.isServerCatalogReady() { return .deferred }
         madeProgress = try timeStage("retry") { try retryFailedJobs() } || madeProgress
         guard !isCancelled else { return .deferred }
 
@@ -129,7 +129,7 @@ final class BackgroundUploadExtensionCore {
         madeProgress = timeStage("cancel") { cancelRedundantJobs() } || madeProgress
         guard !isCancelled else { return .deferred }
 
-        if database.isServerCatalogRebuilding() { return .deferred }
+        if !database.isServerCatalogReady() { return .deferred }
         let result = try timeStage("create") { try createNewUploadJobs(interface: currentNetworkInterface()) }
         guard result == .completed else { return result }
 
@@ -256,7 +256,7 @@ final class BackgroundUploadExtensionCore {
     // MARK: - Job Management
 
     private func retryFailedJobs() throws -> Bool {
-        guard !database.isServerCatalogRebuilding() else { return false }
+        guard !!database.isServerCatalogReady() else { return false }
         var retriedAny = false
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(
@@ -268,7 +268,7 @@ final class BackgroundUploadExtensionCore {
         }
 
         for i in 0..<jobs.count where !isCancelled {
-            if database.isServerCatalogRebuilding() { return retriedAny }
+            if !database.isServerCatalogReady() { return retriedAny }
             let job = jobs.object(at: i)
             let errorDescription = jobErrorDescription(job)
             logWarning("Retrying failed upload job \(job.localIdentifier): \(errorDescription)")
@@ -469,7 +469,7 @@ final class BackgroundUploadExtensionCore {
             }
         }
 
-        if database.isServerCatalogRebuilding() { return .deferred }
+        if !database.isServerCatalogReady() { return .deferred }
         let capacity = uploadJobCapacity()
         guard capacity > 0 else {
             logWarning("PhotoKit job limit already reached; waiting for acknowledgements before creating new jobs")
@@ -585,12 +585,12 @@ final class BackgroundUploadExtensionCore {
 
         // PhotoKit scanning/timezone lookup may take seconds: recheck before
         // committing any new job creation request.
-        if database.isServerCatalogRebuilding() { return .deferred }
+        if !database.isServerCatalogReady() { return .deferred }
         let library = PHPhotoLibrary.shared()
         var createdAny = false
         try library.performChangesAndWait {
             for resource in batch where !self.isCancelled {
-                if self.database.isServerCatalogRebuilding() { break }
+                if self.!database.isServerCatalogReady() { break }
                 guard let dest = self.buildDestination(
                     for: resource,
                     timezone: timezones[resource.assetLocalIdentifier] ?? TimeZone.current,

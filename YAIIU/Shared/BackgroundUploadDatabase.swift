@@ -208,6 +208,33 @@ final class BackgroundUploadDatabase {
         }
     }
 
+    /// The server catalog is authoritative only after a completed sync has
+    /// committed a checkpoint for the current destination. A failed first
+    /// sync/reset deletes sync_metadata; expiry/release of the temporary
+    /// rebuild lease must never expose an empty catalog as "all missing".
+    ///
+    /// SQLite executes this check as one read snapshot. Any query failure
+    /// conservatively defers uploads rather than trusting partial state.
+    func isServerCatalogReady(now: Date = Date()) -> Bool {
+        queue.sync {
+            let sql = """
+                SELECT EXISTS (
+                    SELECT 1 FROM sync_metadata WHERE id = 1
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM server_catalog_rebuild_state
+                    WHERE id = 1 AND started_at > ?
+                );
+            """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                return false
+            }
+            sqlite3_bind_double(stmt, 1, now.timeIntervalSince1970 - 30 * 60)
+            return sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) == 1
+        }
+    }
+
     // MARK: - Upload Jobs
     
     func createOrUpdateJob(assetId: String, resourceType: String, filename: String, status: UploadJobStatus = .pending) {
