@@ -256,7 +256,7 @@ final class BackgroundUploadExtensionCore {
     // MARK: - Job Management
 
     private func retryFailedJobs() throws -> Bool {
-        guard !!database.isServerCatalogReady() else { return false }
+        guard database.isServerCatalogReady() else { return false }
         var retriedAny = false
         let library = PHPhotoLibrary.shared()
         let jobs = PHAssetResourceUploadJob.fetchJobs(
@@ -609,7 +609,7 @@ final class BackgroundUploadExtensionCore {
         var createdAny = false
         try library.performChangesAndWait {
             for resource in batch where !self.isCancelled {
-                if self.!database.isServerCatalogReady() { break }
+                if !self.database.isServerCatalogReady() { break }
                 guard let dest = self.buildDestination(
                     for: resource,
                     timezone: timezones[resource.assetLocalIdentifier] ?? TimeZone.current,
