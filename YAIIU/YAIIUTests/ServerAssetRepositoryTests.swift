@@ -1759,6 +1759,55 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertFalse(try bg.ensureDestinationIdentity("new-account"))
     }
 
+    func testFirstDestinationInitializationClearsUnscopedUploadOnlyHistory() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "legacy-upload-only",
+            primaryHash: "preserve-old-local-sha1", rawHash: nil, hasRAW: false
+        )
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "new-upload-only",
+            primaryHash: "preserve-new-local-sha1", rawHash: nil, hasRAW: false
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy-upload-only", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "unknown"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "new-upload-only", resourceType: "jpeg",
+            filename: "new.jpg", immichId: "new-remote",
+            destinationIdentity: "new-destination"
+        )
+        // No background identity, server catalog, or sync metadata exists:
+        // legacy upload history alone must still trigger a destination reset.
+        XCTAssertEqual(count("SELECT COUNT(*) FROM background_upload_state;"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM server_assets_cache;"), 0)
+        XCTAssertEqual(count("SELECT COUNT(*) FROM sync_metadata;"), 0)
+
+        let bg = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(try bg.ensureDestinationIdentity("new-destination"))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'legacy-upload-only';
+        """), 0)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'new-upload-only'
+              AND destination_identity = 'new-destination';
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy-upload-only'
+              AND sha1_hash = 'preserve-old-local-sha1'
+              AND checked_at IS NULL AND is_on_server = 0;
+        """), 1)
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'new-upload-only'
+              AND sha1_hash = 'preserve-new-local-sha1'
+              AND checked_at IS NOT NULL AND is_on_server = 1;
+        """), 1)
+    }
+
     func testFirstDestinationInitializationDoesNotTrustLegacyServerCatalog() throws {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

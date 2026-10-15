@@ -663,15 +663,19 @@ final class BackgroundUploadDatabase {
 
             // Persisted discovery and the server catalog are destination-specific.
             // Any prior state row (including a legacy NULL identity) or a
-            // pre-background-upload server catalog without an identity must be
-            // treated as untrusted. Cached local SHA1s are NOT deleted.
+            // pre-background-upload server catalog or legacy unscoped upload
+            // history must be treated as untrusted. Cached local SHA1s are NOT deleted.
             var legacyCatalogExists = false
             var legacyStmt: OpaquePointer?
             guard sqlite3_prepare_v2(
                 db,
                 """
                 SELECT EXISTS (SELECT 1 FROM server_assets_cache LIMIT 1)
-                    OR EXISTS (SELECT 1 FROM sync_metadata LIMIT 1);
+                    OR EXISTS (SELECT 1 FROM sync_metadata LIMIT 1)
+                    OR EXISTS (
+                        SELECT 1 FROM uploaded_assets
+                        WHERE destination_identity IS NULL LIMIT 1
+                    );
                 """,
                 -1, &legacyStmt, nil
             ) == SQLITE_OK else {
