@@ -126,6 +126,10 @@
 "photoGrid.permission.openSettings" = "설정 열기";
 "photoGrid.filter.all" = "모든 사진";
 "photoGrid.filter.notUploaded" = "업로드되지 않음";
+"photoGrid.filter.favorites" = "즐겨찾기";
+"photoGrid.filter.album" = "앨범";
+"photoGrid.filter.chooseAlbum" = "앨범 선택";
+"photoGrid.filter.noAlbums" = "선택할 앨범이 없습니다";
 "photoGrid.filter.active" = "%d개 표시 중";
 "photoGrid.selectAllNotUploaded" = "업로드 안 된 항목 전체 선택";
 "photoGrid.section.today" = "오늘";
