@@ -319,7 +319,9 @@ final class HashCacheRepository {
                             isFullyUploaded = hasUploadedPrimary || primaryOnServer
                         }
                         
-                        if isFullyUploaded {
+                        if !hasBeenChecked && hasServerCache {
+                            statusMap[identifier] = .pending
+                        } else if isFullyUploaded {
                             statusMap[identifier] = .uploaded
                         } else if hasBeenChecked {
                             // Already checked - show as not uploaded
@@ -428,6 +430,60 @@ final class HashCacheRepository {
         }
     }
     
+    /// Invalidate only checks affected by a remote delta. Run before changing the
+    /// server cache/ACK so a crash cannot strand a stale negative result.
+    /// Full sync invalidates every check but keeps the computed hashes.
+    @discardableResult
+    func invalidateHashChecksForServerChanges(checksums: [String], fullReset: Bool) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return false }
+            let unique = Array(Set(checksums))
+            guard fullReset || !unique.isEmpty else { return true }
+            guard self.connection.beginTransaction() else { return false }
+
+            let batches: [[String]] = fullReset ? [[]] : stride(from: 0, to: unique.count, by: 200).map {
+                Array(unique[$0..<min($0 + 200, unique.count)])
+            }
+            for batch in batches {
+                let sql: String
+                if fullReset {
+                    sql = "UPDATE hash_cache SET checked_at = NULL WHERE checked_at IS NOT NULL;"
+                } else {
+                    let args = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                    sql = """
+                        UPDATE hash_cache SET checked_at = NULL
+                        WHERE checked_at IS NOT NULL
+                          AND (sha1_hash IN (\(args)) OR raw_hash IN (\(args)));
+                        """
+                }
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+                if !fullReset {
+                    for (index, checksum) in batch.enumerated() {
+                        sqlite3_bind_text(statement, Int32(index + 1), (checksum as NSString).utf8String, -1, nil)
+                        sqlite3_bind_text(statement, Int32(index + 1 + batch.count), (checksum as NSString).utf8String, -1, nil)
+                    }
+                }
+                let success = sqlite3_step(statement) == SQLITE_DONE
+                sqlite3_finalize(statement)
+                guard success else {
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return false
+            }
+            return true
+        }
+    }
+
     func getMultiResourceHashesNotFullyOnServerAsync(completion: @escaping ([MultiResourceHashRecord]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
@@ -438,7 +494,7 @@ final class HashCacheRepository {
             let sql = """
                 SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server
                 FROM hash_cache
-                WHERE is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0);
+                WHERE checked_at IS NULL;
             """
             var statement: OpaquePointer?
             var records: [MultiResourceHashRecord] = []
