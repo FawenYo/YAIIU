@@ -484,9 +484,7 @@ struct PhotoGridView: View {
                 // asset fetch and no-op in startBackgroundProcessing() because
                 // assetCount was still 0. Retry now that assets have loaded so
                 // upload-status icons populate without requiring a manual refresh.
-                if !hashManager.isProcessing {
-                    startBackgroundProcessing()
-                }
+                startBackgroundProcessing()
             }
         }
         .onChange(of: uploadManager.isUploading) { oldValue, newValue in
@@ -617,15 +615,15 @@ struct PhotoGridView: View {
         // creating an authoritative foreground persistent-change checkpoint.
         guard !photoLibraryManager.isLoading,
               photoLibraryManager.fetchResult != nil else { return }
-        guard !hashManager.isProcessing, !foregroundWorkPreparing else {
+        // The server-sync path may already have set the 'Preparing...' UI
+        // placeholder; only an admitted hash run should defer new work.
+        guard !hashManager.hasActivePipeline, !foregroundWorkPreparing else {
             foregroundRefreshPending = true
             return
         }
 
         foregroundWorkPreparing = true
-        if !hashManager.isProcessing {
-            hashManager.setPreparingState()
-        }
+        hashManager.setPreparingState()
         let manager = photoLibraryManager
         Task.detached(priority: .utility) {
             // PhotoKit hash invalidation must not race with a server checksum
@@ -635,7 +633,9 @@ struct PhotoGridView: View {
             await ServerAssetVerificationGate.shared.release()
             await MainActor.run {
                 foregroundWorkPreparing = false
-                if hashManager.isProcessing {
+                if hashManager.hasActivePipeline {
+                    // Another legitimate hash run won admission while PhotoKit
+                    // was preparing; leave the new work queued for the next pass.
                     foregroundRefreshPending = true
                     return
                 }
@@ -648,7 +648,7 @@ struct PhotoGridView: View {
                 case .unavailable:
                     hashManager.clearPreparingState()
                 }
-                if foregroundRefreshPending && !hashManager.isProcessing {
+                if foregroundRefreshPending && !hashManager.hasActivePipeline {
                     foregroundRefreshPending = false
                     startBackgroundProcessing()
                 }
