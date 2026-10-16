@@ -534,3 +534,24 @@ private extension Collection {
         count == 1 ? first : nil
     }
 }
+
+ 
+final class PhotoLibraryFilterTests: XCTestCase {
+    func testMatchingIndicesFollowGridOrderAndIgnoreUnavailableAssets() {
+        let grid = ["new", "shared", "old", "hidden", "last"]
+        let members: Set<String> = ["old", "shared", "not-in-library"]
+        XCTAssertEqual(
+            PhotoLibraryManager.matchingIndices(in: grid, members: members),
+            [1, 2]
+        )
+    }
+
+    func testMatchingIndicesHandleEmptyAndDuplicateMembership() {
+        let grid = ["a", "b", "c"]
+        XCTAssertEqual(PhotoLibraryManager.matchingIndices(in: grid, members: []), [])
+        XCTAssertEqual(
+            PhotoLibraryManager.matchingIndices(in: grid, members: Set(["a", "a", "c"])),
+            [0, 2]
+        )
+    }
+}
