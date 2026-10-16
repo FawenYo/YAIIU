@@ -235,6 +235,45 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(String(cString: sqlite3_column_text(statement, 0)), "sha-first")
     }
 
+    func testFullLibrarySnapshotPrunesEvenAlreadyCheckedOrphans() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('still-local', 'sha-a', 0, 100), ('photo-deleted', 'sha-b', 0, 100);
+        """)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "photo-deleted", resourceType: "primary",
+            filename: "deleted.jpg", immichId: "remote-asset"
+        )
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [PhotoAssetSnapshot(localIdentifier: "still-local", modificationDate: nil)],
+            pruneOrphans: true
+        )
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "photo-deleted"))
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "still-local"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "photo-deleted"))
+    }
+
+    func testLimitedLibrarySnapshotDoesNotPruneInvisibleAssets() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('hidden-but-existing', 'sha-a', 0, 100);
+        """)
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: nil)],
+            pruneOrphans: false
+        )
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "hidden-but-existing"))
+    }
+
+    func testEmptyFullLibraryPrunesFinalOrphan() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('deleted-last-photo', 'sha-last', 0, 100);
+        """)
+        hashRepository.resetCacheForModifiedAssets(snapshots: [], pruneOrphans: true)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "deleted-last-photo"))
+    }
+
     func testRemoteDeletionPrunesOnlyMatchingUploadReceipts() {
         XCTAssertTrue(repository.saveServerAssets([record(checksum: "sha-deleted", iCloudId: nil)]))
         uploadRepository.recordUploadedAsset(
