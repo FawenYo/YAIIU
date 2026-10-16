@@ -192,9 +192,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         options.includeHiddenAssets = false
         let assets = PHAsset.fetchAssets(in: collection, options: options)
         var members = Set<String>(minimumCapacity: assets.count)
-        assets.enumerateObjects { asset, _, _ in
+        assets.enumerateObjects { asset, _, stop in
+            if Task.isCancelled {
+                stop.pointee = true
+                return
+            }
             members.insert(asset.localIdentifier)
         }
+        guard !Task.isCancelled else { return [] }
         return matchingIndices(in: orderedIdentifiers, members: members)
     }
 
