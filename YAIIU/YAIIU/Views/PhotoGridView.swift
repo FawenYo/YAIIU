@@ -458,7 +458,14 @@ struct PhotoGridView: View {
             }
         }
         .onChange(of: hashManager.isProcessing) { oldValue, newValue in
-            if oldValue == true && newValue == false {
+            if newValue {
+                // Pause only PhotoKit preheating. Do not clear visible cache or
+                // cancel existing image requests (the PR #90 spinner regression).
+                if let range = lastPrefetchedRange {
+                    ThumbnailCache.shared.stopPrefetching(for: photoLibraryManager.assets(in: range))
+                    lastPrefetchedRange = nil
+                }
+            } else if oldValue {
                 syncPendingICloudIds()
             }
         }
@@ -539,9 +546,9 @@ struct PhotoGridView: View {
         
         let manager = photoLibraryManager
         Task.detached(priority: .utility) {
-            let assets = manager.allAssets()
+            let snapshots = manager.allAssetSnapshots()
             await MainActor.run {
-                HashManager.shared.startBackgroundProcessing(assets: assets)
+                HashManager.shared.startBackgroundProcessing(snapshots: snapshots)
             }
         }
     }
@@ -876,6 +883,8 @@ struct PhotoGridView: View {
     }
     
     private func prefetchThumbnails(around index: Int) {
+        // Avoid competing PhotoKit native allocations during resource hashing.
+        guard !hashManager.isProcessing else { return }
         let count = photoLibraryManager.assetCount
         guard count > 0 else { return }
         

@@ -106,11 +106,13 @@ struct UploadProgressView: View {
 
 struct UploadItemRow: View {
     @ObservedObject var item: UploadItem
+    @State private var thumbnail: UIImage?
+    @State private var isVisible = false
     
     var body: some View {
         HStack(spacing: 12) {
             // Thumbnail
-            if let thumbnail = item.thumbnail {
+            if let thumbnail {
                 Image(uiImage: thumbnail)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -214,6 +216,21 @@ struct UploadItemRow: View {
             }
         }
         .padding(.vertical, 4)
+        .onAppear {
+            isVisible = true
+            ThumbnailCache.shared.getThumbnail(for: item.asset) { image in
+                Task { @MainActor in
+                    // Old cache cancellation is keyed by asset, not consumer.
+                    // Preserve shared requests and ignore results for hidden rows.
+                    guard isVisible else { return }
+                    thumbnail = image
+                }
+            }
+        }
+        .onDisappear {
+            isVisible = false
+            thumbnail = nil
+        }
     }
 }
 

@@ -26,7 +26,6 @@ class UploadItem: Identifiable, ObservableObject {
     
     @Published var status: UploadStatus = .pending
     @Published var progress: Double = 0.0
-    @Published var thumbnail: UIImage?
     @Published var errorMessage: String?
     
     var resourcesUploaded: [String: Bool] = [:]
@@ -211,9 +210,6 @@ class UploadManager: ObservableObject {
 
                     let item = UploadItem(asset: entry.asset, filename: entry.filename, hasRAW: entry.hasRAW)
                     item.totalResources = entry.resourceCount
-                    ThumbnailCache.shared.getThumbnail(for: entry.asset) { [weak item] image in
-                        Task { @MainActor in item?.thumbnail = image }
-                    }
                     self.uploadQueue.append(item)
                 }
 
