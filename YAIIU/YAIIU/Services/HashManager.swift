@@ -500,7 +500,10 @@ class HashManager: ObservableObject {
                 syncStatusCache.removeAll()
             }
             if let snapshotsToInvalidate {
-                DatabaseManager.shared.resetCacheForModifiedAssets(snapshots: snapshotsToInvalidate)
+                DatabaseManager.shared.resetCacheForModifiedAssets(
+                    snapshots: snapshotsToInvalidate,
+                    pruneOrphans: PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+                )
             }
         }) else { return }
         shouldStop = false
