@@ -429,6 +429,9 @@ struct PhotoGridView: View {
                 photoLibraryManager.requestAuthorization()
             }
             performAutoSync()
+            if currentFilter == .favorites || currentFilter == .album {
+                refreshPhotoKitFilter()
+            }
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
@@ -913,18 +916,22 @@ struct PhotoGridView: View {
         let albumID = selectedAlbum?.id
         isFilterLoading = true
 
-        photoFilterTask = Task(priority: .utility) {
-            let indices = await Task.detached(priority: .utility) {
-                switch filter {
-                case .favorites:
-                    return PhotoLibraryManager.favoriteIndices(in: identifiers)
-                case .album:
-                    guard let albumID else { return [Int]() }
-                    return PhotoLibraryManager.albumIndices(in: identifiers, albumID: albumID)
-                default:
-                    return [Int]()
+        // Keep the detached task itself so cancel() interrupts PhotoKit enumeration;
+        // do not create an untracked detached child that can keep scanning in parallel.
+        photoFilterTask = Task.detached(priority: .utility) {
+            let indices: [Int]
+            switch filter {
+            case .favorites:
+                indices = PhotoLibraryManager.favoriteIndices(in: identifiers)
+            case .album:
+                if let albumID {
+                    indices = PhotoLibraryManager.albumIndices(in: identifiers, albumID: albumID)
+                } else {
+                    indices = []
                 }
-            }.value
+            default:
+                indices = []
+            }
 
             guard !Task.isCancelled else { return }
             await MainActor.run {
