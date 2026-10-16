@@ -110,6 +110,8 @@ class ImmichAPIService: NSObject {
             fileURL = try await Task.detached(priority: .utility) {
                 try ImageTimezoneMetadata.addingOffsetIfMissing(
                     to: originalFileURL,
+                    filename: filename,
+                    mimeType: mimeType,
                     timezone: rewriteTimezone,
                     at: createdAt
                 )
