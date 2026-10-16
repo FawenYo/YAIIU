@@ -11,6 +11,19 @@ struct PhotoAlbumOption: Identifiable, Hashable, Sendable {
 struct PhotoAssetSnapshot: Sendable {
     let localIdentifier: String
     let modificationDate: Date?
+    let isHidden: Bool
+
+    init(localIdentifier: String, modificationDate: Date?, isHidden: Bool = false) {
+        self.localIdentifier = localIdentifier
+        self.modificationDate = modificationDate
+        self.isHidden = isHidden
+    }
+
+    /// Do not start hashing hidden photos merely because orphan cleanup includes
+    /// them in its authoritative PhotoKit snapshot.
+    static func visibleIdentifiers(in snapshots: [PhotoAssetSnapshot]) -> [String] {
+        snapshots.filter { !$0.isHidden }.map(\.localIdentifier)
+    }
 }
 
 
@@ -368,19 +381,28 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         return identifiers
     }
 
-    func allAssetSnapshots() -> [PhotoAssetSnapshot] {
-        guard let result = fetchResult else { return [] }
+    /// The grid intentionally excludes hidden Photos, but orphan cleanup must
+    /// compare with a hidden-inclusive snapshot or it could delete valid hashes.
+    func allAssetSnapshots(includingHidden: Bool = false) -> [PhotoAssetSnapshot] {
+        let result: PHFetchResult<PHAsset>
+        if includingHidden {
+            let options = PHFetchOptions()
+            options.includeHiddenAssets = true
+            result = PHAsset.fetchAssets(with: options)
+        } else {
+            guard let visibleResult = fetchResult else { return [] }
+            result = visibleResult
+        }
+
         var snapshots: [PhotoAssetSnapshot] = []
         snapshots.reserveCapacity(result.count)
-
         result.enumerateObjects { asset, _, _ in
             autoreleasepool {
-                snapshots.append(
-                    PhotoAssetSnapshot(
-                        localIdentifier: asset.localIdentifier,
-                        modificationDate: asset.modificationDate
-                    )
-                )
+                snapshots.append(PhotoAssetSnapshot(
+                    localIdentifier: asset.localIdentifier,
+                    modificationDate: asset.modificationDate,
+                    isHidden: asset.isHidden
+                ))
             }
         }
         return snapshots
