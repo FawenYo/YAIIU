@@ -433,7 +433,11 @@ struct PhotoGridView: View {
         .onAppear {
             if !hasAppeared {
                 hasAppeared = true
-                photoLibraryManager.requestAuthorization()
+                photoLibraryManager.requestAuthorization { status in
+                    if status != .authorized && status != .limited {
+                        hashManager.clearPreparingState()
+                    }
+                }
             }
             performAutoSync()
             if currentFilter == .favorites || currentFilter == .album {
@@ -625,6 +629,7 @@ struct PhotoGridView: View {
         foregroundWorkPreparing = true
         hashManager.setPreparingState()
         let manager = photoLibraryManager
+        logInfo("Foreground PhotoKit work preparation started", category: .hash)
         Task.detached(priority: .utility) {
             // PhotoKit hash invalidation must not race with a server checksum
             // check that is about to write its verification result.
@@ -632,6 +637,7 @@ struct PhotoGridView: View {
             let work = manager.prepareForegroundPhotoWork()
             await ServerAssetVerificationGate.shared.release()
             await MainActor.run {
+                logInfo("Foreground PhotoKit preparation completed", category: .hash)
                 foregroundWorkPreparing = false
                 if hashManager.hasActivePipeline {
                     // Another legitimate hash run won admission while PhotoKit
