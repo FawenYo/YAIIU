@@ -2,6 +2,12 @@ import Foundation
 import Photos
 import UIKit
 
+/// An Apple Photos album that can be chosen as a local gallery filter.
+struct PhotoAlbumOption: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+}
+
 struct PhotoAssetSnapshot: Sendable {
     let localIdentifier: String
     let modificationDate: Date?
@@ -19,6 +25,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var assetCount: Int = 0
+    /// Invalidates PhotoKit-based grid filters when favorites or album membership changes.
+    @Published private(set) var libraryRevision: Int = 0
+    /// The grid may only interpret index-based filters against this fetch generation.
+    /// Both the fetch and the identifier snapshot get the same generation.
+    @Published private(set) var assetFetchGeneration: Int = 0
+    @Published private(set) var orderedIdentifiersGeneration: Int? = nil
 
     /// Local identifiers in fetch order, materialized once per library load so
     /// callers can derive counts/filters without re-enumerating the lazy
@@ -73,6 +85,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Incrementally applies library changes so photos captured while the app was
     /// backgrounded appear on foreground without a full re-fetch.
     func photoLibraryDidChange(_ changeInstance: PHChange) {
+        // Album membership and favorite changes can leave the all-assets count unchanged.
+        // Notify filters even if PhotoKit supplies no changes for the all-assets fetch.
+        DispatchQueue.main.async { [weak self] in
+            self?.libraryRevision &+= 1
+        }
         fetchResultLock.lock()
         let albums = albumFetchResult
         fetchResultLock.unlock()
@@ -107,34 +124,108 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let updatedResult = changes.fetchResultAfterChanges
         let count = updatedResult.count
 
-        // Phase 1: publish the fetch result and count so the grid updates promptly.
+        // Swap the fetch and invalidate its previous index snapshot on the main
+        // actor. Do not publish index-based filters until enumeration of this
+        // exact fetch generation finishes.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.assetFetchGeneration &+= 1
+            let generation = self.assetFetchGeneration
+            self.orderedIdentifiersGeneration = nil
+            self.orderedLocalIdentifiers = []
             self.fetchResultLock.lock()
             self._fetchResult = updatedResult
             self.fetchResultLock.unlock()
             self.assetCount = count
-        }
 
-        // Phase 2: build the full identifier list off the critical path, matching
-        // the two-phase pattern in fetchAssetsAsync.
-        Task(priority: .utility) {
-            var identifiers: [String] = []
-            identifiers.reserveCapacity(count)
-            updatedResult.enumerateObjects { asset, _, _ in
-                identifiers.append(asset.localIdentifier)
-            }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                // Drop the result if a newer change superseded this fetch result
-                // while enumerating; otherwise a slow task could overwrite the
-                // identifiers with a stale list, desyncing them from _fetchResult.
-                if self.fetchResult === updatedResult {
+            Task.detached(priority: .utility) { [weak self] in
+                var identifiers: [String] = []
+                identifiers.reserveCapacity(count)
+                updatedResult.enumerateObjects { asset, _, stop in
+                    if Task.isCancelled {
+                        stop.pointee = true
+                        return
+                    }
+                    identifiers.append(asset.localIdentifier)
+                }
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self,
+                          self.assetFetchGeneration == generation,
+                          self.fetchResult === updatedResult else { return }
                     self.orderedLocalIdentifiers = identifiers
+                    self.orderedIdentifiersGeneration = generation
+                    self.libraryRevision &+= 1
                 }
             }
         }
     }
+
+    /// Enumerate user-accessible albums without retaining PhotoKit collection objects in SwiftUI.
+    static func availableAlbums() -> [PhotoAlbumOption] {
+        let collections = PHAssetCollection.fetchAssetCollections(
+            with: .album, subtype: .any, options: nil
+        )
+        var albums: [PhotoAlbumOption] = []
+        albums.reserveCapacity(collections.count)
+        collections.enumerateObjects { collection, _, _ in
+            albums.append(PhotoAlbumOption(
+                id: collection.localIdentifier,
+                title: collection.localizedTitle ?? ""
+            ))
+        }
+        return albums.sorted {
+            let comparison = $0.title.localizedStandardCompare($1.title)
+            return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
+        }
+    }
+
+    /// Use PhotoKit's native Favorites smart album, then map identifiers to the
+    /// already-ordered main-library index. No PHAsset array is retained.
+    static func favoriteIndices(in orderedIdentifiers: [String]) -> [Int] {
+        let favorites = PHAssetCollection.fetchAssetCollections(
+            with: .smartAlbum, subtype: .smartAlbumFavorites, options: nil
+        )
+        guard let collection = favorites.firstObject else { return [] }
+        return indices(in: orderedIdentifiers, collection: collection)
+    }
+
+    static func albumIndices(in orderedIdentifiers: [String], albumID: String) -> [Int] {
+        let collections = PHAssetCollection.fetchAssetCollections(
+            withLocalIdentifiers: [albumID], options: nil
+        )
+        guard let collection = collections.firstObject,
+              collection.assetCollectionType == .album else { return [] }
+        return indices(in: orderedIdentifiers, collection: collection)
+    }
+
+    private static func indices(in orderedIdentifiers: [String], collection: PHAssetCollection) -> [Int] {
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        let assets = PHAsset.fetchAssets(in: collection, options: options)
+        var members = Set<String>(minimumCapacity: assets.count)
+        assets.enumerateObjects { asset, _, stop in
+            if Task.isCancelled {
+                stop.pointee = true
+                return
+            }
+            members.insert(asset.localIdentifier)
+        }
+        guard !Task.isCancelled else { return [] }
+        return matchingIndices(in: orderedIdentifiers, members: members)
+    }
+
+    /// Pure indexing helper: preserves the main grid's newest-first order and
+    /// excludes limited-library-inaccessible/hidden assets.
+    static func matchingIndices(in orderedIdentifiers: [String], members: Set<String>) -> [Int] {
+        var indices: [Int] = []
+        indices.reserveCapacity(min(orderedIdentifiers.count, members.count))
+        for (index, id) in orderedIdentifiers.enumerated() where members.contains(id) {
+            indices.append(index)
+        }
+        return indices
+    }
+
     private static func fetchUserAlbums() -> PHFetchResult<PHAssetCollection> {
         PHAssetCollection.fetchAssetCollections(
             with: .album,
@@ -200,6 +291,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             return PHAsset.fetchAssets(with: fetchOptions)
         }.value
 
+        assetFetchGeneration &+= 1
+        let generation = assetFetchGeneration
+        orderedIdentifiersGeneration = nil
+        orderedLocalIdentifiers = []
         fetchResultLock.lock()
         _fetchResult = result
         fetchResultLock.unlock()
@@ -218,7 +313,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
             return ids
         }.value
+        // A PhotoKit change may have replaced the fetch during enumeration.
+        // Never let a delayed snapshot overwrite a newer fetch generation.
+        guard assetFetchGeneration == generation, fetchResult === result else { return }
         orderedLocalIdentifiers = identifiers
+        orderedIdentifiersGeneration = generation
+        libraryRevision &+= 1
 
         await triggerFavoriteSync()
         await AlbumSyncService.shared.syncIfEnabled()

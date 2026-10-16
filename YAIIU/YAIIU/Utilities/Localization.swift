@@ -277,6 +277,10 @@ enum L10n {
         static var permissionOpenSettings: String { "photoGrid.permission.openSettings".localized }
         static var filterAll: String { "photoGrid.filter.all".localized }
         static var filterNotUploaded: String { "photoGrid.filter.notUploaded".localized }
+        static var filterFavorites: String { "photoGrid.filter.favorites".localized }
+        static var filterAlbum: String { "photoGrid.filter.album".localized }
+        static var filterChooseAlbum: String { "photoGrid.filter.chooseAlbum".localized }
+        static var filterNoAlbums: String { "photoGrid.filter.noAlbums".localized }
         static func filterActive(_ count: Int) -> String {
             return "photoGrid.filter.active".localized(with: count)
         }

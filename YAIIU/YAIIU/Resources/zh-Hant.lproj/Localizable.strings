@@ -127,6 +127,10 @@
 "photoGrid.permission.openSettings" = "開啟設定";
 "photoGrid.filter.all" = "所有照片";
 "photoGrid.filter.notUploaded" = "尚未上傳";
+"photoGrid.filter.favorites" = "最愛";
+"photoGrid.filter.album" = "相簿";
+"photoGrid.filter.chooseAlbum" = "選擇相簿";
+"photoGrid.filter.noAlbums" = "沒有可選擇的相簿";
 "photoGrid.filter.active" = "顯示 %d 個項目";
 "photoGrid.selectAllNotUploaded" = "全選未上傳";
 "photoGrid.section.today" = "今天";

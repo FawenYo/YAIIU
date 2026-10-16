@@ -5,9 +5,11 @@ import UIKit
 
 // MARK: - Photo Filter Options
 
-enum PhotoFilterOption: String, CaseIterable, Identifiable {
+enum PhotoFilterOption: String, CaseIterable, Identifiable, Sendable {
     case all
     case notUploaded
+    case favorites
+    case album
     
     var id: String { rawValue }
     
@@ -17,6 +19,10 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable {
             return L10n.PhotoGrid.filterAll
         case .notUploaded:
             return L10n.PhotoGrid.filterNotUploaded
+        case .favorites:
+            return L10n.PhotoGrid.filterFavorites
+        case .album:
+            return L10n.PhotoGrid.filterAlbum
         }
     }
     
@@ -26,6 +32,10 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable {
             return "photo.on.rectangle"
         case .notUploaded:
             return "icloud.slash"
+        case .favorites:
+            return "heart.fill"
+        case .album:
+            return "rectangle.stack"
         }
     }
 }
@@ -267,10 +277,23 @@ struct PhotoGridView: View {
     @State private var showingUploadConfirmation = false
     @State private var hasAppeared = false
     @State private var lastPrefetchedRange: Range<Int>?
+    /// At most ~60 PhotoKit assets from the filtered display window.
+    @State private var lastPrefetchedFilteredAssets: [PHAsset] = []
     @State private var isSyncing = false
     @State private var currentFilter: PhotoFilterOption = .all
+    @State private var selectedAlbum: PhotoAlbumOption?
+    @State private var albumChoices: [PhotoAlbumOption] = []
+    @State private var albumSearch = ""
+    @State private var isAlbumPickerPresented = false
+    @State private var isLoadingAlbums = false
+    @State private var isFilterLoading = false
+    @State private var albumLoadTask: Task<Void, Never>?
+    @State private var photoFilterTask: Task<Void, Never>?
+    @State private var libraryRefreshTask: Task<Void, Never>?
+    @State private var photoFilterVersion = 0
     
     @State private var filteredIndices: [Int] = []
+    @State private var filteredIndicesGeneration: Int?
     @State private var cachedNotUploadedCount: Int = 0
     @State private var countRefreshTask: Task<Void, Never>?
     @State private var recomputeTask: Task<Void, Never>?
@@ -301,9 +324,16 @@ struct PhotoGridView: View {
         switch currentFilter {
         case .all:
             return photoLibraryManager.assetCount
-        case .notUploaded:
-            return filteredIndices.count
+        case .notUploaded, .favorites, .album:
+            // Never use indices from an older all-assets PHFetchResult.
+            return filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration
+                ? filteredIndices.count : 0
         }
+    }
+
+    private var visibleAlbumChoices: [PhotoAlbumOption] {
+        guard !albumSearch.isEmpty else { return albumChoices }
+        return albumChoices.filter { $0.title.localizedCaseInsensitiveContains(albumSearch) }
     }
 
     private var isTabBarHidden: Bool {
@@ -349,7 +379,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.select) {
                                 isSelectionMode = true
                             }
-                            .disabled(displayCount == 0)
+                            .disabled(displayCount == 0 || isFilterLoading)
                         }
                     }
 
@@ -358,14 +388,14 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.selectAllNotUploaded) {
                                 selectAllNotUploaded()
                             }
-                            .disabled(hashManager.isProcessing || isSelectingAll)
+                            .disabled(hashManager.isProcessing || isSelectingAll || isFilterLoading)
 
                             Spacer()
 
                             Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
                                 showingUploadConfirmation = true
                             }
-                            .disabled(selectedAssets.isEmpty)
+                            .disabled(selectedAssets.isEmpty || isFilterLoading)
                         }
                     }
                 }
@@ -379,6 +409,9 @@ struct PhotoGridView: View {
                 }
             }
             .navigationViewStyle(.stack)
+            .sheet(isPresented: $isAlbumPickerPresented) {
+                albumPickerSheet
+            }
             .toolbar(isTabBarHidden ? .hidden : .visible, for: .tabBar)
             .animation(.easeInOut(duration: 0.2), value: isTabBarHidden)
             
@@ -401,10 +434,16 @@ struct PhotoGridView: View {
                 photoLibraryManager.requestAuthorization()
             }
             performAutoSync()
+            if currentFilter == .favorites || currentFilter == .album {
+                refreshPhotoKitFilter()
+            }
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
                 performAutoSync()
+                if currentFilter == .favorites || currentFilter == .album {
+                    refreshPhotoKitFilter()
+                }
             }
         }
         .onDisappear {
@@ -417,10 +456,14 @@ struct PhotoGridView: View {
             recomputeTask = nil
             processingTask?.cancel()
             processingTask = nil
+            albumLoadTask?.cancel()
+            photoFilterTask?.cancel()
+            libraryRefreshTask?.cancel()
+            stopPrefetching()
         }
         .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
             if newValue > 0 && oldValue == 0 {
-                prefetchThumbnails(around: 0)
+                prefetchThumbnails(aroundDisplayIndex: 0)
             }
         }
         .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
@@ -461,10 +504,7 @@ struct PhotoGridView: View {
             if newValue {
                 // Pause only PhotoKit preheating. Do not clear visible cache or
                 // cancel existing image requests (the PR #90 spinner regression).
-                if let range = lastPrefetchedRange {
-                    ThumbnailCache.shared.stopPrefetching(for: photoLibraryManager.assets(in: range))
-                    lastPrefetchedRange = nil
-                }
+                stopPrefetching()
             } else if oldValue {
                 syncPendingICloudIds()
             }
@@ -481,6 +521,39 @@ struct PhotoGridView: View {
         // every publish, so the count tracks the icons exactly.
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { _ in
             scheduleCountRefresh()
+        }
+        .onReceive(photoLibraryManager.$assetFetchGeneration.receive(on: RunLoop.main)) { _ in
+            // A filtered index is a position within one particular PHFetchResult.
+            // Invalidate it immediately when that fetch is replaced, before a
+            // delayed identifier enumeration can publish its replacement.
+            photoFilterTask?.cancel()
+            photoFilterVersion += 1
+            selectionTask?.cancel()
+            isSelectingAll = false
+            selectedAssets.removeAll()
+            if showingPhotoDetail { showingPhotoDetail = false }
+            filteredIndices = []
+            filteredIndicesGeneration = nil
+            // Old full-library ranges refer to the previous fetch. Avoid
+            // interpreting them against the newly swapped result.
+            lastPrefetchedRange = nil
+            if !lastPrefetchedFilteredAssets.isEmpty {
+                ThumbnailCache.shared.stopPrefetching(for: lastPrefetchedFilteredAssets)
+                lastPrefetchedFilteredAssets = []
+            }
+            refreshToken = UUID()
+        }
+        .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
+            // Coalesce PhotoKit notifications (including album membership edits).
+            libraryRefreshTask?.cancel()
+            libraryRefreshTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                recomputeCounts()
+                if currentFilter == .favorites || currentFilter == .album {
+                    refreshPhotoKitFilter()
+                }
+            }
         }
     }
 
@@ -659,7 +732,7 @@ struct PhotoGridView: View {
         switch currentFilter {
         case .all:
             return displayIndex
-        case .notUploaded:
+        case .notUploaded, .favorites, .album:
             guard displayIndex < filteredIndices.count else { return displayIndex }
             return filteredIndices[displayIndex]
         }
@@ -681,6 +754,7 @@ struct PhotoGridView: View {
             showingPhotoDetail: showingPhotoDetail,
             selectedPhotoIndex: selectedPhotoIndex,
             onTap: {
+                guard !isFilterLoading else { return }
                 if isSelectionMode {
                     toggleSelection(at: assetIndex)
                 } else {
@@ -688,6 +762,7 @@ struct PhotoGridView: View {
                 }
             },
             onLongPress: {
+                guard !isFilterLoading else { return }
                 if !isSelectionMode {
                     isSelectionMode = true
                     if let id = photoLibraryManager.localIdentifier(at: assetIndex) {
@@ -707,13 +782,21 @@ struct PhotoGridView: View {
     }
     
     private var filterIndicatorView: some View {
-        HStack {
+        HStack(spacing: 8) {
             Image(systemName: currentFilter.iconName)
                 .foregroundColor(.orange)
-            Text(L10n.PhotoGrid.filterActive(displayCount))
+            Text(currentFilter == .album ? (selectedAlbum?.title ?? L10n.PhotoGrid.filterAlbum) : currentFilter.localizedTitle)
                 .font(.subheadline)
-                .foregroundColor(.secondary)
-            Spacer()
+                .lineLimit(1)
+            if isFilterLoading {
+                ProgressView()
+                    .scaleEffect(0.7)
+            } else {
+                Text(L10n.PhotoGrid.filterActive(displayCount))
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 4)
             Button {
                 applyFilter(.all)
             } label: {
@@ -725,14 +808,19 @@ struct PhotoGridView: View {
         .padding(.vertical, 8)
         .background(Color(.systemGray6))
     }
-    
+
     @ViewBuilder
     private var filterMenuButton: some View {
         if !hashManager.isProcessing {
             Menu {
                 ForEach(PhotoFilterOption.allCases) { option in
                     Button {
-                        applyFilter(option)
+                        if option == .album {
+                            albumSearch = ""
+                            isAlbumPickerPresented = true
+                        } else {
+                            applyFilter(option)
+                        }
                     } label: {
                         Label {
                             if option == .notUploaded {
@@ -743,6 +831,8 @@ struct PhotoGridView: View {
                         } icon: {
                             if currentFilter == option {
                                 Image(systemName: "checkmark")
+                            } else {
+                                Image(systemName: option.iconName)
                             }
                         }
                     }
@@ -753,25 +843,171 @@ struct PhotoGridView: View {
             }
         }
     }
-    
-    // MARK: - Filter Cache Management
-    
-    private func applyFilter(_ filter: PhotoFilterOption) {
-        if isSelectionMode {
-            selectedAssets.removeAll()
+
+    private var albumPickerSheet: some View {
+        NavigationStack {
+            List {
+                if isLoadingAlbums {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                } else if visibleAlbumChoices.isEmpty {
+                    Text(L10n.PhotoGrid.filterNoAlbums)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(visibleAlbumChoices) { album in
+                        Button {
+                            selectedAlbum = album
+                            isAlbumPickerPresented = false
+                            applyFilter(.album)
+                        } label: {
+                            HStack {
+                                Text(album.title)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if currentFilter == .album && selectedAlbum?.id == album.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(L10n.PhotoGrid.filterChooseAlbum)
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $albumSearch)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L10n.PhotoGrid.cancel) {
+                        isAlbumPickerPresented = false
+                    }
+                }
+            }
+            .task {
+                loadAlbumChoices()
+            }
         }
-        
+    }
+
+    private func loadAlbumChoices() {
+        albumLoadTask?.cancel()
+        isLoadingAlbums = true
+        albumLoadTask = Task {
+            let albums = await Task.detached(priority: .utility) {
+                PhotoLibraryManager.availableAlbums()
+            }.value
+            guard !Task.isCancelled else { return }
+            albumChoices = albums
+            isLoadingAlbums = false
+        }
+    }
+
+    // MARK: - Filter Cache Management
+
+    private func applyFilter(_ filter: PhotoFilterOption) {
+        stopPrefetching()
+        selectionTask?.cancel()
+        isSelectingAll = false
+        selectedAssets.removeAll()
+        dragState.reset()
+        photoFilterTask?.cancel()
+        photoFilterVersion += 1
+        isFilterLoading = false
         currentFilter = filter
-        
-        if filter == .notUploaded {
-            // filteredIndices is kept current by recomputeCounts(); rebuild it
-            // off the main thread so tapping the filter never blocks the UI on
-            // large libraries. recomputeCounts() flips refreshToken once the new
-            // indices land, so avoid rebuilding here with the stale set first.
+        filteredIndices = []
+        filteredIndicesGeneration = nil
+        if showingPhotoDetail { showingPhotoDetail = false }
+        if filter != .album {
+            selectedAlbum = nil
+        }
+
+        switch filter {
+        case .notUploaded:
             recomputeCounts()
-        } else {
-            // Other filters use the full set immediately, so rebuild now.
+        case .favorites, .album:
+            refreshPhotoKitFilter()
+        case .all:
             refreshToken = UUID()
+        }
+    }
+
+    /// Only enumerate the selected PhotoKit collection off the main actor. The
+    /// resulting indices refer to the main gallery's original fetch order.
+    private func refreshPhotoKitFilter() {
+        guard currentFilter == .favorites || currentFilter == .album else { return }
+        photoFilterTask?.cancel()
+        photoFilterVersion += 1
+        let version = photoFilterVersion
+        let filter = currentFilter
+        let generation = photoLibraryManager.assetFetchGeneration
+        let identifiers = photoLibraryManager.orderedLocalIdentifiers
+        let albumID = selectedAlbum?.id
+
+        // An all-assets fetch is published before its corresponding identifier
+        // snapshot is built. Do not interpret index-based filters in that gap.
+        guard photoLibraryManager.orderedIdentifiersGeneration == generation else {
+            filteredIndicesGeneration = nil
+            isFilterLoading = photoLibraryManager.assetCount > 0
+            return
+        }
+
+        let selectedAtStart = selectedAssets
+        selectionTask?.cancel()
+        isSelectingAll = false
+        isFilterLoading = true
+
+        photoFilterTask = Task.detached(priority: .utility) {
+            let indices: [Int]
+            switch filter {
+            case .favorites:
+                indices = PhotoLibraryManager.favoriteIndices(in: identifiers)
+            case .album:
+                if let albumID {
+                    indices = PhotoLibraryManager.albumIndices(in: identifiers, albumID: albumID)
+                } else {
+                    indices = []
+                }
+            default:
+                indices = []
+            }
+
+            guard !Task.isCancelled else { return }
+
+            // Preserve only previously selected photos that still belong to the
+            // refreshed filter. Do the membership walk off-main for large albums.
+            var retained = Set<String>()
+            if !selectedAtStart.isEmpty {
+                retained.reserveCapacity(selectedAtStart.count)
+                for index in indices {
+                    if Task.isCancelled { return }
+                    let identifier = identifiers[index]
+                    if selectedAtStart.contains(identifier) {
+                        retained.insert(identifier)
+                    }
+                }
+            }
+
+            await MainActor.run {
+                guard !Task.isCancelled, version == self.photoFilterVersion,
+                      self.currentFilter == filter,
+                      self.photoLibraryManager.assetFetchGeneration == generation,
+                      self.photoLibraryManager.orderedIdentifiersGeneration == generation else { return }
+
+                if self.showingPhotoDetail && self.filteredIndices != indices {
+                    // PhotoDetailView stores its PHAsset in @State; dismiss rather
+                    // than leave it showing a removed/incorrect album item.
+                    self.showingPhotoDetail = false
+                }
+                if self.isSelectionMode {
+                    self.selectedAssets.formIntersection(retained)
+                }
+                self.filteredIndices = indices
+                self.filteredIndicesGeneration = generation
+                self.isFilterLoading = false
+                self.refreshToken = UUID()
+            }
         }
     }
 
@@ -839,9 +1075,11 @@ struct PhotoGridView: View {
         let version = countComputeVersion
 
         recomputeTask = Task(priority: .utility) {
-            let (statusCache, identifiers) = await MainActor.run {
-                (hash.syncStatusCache, manager.orderedLocalIdentifiers)
+            let (statusCache, identifiers, generation, snapshotGeneration) = await MainActor.run {
+                (hash.syncStatusCache, manager.orderedLocalIdentifiers,
+                 manager.assetFetchGeneration, manager.orderedIdentifiersGeneration)
             }
+            guard snapshotGeneration == generation else { return }
 
             var notUploadedIndices: [Int] = []
             notUploadedIndices.reserveCapacity(identifiers.count / 4)
@@ -856,10 +1094,16 @@ struct PhotoGridView: View {
                 // Discard results from superseded invocations; without this guard
                 // a task that read an earlier cache snapshot could finish last and
                 // overwrite with a stale value (stale-wins race).
-                guard !Task.isCancelled, version == self.countComputeVersion else { return }
+                guard !Task.isCancelled, version == self.countComputeVersion,
+                      manager.assetFetchGeneration == generation,
+                      manager.orderedIdentifiersGeneration == generation else { return }
                 self.cachedNotUploadedCount = notUploadedIndices.count
-                self.filteredIndices = notUploadedIndices
                 if self.currentFilter == .notUploaded {
+                    if self.showingPhotoDetail && self.filteredIndices != notUploadedIndices {
+                        self.showingPhotoDetail = false
+                    }
+                    self.filteredIndices = notUploadedIndices
+                    self.filteredIndicesGeneration = generation
                     self.refreshToken = UUID()
                 }
             }
@@ -867,6 +1111,7 @@ struct PhotoGridView: View {
     }
     
     private func openPhotoDetail(at index: Int) {
+        guard !isFilterLoading, index < displayCount else { return }
         selectedPhotoIndex = index
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             showingPhotoDetail = true
@@ -874,7 +1119,7 @@ struct PhotoGridView: View {
     }
     
     private func onItemAppear(displayIndex: Int, assetIndex: Int) {
-        prefetchThumbnails(around: assetIndex)
+        prefetchThumbnails(aroundDisplayIndex: displayIndex)
         updateVisibleDate(for: displayIndex, assetIndex: assetIndex, isAppearing: true)
     }
     
@@ -882,33 +1127,54 @@ struct PhotoGridView: View {
         updateVisibleDate(for: displayIndex, assetIndex: assetIndex, isAppearing: false)
     }
     
-    private func prefetchThumbnails(around index: Int) {
-        // Avoid competing PhotoKit native allocations during resource hashing.
-        guard !hashManager.isProcessing else { return }
-        let count = photoLibraryManager.assetCount
-        guard count > 0 else { return }
-        
-        let startIndex = max(0, index - prefetchBuffer)
-        let endIndex = min(count, index + prefetchBuffer)
-        
-        guard startIndex < endIndex else { return }
-        
-        let newRange = startIndex..<endIndex
-        
-        if let oldRange = lastPrefetchedRange {
-            let indicesToStop = oldRange.filter { !newRange.contains($0) }
-            let assetsToStop = indicesToStop.compactMap { photoLibraryManager.asset(at: $0) }
-            if !assetsToStop.isEmpty {
-                ThumbnailCache.shared.stopPrefetching(for: assetsToStop)
-            }
+    private func stopPrefetching() {
+        if let range = lastPrefetchedRange {
+            ThumbnailCache.shared.stopPrefetching(for: photoLibraryManager.assets(in: range))
+            lastPrefetchedRange = nil
         }
-        
-        lastPrefetchedRange = newRange
-        
-        let assetsToPreload = photoLibraryManager.assets(in: newRange)
-        ThumbnailCache.shared.prefetchThumbnails(for: assetsToPreload)
+        if !lastPrefetchedFilteredAssets.isEmpty {
+            ThumbnailCache.shared.stopPrefetching(for: lastPrefetchedFilteredAssets)
+            lastPrefetchedFilteredAssets = []
+        }
     }
-    
+
+    private func prefetchThumbnails(aroundDisplayIndex displayIndex: Int) {
+        // Avoid competing PhotoKit native allocations during resource hashing.
+        guard !hashManager.isProcessing, !isFilterLoading,
+              displayIndex < displayCount else { return }
+
+        let start = max(0, displayIndex - prefetchBuffer)
+        let end = min(displayCount, displayIndex + prefetchBuffer + 1)
+        guard start < end else { return }
+
+        if currentFilter == .all {
+            let newRange = start..<end
+            if let oldRange = lastPrefetchedRange {
+                let stale = oldRange.filter { !newRange.contains($0) }
+                ThumbnailCache.shared.stopPrefetching(
+                    for: stale.compactMap { photoLibraryManager.asset(at: $0) }
+                )
+            }
+            lastPrefetchedRange = newRange
+            ThumbnailCache.shared.prefetchThumbnails(for: photoLibraryManager.assets(in: newRange))
+            return
+        }
+
+        // For Favorites/album/not-uploaded views, neighboring display items can
+        // be far apart in the full library. Preheat only those visible neighbors.
+        guard filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration else { return }
+        let assets = filteredIndices[start..<end].compactMap {
+            photoLibraryManager.asset(at: $0)
+        }
+        let currentIDs = Set(assets.map(\.localIdentifier))
+        let oldIDs = Set(lastPrefetchedFilteredAssets.map(\.localIdentifier))
+        let stale = lastPrefetchedFilteredAssets.filter { !currentIDs.contains($0.localIdentifier) }
+        let fresh = assets.filter { !oldIDs.contains($0.localIdentifier) }
+        if !stale.isEmpty { ThumbnailCache.shared.stopPrefetching(for: stale) }
+        if !fresh.isEmpty { ThumbnailCache.shared.prefetchThumbnails(for: fresh) }
+        lastPrefetchedFilteredAssets = assets
+    }
+
     private func refreshPhotosAsync() async {
         performAutoSync()
         
@@ -996,7 +1262,7 @@ struct PhotoGridView: View {
     }
     
     private func handleDragBegan(at point: CGPoint) {
-        guard let idx = displayIndex(at: point) else { return }
+        guard !isFilterLoading, let idx = displayIndex(at: point) else { return }
         let actualIdx = resolveActualIndex(idx)
         
         dragState.baseSelection = selectedAssets
@@ -1011,7 +1277,7 @@ struct PhotoGridView: View {
     }
     
     private func handleDragChanged(at point: CGPoint) {
-        guard let anchor = dragState.anchorIndex else { return }
+        guard !isFilterLoading, let anchor = dragState.anchorIndex else { return }
         guard let idx = displayIndex(at: point) else { return }
         guard idx != dragState.currentIndex else { return }
         
@@ -1042,27 +1308,47 @@ struct PhotoGridView: View {
     
     private func selectAllNotUploaded() {
         let statusCache = hashManager.syncStatusCache
-        guard let fetchResult = photoLibraryManager.fetchResult, !isSelectingAll else { return }
+        guard let fetchResult = photoLibraryManager.fetchResult,
+              !isSelectingAll, !isFilterLoading,
+              (currentFilter == .all ||
+               filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
+        let generation = photoLibraryManager.assetFetchGeneration
+        // Selection must stay within the active Favorites/album/not-uploaded filter.
+        let visibleIndices: [Int]? = currentFilter == .all ? nil : filteredIndices
 
         isSelectingAll = true
         selectionTask?.cancel()
         selectionTask = Task(priority: .userInitiated) {
             var ids = Set<String>()
-            ids.reserveCapacity(fetchResult.count / 4)
-
-            fetchResult.enumerateObjects { asset, _, stop in
-                if Task.isCancelled {
-                    stop.pointee = true
-                    return
+            if let visibleIndices {
+                ids.reserveCapacity(visibleIndices.count)
+                for index in visibleIndices {
+                    if Task.isCancelled { return }
+                    guard index >= 0, index < fetchResult.count else { continue }
+                    let id = fetchResult.object(at: index).localIdentifier
+                    if (statusCache[id] ?? .pending) != .uploaded {
+                        ids.insert(id)
+                    }
                 }
-                if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
-                    ids.insert(asset.localIdentifier)
+            } else {
+                ids.reserveCapacity(fetchResult.count / 4)
+                fetchResult.enumerateObjects { asset, _, stop in
+                    if Task.isCancelled {
+                        stop.pointee = true
+                        return
+                    }
+                    if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
+                        ids.insert(asset.localIdentifier)
+                    }
                 }
             }
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
-
+                if self.photoLibraryManager.assetFetchGeneration != generation {
+                    self.isSelectingAll = false
+                    return
+                }
                 if self.isSelectionMode {
                     self.selectedAssets = ids
                 }
@@ -1081,6 +1367,9 @@ struct PhotoGridView: View {
     }
     
     private func uploadSelectedPhotos() {
+        guard !isFilterLoading,
+              (currentFilter == .all ||
+               filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
         let identifiersToUpload = Array(selectedAssets)
         let manager = uploadManager
         
