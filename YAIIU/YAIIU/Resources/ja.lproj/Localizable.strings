@@ -126,6 +126,10 @@
 "photoGrid.permission.openSettings" = "設定を開く";
 "photoGrid.filter.all" = "すべての写真";
 "photoGrid.filter.notUploaded" = "未アップロード";
+"photoGrid.filter.favorites" = "お気に入り";
+"photoGrid.filter.album" = "アルバム";
+"photoGrid.filter.chooseAlbum" = "アルバムを選択";
+"photoGrid.filter.noAlbums" = "利用できるアルバムがありません";
 "photoGrid.filter.active" = "%d件を表示";
 "photoGrid.selectAllNotUploaded" = "未アップロードを全選択";
 "photoGrid.section.today" = "今日";
