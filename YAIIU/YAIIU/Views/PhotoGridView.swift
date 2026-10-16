@@ -286,6 +286,8 @@ struct PhotoGridView: View {
     @State private var albumSearch = ""
     @State private var isAlbumPickerPresented = false
     @State private var isLoadingAlbums = false
+    @State private var foregroundWorkPreparing = false
+    @State private var foregroundRefreshPending = false
     @State private var isFilterLoading = false
     @State private var albumLoadTask: Task<Void, Never>?
     @State private var photoFilterTask: Task<Void, Never>?
@@ -507,6 +509,10 @@ struct PhotoGridView: View {
                 stopPrefetching()
             } else if oldValue {
                 syncPendingICloudIds()
+                if foregroundRefreshPending {
+                    foregroundRefreshPending = false
+                    startBackgroundProcessing()
+                }
             }
         }
         // The count must track the same source as the per-photo icons
@@ -606,45 +612,46 @@ struct PhotoGridView: View {
     }
     
     private func startBackgroundProcessing() {
-        guard photoLibraryManager.assetCount > 0 else {
-            // The final photo may have been removed while the app was closed.
-            // Once the full library has loaded, clear its now-orphaned cache
-            // without starting the normal hash pipeline for zero photos.
-            if !photoLibraryManager.isLoading &&
-               PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized {
-                let manager = photoLibraryManager
-                Task.detached(priority: .utility) {
-                    // Zero visible assets may mean every photo was hidden.
-                    let snapshots = manager.allAssetSnapshots(includingHidden: true)
-                    guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
-                    DatabaseManager.shared.resetCacheForModifiedAssets(
-                        snapshots: snapshots, pruneOrphans: true
-                    )
-                }
-            }
-            if hashManager.isProcessing {
-                hashManager.clearPreparingState()
-            }
+        // Asset count zero is valid (all photos could be hidden or removed).
+        // Wait until PhotoLibraryManager has a real fetch result before
+        // creating an authoritative foreground persistent-change checkpoint.
+        guard !photoLibraryManager.isLoading,
+              photoLibraryManager.fetchResult != nil else { return }
+        guard !hashManager.isProcessing, !foregroundWorkPreparing else {
+            foregroundRefreshPending = true
             return
         }
-        
+
+        foregroundWorkPreparing = true
         if !hashManager.isProcessing {
             hashManager.setPreparingState()
         }
-        
         let manager = photoLibraryManager
         Task.detached(priority: .utility) {
-            // One hidden-inclusive snapshot suffices for both cleanup and
-            // visible-only hashing, without enumerating the entire library twice.
-            let snapshots = manager.allAssetSnapshots(
-                includingHidden: PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
-            )
+            let work = manager.prepareForegroundPhotoWork()
             await MainActor.run {
-                HashManager.shared.startBackgroundProcessing(snapshots: snapshots)
+                foregroundWorkPreparing = false
+                if hashManager.isProcessing {
+                    foregroundRefreshPending = true
+                    return
+                }
+                switch work {
+                case .incremental(let identifiers):
+                    // A zero-length delta still starts server status checks.
+                    hashManager.startBackgroundProcessing(identifiers: identifiers)
+                case .fallbackSnapshot(let snapshots):
+                    hashManager.startBackgroundProcessing(snapshots: snapshots)
+                case .unavailable:
+                    hashManager.clearPreparingState()
+                }
+                if foregroundRefreshPending && !hashManager.isProcessing {
+                    foregroundRefreshPending = false
+                    startBackgroundProcessing()
+                }
             }
         }
     }
-    
+
     // MARK: - Photo Grid Content
     
     private var photoGridContent: some View {
