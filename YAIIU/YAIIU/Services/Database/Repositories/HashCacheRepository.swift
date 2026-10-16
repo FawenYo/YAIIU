@@ -870,6 +870,36 @@ final class HashCacheRepository {
         }
     }
 
+    /// Hidden assets should not be hashed by the visible-library pipeline.
+    /// Only explicit hidden PHAssets are acknowledged; temporarily absent
+    /// local identifiers remain pending until PhotoKit can resolve them.
+    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {
+        guard !identifiers.isEmpty else { return }
+        connection.ensureInitialized()
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                self.connection.db,
+                "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
+                -1, &statement, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                return
+            }
+            defer { sqlite3_finalize(statement) }
+            for id in identifiers {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    logError("Failed to discard hidden foreground PhotoKit ID", category: .database)
+                    break
+                }
+            }
+        }
+    }
+
     // MARK: - Modified Asset Invalidation
 
     /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate
