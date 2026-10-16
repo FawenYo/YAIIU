@@ -24,6 +24,7 @@ protocol ServerAssetSyncAPI {
 }
 
 protocol ServerAssetSyncStore {
+    func invalidateHashChecksForServerChanges(checksums: [String], fullReset: Bool) -> Bool
     func isAssetOnServer(checksum: String) -> Bool
     func getServerAssetByImmichId(_ immichId: String) -> ServerAssetRecord?
     func getSyncMetadata() -> SyncMetadata?
@@ -205,6 +206,9 @@ class ServerAssetSyncService {
                 throw SyncError.repeatedServerReset
             }
 
+            guard dbManager.invalidateHashChecksForServerChanges(checksums: [], fullReset: true) else {
+                throw SyncError.syncFailed(reason: "Failed to invalidate hash checks before reset")
+            }
             guard clearCache() else {
                 throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
             }
@@ -261,6 +265,35 @@ class ServerAssetSyncService {
             handler: progressHandler
         )
 
+
+        // Invalidate before mutating cache or sending ACK. Replayed events are
+        // idempotent; a crash must never permanently trust an old negative match.
+        var affectedChecksums = Set<String>()
+        if syncType == "delta" {
+            func addChecksums(_ asset: ServerAssetRecord?) {
+                guard let asset else { return }
+                affectedChecksums.insert(asset.checksum)
+                if let sourceChecksum = asset.sourceChecksum {
+                    affectedChecksums.insert(sourceChecksum)
+                }
+            }
+            for asset in serverAssetRecords { addChecksums(asset) }
+            var changedIds = Set(serverAssetRecords.map(\.immichId))
+            changedIds.formUnion(deletedIds)
+            changedIds.formUnion(metadataResult.iCloudIdUpserts.keys)
+            changedIds.formUnion(metadataResult.iCloudIdDeletes)
+            changedIds.formUnion(metadataResult.sourceChecksumUpserts.keys)
+            for id in changedIds {
+                addChecksums(dbManager.getServerAssetByImmichId(id))
+            }
+            affectedChecksums.formUnion(metadataResult.sourceChecksumUpserts.values)
+        }
+        guard dbManager.invalidateHashChecksForServerChanges(
+            checksums: Array(affectedChecksums),
+            fullReset: syncType == "full"
+        ) else {
+            throw SyncError.syncFailed(reason: "Failed to persist hash verification invalidations")
+        }
 
         if syncType == "full", !clearCache() {
             throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
