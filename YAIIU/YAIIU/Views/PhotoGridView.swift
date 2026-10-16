@@ -8,6 +8,8 @@ import UIKit
 enum PhotoFilterOption: String, CaseIterable, Identifiable {
     case all
     case notUploaded
+    case favorites
+    case album
     
     var id: String { rawValue }
     
@@ -17,6 +19,10 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable {
             return L10n.PhotoGrid.filterAll
         case .notUploaded:
             return L10n.PhotoGrid.filterNotUploaded
+        case .favorites:
+            return L10n.PhotoGrid.filterFavorites
+        case .album:
+            return L10n.PhotoGrid.filterAlbum
         }
     }
     
@@ -26,6 +32,10 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable {
             return "photo.on.rectangle"
         case .notUploaded:
             return "icloud.slash"
+        case .favorites:
+            return "heart.fill"
+        case .album:
+            return "rectangle.stack"
         }
     }
 }
@@ -269,6 +279,16 @@ struct PhotoGridView: View {
     @State private var lastPrefetchedRange: Range<Int>?
     @State private var isSyncing = false
     @State private var currentFilter: PhotoFilterOption = .all
+    @State private var selectedAlbum: PhotoAlbumOption?
+    @State private var albumChoices: [PhotoAlbumOption] = []
+    @State private var albumSearch = ""
+    @State private var isAlbumPickerPresented = false
+    @State private var isLoadingAlbums = false
+    @State private var isFilterLoading = false
+    @State private var albumLoadTask: Task<Void, Never>?
+    @State private var photoFilterTask: Task<Void, Never>?
+    @State private var libraryRefreshTask: Task<Void, Never>?
+    @State private var photoFilterVersion = 0
     
     @State private var filteredIndices: [Int] = []
     @State private var cachedNotUploadedCount: Int = 0
@@ -301,9 +321,14 @@ struct PhotoGridView: View {
         switch currentFilter {
         case .all:
             return photoLibraryManager.assetCount
-        case .notUploaded:
+        case .notUploaded, .favorites, .album:
             return filteredIndices.count
         }
+    }
+
+    private var visibleAlbumChoices: [PhotoAlbumOption] {
+        guard !albumSearch.isEmpty else { return albumChoices }
+        return albumChoices.filter { $0.title.localizedCaseInsensitiveContains(albumSearch) }
     }
 
     private var isTabBarHidden: Bool {
@@ -358,7 +383,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.selectAllNotUploaded) {
                                 selectAllNotUploaded()
                             }
-                            .disabled(hashManager.isProcessing || isSelectingAll)
+                            .disabled(hashManager.isProcessing || isSelectingAll || isFilterLoading)
 
                             Spacer()
 
@@ -379,6 +404,9 @@ struct PhotoGridView: View {
                 }
             }
             .navigationViewStyle(.stack)
+            .sheet(isPresented: $isAlbumPickerPresented) {
+                albumPickerSheet
+            }
             .toolbar(isTabBarHidden ? .hidden : .visible, for: .tabBar)
             .animation(.easeInOut(duration: 0.2), value: isTabBarHidden)
             
@@ -405,6 +433,9 @@ struct PhotoGridView: View {
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
                 performAutoSync()
+                if currentFilter == .favorites || currentFilter == .album {
+                    refreshPhotoKitFilter()
+                }
             }
         }
         .onDisappear {
@@ -417,6 +448,9 @@ struct PhotoGridView: View {
             recomputeTask = nil
             processingTask?.cancel()
             processingTask = nil
+            albumLoadTask?.cancel()
+            photoFilterTask?.cancel()
+            libraryRefreshTask?.cancel()
         }
         .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
             if newValue > 0 && oldValue == 0 {
@@ -481,6 +515,18 @@ struct PhotoGridView: View {
         // every publish, so the count tracks the icons exactly.
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { _ in
             scheduleCountRefresh()
+        }
+        .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
+            // Coalesce PhotoKit notifications (including album membership edits).
+            libraryRefreshTask?.cancel()
+            libraryRefreshTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                recomputeCounts()
+                if currentFilter == .favorites || currentFilter == .album {
+                    refreshPhotoKitFilter()
+                }
+            }
         }
     }
 
@@ -659,7 +705,7 @@ struct PhotoGridView: View {
         switch currentFilter {
         case .all:
             return displayIndex
-        case .notUploaded:
+        case .notUploaded, .favorites, .album:
             guard displayIndex < filteredIndices.count else { return displayIndex }
             return filteredIndices[displayIndex]
         }
