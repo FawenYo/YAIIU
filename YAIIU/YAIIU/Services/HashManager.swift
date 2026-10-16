@@ -982,10 +982,17 @@ class HashManager: ObservableObject {
             return
         }
         
+        // Never cache a negative without a completed server baseline.
+        guard DatabaseManager.shared.getSyncMetadata()?.lastSyncTime != nil else {
+            logInfo("Skipping hash verification without a completed server baseline", category: .hash)
+            finishProcessing(runID: runID)
+            return
+        }
+
         isCheckingActive = true
         
-        // Get all multi-resource hashes that are not fully on server
-        // For JPEG+RAW assets, both must be verified
+        // Verify only unchecked hashes (new assets or server-delta invalidations).
+        // JPEG+RAW assets still require verification of both resources.
         DatabaseManager.shared.getMultiResourceHashesNotFullyOnServerAsync { [weak self] records in
             guard let self = self else { return }
             
@@ -1079,7 +1086,8 @@ class HashManager: ObservableObject {
             }
             
             // Check if server assets cache has been synced
-            let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
+            // An authoritative server baseline may contain zero assets.
+            let hasServerCache = DatabaseManager.shared.getSyncMetadata()?.lastSyncTime != nil
 
             // Preload localIdentifier → immichId map from upload records for iCloudId backfill
             let uploadedMappings = DatabaseManager.shared.getAllUploadedAssetMappings()
@@ -1113,8 +1121,9 @@ class HashManager: ObservableObject {
                     self.objectWillChange.send()
                 }
                 
-                var primaryOnServer = record.primaryOnServer
-                var rawOnServer = record.rawOnServer
+                // A server deletion can invalidate a previous true result.
+                var primaryOnServer = false
+                var rawOnServer = false
                 
                 // Check primary hash against server
                 if !primaryOnServer {
