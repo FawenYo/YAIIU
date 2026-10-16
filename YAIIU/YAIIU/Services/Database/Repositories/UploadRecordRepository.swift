@@ -30,8 +30,8 @@ final class UploadRecordRepository {
         var isUploaded = false
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT
-            sqlite3_bind_text(statement, 2, resourceType, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(statement, 2, resourceType, -1, SQLITE_BIND_TRANSIENT)
             
             if sqlite3_step(statement) == SQLITE_ROW {
                 isUploaded = sqlite3_column_int(statement, 0) > 0
@@ -60,7 +60,7 @@ final class UploadRecordRepository {
         var isUploaded = false
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT)
             
             if sqlite3_step(statement) == SQLITE_ROW {
                 isUploaded = sqlite3_column_int(statement, 0) > 0
@@ -93,8 +93,8 @@ final class UploadRecordRepository {
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
             guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-            sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-            sqlite3_bind_text(stmt, 2, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if sqlite3_step(stmt) == SQLITE_DONE {
                 let queueSQL = """
                     INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
@@ -107,7 +107,7 @@ final class UploadRecordRepository {
                 var queueStmt: OpaquePointer?
                 if sqlite3_prepare_v2(connection.db, queueSQL, -1, &queueStmt, nil) == SQLITE_OK {
                     sqlite3_bind_double(queueStmt, 1, Date().timeIntervalSince1970)
-                    sqlite3_bind_text(queueStmt, 2, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+                    sqlite3_bind_text(queueStmt, 2, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                     sqlite3_step(queueStmt)
                 }
                 sqlite3_finalize(queueStmt)
@@ -191,16 +191,16 @@ final class UploadRecordRepository {
         var saved = false
 
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-            sqlite3_bind_text(statement, 2, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-            sqlite3_bind_text(statement, 3, (filename as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-            sqlite3_bind_text(statement, 4, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(statement, 2, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(statement, 3, (filename as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(statement, 4, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_bind_int64(statement, 5, fileSize)
             sqlite3_bind_int(statement, 6, isDuplicate ? 1 : 0)
             sqlite3_bind_int(statement, 7, isFavorite ? 1 : 0)
             sqlite3_bind_double(statement, 8, Date().timeIntervalSince1970)
             if let destinationIdentity {
-                sqlite3_bind_text(statement, 9, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+                sqlite3_bind_text(statement, 9, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             } else {
                 sqlite3_bind_null(statement, 9)
             }
@@ -239,10 +239,10 @@ final class UploadRecordRepository {
                 connection.rollbackTransaction()
                 return false
             }
-            sqlite3_bind_text(videoStmt, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(videoStmt, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if let destinationIdentity {
-                sqlite3_bind_text(videoStmt, 2, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-                sqlite3_bind_text(videoStmt, 3, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+                sqlite3_bind_text(videoStmt, 2, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                sqlite3_bind_text(videoStmt, 3, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             } else {
                 sqlite3_bind_null(videoStmt, 2)
                 sqlite3_bind_null(videoStmt, 3)
@@ -288,14 +288,14 @@ final class UploadRecordRepository {
             connection.rollbackTransaction()
             return false
         }
-        sqlite3_bind_text(statusStmt, 1, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-        sqlite3_bind_text(statusStmt, 2, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-        sqlite3_bind_text(statusStmt, 3, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+        sqlite3_bind_text(statusStmt, 1, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+        sqlite3_bind_text(statusStmt, 2, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+        sqlite3_bind_text(statusStmt, 3, (resourceType as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         sqlite3_bind_double(statusStmt, 4, Date().timeIntervalSince1970)
-        sqlite3_bind_text(statusStmt, 5, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+        sqlite3_bind_text(statusStmt, 5, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         if let destinationIdentity {
-            sqlite3_bind_text(statusStmt, 6, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-            sqlite3_bind_text(statusStmt, 7, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(statusStmt, 6, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(statusStmt, 7, (destinationIdentity as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         } else {
             sqlite3_bind_null(statusStmt, 6)
             sqlite3_bind_null(statusStmt, 7)
@@ -337,7 +337,7 @@ final class UploadRecordRepository {
             return false
         }
         sqlite3_bind_double(queueStmt, 1, Date().timeIntervalSince1970)
-        sqlite3_bind_text(queueStmt, 2, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+        sqlite3_bind_text(queueStmt, 2, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         let queued = sqlite3_step(queueStmt) == SQLITE_DONE
         sqlite3_finalize(queueStmt)
         guard queued, connection.commitTransaction() else {
@@ -438,7 +438,7 @@ final class UploadRecordRepository {
         var records: [UploadRecord] = []
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT)
             
             while sqlite3_step(statement) == SQLITE_ROW {
                 let uploadedAt = sqlite3_column_double(statement, 7)
@@ -476,7 +476,7 @@ final class UploadRecordRepository {
         var statement: OpaquePointer?
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_step(statement)
         }
         
@@ -754,8 +754,8 @@ final class UploadRecordRepository {
                 defer { sqlite3_finalize(statement) }
 
                 for (assetId, immichId) in mappings {
-                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
-                    sqlite3_bind_text(statement, 2, (assetId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT
+                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                    sqlite3_bind_text(statement, 2, (assetId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                     if sqlite3_step(statement) != SQLITE_DONE {
                         logError("Failed to update immich_id for asset \(assetId): \(self.connection.lastErrorMessage)", category: .database)
                     }
