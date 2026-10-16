@@ -277,6 +277,8 @@ struct PhotoGridView: View {
     @State private var showingUploadConfirmation = false
     @State private var hasAppeared = false
     @State private var lastPrefetchedRange: Range<Int>?
+    /// At most ~60 PhotoKit assets from the filtered display window.
+    @State private var lastPrefetchedFilteredAssets: [PHAsset] = []
     @State private var isSyncing = false
     @State private var currentFilter: PhotoFilterOption = .all
     @State private var selectedAlbum: PhotoAlbumOption?
@@ -457,10 +459,11 @@ struct PhotoGridView: View {
             albumLoadTask?.cancel()
             photoFilterTask?.cancel()
             libraryRefreshTask?.cancel()
+            stopPrefetching()
         }
         .onChange(of: photoLibraryManager.assetCount) { oldValue, newValue in
             if newValue > 0 && oldValue == 0 {
-                prefetchThumbnails(around: 0)
+                prefetchThumbnails(aroundDisplayIndex: 0)
             }
         }
         .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
@@ -501,10 +504,7 @@ struct PhotoGridView: View {
             if newValue {
                 // Pause only PhotoKit preheating. Do not clear visible cache or
                 // cancel existing image requests (the PR #90 spinner regression).
-                if let range = lastPrefetchedRange {
-                    ThumbnailCache.shared.stopPrefetching(for: photoLibraryManager.assets(in: range))
-                    lastPrefetchedRange = nil
-                }
+                stopPrefetching()
             } else if oldValue {
                 syncPendingICloudIds()
             }
@@ -534,6 +534,13 @@ struct PhotoGridView: View {
             if showingPhotoDetail { showingPhotoDetail = false }
             filteredIndices = []
             filteredIndicesGeneration = nil
+            // Old full-library ranges refer to the previous fetch. Avoid
+            // interpreting them against the newly swapped result.
+            lastPrefetchedRange = nil
+            if !lastPrefetchedFilteredAssets.isEmpty {
+                ThumbnailCache.shared.stopPrefetching(for: lastPrefetchedFilteredAssets)
+                lastPrefetchedFilteredAssets = []
+            }
             refreshToken = UUID()
         }
         .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
@@ -900,6 +907,7 @@ struct PhotoGridView: View {
     // MARK: - Filter Cache Management
 
     private func applyFilter(_ filter: PhotoFilterOption) {
+        stopPrefetching()
         selectionTask?.cancel()
         isSelectingAll = false
         selectedAssets.removeAll()
@@ -1111,7 +1119,7 @@ struct PhotoGridView: View {
     }
     
     private func onItemAppear(displayIndex: Int, assetIndex: Int) {
-        prefetchThumbnails(around: assetIndex)
+        prefetchThumbnails(aroundDisplayIndex: displayIndex)
         updateVisibleDate(for: displayIndex, assetIndex: assetIndex, isAppearing: true)
     }
     
@@ -1119,33 +1127,54 @@ struct PhotoGridView: View {
         updateVisibleDate(for: displayIndex, assetIndex: assetIndex, isAppearing: false)
     }
     
-    private func prefetchThumbnails(around index: Int) {
-        // Avoid competing PhotoKit native allocations during resource hashing.
-        guard !hashManager.isProcessing else { return }
-        let count = photoLibraryManager.assetCount
-        guard count > 0 else { return }
-        
-        let startIndex = max(0, index - prefetchBuffer)
-        let endIndex = min(count, index + prefetchBuffer)
-        
-        guard startIndex < endIndex else { return }
-        
-        let newRange = startIndex..<endIndex
-        
-        if let oldRange = lastPrefetchedRange {
-            let indicesToStop = oldRange.filter { !newRange.contains($0) }
-            let assetsToStop = indicesToStop.compactMap { photoLibraryManager.asset(at: $0) }
-            if !assetsToStop.isEmpty {
-                ThumbnailCache.shared.stopPrefetching(for: assetsToStop)
-            }
+    private func stopPrefetching() {
+        if let range = lastPrefetchedRange {
+            ThumbnailCache.shared.stopPrefetching(for: photoLibraryManager.assets(in: range))
+            lastPrefetchedRange = nil
         }
-        
-        lastPrefetchedRange = newRange
-        
-        let assetsToPreload = photoLibraryManager.assets(in: newRange)
-        ThumbnailCache.shared.prefetchThumbnails(for: assetsToPreload)
+        if !lastPrefetchedFilteredAssets.isEmpty {
+            ThumbnailCache.shared.stopPrefetching(for: lastPrefetchedFilteredAssets)
+            lastPrefetchedFilteredAssets = []
+        }
     }
-    
+
+    private func prefetchThumbnails(aroundDisplayIndex displayIndex: Int) {
+        // Avoid competing PhotoKit native allocations during resource hashing.
+        guard !hashManager.isProcessing, !isFilterLoading,
+              displayIndex < displayCount else { return }
+
+        let start = max(0, displayIndex - prefetchBuffer)
+        let end = min(displayCount, displayIndex + prefetchBuffer + 1)
+        guard start < end else { return }
+
+        if currentFilter == .all {
+            let newRange = start..<end
+            if let oldRange = lastPrefetchedRange {
+                let stale = oldRange.filter { !newRange.contains($0) }
+                ThumbnailCache.shared.stopPrefetching(
+                    for: stale.compactMap { photoLibraryManager.asset(at: $0) }
+                )
+            }
+            lastPrefetchedRange = newRange
+            ThumbnailCache.shared.prefetchThumbnails(for: photoLibraryManager.assets(in: newRange))
+            return
+        }
+
+        // For Favorites/album/not-uploaded views, neighboring display items can
+        // be far apart in the full library. Preheat only those visible neighbors.
+        guard filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration else { return }
+        let assets = filteredIndices[start..<end].compactMap {
+            photoLibraryManager.asset(at: $0)
+        }
+        let currentIDs = Set(assets.map(\.localIdentifier))
+        let oldIDs = Set(lastPrefetchedFilteredAssets.map(\.localIdentifier))
+        let stale = lastPrefetchedFilteredAssets.filter { !currentIDs.contains($0.localIdentifier) }
+        let fresh = assets.filter { !oldIDs.contains($0.localIdentifier) }
+        if !stale.isEmpty { ThumbnailCache.shared.stopPrefetching(for: stale) }
+        if !fresh.isEmpty { ThumbnailCache.shared.prefetchThumbnails(for: fresh) }
+        lastPrefetchedFilteredAssets = assets
+    }
+
     private func refreshPhotosAsync() async {
         performAutoSync()
         
