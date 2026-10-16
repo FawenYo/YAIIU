@@ -538,7 +538,10 @@ struct PhotoGridView: View {
             photoFilterVersion += 1
             selectionTask?.cancel()
             isSelectingAll = false
-            selectedAssets.removeAll()
+            // A new PhotoKit fetch invalidates indices, not local identifiers.
+            // Keep the user's in-progress selection while upload completion or
+            // library edits trigger a refresh. Filter membership is reconciled
+            // when the new identifier snapshot arrives.
             if showingPhotoDetail { showingPhotoDetail = false }
             filteredIndices = []
             filteredIndicesGeneration = nil
@@ -989,7 +992,6 @@ struct PhotoGridView: View {
             return
         }
 
-        let selectedAtStart = selectedAssets
         selectionTask?.cancel()
         isSelectingAll = false
         isFilterLoading = true
@@ -1011,19 +1013,11 @@ struct PhotoGridView: View {
 
             guard !Task.isCancelled else { return }
 
-            // Preserve only previously selected photos that still belong to the
-            // refreshed filter. Do the membership walk off-main for large albums.
-            var retained = Set<String>()
-            if !selectedAtStart.isEmpty {
-                retained.reserveCapacity(selectedAtStart.count)
-                for index in indices {
-                    if Task.isCancelled { return }
-                    let identifier = identifiers[index]
-                    if selectedAtStart.contains(identifier) {
-                        retained.insert(identifier)
-                    }
-                }
-            }
+            // Build valid membership off-main. Intersect the CURRENT selection
+            // when publishing, rather than a stale snapshot from task start:
+            // the user may have selected more photos during this refresh.
+            let visibleIdentifiers = Set(indices.map { identifiers[$0] })
+            guard !Task.isCancelled else { return }
 
             await MainActor.run {
                 guard !Task.isCancelled, version == self.photoFilterVersion,
@@ -1037,7 +1031,7 @@ struct PhotoGridView: View {
                     self.showingPhotoDetail = false
                 }
                 if self.isSelectionMode {
-                    self.selectedAssets.formIntersection(retained)
+                    self.selectedAssets.formIntersection(visibleIdentifiers)
                 }
                 self.filteredIndices = indices
                 self.filteredIndicesGeneration = generation
