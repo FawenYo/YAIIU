@@ -102,6 +102,7 @@ final class SQLiteConnection {
         createServerAssetsCacheTable()
         createSyncMetadataTable()
         createChangeTokensTable()
+        createForegroundPhotoStateTables()
         createBackgroundUploadQueueTable()
         createBackgroundUploadStateTable()
         createIndexes()
@@ -201,6 +202,22 @@ final class SQLiteConnection {
         );
         """
         executeStatement(sql)
+    }
+
+    /// Separate foreground cursor: the upload extension independently advances
+    /// `change_tokens`, so sharing that cursor could silently skip foreground work.
+    private func createForegroundPhotoStateTables() {
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS foreground_photo_change_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                token_data BLOB NOT NULL
+            );
+        """)
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS foreground_photo_pending_assets (
+                asset_id TEXT PRIMARY KEY NOT NULL
+            );
+        """)
     }
 
     private func createBackgroundUploadQueueTable() {
