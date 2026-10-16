@@ -291,6 +291,7 @@ struct PhotoGridView: View {
     @State private var photoFilterVersion = 0
     
     @State private var filteredIndices: [Int] = []
+    @State private var filteredIndicesGeneration: Int?
     @State private var cachedNotUploadedCount: Int = 0
     @State private var countRefreshTask: Task<Void, Never>?
     @State private var recomputeTask: Task<Void, Never>?
@@ -322,7 +323,9 @@ struct PhotoGridView: View {
         case .all:
             return photoLibraryManager.assetCount
         case .notUploaded, .favorites, .album:
-            return filteredIndices.count
+            // Never use indices from an older all-assets PHFetchResult.
+            return filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration
+                ? filteredIndices.count : 0
         }
     }
 
@@ -374,7 +377,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.select) {
                                 isSelectionMode = true
                             }
-                            .disabled(displayCount == 0)
+                            .disabled(displayCount == 0 || isFilterLoading)
                         }
                     }
 
@@ -390,7 +393,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
                                 showingUploadConfirmation = true
                             }
-                            .disabled(selectedAssets.isEmpty)
+                            .disabled(selectedAssets.isEmpty || isFilterLoading)
                         }
                     }
                 }
@@ -518,6 +521,20 @@ struct PhotoGridView: View {
         // every publish, so the count tracks the icons exactly.
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { _ in
             scheduleCountRefresh()
+        }
+        .onReceive(photoLibraryManager.$assetFetchGeneration.receive(on: RunLoop.main)) { _ in
+            // A filtered index is a position within one particular PHFetchResult.
+            // Invalidate it immediately when that fetch is replaced, before a
+            // delayed identifier enumeration can publish its replacement.
+            photoFilterTask?.cancel()
+            photoFilterVersion += 1
+            selectionTask?.cancel()
+            isSelectingAll = false
+            selectedAssets.removeAll()
+            if showingPhotoDetail { showingPhotoDetail = false }
+            filteredIndices = []
+            filteredIndicesGeneration = nil
+            refreshToken = UUID()
         }
         .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
             // Coalesce PhotoKit notifications (including album membership edits).
@@ -730,6 +747,7 @@ struct PhotoGridView: View {
             showingPhotoDetail: showingPhotoDetail,
             selectedPhotoIndex: selectedPhotoIndex,
             onTap: {
+                guard !isFilterLoading else { return }
                 if isSelectionMode {
                     toggleSelection(at: assetIndex)
                 } else {
@@ -737,6 +755,7 @@ struct PhotoGridView: View {
                 }
             },
             onLongPress: {
+                guard !isFilterLoading else { return }
                 if !isSelectionMode {
                     isSelectionMode = true
                     if let id = photoLibraryManager.localIdentifier(at: assetIndex) {
@@ -890,6 +909,8 @@ struct PhotoGridView: View {
         isFilterLoading = false
         currentFilter = filter
         filteredIndices = []
+        filteredIndicesGeneration = nil
+        if showingPhotoDetail { showingPhotoDetail = false }
         if filter != .album {
             selectedAlbum = nil
         }
@@ -912,20 +933,23 @@ struct PhotoGridView: View {
         photoFilterVersion += 1
         let version = photoFilterVersion
         let filter = currentFilter
+        let generation = photoLibraryManager.assetFetchGeneration
         let identifiers = photoLibraryManager.orderedLocalIdentifiers
         let albumID = selectedAlbum?.id
-        // The full identifier snapshot is built asynchronously after first paint.
-        // Avoid a wasted PhotoKit scan until it becomes available.
-        if identifiers.isEmpty {
-            filteredIndices = []
+
+        // An all-assets fetch is published before its corresponding identifier
+        // snapshot is built. Do not interpret index-based filters in that gap.
+        guard photoLibraryManager.orderedIdentifiersGeneration == generation else {
+            filteredIndicesGeneration = nil
             isFilterLoading = photoLibraryManager.assetCount > 0
-            refreshToken = UUID()
             return
         }
+
+        let selectedAtStart = selectedAssets
+        selectionTask?.cancel()
+        isSelectingAll = false
         isFilterLoading = true
 
-        // Keep the detached task itself so cancel() interrupts PhotoKit enumeration;
-        // do not create an untracked detached child that can keep scanning in parallel.
         photoFilterTask = Task.detached(priority: .utility) {
             let indices: [Int]
             switch filter {
@@ -942,10 +966,37 @@ struct PhotoGridView: View {
             }
 
             guard !Task.isCancelled else { return }
+
+            // Preserve only previously selected photos that still belong to the
+            // refreshed filter. Do the membership walk off-main for large albums.
+            var retained = Set<String>()
+            if !selectedAtStart.isEmpty {
+                retained.reserveCapacity(selectedAtStart.count)
+                for index in indices {
+                    if Task.isCancelled { return }
+                    let identifier = identifiers[index]
+                    if selectedAtStart.contains(identifier) {
+                        retained.insert(identifier)
+                    }
+                }
+            }
+
             await MainActor.run {
                 guard !Task.isCancelled, version == self.photoFilterVersion,
-                      self.currentFilter == filter else { return }
+                      self.currentFilter == filter,
+                      self.photoLibraryManager.assetFetchGeneration == generation,
+                      self.photoLibraryManager.orderedIdentifiersGeneration == generation else { return }
+
+                if self.showingPhotoDetail && self.filteredIndices != indices {
+                    // PhotoDetailView stores its PHAsset in @State; dismiss rather
+                    // than leave it showing a removed/incorrect album item.
+                    self.showingPhotoDetail = false
+                }
+                if self.isSelectionMode {
+                    self.selectedAssets.formIntersection(retained)
+                }
                 self.filteredIndices = indices
+                self.filteredIndicesGeneration = generation
                 self.isFilterLoading = false
                 self.refreshToken = UUID()
             }
@@ -1016,9 +1067,11 @@ struct PhotoGridView: View {
         let version = countComputeVersion
 
         recomputeTask = Task(priority: .utility) {
-            let (statusCache, identifiers) = await MainActor.run {
-                (hash.syncStatusCache, manager.orderedLocalIdentifiers)
+            let (statusCache, identifiers, generation, snapshotGeneration) = await MainActor.run {
+                (hash.syncStatusCache, manager.orderedLocalIdentifiers,
+                 manager.assetFetchGeneration, manager.orderedIdentifiersGeneration)
             }
+            guard snapshotGeneration == generation else { return }
 
             var notUploadedIndices: [Int] = []
             notUploadedIndices.reserveCapacity(identifiers.count / 4)
@@ -1033,10 +1086,16 @@ struct PhotoGridView: View {
                 // Discard results from superseded invocations; without this guard
                 // a task that read an earlier cache snapshot could finish last and
                 // overwrite with a stale value (stale-wins race).
-                guard !Task.isCancelled, version == self.countComputeVersion else { return }
+                guard !Task.isCancelled, version == self.countComputeVersion,
+                      manager.assetFetchGeneration == generation,
+                      manager.orderedIdentifiersGeneration == generation else { return }
                 self.cachedNotUploadedCount = notUploadedIndices.count
                 if self.currentFilter == .notUploaded {
+                    if self.showingPhotoDetail && self.filteredIndices != notUploadedIndices {
+                        self.showingPhotoDetail = false
+                    }
                     self.filteredIndices = notUploadedIndices
+                    self.filteredIndicesGeneration = generation
                     self.refreshToken = UUID()
                 }
             }
@@ -1044,6 +1103,7 @@ struct PhotoGridView: View {
     }
     
     private func openPhotoDetail(at index: Int) {
+        guard !isFilterLoading, index < displayCount else { return }
         selectedPhotoIndex = index
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             showingPhotoDetail = true
@@ -1173,7 +1233,7 @@ struct PhotoGridView: View {
     }
     
     private func handleDragBegan(at point: CGPoint) {
-        guard let idx = displayIndex(at: point) else { return }
+        guard !isFilterLoading, let idx = displayIndex(at: point) else { return }
         let actualIdx = resolveActualIndex(idx)
         
         dragState.baseSelection = selectedAssets
@@ -1188,7 +1248,7 @@ struct PhotoGridView: View {
     }
     
     private func handleDragChanged(at point: CGPoint) {
-        guard let anchor = dragState.anchorIndex else { return }
+        guard !isFilterLoading, let anchor = dragState.anchorIndex else { return }
         guard let idx = displayIndex(at: point) else { return }
         guard idx != dragState.currentIndex else { return }
         
@@ -1271,6 +1331,7 @@ struct PhotoGridView: View {
     }
     
     private func uploadSelectedPhotos() {
+        guard !isFilterLoading else { return }
         let identifiersToUpload = Array(selectedAssets)
         let manager = uploadManager
         
