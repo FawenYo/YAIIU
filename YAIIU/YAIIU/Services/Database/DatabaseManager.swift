@@ -208,6 +208,33 @@ final class DatabaseManager {
         hashRepo.batchDeleteHashCacheRecords(localIdentifiers: localIdentifiers)
     }
 
+    // MARK: - Foreground PhotoKit persistent-change journal
+
+    func loadForegroundPhotoToken() -> Data? {
+        hashRepo.loadForegroundPhotoToken()
+    }
+
+    @discardableResult
+    func applyForegroundPhotoChanges(
+        snapshots: [PhotoAssetSnapshot],
+        pendingIdentifiers: Set<String>,
+        deletedIdentifiers: Set<String>,
+        tokenData: Data,
+        bootstrap: Bool
+    ) -> Bool {
+        hashRepo.applyForegroundPhotoChanges(
+            snapshots: snapshots,
+            pendingIdentifiers: pendingIdentifiers,
+            deletedIdentifiers: deletedIdentifiers,
+            tokenData: tokenData,
+            bootstrap: bootstrap
+        )
+    }
+
+    func getPendingForegroundPhotoIdentifiers() -> [String] {
+        hashRepo.getPendingForegroundPhotoIdentifiers()
+    }
+
     func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool = false) {
         hashRepo.resetCacheForModifiedAssets(snapshots: snapshots, pruneOrphans: pruneOrphans)
     }
