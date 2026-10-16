@@ -42,6 +42,33 @@ protocol ServerAssetSyncStore {
 extension ImmichAPIService: ServerAssetSyncAPI {}
 extension DatabaseManager: ServerAssetSyncStore {}
 
+/// Serializes Immich server-cache mutations with foreground hash verification.
+/// A sync and a multi-resource check must never observe each other's partial state.
+actor ServerAssetVerificationGate {
+    static let shared = ServerAssetVerificationGate()
+
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if held {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                waiters.append(continuation)
+            }
+        } else {
+            held = true
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            held = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 class ServerAssetSyncService {
 
     // MARK: - Checksum Conversion
@@ -125,6 +152,11 @@ class ServerAssetSyncService {
             }
 
             defer { self.syncQueue.sync { self.isSyncing = false } }
+
+            // Hold this gate across the complete stream transaction (including
+            // reset retries) so no hash check can read intermediate cache rows.
+            await ServerAssetVerificationGate.shared.acquire()
+            defer { Task { await ServerAssetVerificationGate.shared.release() } }
 
             do {
                 let result = try await self.performSync(
