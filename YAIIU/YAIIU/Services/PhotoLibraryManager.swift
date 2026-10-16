@@ -388,6 +388,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         if includingHidden {
             let options = PHFetchOptions()
             options.includeHiddenAssets = true
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             result = PHAsset.fetchAssets(with: options)
         } else {
             guard let visibleResult = fetchResult else { return [] }
