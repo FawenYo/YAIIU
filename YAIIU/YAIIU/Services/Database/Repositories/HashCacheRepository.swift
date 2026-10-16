@@ -577,26 +577,28 @@ final class HashCacheRepository {
 
     /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate
     /// has changed since the date was last stored. Assets with NULL stored dates are skipped.
-    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot]) {
-        guard !snapshots.isEmpty else { return }
+    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool = false) {
+        guard !snapshots.isEmpty || pruneOrphans else { return }
 
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
-            self.resetCacheForModifiedAssetsInternal(snapshots: snapshots)
+            self.resetCacheForModifiedAssetsInternal(snapshots: snapshots, pruneOrphans: pruneOrphans)
         }
     }
 
-    private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot]) {
+    private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool) {
         // Fetch all stored modification dates in one query; NULL means not yet recorded
         let sql = "SELECT asset_id, asset_modification_date FROM hash_cache;"
         var statement: OpaquePointer?
         var storedDates: [String: Double] = [:]      // asset_id -> stored timestamp
         var nullDateIds: Set<String> = []             // asset_id with no stored date yet
+        var cachedIds: Set<String> = []
 
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
             while sqlite3_step(statement) == SQLITE_ROW {
                 if let idCString = sqlite3_column_text(statement, 0) {
                     let assetId = String(cString: idCString)
+                    cachedIds.insert(assetId)
                     if sqlite3_column_type(statement, 1) == SQLITE_NULL {
                         nullDateIds.insert(assetId)
                     } else {
@@ -613,10 +615,21 @@ final class HashCacheRepository {
             backfillModificationDates(snapshots: snapshots, assetIds: nullDateIds)
         }
 
-        guard !storedDates.isEmpty else { return }
+        // This is independent of server hash verification: checked negative rows
+        // must also be removed when their local PhotoKit asset disappears.
+        // Only prune with full-library authorization; limited-library snapshots
+        // cannot distinguish deleted assets from temporarily inaccessible ones.
+        var invalidatedIds: [String] = []
+        if pruneOrphans {
+            let visibleIds = Set(snapshots.map(\.localIdentifier))
+            let missing = cachedIds.subtracting(visibleIds)
+            invalidatedIds.append(contentsOf: missing)
+            if !missing.isEmpty {
+                logInfo("Pruning \(missing.count) orphan PhotoKit hash cache records", category: .hash)
+            }
+        }
 
         // Compare current modificationDate against stored date
-        var invalidatedIds: [String] = []
 
         for snapshot in snapshots {
             let identifier = snapshot.localIdentifier
@@ -632,7 +645,7 @@ final class HashCacheRepository {
 
         guard !invalidatedIds.isEmpty else { return }
 
-        logInfo("Invalidating \(invalidatedIds.count) modified assets", category: .hash)
+        logInfo("Invalidating \(invalidatedIds.count) modified or removed assets", category: .hash)
 
         // Delete both hash_cache and uploaded_assets for each invalidated asset
         connection.beginTransaction()
