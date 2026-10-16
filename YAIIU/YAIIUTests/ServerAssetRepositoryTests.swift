@@ -506,6 +506,62 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(secondRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
     }
 
+    func testForegroundBootstrapBackfillsMissingModificationDate() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "legacy", primaryHash: "sha-legacy",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [
+                PhotoAssetSnapshot(
+                    localIdentifier: "legacy", modificationDate: Date(timeIntervalSince1970: 100)
+                )
+            ],
+            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
+            tokenData: Data([1]), bootstrap: true
+        ))
+        // A metadata-only change at the same date must not discard this
+        // expensive hash; a real content edit must.
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [
+                PhotoAssetSnapshot(
+                    localIdentifier: "legacy", modificationDate: Date(timeIntervalSince1970: 100)
+                )
+            ],
+            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
+            tokenData: Data([2]), bootstrap: false
+        ))
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "legacy"))
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [
+                PhotoAssetSnapshot(
+                    localIdentifier: "legacy", modificationDate: Date(timeIntervalSince1970: 120)
+                )
+            ],
+            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
+            tokenData: Data([3]), bootstrap: false
+        ))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "legacy"))
+    }
+
+    func testUnknownModificationDateIsConservativelyInvalidatedOnUpdate() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "legacy", primaryHash: "sha-legacy",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [
+                PhotoAssetSnapshot(
+                    localIdentifier: "legacy", modificationDate: Date(timeIntervalSince1970: 120)
+                )
+            ],
+            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
+            tokenData: Data([1]), bootstrap: false
+        ))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "legacy"))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["legacy"])
+    }
+
     func testForegroundDeltaFailureRollsBackCheckpointAndHashInvalidation() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "edited", primaryHash: "sha-before",
