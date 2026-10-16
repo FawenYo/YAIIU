@@ -726,9 +726,18 @@ final class HashCacheRepository {
                 sqlite3_finalize(query)
                 guard queryOK else { return false }
                 guard runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", modified),
-                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified) else {
-                    return false
-                }
+                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified),
+                      execute("""
+                        UPDATE hash_cache SET asset_modification_date = (
+                            SELECT s.modified_at FROM foreground_snapshot s
+                            WHERE s.asset_id = hash_cache.asset_id
+                        )
+                        WHERE asset_modification_date IS NULL
+                          AND asset_id IN (
+                            SELECT asset_id FROM foreground_snapshot
+                            WHERE modified_at IS NOT NULL
+                          );
+                        """) else { return false }
 
                 let missingFromSnapshot =
                     "asset_id NOT IN (SELECT asset_id FROM foreground_snapshot)"
@@ -768,9 +777,11 @@ final class HashCacheRepository {
                     sqlite3_clear_bindings(statement)
                     sqlite3_bind_text(statement, 1, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
                     let step = sqlite3_step(statement)
-                    if step == SQLITE_ROW,
-                       sqlite3_column_type(statement, 0) != SQLITE_NULL,
-                       abs(date.timeIntervalSince1970 - sqlite3_column_double(statement, 0)) > 1 {
+                    if step == SQLITE_ROW &&
+                        (sqlite3_column_type(statement, 0) == SQLITE_NULL ||
+                         abs(date.timeIntervalSince1970 - sqlite3_column_double(statement, 0)) > 1) {
+                        // Legacy cached hashes without modification dates cannot
+                        // safely assert that a changed PhotoKit asset is unchanged.
                         modified.insert(snapshot.localIdentifier)
                     } else if step != SQLITE_ROW && step != SQLITE_DONE {
                         checkOK = false
