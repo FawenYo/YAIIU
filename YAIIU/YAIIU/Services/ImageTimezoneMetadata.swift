@@ -86,7 +86,7 @@ enum ImageTimezoneMetadata {
         if let metadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil),
            let offset = CGImageMetadataCopyStringValueWithPath(metadata, nil, offsetPath),
            !String(offset).isEmpty {
-            return offset as String
+            return String(offset)
         }
         return nil
     }
