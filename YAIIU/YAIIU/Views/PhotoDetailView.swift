@@ -160,90 +160,19 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
             imageView.image = nil
             currentImageSize = .zero
             lastLayoutBounds = .zero
-            zoomScale = minimumZoomScale
             return
         }
-
-        // Skip only the exact same UIImage instance. A higher-resolution
-        // replacement can have the same logical point size with a different
-        // backing pixel count.
-        if imageView.image === image && lastLayoutBounds == bounds.size { return }
-
-        let hadImage = imageView.image != nil
-        let previousZoomScale = min(
-            max(zoomScale, minimumZoomScale),
-            maximumZoomScale
-        )
-
-        // Preserve the center of the visible viewport as a normalized position
-        // in the current zoomed content. Reset the zoom transform before
-        // changing imageView.frame below.
-        let previousContentSize = contentSize
-        let normalizedCenter: CGPoint? = {
-            guard hadImage,
-                  previousContentSize.width > 0,
-                  previousContentSize.height > 0 else { return nil }
-
-            return CGPoint(
-                x: min(
-                    max(
-                        (contentOffset.x + bounds.width / 2)
-                            / previousContentSize.width,
-                        0
-                    ),
-                    1
-                ),
-                y: min(
-                    max(
-                        (contentOffset.y + bounds.height / 2)
-                            / previousContentSize.height,
-                        0
-                    ),
-                    1
-                )
-            )
-        }()
-
-        if hadImage {
-            setZoomScale(minimumZoomScale, animated: false)
-        }
-
+        
+        // Skip redundant updates for same image when bounds unchanged
+        if currentImageSize == image.size && lastLayoutBounds == bounds.size { return }
+        
         currentImageSize = image.size
         imageView.image = image
-
+        zoomScale = 1.0
+        
         if bounds.width > 0 && bounds.height > 0 {
             configureImageSize(for: image)
             lastLayoutBounds = bounds.size
-        }
-
-        guard hadImage else {
-            zoomScale = minimumZoomScale
-            return
-        }
-
-        setZoomScale(previousZoomScale, animated: false)
-        centerImageView()
-
-        if let normalizedCenter {
-            let desiredOffset = CGPoint(
-                x: contentSize.width * normalizedCenter.x - bounds.width / 2,
-                y: contentSize.height * normalizedCenter.y - bounds.height / 2
-            )
-            let inset = adjustedContentInset
-            let minX = -inset.left
-            let minY = -inset.top
-            let maxX = max(
-                minX,
-                contentSize.width - bounds.width + inset.right
-            )
-            let maxY = max(
-                minY,
-                contentSize.height - bounds.height + inset.bottom
-            )
-            contentOffset = CGPoint(
-                x: min(max(desiredOffset.x, minX), maxX),
-                y: min(max(desiredOffset.y, minY), maxY)
-            )
         }
     }
     
@@ -808,13 +737,7 @@ struct PhotoDetailView: View {
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
     @State private var dragProgress: CGFloat = 0
-    @State private var imageRequestID: PHImageRequestID?
-    @State private var videoThumbnailRequestID: PHImageRequestID?
-    @State private var videoPlayerRequestID: PHImageRequestID?
-    @State private var imageRequestGeneration = UUID()
-    @State private var videoThumbnailRequestGeneration = UUID()
-    @State private var videoPlayerRequestGeneration = UUID()
-    @State private var zoomResolutionRequested = false
+    @State private var imageLoadTask: Task<Void, Never>?
     
     @State private var player: AVPlayer?
     @State private var isVideoLoading: Bool = false
@@ -961,17 +884,6 @@ struct PhotoDetailView: View {
             cleanupCurrentAsset()
             resetAssetStates()
             loadAssetAtCurrentIndex()
-        }
-        .onChange(of: scale) { _, newScale in
-            guard newScale >= 1.75,
-                  !zoomResolutionRequested,
-                  let asset = currentAsset,
-                  asset.mediaType == .image else { return }
-
-            // Keep the baseline decode small. Only when the user actually zooms
-            // do we request enough pixels for the supported 4× zoom range.
-            zoomResolutionRequested = true
-            loadFullImage(for: asset, overscan: 4.0)
         }
     }
     
@@ -1491,30 +1403,9 @@ struct PhotoDetailView: View {
     }
     
     private func cleanupCurrentAsset() {
-        let imageManager = PHImageManager.default()
-
-        imageRequestGeneration = UUID()
-        videoThumbnailRequestGeneration = UUID()
-        videoPlayerRequestGeneration = UUID()
-
-        if let requestID = imageRequestID {
-            imageManager.cancelImageRequest(requestID)
-            imageRequestID = nil
-        }
-        if let requestID = videoThumbnailRequestID {
-            imageManager.cancelImageRequest(requestID)
-            videoThumbnailRequestID = nil
-        }
-        if let requestID = videoPlayerRequestID {
-            imageManager.cancelImageRequest(requestID)
-            videoPlayerRequestID = nil
-        }
-
-        fullImage = nil
+        imageLoadTask?.cancel()
         player?.pause()
         player = nil
-        isVideoLoading = false
-        isVideoPlaying = false
         if let observer = playerEndObserver {
             NotificationCenter.default.removeObserver(observer)
             playerEndObserver = nil
@@ -1524,7 +1415,6 @@ struct PhotoDetailView: View {
     private func resetAssetStates() {
         currentAsset = nil
         fullImage = nil
-        zoomResolutionRequested = false
         scale = 1.0
         offset = .zero
         dragProgress = 0
@@ -1544,134 +1434,75 @@ struct PhotoDetailView: View {
     
     // MARK: - Data Loading
     
-    private func detailPreviewTargetSize(
-        for asset: PHAsset,
-        overscan: CGFloat
-    ) -> CGSize {
-        // A full-resolution 48 MP decode can consume well over 100 MiB. Use an
-        // orientation-independent long-edge target for the baseline preview,
-        // then request more pixels only after the user actually zooms.
-        let screen = UIScreen.main.bounds.size
-        let scale = UIScreen.main.scale
-        let longEdge = max(screen.width, screen.height) * scale * overscan
-
-        return CGSize(
-            width: min(longEdge, CGFloat(asset.pixelWidth)),
-            height: min(longEdge, CGFloat(asset.pixelHeight))
-        )
-    }
-
-    private func loadFullImage(
-        for asset: PHAsset,
-        overscan: CGFloat = 1.5
-    ) {
-        let generation = UUID()
-        imageRequestGeneration = generation
-
-        if let requestID = imageRequestID {
-            PHImageManager.default().cancelImageRequest(requestID)
-            imageRequestID = nil
-        }
-
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
-        options.isSynchronous = false
-        options.resizeMode = .fast
-
-        let targetSize = detailPreviewTargetSize(for: asset, overscan: overscan)
-        let isZoomUpgrade = overscan > 1.5
-
-        imageRequestID = PHImageManager.default().requestImage(
-            for: asset,
-            targetSize: targetSize,
-            contentMode: .aspectFit,
-            options: options
-        ) { image, info in
-            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
-
-            Task { @MainActor in
-                guard !isCancelled,
-                      generation == self.imageRequestGeneration,
-                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
-                if let image {
-                    self.fullImage = image
-                }
-                if !isDegraded {
-                    self.imageRequestID = nil
-                    if isZoomUpgrade && image == nil {
-                        self.zoomResolutionRequested = false
+    private func loadFullImage(for asset: PHAsset) {
+        imageLoadTask = Task {
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .highQualityFormat
+            options.isNetworkAccessAllowed = true
+            options.isSynchronous = false
+            options.resizeMode = .none
+            
+            await withCheckedContinuation { continuation in
+                PHImageManager.default().requestImage(
+                    for: asset,
+                    targetSize: PHImageManagerMaximumSize,
+                    contentMode: .aspectFit,
+                    options: options
+                ) { image, info in
+                    let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                    
+                    Task { @MainActor in
+                        if asset.localIdentifier == self.currentAsset?.localIdentifier {
+                            if let image = image {
+                                self.fullImage = image
+                            }
+                        }
+                        
+                        if !isDegraded {
+                            continuation.resume()
+                        }
                     }
                 }
             }
         }
     }
-
+    
     private func loadVideoThumbnail(for asset: PHAsset) {
-        let generation = UUID()
-        videoThumbnailRequestGeneration = generation
-
-        if let requestID = videoThumbnailRequestID {
-            PHImageManager.default().cancelImageRequest(requestID)
-            videoThumbnailRequestID = nil
-        }
-
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
-        options.resizeMode = .fast
         
         let targetSize = CGSize(
             width: UIScreen.main.bounds.width * UIScreen.main.scale,
             height: UIScreen.main.bounds.height * UIScreen.main.scale
         )
         
-        videoThumbnailRequestID = PHImageManager.default().requestImage(
+        PHImageManager.default().requestImage(
             for: asset,
             targetSize: targetSize,
             contentMode: .aspectFit,
             options: options
         ) { image, info in
-            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
-
             Task { @MainActor in
-                guard !isCancelled,
-                      generation == self.videoThumbnailRequestGeneration,
-                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
-                if let image {
-                    self.fullImage = image
-                }
-                if !isDegraded {
-                    self.videoThumbnailRequestID = nil
+                if asset.localIdentifier == self.currentAsset?.localIdentifier {
+                    if let image = image {
+                        self.fullImage = image
+                    }
                 }
             }
         }
     }
     
     private func loadVideo(for asset: PHAsset) {
-        let generation = UUID()
-        videoPlayerRequestGeneration = generation
         isVideoLoading = true
         
         let options = PHVideoRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .automatic
         
-        if let requestID = videoPlayerRequestID {
-            PHImageManager.default().cancelImageRequest(requestID)
-            videoPlayerRequestID = nil
-        }
-
-        videoPlayerRequestID = PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
-            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
-
+        PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
             Task { @MainActor in
-                guard !isCancelled,
-                      generation == self.videoPlayerRequestGeneration,
-                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
-                self.videoPlayerRequestID = nil
+                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
                 self.isVideoLoading = false
                 
                 if let playerItem = playerItem {

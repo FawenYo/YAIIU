@@ -1,6 +1,5 @@
 import SwiftUI
 import Photos
-import Combine
 import os.lock
 
 final class RAWFormatChecker {
@@ -71,7 +70,6 @@ struct PhotoThumbnailView: View {
     @State private var videoDuration: TimeInterval = 0
     @State private var isVideo: Bool = false
     @State private var loadTask: Task<Void, Never>?
-    @State private var thumbnailRequestToken: ThumbnailCache.RequestToken?
     @State private var isViewActive: Bool = false
     
     init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, isUploaded: Bool) {
@@ -209,29 +207,7 @@ struct PhotoThumbnailView: View {
             isViewActive = false
             loadTask?.cancel()
             loadTask = nil
-            if let thumbnailRequestToken {
-                ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
-                self.thumbnailRequestToken = nil
-            }
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .thumbnailCacheDidClear)
-                .receive(on: RunLoop.main)
-        ) { _ in
-            guard isViewActive else { return }
-            thumbnail = nil
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .thumbnailCacheShouldReloadVisible)
-                .receive(on: RunLoop.main)
-        ) { _ in
-            guard isViewActive,
-                  !HashManager.shared.isProcessing,
-                  UIApplication.shared.applicationState == .active else { return }
-            // A reload notification means the cache has already been
-            // invalidated. Drop any stale cell-held image before requesting.
-            thumbnail = nil
-            requestThumbnail()
+            ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier)
         }
     }
     
@@ -330,9 +306,14 @@ struct PhotoThumbnailView: View {
             hasRAW = cachedRAW
         }
         
-        requestThumbnail()
-
         loadTask = Task { @MainActor in
+            ThumbnailCache.shared.getThumbnail(for: asset) { [self] image in
+                guard self.isViewActive else { return }
+                if let image = image {
+                    self.thumbnail = image
+                }
+            }
+            
             // Only check RAW if not already cached
             if RAWFormatChecker.shared.getCachedRAWStatus(for: asset.localIdentifier) == nil {
                 let assetId = asset.localIdentifier
@@ -349,20 +330,6 @@ struct PhotoThumbnailView: View {
         }
     }
     
-    private func requestThumbnail() {
-        if let thumbnailRequestToken {
-            ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
-            self.thumbnailRequestToken = nil
-        }
-
-        thumbnailRequestToken = ThumbnailCache.shared.getThumbnail(for: asset) { [self] image in
-            guard self.isViewActive else { return }
-            if let image {
-                self.thumbnail = image
-            }
-        }
-    }
-
     private func formatDuration(_ duration: TimeInterval) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60

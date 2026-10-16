@@ -166,24 +166,6 @@ enum HashPipelinePolicy {
         return max(estimatedBytes, 1)
     }
 
-    /// Reserve by PhotoKit's estimated resource size so the byte budget can
-    /// admit multiple downloads. iCloud-optimised assets can report zero, so
-    /// give unknown sizes a conservative floor and reconcile with actual bytes
-    /// after PhotoKit finishes writing the temp files.
-    static func downloadReservationBytes(
-        estimatedBytes: Int64,
-        hasUnknownResourceSize: Bool,
-        budgetBytes: Int64,
-        minimumBytes: Int64 = 64 * 1024 * 1024
-    ) -> Int64 {
-        // PhotoKit can report zero for iCloud-optimised resources. Their real
-        // size is unknowable until writeData finishes, so reserve the whole
-        // budget and serialize that download rather than risk oversubscribing
-        // temporary storage.
-        guard !hasUnknownResourceSize, estimatedBytes > 0 else { return budgetBytes }
-        return max(estimatedBytes, minimumBytes)
-    }
-
     /// Runs operations with at most `limit` in flight (FIFO order, bounded
     /// window: one completion admits the next element).
     static func processConcurrently<Element: Sendable>(
@@ -866,21 +848,17 @@ class HashManager: ObservableObject {
             return
         }
 
-        // PhotoKit's KVC fileSize is only an estimate. Reserving the entire
-        // disk budget here would serialize the download window to one asset,
-        // so reserve the estimate (with a floor for unknown iCloud sizes) and
-        // reconcile against the actual temp-file size after delivery.
+        // Keep PhotoKit's estimated size for proactive rate limiting, but not
+        // for temp-file budget reservations: it is not an upper bound on
+        // delivery or native PhotoKit memory usage. Serializing prepared work
+        // leaves headroom for the rest of the app even on large libraries.
         let rateLimitCharge = HashPipelinePolicy.photoKitRateLimitChargeBytes(
             estimatedBytes: resources.plan.estimatedBytes,
             hasUnknownResourceSize: resources.plan.hasUnknownResourceSize
         )
         guard await photoKitRateLimiter.waitForAdmission(bytes: rateLimitCharge) else { return }
 
-        let reservation = HashPipelinePolicy.downloadReservationBytes(
-            estimatedBytes: resources.plan.estimatedBytes,
-            hasUnknownResourceSize: resources.plan.hasUnknownResourceSize,
-            budgetBytes: HashPipelinePolicy.diskBudgetBytes
-        )
+        let reservation = HashPipelinePolicy.diskBudgetBytes
         guard await budget.acquire(reservation) else { return }
 
         guard let pressurePermitHeld = await memoryPressureThrottle.acquireIfNeeded() else {
@@ -907,9 +885,8 @@ class HashManager: ObservableObject {
             return
         }
 
-        let actual = files.actualBytes
-        budget.adjust(from: reservation, to: actual)
-        let charged = actual
+        let charged = max(reservation, files.actualBytes)
+        budget.adjust(from: reservation, to: charged)
 
         // Hand the files to the consumer; the registry entry lets the run sweep
         // them if the cancelled stream discards the buffered handoff. The
@@ -1288,10 +1265,7 @@ class HashManager: ObservableObject {
     @MainActor
     func forceReprocess(assets: [PHAsset]) {
         let snapshots = assets.map {
-            PhotoAssetSnapshot(
-                localIdentifier: $0.localIdentifier,
-                modificationDate: $0.modificationDate
-            )
+            PhotoAssetSnapshot(localIdentifier: $0.localIdentifier, modificationDate: $0.modificationDate)
         }
         startBackgroundProcessing(
             identifiers: snapshots.map { $0.localIdentifier },

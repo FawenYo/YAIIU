@@ -1,6 +1,4 @@
 import SwiftUI
-import Combine
-import UIKit
 
 struct UploadProgressView: View {
     @EnvironmentObject var uploadManager: UploadManager
@@ -108,13 +106,13 @@ struct UploadProgressView: View {
 
 struct UploadItemRow: View {
     @ObservedObject var item: UploadItem
-    @State private var isActive = false
-    @State private var thumbnailRequestToken: ThumbnailCache.RequestToken?
+    @State private var thumbnail: UIImage?
+    @State private var isVisible = false
     
     var body: some View {
         HStack(spacing: 12) {
             // Thumbnail
-            if let thumbnail = item.thumbnail {
+            if let thumbnail {
                 Image(uiImage: thumbnail)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -219,48 +217,19 @@ struct UploadItemRow: View {
         }
         .padding(.vertical, 4)
         .onAppear {
-            isActive = true
-            loadThumbnailIfNeeded()
+            isVisible = true
+            ThumbnailCache.shared.getThumbnail(for: item.asset) { image in
+                Task { @MainActor in
+                    // Old cache cancellation is keyed by asset, not consumer.
+                    // Preserve shared requests and ignore results for hidden rows.
+                    guard isVisible else { return }
+                    thumbnail = image
+                }
+            }
         }
         .onDisappear {
-            isActive = false
-            if let thumbnailRequestToken {
-                ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
-                self.thumbnailRequestToken = nil
-            }
-            item.thumbnail = nil
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .thumbnailCacheDidClear)
-                .receive(on: RunLoop.main)
-        ) { _ in
-            guard isActive else { return }
-            item.thumbnail = nil
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .thumbnailCacheShouldReloadVisible)
-                .receive(on: RunLoop.main)
-        ) { _ in
-            guard isActive,
-                  !HashManager.shared.isProcessing,
-                  UIApplication.shared.applicationState == .active else { return }
-            loadThumbnailIfNeeded()
-        }
-    }
-
-    private func loadThumbnailIfNeeded() {
-        guard item.thumbnail == nil else { return }
-
-        if let thumbnailRequestToken {
-            ThumbnailCache.shared.cancelThumbnail(thumbnailRequestToken)
-            self.thumbnailRequestToken = nil
-        }
-
-        thumbnailRequestToken = ThumbnailCache.shared.getThumbnail(for: item.asset) { [weak item] image in
-            Task { @MainActor in
-                guard isActive else { return }
-                item?.thumbnail = image
-            }
+            isVisible = false
+            thumbnail = nil
         }
     }
 }

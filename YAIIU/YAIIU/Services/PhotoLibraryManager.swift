@@ -8,6 +8,7 @@ struct PhotoAssetSnapshot: Sendable {
 }
 
 
+
 /// Manages photo library access with lazy loading for optimal memory performance.
 /// Uses PHFetchResult directly instead of materializing all PHAsset objects into arrays.
 final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
@@ -267,9 +268,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         return identifiers
     }
 
-    /// Lightweight full-library snapshot used by background hash invalidation.
-    /// Avoid retaining the entire photo library as PHAsset objects while the
-    /// hash pipeline is active.
     func allAssetSnapshots() -> [PhotoAssetSnapshot] {
         guard let result = fetchResult else { return [] }
         var snapshots: [PhotoAssetSnapshot] = []

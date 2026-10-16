@@ -387,70 +387,20 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
-    func testDownloadReservationUsesEstimateInsteadOfWholeBudget() {
-        let estimate: Int64 = 12 * 1024 * 1024
-        let reservation = HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, hasUnknownResourceSize: false, budgetBytes: 1_500 * 1024 * 1024)
+    func testWholeBudgetReservationSerializesPreparedAssets() async {
+        let reservation = HashPipelinePolicy.diskBudgetBytes
+        let budget = ResourceBudget(limit: reservation)
+        let firstAcquired = await budget.acquire(reservation)
+        XCTAssertTrue(firstAcquired)
 
-        XCTAssertEqual(reservation, 64 * 1024 * 1024)
-        XCTAssertLessThan(reservation, 1_500 * 1024 * 1024)
-    }
-
-    func testDownloadReservationKeepsLargerEstimate() {
-        let estimate: Int64 = 240 * 1024 * 1024
-
-        XCTAssertEqual(
-            HashPipelinePolicy.downloadReservationBytes(estimatedBytes: estimate, hasUnknownResourceSize: false, budgetBytes: 1_500 * 1024 * 1024),
-            estimate
-        )
-    }
-
-    func testKnownEstimatedReservationsAllowMultipleDownloadsWithinBudget() async {
-        let budgetBytes: Int64 = 1_500 * 1024 * 1024
-        let budget = ResourceBudget(limit: budgetBytes)
-        let reservation = HashPipelinePolicy.downloadReservationBytes(
-            estimatedBytes: 32 * 1024 * 1024,
-            hasUnknownResourceSize: false,
-            budgetBytes: budgetBytes
-        )
-
-        let first = await budget.acquire(reservation)
-        let second = await budget.acquire(reservation)
-        let third = await budget.acquire(reservation)
-
-        XCTAssertTrue(first)
-        XCTAssertTrue(second)
-        XCTAssertTrue(third)
-
+        // A second asset must not enter PhotoKit while the first prepared
+        // asset still owns its full-budget reservation.
+        let waiter = Task { await budget.acquire(reservation) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        waiter.cancel()
+        let secondAcquired = await waiter.value
+        XCTAssertFalse(secondAcquired)
         budget.release(reservation)
-        budget.release(reservation)
-        budget.release(reservation)
-    }
-
-    func testUnknownSizeReservesWholeBudget() {
-        let budgetBytes: Int64 = 1_500 * 1024 * 1024
-
-        XCTAssertEqual(
-            HashPipelinePolicy.downloadReservationBytes(
-                estimatedBytes: 0,
-                hasUnknownResourceSize: true,
-                budgetBytes: budgetBytes
-            ),
-            budgetBytes
-        )
-    }
-
-    func testPartiallyUnknownResourcesReserveWholeBudget() {
-        let budgetBytes: Int64 = 1_500 * 1024 * 1024
-
-        XCTAssertEqual(
-            HashPipelinePolicy.downloadReservationBytes(
-                estimatedBytes: 20 * 1024 * 1024,
-                hasUnknownResourceSize: true,
-                budgetBytes: budgetBytes
-            ),
-            budgetBytes,
-            "A known JPEG plus unknown RAW must remain serialized"
-        )
     }
 
     func testBudgetBlocksWhenExhaustedThenAdmitsOnRelease() async {
