@@ -203,8 +203,8 @@ final class DatabaseManager {
         hashRepo.batchDeleteHashCacheRecords(localIdentifiers: localIdentifiers)
     }
 
-    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot]) {
-        hashRepo.resetCacheForModifiedAssets(snapshots: snapshots)
+    func resetCacheForModifiedAssets(assets: [PHAsset]) {
+        hashRepo.resetCacheForModifiedAssets(assets: assets)
     }
     
     // MARK: - Server Assets Cache Management
