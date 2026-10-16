@@ -521,16 +521,16 @@ final class HashCacheRepository {
 
     /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate
     /// has changed since the date was last stored. Assets with NULL stored dates are skipped.
-    func resetCacheForModifiedAssets(assets: [PHAsset]) {
-        guard !assets.isEmpty else { return }
+    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot]) {
+        guard !snapshots.isEmpty else { return }
 
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
-            self.resetCacheForModifiedAssetsInternal(assets: assets)
+            self.resetCacheForModifiedAssetsInternal(snapshots: snapshots)
         }
     }
 
-    private func resetCacheForModifiedAssetsInternal(assets: [PHAsset]) {
+    private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot]) {
         // Fetch all stored modification dates in one query; NULL means not yet recorded
         let sql = "SELECT asset_id, asset_modification_date FROM hash_cache;"
         var statement: OpaquePointer?
@@ -554,7 +554,7 @@ final class HashCacheRepository {
         // Backfill modificationDate for pre-migration rows that have no stored date.
         // Cannot be done at migration time because PHAsset is unavailable there.
         if !nullDateIds.isEmpty {
-            backfillModificationDates(assets: assets, assetIds: nullDateIds)
+            backfillModificationDates(snapshots: snapshots, assetIds: nullDateIds)
         }
 
         guard !storedDates.isEmpty else { return }
@@ -562,10 +562,10 @@ final class HashCacheRepository {
         // Compare current modificationDate against stored date
         var invalidatedIds: [String] = []
 
-        for asset in assets {
-            let identifier = asset.localIdentifier
+        for snapshot in snapshots {
+            let identifier = snapshot.localIdentifier
             guard let storedTimestamp = storedDates[identifier] else { continue }
-            guard let currentDate = asset.modificationDate else { continue }
+            guard let currentDate = snapshot.modificationDate else { continue }
 
             let currentTimestamp = currentDate.timeIntervalSince1970
             // Use 1-second tolerance to avoid floating point noise
@@ -625,7 +625,7 @@ final class HashCacheRepository {
         logDebug("Invalidated assets: \(invalidatedIds.map { String($0.prefix(20)) })", category: .hash)
     }
 
-    private func backfillModificationDates(assets: [PHAsset], assetIds: Set<String>) {
+    private func backfillModificationDates(snapshots: [PhotoAssetSnapshot], assetIds: Set<String>) {
         let sql = "UPDATE hash_cache SET asset_modification_date = ? WHERE asset_id = ?;"
         var statement: OpaquePointer?
 
@@ -635,12 +635,12 @@ final class HashCacheRepository {
         connection.beginTransaction()
         var failed = false
         var count = 0
-        for asset in assets {
-            guard assetIds.contains(asset.localIdentifier),
-                  let modDate = asset.modificationDate else { continue }
+        for snapshot in snapshots {
+            guard assetIds.contains(snapshot.localIdentifier),
+                  let modDate = snapshot.modificationDate else { continue }
 
             sqlite3_bind_double(statement, 1, modDate.timeIntervalSince1970)
-            sqlite3_bind_text(statement, 2, (asset.localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
             if sqlite3_step(statement) != SQLITE_DONE {
                 failed = true
                 break
