@@ -15,7 +15,7 @@ var exifOffsetPattern = regexp.MustCompile(`^[+-](?:0\d|1\d|2[0-3]):[0-5]\d$`)
 // Unsupported files and images that already have an offset pass through unchanged.
 // A missing ExifTool install yields an error the caller treats as "skip normalization".
 func addTimezoneOffsetIfMissing(photoData []byte, filename, offset string) ([]byte, bool, error) {
-	if !exifOffsetPattern.MatchString(offset) || !isImageFilename(filename) {
+	if !exifOffsetPattern.MatchString(offset) || !canRewriteTimezone(filename) {
 		return photoData, false, nil
 	}
 	if _, err := exec.LookPath("exiftool"); err != nil {
@@ -70,12 +70,12 @@ func addTimezoneOffsetIfMissing(photoData []byte, filename, offset string) ([]by
 	return normalized, true, nil
 }
 
-func isImageFilename(filename string) bool {
+// Restrict metadata-only rewrites to formats validated for this upload path.
+// Camera RAW and HEIF (including files already containing correct GPS/EXIF)
+// must always be sent to Immich without changing their bytes.
+func canRewriteTimezone(filename string) bool {
 	lower := strings.ToLower(filename)
-	for _, extension := range []string{".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff", ".webp", ".dng", ".arw", ".cr2", ".cr3", ".nef", ".raf", ".orf", ".rw2"} {
-		if strings.HasSuffix(lower, extension) {
-			return true
-		}
-	}
-	return false
+	return strings.HasSuffix(lower, ".jpg") ||
+		strings.HasSuffix(lower, ".jpeg") ||
+		strings.HasSuffix(lower, ".png")
 }
