@@ -160,7 +160,6 @@ class UploadManager: ObservableObject {
     
     // Two slots for transferring bytes; separately bound the number of
     // in-flight requests waiting for Immich to acknowledge processing.
-    private let uploadConcurrency = 2
     private let maxInFlightUploads = 8
     private let transferBudget = ResourceBudget(limit: 2)
     
@@ -456,8 +455,10 @@ class UploadManager: ObservableObject {
             let responseTracker = ResponseTracker(totalCount: totalResources) { [weak item] in
                 Task { @MainActor in
                     item?.status = .completed
+                    // The queue must observe .completed before its worker exits;
+                    // otherwise the final cleanup can race this UI update.
+                    continuation.resume()
                 }
-                continuation.resume()
             } onError: { error in
                 continuation.resume(throwing: error)
             }
