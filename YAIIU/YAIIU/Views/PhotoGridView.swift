@@ -5,7 +5,7 @@ import UIKit
 
 // MARK: - Photo Filter Options
 
-enum PhotoFilterOption: String, CaseIterable, Identifiable {
+enum PhotoFilterOption: String, CaseIterable, Identifiable, Sendable {
     case all
     case notUploaded
     case favorites
@@ -1204,27 +1204,40 @@ struct PhotoGridView: View {
     
     private func selectAllNotUploaded() {
         let statusCache = hashManager.syncStatusCache
-        guard let fetchResult = photoLibraryManager.fetchResult, !isSelectingAll else { return }
+        guard let fetchResult = photoLibraryManager.fetchResult,
+              !isSelectingAll, !isFilterLoading else { return }
+        // Selection must stay within the active Favorites/album/not-uploaded filter.
+        let visibleIndices: [Int]? = currentFilter == .all ? nil : filteredIndices
 
         isSelectingAll = true
         selectionTask?.cancel()
         selectionTask = Task(priority: .userInitiated) {
             var ids = Set<String>()
-            ids.reserveCapacity(fetchResult.count / 4)
-
-            fetchResult.enumerateObjects { asset, _, stop in
-                if Task.isCancelled {
-                    stop.pointee = true
-                    return
+            if let visibleIndices {
+                ids.reserveCapacity(visibleIndices.count)
+                for index in visibleIndices {
+                    if Task.isCancelled { return }
+                    guard index >= 0, index < fetchResult.count else { continue }
+                    let id = fetchResult.object(at: index).localIdentifier
+                    if (statusCache[id] ?? .pending) != .uploaded {
+                        ids.insert(id)
+                    }
                 }
-                if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
-                    ids.insert(asset.localIdentifier)
+            } else {
+                ids.reserveCapacity(fetchResult.count / 4)
+                fetchResult.enumerateObjects { asset, _, stop in
+                    if Task.isCancelled {
+                        stop.pointee = true
+                        return
+                    }
+                    if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
+                        ids.insert(asset.localIdentifier)
+                    }
                 }
             }
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
-
                 if self.isSelectionMode {
                     self.selectedAssets = ids
                 }
