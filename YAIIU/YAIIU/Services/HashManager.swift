@@ -981,39 +981,47 @@ class HashManager: ObservableObject {
             finishProcessing(runID: runID)
             return
         }
-        
-        // Never cache a negative without a completed server baseline.
-        guard DatabaseManager.shared.getSyncMetadata()?.lastSyncTime != nil else {
-            logInfo("Skipping hash verification without a completed server baseline", category: .hash)
-            finishProcessing(runID: runID)
-            return
-        }
 
         isCheckingActive = true
-        
-        // Verify only unchecked hashes (new assets or server-delta invalidations).
-        // JPEG+RAW assets still require verification of both resources.
-        DatabaseManager.shared.getMultiResourceHashesNotFullyOnServerAsync { [weak self] records in
-            guard let self = self else { return }
-            
-            // Ensure UI updates happen on main thread
-            Task { @MainActor in
-                guard self.isCurrentRun(runID) else { return }
-                if records.isEmpty {
-                    self.finishProcessing(runID: runID)
-                    return
-                }
+        checkTask?.cancel()
+        checkTask = Task { [weak self] in
+            // Protect the entire read/verification/write cycle against an
+            // Immich delta mutating the cache concurrently. Acquire the gate
+            // BEFORE selecting unchecked records to include the latest delta.
+            await ServerAssetVerificationGate.shared.acquire()
+            defer {
+                Task { await ServerAssetVerificationGate.shared.release() }
+            }
+            guard let self, self.isCurrentRun(runID), !Task.isCancelled else { return }
 
+            // No authoritative negative results until a server baseline exists.
+            guard DatabaseManager.shared.getSyncMetadata()?.lastSyncTime != nil else {
+                await MainActor.run { self.finishProcessing(runID: runID) }
+                return
+            }
+
+            let records: [MultiResourceHashRecord] = await withCheckedContinuation { continuation in
+                DatabaseManager.shared.getMultiResourceHashesNotFullyOnServerAsync {
+                    continuation.resume(returning: $0)
+                }
+            }
+            guard self.isCurrentRun(runID), !Task.isCancelled, !self.shouldStop else { return }
+            guard !records.isEmpty else {
+                await MainActor.run { self.finishProcessing(runID: runID) }
+                return
+            }
+
+            await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
                 self.totalAssetsToProcess = records.count
                 self.processedAssetsCount = 0
                 self.statusMessage = "Checking cloud status (0/\(records.count))..."
-
-                self.checkMultiResourceHashesAgainstCache(records: records, runID: runID)
             }
+            await self.checkMultiResourceHashesAgainstCache(records: records, runID: runID)
         }
     }
-    
-    private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord], runID: UUID) {
+
+    private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord], runID: UUID) async {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
             return
@@ -1024,12 +1032,7 @@ class HashManager: ObservableObject {
             return
         }
         
-        // Cancel any existing task
-        checkTask?.cancel()
-        
-        checkTask = Task { [weak self] in
-            guard let self = self else { return }
-            guard self.isCurrentRun(runID), !Task.isCancelled else { return }
+        guard self.isCurrentRun(runID), !Task.isCancelled else { return }
             
             // First, filter out deleted photos and collect orphan identifiers
             let allIdentifiers = records.map { $0.assetId }
@@ -1206,9 +1209,8 @@ class HashManager: ObservableObject {
             await MainActor.run {
                 self.finishProcessing(runID: runID, shouldSyncAlbums: true)
             }
-        }
     }
-    
+
     private func finishProcessing(runID: UUID, shouldSyncAlbums: Bool = false) {
         guard runState.finish(runID) else { return }
         if shouldSyncAlbums {
