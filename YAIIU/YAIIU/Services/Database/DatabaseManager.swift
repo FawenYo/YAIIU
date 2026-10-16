@@ -235,6 +235,10 @@ final class DatabaseManager {
         hashRepo.getPendingForegroundPhotoIdentifiers()
     }
 
+    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {
+        hashRepo.discardForegroundPendingIdentifiers(identifiers)
+    }
+
     func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool = false) {
         hashRepo.resetCacheForModifiedAssets(snapshots: snapshots, pruneOrphans: pruneOrphans)
     }
