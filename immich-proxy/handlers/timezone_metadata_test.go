@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,26 @@ func TestAddTimezoneOffsetIfMissing(t *testing.T) {
 	}
 	if offset := readOffset(t, unchanged); offset != "+08:00" {
 		t.Fatalf("offset = %q, want existing +08:00", offset)
+	}
+}
+
+// Camera originals must short-circuit before ExifTool, preserving exact bytes.
+func TestAddTimezoneOffsetPreservesRAWBytes(t *testing.T) {
+	t.Setenv("PATH", "") // Verify the skip does not invoke ExifTool.
+	input := []byte{0x49, 0x49, 0x2a, 0x00, 0x10, 0x11, 0x12, 0x13}
+	for _, filename := range []string{
+		"DSC01387.ARW", "DSC01387.CR3", "DSC01387.NEF",
+		"DSC01387.DNG", "DSC01387.RAF", "IMG_1.HEIC",
+	} {
+		t.Run(filename, func(t *testing.T) {
+			output, changed, err := addTimezoneOffsetIfMissing(input, filename, "+08:00")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed || !bytes.Equal(output, input) {
+				t.Fatal("expected original file bytes without rewriting")
+			}
+		})
 	}
 }
 
