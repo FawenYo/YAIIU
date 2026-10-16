@@ -1402,7 +1402,17 @@ struct PhotoGridView: View {
                filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
         let identifiersToUpload = Array(selectedAssets)
         let manager = uploadManager
-        
+
+        // End this selection session immediately. The PhotoKit fetch below may
+        // take time; its eventual completion must not cancel a NEW selection
+        // session the user has started in the meantime.
+        selectionTask?.cancel()
+        selectionTask = nil
+        isSelectingAll = false
+        isSelectionMode = false
+        selectedAssets.removeAll()
+        dragState.reset()
+
         Task.detached(priority: .userInitiated) {
             let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiersToUpload, options: nil)
             var assetsToUpload: [PHAsset] = []
@@ -1413,9 +1423,6 @@ struct PhotoGridView: View {
             
             await MainActor.run {
                 manager.uploadAssets(assetsToUpload)
-                isSelectionMode = false
-                selectedAssets.removeAll()
-                dragState.reset()
             }
         }
     }
