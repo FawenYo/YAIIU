@@ -607,6 +607,15 @@ struct PhotoGridView: View {
     
     private func startBackgroundProcessing() {
         guard photoLibraryManager.assetCount > 0 else {
+            // The final photo may have been removed while the app was closed.
+            // Once the full library has loaded, clear its now-orphaned cache
+            // without starting the normal hash pipeline for zero photos.
+            if !photoLibraryManager.isLoading &&
+               PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized {
+                Task.detached(priority: .utility) {
+                    DatabaseManager.shared.resetCacheForModifiedAssets(snapshots: [], pruneOrphans: true)
+                }
+            }
             if hashManager.isProcessing {
                 hashManager.clearPreparingState()
             }
