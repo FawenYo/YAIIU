@@ -983,6 +983,7 @@ struct PhotoGridView: View {
         let generation = photoLibraryManager.assetFetchGeneration
         let identifiers = photoLibraryManager.orderedLocalIdentifiers
         let albumID = selectedAlbum?.id
+        let shouldReconcileSelection = isSelectionMode && !selectedAssets.isEmpty
 
         // An all-assets fetch is published before its corresponding identifier
         // snapshot is built. Do not interpret index-based filters in that gap.
@@ -1013,10 +1014,12 @@ struct PhotoGridView: View {
 
             guard !Task.isCancelled else { return }
 
-            // Build valid membership off-main. Intersect the CURRENT selection
-            // when publishing, rather than a stale snapshot from task start:
-            // the user may have selected more photos during this refresh.
-            let visibleIdentifiers = Set(indices.map { identifiers[$0] })
+            // Build membership off-main only if a selection existed at task
+            // start; most filter refreshes need no extra set of identifiers.
+            // Later selection edits are reconciled against the CURRENT set
+            // when publishing, not against an obsolete selection snapshot.
+            let visibleIdentifiers: Set<String>? = shouldReconcileSelection
+                ? Set(indices.map { identifiers[$0] }) : nil
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
@@ -1030,7 +1033,7 @@ struct PhotoGridView: View {
                     // than leave it showing a removed/incorrect album item.
                     self.showingPhotoDetail = false
                 }
-                if self.isSelectionMode {
+                if self.isSelectionMode, let visibleIdentifiers {
                     self.selectedAssets.formIntersection(visibleIdentifiers)
                 }
                 self.filteredIndices = indices
