@@ -28,6 +28,15 @@ struct PhotoAssetSnapshot: Sendable {
 
 
 
+/// Foreground startup may avoid library-wide enumeration after the initial
+/// checkpoint, but Limited Photos and transient PhotoKit failures fall back to
+/// the legacy snapshot (without authoritative orphan deletion).
+enum ForegroundPhotoWork {
+    case incremental([String])
+    case fallbackSnapshot([PhotoAssetSnapshot])
+    case unavailable
+}
+
 /// Manages photo library access with lazy loading for optimal memory performance.
 /// Uses PHFetchResult directly instead of materializing all PHAsset objects into arrays.
 final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
@@ -409,6 +418,158 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         return snapshots
     }
     
+    // MARK: - Foreground PhotoKit Delta Reconciliation
+
+    /// Independent of the background upload extension's own change cursor.
+    /// Serialized because launch, foregrounding, and initial asset loading may
+    /// all request a scan at nearly the same time.
+    private static let foregroundChangeQueue =
+        DispatchQueue(label: "com.fawenyo.yaiiu.foreground-photo-changes")
+
+    /// Call on a background queue, never on the first-paint UI path.
+    /// On normal launches this reads PhotoKit persistent history plus durable
+    /// unresolved IDs; it does NOT walk the entire asset library.
+    func prepareForegroundPhotoWork() -> ForegroundPhotoWork {
+        Self.foregroundChangeQueue.sync {
+            let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            guard authorization == .authorized || authorization == .limited else {
+                return .unavailable
+            }
+
+            // PhotoKit Limited Photos can change its visible selection without
+            // a trustworthy full-library deletion set. Never advance the full
+            // cursor while the app has partial access.
+            if authorization == .limited {
+                return .fallbackSnapshot(allAssetSnapshots())
+            }
+
+            let db = DatabaseManager.shared
+            guard let tokenData = db.loadForegroundPhotoToken(),
+                  let token = try? NSKeyedUnarchiver.unarchivedObject(
+                      ofClass: PHPersistentChangeToken.self, from: tokenData
+                  ) else {
+                return bootstrapForegroundPhotoWork()
+            }
+
+            do {
+                let changes = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
+                var processedBatches = 0
+                var touchedAssets = 0
+                for change in changes {
+                    let details = try change.changeDetails(for: .asset)
+                    let deleted = details.deletedLocalIdentifiers
+                    let affected = details.insertedLocalIdentifiers
+                        .union(details.updatedLocalIdentifiers)
+                        .subtracting(deleted)
+
+                    // Fetch only changed identifiers, including hidden assets to
+                    // distinguish legitimate hidden updates from removals.
+                    let options = PHFetchOptions()
+                    options.includeHiddenAssets = true
+                    let fetched = PHAsset.fetchAssets(
+                        withLocalIdentifiers: Array(affected), options: options
+                    )
+                    var snapshots: [PhotoAssetSnapshot] = []
+                    snapshots.reserveCapacity(fetched.count)
+                    fetched.enumerateObjects { asset, _, _ in
+                        snapshots.append(PhotoAssetSnapshot(
+                            localIdentifier: asset.localIdentifier,
+                            modificationDate: asset.modificationDate,
+                            isHidden: asset.isHidden
+                        ))
+                    }
+
+                    let nextTokenData = try NSKeyedArchiver.archivedData(
+                        withRootObject: change.changeToken, requiringSecureCoding: true
+                    )
+                    guard db.applyForegroundPhotoChanges(
+                        snapshots: snapshots,
+                        pendingIdentifiers: affected,
+                        deletedIdentifiers: deleted,
+                        tokenData: nextTokenData,
+                        bootstrap: false
+                    ) else {
+                        logError("Failed to atomically persist foreground PhotoKit delta", category: .database)
+                        return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+                    }
+                    processedBatches += 1
+                    touchedAssets += affected.count + deleted.count
+                }
+                if processedBatches > 0 {
+                    logInfo(
+                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets",
+                        category: .hash
+                    )
+                }
+                return .incremental(visibleForegroundPendingIdentifiers())
+            } catch let error as NSError
+                where error.domain == PHPhotosErrorDomain &&
+                    (error.code == PHPhotosError.persistentChangeTokenExpired.rawValue ||
+                     error.code == PHPhotosError.persistentChangeDetailsUnavailable.rawValue) {
+                logWarning("Foreground PhotoKit history expired; rebuilding checkpoint", category: .hash)
+                return bootstrapForegroundPhotoWork()
+            } catch {
+                logWarning("Foreground PhotoKit delta unavailable: \(error.localizedDescription)", category: .hash)
+                return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+            }
+        }
+    }
+
+    /// A delayed extension event may re-enqueue previously hidden assets.
+    /// Check only pending IDs, never the whole library, and retain
+    /// temporarily unavailable IDs for a subsequent pass.
+    private func visibleForegroundPendingIdentifiers() -> [String] {
+        let pending = DatabaseManager.shared.getPendingForegroundPhotoIdentifiers()
+        guard !pending.isEmpty else { return [] }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: pending, options: options)
+        var visible = Set<String>()
+        var hidden = Set<String>()
+        result.enumerateObjects { asset, _, _ in
+            if asset.isHidden {
+                hidden.insert(asset.localIdentifier)
+            } else {
+                visible.insert(asset.localIdentifier)
+            }
+        }
+        if !hidden.isEmpty {
+            DatabaseManager.shared.discardForegroundPendingIdentifiers(hidden)
+        }
+        return pending.filter { visible.contains($0) }
+    }
+
+    private func bootstrapForegroundPhotoWork() -> ForegroundPhotoWork {
+        logInfo("Foreground PhotoKit bootstrap started", category: .hash)
+        // Capture BEFORE the full scan: edits during enumeration must replay
+        // on the next delta, not disappear behind the checkpoint.
+        do {
+            let tokenData = try NSKeyedArchiver.archivedData(
+                withRootObject: PHPhotoLibrary.shared().currentChangeToken,
+                requiringSecureCoding: true
+            )
+            let snapshots = allAssetSnapshots(includingHidden: true)
+            guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
+                return .fallbackSnapshot(snapshots)
+            }
+            guard DatabaseManager.shared.applyForegroundPhotoChanges(
+                snapshots: snapshots,
+                pendingIdentifiers: Set(PhotoAssetSnapshot.visibleIdentifiers(in: snapshots)),
+                deletedIdentifiers: [],
+                tokenData: tokenData,
+                bootstrap: true
+            ) else {
+                logError("Foreground PhotoKit bootstrap checkpoint persistence failed", category: .database)
+                return .fallbackSnapshot(snapshots)
+            }
+            logInfo("Foreground PhotoKit initial checkpoint built; assets=\(snapshots.count)", category: .hash)
+            return .incremental(visibleForegroundPendingIdentifiers())
+        } catch {
+            logWarning("Could not capture foreground PhotoKit change token: \(error.localizedDescription)", category: .hash)
+            return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+        }
+    }
+
     private func triggerFavoriteSync() async {
         await FavoriteSyncService.shared.syncFavoriteChanges()
     }

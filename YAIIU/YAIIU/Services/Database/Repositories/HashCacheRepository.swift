@@ -345,33 +345,60 @@ final class HashCacheRepository {
     }
     
     func getAssetsNeedingHashAsync(allIdentifiers: [String], completion: @escaping ([String]) -> Void) {
+        guard !allIdentifiers.isEmpty else {
+            DispatchQueue.main.async { completion([]) }
+            return
+        }
         connection.dbQueue.async { [weak self] in
-            guard let self = self else {
+            guard let self else {
                 DispatchQueue.main.async { completion([]) }
                 return
             }
-            
-            let sql = "SELECT asset_id FROM hash_cache;"
-            var statement: OpaquePointer?
-            var existingIds: Set<String> = []
-            
-            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+
+            // Delta launches usually supply 0–10 identifiers. Avoid selecting
+            // every cached hash just to check a few (or zero) PhotoKit assets.
+            // Keep a full-table branch for one-time bootstrap's large batches.
+            var needingHash: [String] = []
+            if allIdentifiers.count > 2_000 {
+                var statement: OpaquePointer?
+                var known: Set<String> = []
+                guard sqlite3_prepare_v2(
+                    self.connection.db, "SELECT asset_id FROM hash_cache;",
+                    -1, &statement, nil
+                ) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    DispatchQueue.main.async { completion(allIdentifiers) }
+                    return
+                }
                 while sqlite3_step(statement) == SQLITE_ROW {
-                    if let cString = sqlite3_column_text(statement, 0) {
-                        existingIds.insert(String(cString: cString))
+                    if let id = sqlite3_column_text(statement, 0) {
+                        known.insert(String(cString: id))
                     }
                 }
+                sqlite3_finalize(statement)
+                needingHash = allIdentifiers.filter { !known.contains($0) }
+            } else {
+                let sql = "SELECT 1 FROM hash_cache WHERE asset_id = ? LIMIT 1;"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    DispatchQueue.main.async { completion(allIdentifiers) }
+                    return
+                }
+                for identifier in allIdentifiers {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    sqlite3_bind_text(statement, 1, (identifier as NSString).utf8String, -1, nil)
+                    if sqlite3_step(statement) != SQLITE_ROW {
+                        needingHash.append(identifier)
+                    }
+                }
+                sqlite3_finalize(statement)
             }
-            sqlite3_finalize(statement)
-            
-            let needingHash = allIdentifiers.filter { !existingIds.contains($0) }
-            
-            DispatchQueue.main.async {
-                completion(needingHash)
-            }
+            DispatchQueue.main.async { completion(needingHash) }
         }
     }
-    
+
     func getHashesNeedingCheckAsync(completion: @escaping ([(String, String)]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
@@ -573,6 +600,306 @@ final class HashCacheRepository {
         }
     }
     
+    // MARK: - Foreground PhotoKit Persistent Changes
+
+    /// Deliberately separate from the background extension's `change_tokens`.
+    /// Neither consumer may advance the other's cursor.
+    func loadForegroundPhotoToken() -> Data? {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return nil }
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(
+                self.connection.db,
+                "SELECT token_data FROM foreground_photo_change_state WHERE id = 1;",
+                -1, &statement, nil
+            ) == SQLITE_OK, sqlite3_step(statement) == SQLITE_ROW,
+                  let bytes = sqlite3_column_blob(statement, 0) else { return nil }
+            return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+        }
+    }
+
+    /// Atomically store the cursor and the work it represents. The first pass
+    /// records an entire hidden-inclusive snapshot; later calls apply only
+    /// PhotoKit's changed IDs. A crash can replay work but cannot skip it.
+    @discardableResult
+    func applyForegroundPhotoChanges(
+        snapshots: [PhotoAssetSnapshot],
+        pendingIdentifiers: Set<String>,
+        deletedIdentifiers: Set<String>,
+        tokenData: Data,
+        bootstrap: Bool
+    ) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return false }
+            let db = self.connection.db
+            guard self.connection.beginTransaction() else { return false }
+            var committed = false
+            defer { if !committed { self.connection.rollbackTransaction() } }
+
+            func execute(_ sql: String) -> Bool {
+                sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
+            }
+
+            func runIDs(_ sql: String, _ ids: Set<String>) -> Bool {
+                guard !ids.isEmpty else { return true }
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    return false
+                }
+                defer { sqlite3_finalize(statement) }
+                for id in ids {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    guard sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, nil) == SQLITE_OK,
+                          sqlite3_step(statement) == SQLITE_DONE else { return false }
+                }
+                return true
+            }
+
+            // Bootstrap reconciles old hashes/receipts/queue entries using the
+            // authoritative full-library snapshot (including hidden assets).
+            // The token is sampled BEFORE enumerating, so later changes replay.
+            if bootstrap {
+                guard execute("""
+                    CREATE TEMP TABLE IF NOT EXISTS foreground_snapshot (
+                        asset_id TEXT PRIMARY KEY, is_hidden INTEGER, modified_at REAL
+                    );
+                    """),
+                      execute("DELETE FROM foreground_snapshot;") else { return false }
+
+                var insert: OpaquePointer?
+                guard sqlite3_prepare_v2(db,
+                    "INSERT INTO foreground_snapshot(asset_id, is_hidden, modified_at) VALUES (?, ?, ?);",
+                    -1, &insert, nil
+                ) == SQLITE_OK else {
+                    sqlite3_finalize(insert)
+                    return false
+                }
+                var insertOK = true
+                for snapshot in snapshots {
+                    sqlite3_reset(insert)
+                    sqlite3_clear_bindings(insert)
+                    sqlite3_bind_text(insert, 1, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
+                    sqlite3_bind_int(insert, 2, snapshot.isHidden ? 1 : 0)
+                    if let date = snapshot.modificationDate {
+                        sqlite3_bind_double(insert, 3, date.timeIntervalSince1970)
+                    } else {
+                        sqlite3_bind_null(insert, 3)
+                    }
+                    if sqlite3_step(insert) != SQLITE_DONE {
+                        insertOK = false
+                        break
+                    }
+                }
+                sqlite3_finalize(insert)
+                guard insertOK else { return false }
+
+                // Compare modificationDate only on visible assets. Hidden items
+                // are retained (not rehashed) until they become visible.
+                let modifiedQuery = """
+                    SELECT h.asset_id FROM hash_cache h
+                    JOIN foreground_snapshot s ON s.asset_id = h.asset_id
+                    WHERE s.is_hidden = 0 AND s.modified_at IS NOT NULL
+                      AND h.asset_modification_date IS NOT NULL
+                      AND ABS(s.modified_at - h.asset_modification_date) > 1.0;
+                    """
+                var query: OpaquePointer?
+                guard sqlite3_prepare_v2(db, modifiedQuery, -1, &query, nil) == SQLITE_OK else {
+                    sqlite3_finalize(query)
+                    return false
+                }
+                var modified = Set<String>()
+                var queryOK = true
+                while true {
+                    let result = sqlite3_step(query)
+                    if result == SQLITE_ROW {
+                        if let ptr = sqlite3_column_text(query, 0) {
+                            modified.insert(String(cString: ptr))
+                        }
+                    } else if result == SQLITE_DONE { break }
+                    else { queryOK = false; break }
+                }
+                sqlite3_finalize(query)
+                guard queryOK else { return false }
+                guard runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", modified),
+                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified),
+                      execute("""
+                        UPDATE hash_cache SET asset_modification_date = (
+                            SELECT s.modified_at FROM foreground_snapshot s
+                            WHERE s.asset_id = hash_cache.asset_id
+                        )
+                        WHERE asset_modification_date IS NULL
+                          AND asset_id IN (
+                            SELECT asset_id FROM foreground_snapshot
+                            WHERE modified_at IS NOT NULL
+                          );
+                        """) else { return false }
+
+                let missingFromSnapshot =
+                    "asset_id NOT IN (SELECT asset_id FROM foreground_snapshot)"
+                guard execute("DELETE FROM hash_cache WHERE \(missingFromSnapshot);"),
+                      execute("DELETE FROM uploaded_assets WHERE \(missingFromSnapshot);"),
+                      execute("DELETE FROM foreground_photo_pending_assets WHERE \(missingFromSnapshot);"),
+                      execute("DELETE FROM background_upload_queue WHERE \(missingFromSnapshot);"),
+                      execute("""
+                        DELETE FROM upload_jobs WHERE \(missingFromSnapshot)
+                        AND status IN ('pending', 'failed');
+                        """),
+                      execute("""
+                        DELETE FROM foreground_photo_pending_assets
+                        WHERE asset_id IN
+                          (SELECT asset_id FROM foreground_snapshot WHERE is_hidden = 1);
+                        """),
+                      execute("""
+                        INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
+                        SELECT asset_id FROM foreground_snapshot WHERE is_hidden = 0;
+                        """) else { return false }
+
+            } else {
+                // PhotoKit inserts/updates are not necessarily content edits:
+                // invalidate hashes only when their stored modification date
+                // changed. An updated hidden asset does not enter hashing.
+                var modified = Set<String>()
+                let checkSQL = "SELECT asset_modification_date FROM hash_cache WHERE asset_id = ?;"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(db, checkSQL, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    return false
+                }
+                var checkOK = true
+                for snapshot in snapshots where !snapshot.isHidden {
+                    guard let date = snapshot.modificationDate else { continue }
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    sqlite3_bind_text(statement, 1, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
+                    let step = sqlite3_step(statement)
+                    if step == SQLITE_ROW &&
+                        (sqlite3_column_type(statement, 0) == SQLITE_NULL ||
+                         abs(date.timeIntervalSince1970 - sqlite3_column_double(statement, 0)) > 1) {
+                        // Legacy cached hashes without modification dates cannot
+                        // safely assert that a changed PhotoKit asset is unchanged.
+                        modified.insert(snapshot.localIdentifier)
+                    } else if step != SQLITE_ROW && step != SQLITE_DONE {
+                        checkOK = false
+                        break
+                    }
+                }
+                sqlite3_finalize(statement)
+                guard checkOK,
+                      runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", modified),
+                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified) else {
+                    return false
+                }
+                let hiddenIDs = Set(snapshots.filter(\.isHidden).map(\.localIdentifier))
+                guard runIDs(
+                    "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
+                    hiddenIDs
+                ) else { return false }
+                let toEnqueue = pendingIdentifiers.subtracting(hiddenIDs).subtracting(deletedIdentifiers)
+                guard runIDs(
+                    "INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id) VALUES (?);",
+                    toEnqueue
+                ) else { return false }
+
+                // Only explicit persistent deletions are authoritative here,
+                // never a temporarily unresolvable PHAsset fetch result.
+                guard runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", deletedIdentifiers),
+                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", deletedIdentifiers),
+                      runIDs("DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;", deletedIdentifiers),
+                      runIDs("DELETE FROM background_upload_queue WHERE asset_id = ?;", deletedIdentifiers),
+                      runIDs("""
+                        DELETE FROM upload_jobs WHERE asset_id = ?
+                        AND status IN ('pending', 'failed');
+                        """, deletedIdentifiers) else { return false }
+            }
+
+            // The extension's cursor is untouched, even though the SQLite
+            // database and durable upload queue are shared through App Group.
+            var tokenStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db,
+                "INSERT OR REPLACE INTO foreground_photo_change_state(id, token_data) VALUES (1, ?);",
+                -1, &tokenStatement, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(tokenStatement)
+                return false
+            }
+            let bindResult = tokenData.withUnsafeBytes { bytes in
+                sqlite3_bind_blob(tokenStatement, 1, bytes.baseAddress, Int32(bytes.count),
+                                  unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+            let tokenOK = bindResult == SQLITE_OK && sqlite3_step(tokenStatement) == SQLITE_DONE
+            sqlite3_finalize(tokenStatement)
+            guard tokenOK, self.connection.commitTransaction() else { return false }
+            committed = true
+            return true
+        }
+    }
+
+    /// Drain completed work but keep unfinished identifiers durable across
+    /// app termination, hash cancellations, network failures, and launch races.
+    func getPendingForegroundPhotoIdentifiers() -> [String] {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return [] }
+            let db = self.connection.db
+            let completed = """
+                DELETE FROM foreground_photo_pending_assets
+                WHERE EXISTS (
+                    SELECT 1 FROM hash_cache
+                    WHERE hash_cache.asset_id = foreground_photo_pending_assets.asset_id
+                );
+                """
+            guard sqlite3_exec(db, completed, nil, nil, nil) == SQLITE_OK else { return [] }
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(
+                db, "SELECT asset_id FROM foreground_photo_pending_assets;", -1, &statement, nil
+            ) == SQLITE_OK else { return [] }
+            var identifiers: [String] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let id = sqlite3_column_text(statement, 0) {
+                    identifiers.append(String(cString: id))
+                }
+            }
+            return identifiers
+        }
+    }
+
+    /// Hidden assets should not be hashed by the visible-library pipeline.
+    /// Only explicit hidden PHAssets are acknowledged; temporarily absent
+    /// local identifiers remain pending until PhotoKit can resolve them.
+    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {
+        guard !identifiers.isEmpty else { return }
+        connection.ensureInitialized()
+        connection.dbQueue.sync { [weak self] in
+            guard let self else { return }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                self.connection.db,
+                "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
+                -1, &statement, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                return
+            }
+            defer { sqlite3_finalize(statement) }
+            for id in identifiers {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    logError("Failed to discard hidden foreground PhotoKit ID", category: .database)
+                    break
+                }
+            }
+        }
+    }
+
     // MARK: - Modified Asset Invalidation
 
     /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate

@@ -64,6 +64,14 @@ final class BackgroundUploadDatabase {
                 enqueued_at REAL NOT NULL
             )
         """)
+        // Both processes use the same app-group SQLite DB, but maintain
+        // independent PhotoKit tokens. Reinsert foreground work when the
+        // extension invalidates a hash after foreground cursor advancement.
+        exec("""
+            CREATE TABLE IF NOT EXISTS foreground_photo_pending_assets (
+                asset_id TEXT PRIMARY KEY NOT NULL
+            )
+        """)
         exec("""
             CREATE TABLE IF NOT EXISTS background_upload_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -757,6 +765,42 @@ final class BackgroundUploadDatabase {
                     }
                 }
                 sqlite3_finalize(stmt)
+            }
+
+            // Foreground may already have consumed the same PhotoKit event
+            // and completed its pending hash check. Since this extension
+            // removes hash_cache for updated assets independently, it MUST
+            // enqueue the foreground identifier again in this transaction.
+            // Otherwise both change cursors can advance past an unhashed asset.
+            let foregroundSQL = """
+                INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
+                VALUES (?)
+            """
+            var foregroundStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, foregroundSQL, -1, &foregroundStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(foregroundStmt)
+                return false
+            }
+            defer { sqlite3_finalize(foregroundStmt) }
+            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(deletedAssetIds) {
+                sqlite3_reset(foregroundStmt)
+                sqlite3_clear_bindings(foregroundStmt)
+                guard sqlite3_bind_text(foregroundStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                      sqlite3_step(foregroundStmt) == SQLITE_DONE else { return false }
+            }
+
+            let foregroundDeleteSQL = "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?"
+            var foregroundDeleteStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, foregroundDeleteSQL, -1, &foregroundDeleteStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(foregroundDeleteStmt)
+                return false
+            }
+            defer { sqlite3_finalize(foregroundDeleteStmt) }
+            for assetId in deletedAssetIds {
+                sqlite3_reset(foregroundDeleteStmt)
+                sqlite3_clear_bindings(foregroundDeleteStmt)
+                guard sqlite3_bind_text(foregroundDeleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                      sqlite3_step(foregroundDeleteStmt) == SQLITE_DONE else { return false }
             }
 
             let deleteSql = "DELETE FROM background_upload_queue WHERE asset_id = ?"

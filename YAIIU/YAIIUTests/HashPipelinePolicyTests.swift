@@ -72,6 +72,17 @@ final class HashPipelinePolicyTests: XCTestCase {
         await fulfillment(of: [startedSecondOperation], timeout: 0.1)
     }
 
+    func testPreparingPlaceholderMustNotCountAsAnAdmittedHashRun() {
+        let state = HashPipelinePolicy.RunState()
+        XCTAssertFalse(state.isRunning)
+        guard let runID = state.beginIfIdle() else {
+            return XCTFail("Expected a hash run")
+        }
+        XCTAssertTrue(state.isRunning)
+        XCTAssertTrue(state.finish(runID))
+        XCTAssertFalse(state.isRunning)
+    }
+
     func testFinishedRunCannotOwnStateAfterRestart() {
         let state = HashPipelinePolicy.RunState()
         let oldRunID = state.beginIfIdle()
