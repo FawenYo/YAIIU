@@ -345,33 +345,60 @@ final class HashCacheRepository {
     }
     
     func getAssetsNeedingHashAsync(allIdentifiers: [String], completion: @escaping ([String]) -> Void) {
+        guard !allIdentifiers.isEmpty else {
+            DispatchQueue.main.async { completion([]) }
+            return
+        }
         connection.dbQueue.async { [weak self] in
-            guard let self = self else {
+            guard let self else {
                 DispatchQueue.main.async { completion([]) }
                 return
             }
-            
-            let sql = "SELECT asset_id FROM hash_cache;"
-            var statement: OpaquePointer?
-            var existingIds: Set<String> = []
-            
-            if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
+
+            // Delta launches usually supply 0–10 identifiers. Avoid selecting
+            // every cached hash just to check a few (or zero) PhotoKit assets.
+            // Keep a full-table branch for one-time bootstrap's large batches.
+            var needingHash: [String] = []
+            if allIdentifiers.count > 2_000 {
+                var statement: OpaquePointer?
+                var known: Set<String> = []
+                guard sqlite3_prepare_v2(
+                    self.connection.db, "SELECT asset_id FROM hash_cache;",
+                    -1, &statement, nil
+                ) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    DispatchQueue.main.async { completion(allIdentifiers) }
+                    return
+                }
                 while sqlite3_step(statement) == SQLITE_ROW {
-                    if let cString = sqlite3_column_text(statement, 0) {
-                        existingIds.insert(String(cString: cString))
+                    if let id = sqlite3_column_text(statement, 0) {
+                        known.insert(String(cString: id))
                     }
                 }
+                sqlite3_finalize(statement)
+                needingHash = allIdentifiers.filter { !known.contains($0) }
+            } else {
+                let sql = "SELECT 1 FROM hash_cache WHERE asset_id = ? LIMIT 1;"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    DispatchQueue.main.async { completion(allIdentifiers) }
+                    return
+                }
+                for identifier in allIdentifiers {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    sqlite3_bind_text(statement, 1, (identifier as NSString).utf8String, -1, nil)
+                    if sqlite3_step(statement) != SQLITE_ROW {
+                        needingHash.append(identifier)
+                    }
+                }
+                sqlite3_finalize(statement)
             }
-            sqlite3_finalize(statement)
-            
-            let needingHash = allIdentifiers.filter { !existingIds.contains($0) }
-            
-            DispatchQueue.main.async {
-                completion(needingHash)
-            }
+            DispatchQueue.main.async { completion(needingHash) }
         }
     }
-    
+
     func getHashesNeedingCheckAsync(completion: @escaping ([(String, String)]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
