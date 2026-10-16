@@ -75,6 +75,20 @@ enum TimezoneGeocodingError: Error {
     case timeout
     case failed
 }
+
+// A response from a previous Immich destination must not complete an item
+// selected for foreground upload. Keep the item failed/retryable so that the
+// next manual retry uses the currently configured server and credentials.
+private enum UploadQueueError: LocalizedError {
+    case destinationChanged
+
+    var errorDescription: String? {
+        switch self {
+        case .destinationChanged:
+            return "Immich server or account changed during upload. Retry to upload to the current destination."
+        }
+    }
+}
 private struct UploadPreparation: @unchecked Sendable {
     let resources: [PHAssetResource]
     let isFavorite: Bool
@@ -481,7 +495,11 @@ class UploadManager: ObservableObject {
                                     serverURL: currentSettings.serverURL,
                                     apiKey: currentSettings.apiKey
                                 ) else {
-                                    responseTracker.markCompleted()
+                                    // This response was saved on the old account, not
+                                    // the newly selected destination. Never call
+                                    // markCompleted: it would remove this manually
+                                    // selected asset from the foreground queue.
+                                    responseTracker.markFailed(error: UploadQueueError.destinationChanged)
                                     return
                                 }
                                 DatabaseManager.shared.recordUploadedAsset(
