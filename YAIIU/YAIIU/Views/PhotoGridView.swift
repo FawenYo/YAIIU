@@ -914,6 +914,14 @@ struct PhotoGridView: View {
         let filter = currentFilter
         let identifiers = photoLibraryManager.orderedLocalIdentifiers
         let albumID = selectedAlbum?.id
+        // The full identifier snapshot is built asynchronously after first paint.
+        // Avoid a wasted PhotoKit scan until it becomes available.
+        if identifiers.isEmpty {
+            filteredIndices = []
+            isFilterLoading = photoLibraryManager.assetCount > 0
+            refreshToken = UUID()
+            return
+        }
         isFilterLoading = true
 
         // Keep the detached task itself so cancel() interrupts PhotoKit enumeration;
