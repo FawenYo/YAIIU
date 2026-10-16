@@ -34,6 +34,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             return XCTFail("Expected sync to succeed")
         }
         XCTAssertEqual(operations.values, [
+            "invalidate-hash-checks",
             "clear-cache",
             "save-assets",
             "delete-assets",
@@ -75,7 +76,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         guard case .failure = result else {
             return XCTFail("Expected sync to fail")
         }
-        XCTAssertEqual(operations.values, ["clear-cache"])
+        XCTAssertEqual(operations.values, ["invalidate-hash-checks", "clear-cache"])
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
@@ -90,7 +91,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         guard case .success = result else {
             return XCTFail("Expected sync to succeed")
         }
-        XCTAssertEqual(Array(operations.values.prefix(2)), ["clear-cache", "save-assets"])
+        XCTAssertEqual(Array(operations.values.prefix(3)), ["invalidate-hash-checks", "clear-cache", "save-assets"])
     }
 
     func testFullSyncDoesNotAcknowledgeWhenCacheClearFails() async throws {
@@ -105,7 +106,7 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         guard case .failure = result else {
             return XCTFail("Expected sync to fail")
         }
-        XCTAssertEqual(operations.values, ["clear-cache"])
+        XCTAssertEqual(operations.values, ["invalidate-hash-checks", "clear-cache"])
         XCTAssertTrue(api.sentAcks.isEmpty)
     }
 
@@ -148,6 +149,22 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             return XCTFail("Expected sync to succeed")
         }
         XCTAssertEqual(store.savedAssets.first?.sourceChecksum, "original-checksum")
+        XCTAssertEqual(store.invalidatedFullReset, false)
+        XCTAssertTrue(store.invalidatedChecksums.contains("original-checksum"))
+        XCTAssertTrue(store.invalidatedChecksums.contains("server-checksum"))
+    }
+
+    func testFailedInvalidationPreventsAck() async {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations)
+        let store = StoreStub(operations: operations)
+        store.shouldFailInvalidation = true
+        let service = ServerAssetSyncService(apiService: api, dbManager: store)
+
+        guard case .failure = await sync(service) else {
+            return XCTFail("Expected invalidation failure")
+        }
+        XCTAssertFalse(operations.values.contains("send-acks"))
     }
 
     private func sync(_ service: ServerAssetSyncService) async -> Result<SyncResult, Error> {
@@ -232,11 +249,21 @@ private final class StoreStub: ServerAssetSyncStore, @unchecked Sendable {
     var shouldFailAssetSave = false
     private(set) var savedAssets: [ServerAssetRecord] = []
     var shouldFailCacheClear = false
+    var shouldFailInvalidation = false
+    var invalidatedFullReset: Bool?
+    var invalidatedChecksums: Set<String> = []
     var syncMetadata: SyncMetadata?
     var existingAsset: ServerAssetRecord?
 
     init(operations: OperationRecorder) {
         self.operations = operations
+    }
+
+    func invalidateHashChecksForServerChanges(checksums: [String], fullReset: Bool) -> Bool {
+        invalidatedFullReset = fullReset
+        invalidatedChecksums = Set(checksums)
+        operations.append("invalidate-hash-checks")
+        return !shouldFailInvalidation
     }
 
     func isAssetOnServer(checksum: String) -> Bool { false }

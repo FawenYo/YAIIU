@@ -7,6 +7,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
     private var connection: SQLiteConnection!
     private var repository: ServerAssetRepository!
     private var uploadRepository: UploadRecordRepository!
+    private var hashRepository: HashCacheRepository!
     override func setUp() {
         super.setUp()
         databaseURL = FileManager.default.temporaryDirectory
@@ -15,9 +16,11 @@ final class ServerAssetRepositoryTests: XCTestCase {
         connection.ensureInitialized()
         repository = ServerAssetRepository(connection: connection)
         uploadRepository = UploadRecordRepository(connection: connection)
+        hashRepository = HashCacheRepository(connection: connection)
     }
 
     override func tearDown() {
+        hashRepository = nil
         uploadRepository = nil
         repository = nil
         connection = nil
@@ -180,6 +183,216 @@ final class ServerAssetRepositoryTests: XCTestCase {
         )
 
         XCTAssertEqual(Set(ids), [videoId, rawId])
+    }
+
+    func testCompletedNegativeMatchesAreNotRecheckedWithoutServerDelta() async {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('existing-negative', 'sha-negative', 0, 100);
+        """)
+        let before = await uncheckedHashIds()
+        XCTAssertTrue(before.isEmpty)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForServerChanges(
+            checksums: [], fullReset: false
+        ))
+        let after = await uncheckedHashIds()
+        XCTAssertTrue(after.isEmpty)
+    }
+
+    func testDeltaInvalidatesOnlyMatchingPrimaryAndRawHashes() async {
+        execute("""
+            INSERT INTO hash_cache
+                (asset_id, sha1_hash, raw_hash, has_raw, is_on_server, calculated_at, checked_at)
+            VALUES
+                ('primary', 'sha-new', NULL, 0, 0, 0, 100),
+                ('raw-companion', 'sha-other', 'raw-new', 1, 1, 0, 100),
+                ('unrelated', 'sha-stable', NULL, 0, 0, 0, 100);
+        """)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForServerChanges(
+            checksums: ["sha-new", "raw-new"], fullReset: false
+        ))
+        let dirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(dirty), ["primary", "raw-companion"])
+    }
+
+    func testFullResetRetainsComputedHashes() async {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('first', 'sha-first', 0, 100), ('second', 'sha-second', 0, 100);
+        """)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForServerChanges(
+            checksums: [], fullReset: true
+        ))
+        let dirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(dirty), ["first", "second"])
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(
+            connection.db, "SELECT sha1_hash FROM hash_cache WHERE asset_id='first';",
+            -1, &statement, nil
+        ), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(String(cString: sqlite3_column_text(statement, 0)), "sha-first")
+    }
+
+    func testFullLibrarySnapshotPrunesEvenAlreadyCheckedOrphans() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('still-local', 'sha-a', 0, 100), ('photo-deleted', 'sha-b', 0, 100);
+        """)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "photo-deleted", resourceType: "primary",
+            filename: "deleted.jpg", immichId: "remote-asset"
+        )
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [PhotoAssetSnapshot(localIdentifier: "still-local", modificationDate: nil)],
+            pruneOrphans: true
+        )
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "photo-deleted"))
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "still-local"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "photo-deleted"))
+    }
+
+    func testLimitedLibrarySnapshotDoesNotPruneInvisibleAssets() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('hidden-but-existing', 'sha-a', 0, 100);
+        """)
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: nil)],
+            pruneOrphans: false
+        )
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "hidden-but-existing"))
+    }
+
+    func testEmptyFullLibraryPrunesFinalOrphan() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('deleted-last-photo', 'sha-last', 0, 100);
+        """)
+        hashRepository.resetCacheForModifiedAssets(snapshots: [], pruneOrphans: true)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "deleted-last-photo"))
+    }
+
+    func testFullSnapshotPrunesMissingBackgroundQueueAndPreservesHiddenPhotos() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('visible', 'sha-visible', 0, 100),
+                   ('hidden', 'sha-hidden', 0, 100),
+                   ('deleted', 'sha-deleted', 0, 100);
+            INSERT INTO background_upload_queue (asset_id, enqueued_at)
+            VALUES ('visible', 1), ('hidden', 1), ('deleted', 1), ('queue-only-deleted', 1);
+            INSERT INTO upload_jobs (asset_id, resource_type, filename, status, created_at, updated_at)
+            VALUES ('deleted', 'primary', 'old.jpg', 'pending', 0, 0),
+                   ('queue-only-deleted', 'raw', 'old.dng', 'failed', 0, 0),
+                   ('hidden', 'primary', 'hidden.jpg', 'pending', 0, 0);
+        """)
+        let fullSnapshots = [
+            PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: nil),
+            PhotoAssetSnapshot(localIdentifier: "hidden", modificationDate: nil, isHidden: true)
+        ]
+        XCTAssertEqual(PhotoAssetSnapshot.visibleIdentifiers(in: fullSnapshots), ["visible"])
+        hashRepository.resetCacheForModifiedAssets(snapshots: fullSnapshots, pruneOrphans: true)
+
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "visible"))
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "hidden"))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "deleted"))
+        XCTAssertEqual(queuedIds(), ["hidden", "visible"])
+        XCTAssertEqual(jobIds(), ["hidden"])
+    }
+
+    func testModifiedAssetPreservesBackgroundQueue() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "modified", primaryHash: "before",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        execute("INSERT INTO background_upload_queue (asset_id, enqueued_at) VALUES ('modified', 1);")
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [
+                PhotoAssetSnapshot(
+                    localIdentifier: "modified", modificationDate: Date(timeIntervalSince1970: 110)
+                )
+            ],
+            pruneOrphans: true
+        )
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "modified"))
+        XCTAssertEqual(queuedIds(), ["modified"])
+    }
+
+    func testHiddenOnlyFullSnapshotDoesNotDeleteHiddenCache() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('hidden', 'sha-hidden', 0, 100), ('deleted', 'sha-deleted', 0, 100);
+        """)
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [
+                PhotoAssetSnapshot(localIdentifier: "hidden", modificationDate: nil, isHidden: true)
+            ],
+            pruneOrphans: true
+        )
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "hidden"))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "deleted"))
+    }
+
+    func testQueueDeleteErrorRollsBackCacheAndReceiptCleanup() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('deleted', 'sha-deleted', 0, 100);
+            INSERT INTO background_upload_queue (asset_id, enqueued_at) VALUES ('deleted', 1);
+            CREATE TRIGGER block_queue_deletion BEFORE DELETE ON background_upload_queue
+            BEGIN SELECT RAISE(ABORT, 'simulated queue failure'); END;
+        """)
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "deleted", resourceType: "primary",
+            filename: "deleted.jpg", immichId: "remote-id"
+        )
+        hashRepository.resetCacheForModifiedAssets(snapshots: [], pruneOrphans: true)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "deleted"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "deleted"))
+        XCTAssertEqual(queuedIds(), ["deleted"])
+    }
+
+    private func queuedIds() -> [String] {
+        ids(for: "SELECT asset_id FROM background_upload_queue ORDER BY asset_id;")
+    }
+
+    private func jobIds() -> [String] {
+        ids(for: "SELECT asset_id FROM upload_jobs ORDER BY asset_id;")
+    }
+
+    private func ids(for sql: String) -> [String] {
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        var result: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            result.append(String(cString: sqlite3_column_text(statement, 0)))
+        }
+        return result
+    }
+
+    func testRemoteDeletionPrunesOnlyMatchingUploadReceipts() {
+        XCTAssertTrue(repository.saveServerAssets([record(checksum: "sha-deleted", iCloudId: nil)]))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "deleted-local", resourceType: "primary",
+            filename: "old.jpg", immichId: "asset-1"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "other-local", resourceType: "primary",
+            filename: "other.jpg", immichId: "other-server-id"
+        )
+        XCTAssertTrue(repository.deleteServerAssets(["asset-1"]))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "deleted-local"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "other-local"))
+    }
+
+    private func uncheckedHashIds() async -> [String] {
+        await withCheckedContinuation { continuation in
+            hashRepository.getMultiResourceHashesNotFullyOnServerAsync { records in
+                continuation.resume(returning: records.map(\.assetId))
+            }
+        }
     }
 
     private func installDeferredCommitFailure(triggerEvent: String) {

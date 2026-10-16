@@ -477,7 +477,7 @@ class HashManager: ObservableObject {
     @MainActor
     func startBackgroundProcessing(snapshots: [PhotoAssetSnapshot]) {
         startBackgroundProcessing(
-            identifiers: snapshots.map { $0.localIdentifier },
+            identifiers: PhotoAssetSnapshot.visibleIdentifiers(in: snapshots),
             snapshotsToInvalidate: snapshots
         )
     }
@@ -500,7 +500,10 @@ class HashManager: ObservableObject {
                 syncStatusCache.removeAll()
             }
             if let snapshotsToInvalidate {
-                DatabaseManager.shared.resetCacheForModifiedAssets(snapshots: snapshotsToInvalidate)
+                DatabaseManager.shared.resetCacheForModifiedAssets(
+                    snapshots: snapshotsToInvalidate,
+                    pruneOrphans: PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+                )
             }
         }) else { return }
         shouldStop = false
@@ -981,32 +984,47 @@ class HashManager: ObservableObject {
             finishProcessing(runID: runID)
             return
         }
-        
-        isCheckingActive = true
-        
-        // Get all multi-resource hashes that are not fully on server
-        // For JPEG+RAW assets, both must be verified
-        DatabaseManager.shared.getMultiResourceHashesNotFullyOnServerAsync { [weak self] records in
-            guard let self = self else { return }
-            
-            // Ensure UI updates happen on main thread
-            Task { @MainActor in
-                guard self.isCurrentRun(runID) else { return }
-                if records.isEmpty {
-                    self.finishProcessing(runID: runID)
-                    return
-                }
 
+        isCheckingActive = true
+        checkTask?.cancel()
+        checkTask = Task { [weak self] in
+            // Protect the entire read/verification/write cycle against an
+            // Immich delta mutating the cache concurrently. Acquire the gate
+            // BEFORE selecting unchecked records to include the latest delta.
+            await ServerAssetVerificationGate.shared.acquire()
+            defer {
+                Task { await ServerAssetVerificationGate.shared.release() }
+            }
+            guard let self, self.isCurrentRun(runID), !Task.isCancelled else { return }
+
+            // No authoritative negative results until a server baseline exists.
+            guard DatabaseManager.shared.getSyncMetadata()?.lastSyncTime != nil else {
+                await MainActor.run { self.finishProcessing(runID: runID) }
+                return
+            }
+
+            let records: [MultiResourceHashRecord] = await withCheckedContinuation { continuation in
+                DatabaseManager.shared.getMultiResourceHashesNotFullyOnServerAsync {
+                    continuation.resume(returning: $0)
+                }
+            }
+            guard self.isCurrentRun(runID), !Task.isCancelled, !self.shouldStop else { return }
+            guard !records.isEmpty else {
+                await MainActor.run { self.finishProcessing(runID: runID) }
+                return
+            }
+
+            await MainActor.run {
+                guard self.isCurrentRun(runID) else { return }
                 self.totalAssetsToProcess = records.count
                 self.processedAssetsCount = 0
                 self.statusMessage = "Checking cloud status (0/\(records.count))..."
-
-                self.checkMultiResourceHashesAgainstCache(records: records, runID: runID)
             }
+            await self.checkMultiResourceHashesAgainstCache(records: records, runID: runID)
         }
     }
-    
-    private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord], runID: UUID) {
+
+    private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord], runID: UUID) async {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
             return
@@ -1017,12 +1035,7 @@ class HashManager: ObservableObject {
             return
         }
         
-        // Cancel any existing task
-        checkTask?.cancel()
-        
-        checkTask = Task { [weak self] in
-            guard let self = self else { return }
-            guard self.isCurrentRun(runID), !Task.isCancelled else { return }
+        guard self.isCurrentRun(runID), !Task.isCancelled else { return }
             
             // First, filter out deleted photos and collect orphan identifiers
             let allIdentifiers = records.map { $0.assetId }
@@ -1033,36 +1046,13 @@ class HashManager: ObservableObject {
                 existingIdentifiers.insert(asset.localIdentifier)
             }
             
-            // Find orphan records (in database but no longer in Photo Library)
-            var orphanIdentifiers: [String] = []
-            var validRecords: [MultiResourceHashRecord] = []
-            
-            for record in records {
-                if existingIdentifiers.contains(record.assetId) {
-                    validRecords.append(record)
-                } else {
-                    orphanIdentifiers.append(record.assetId)
-                }
-            }
-            
-            // Clean up orphan records from database
+            // A missing PhotoKit fetch result is NOT proof of deletion. It
+            // could be hidden, iCloud-restoring, or inaccessible under Limited
+            // Photos authorization. Never delete cached hashes here. The full
+            // hidden-inclusive snapshot independently reconciles true orphans.
+            let validRecords = records.filter { existingIdentifiers.contains($0.assetId) }
             guard self.isCurrentRun(runID), !Task.isCancelled else { return }
 
-            if !orphanIdentifiers.isEmpty {
-                logInfo("Cleaning up \(orphanIdentifiers.count) orphan hash cache records for deleted photos", category: .hash)
-                DatabaseManager.shared.batchDeleteHashCacheRecords(localIdentifiers: orphanIdentifiers)
-                
-                // Also remove from memory cache
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    for identifier in orphanIdentifiers {
-                        self.syncStatusCache.removeValue(forKey: identifier)
-                    }
-                    self.objectWillChange.send()
-                }
-                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
-            }
-            
             // Update count to only include valid records
             if validRecords.isEmpty {
                 await MainActor.run {
@@ -1079,7 +1069,8 @@ class HashManager: ObservableObject {
             }
             
             // Check if server assets cache has been synced
-            let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
+            // An authoritative server baseline may contain zero assets.
+            let hasServerCache = DatabaseManager.shared.getSyncMetadata()?.lastSyncTime != nil
 
             // Preload localIdentifier → immichId map from upload records for iCloudId backfill
             let uploadedMappings = DatabaseManager.shared.getAllUploadedAssetMappings()
@@ -1113,8 +1104,9 @@ class HashManager: ObservableObject {
                     self.objectWillChange.send()
                 }
                 
-                var primaryOnServer = record.primaryOnServer
-                var rawOnServer = record.rawOnServer
+                // A server deletion can invalidate a previous true result.
+                var primaryOnServer = false
+                var rawOnServer = false
                 
                 // Check primary hash against server
                 if !primaryOnServer {
@@ -1197,9 +1189,8 @@ class HashManager: ObservableObject {
             await MainActor.run {
                 self.finishProcessing(runID: runID, shouldSyncAlbums: true)
             }
-        }
     }
-    
+
     private func finishProcessing(runID: UUID, shouldSyncAlbums: Bool = false) {
         guard runState.finish(runID) else { return }
         if shouldSyncAlbums {

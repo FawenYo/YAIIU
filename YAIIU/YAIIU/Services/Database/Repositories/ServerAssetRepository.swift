@@ -344,6 +344,29 @@ final class ServerAssetRepository {
                 return false
             }
 
+            // Remote deletions also invalidate local upload receipts for those
+            // Immich IDs, or a stale receipt would mask the server deletion.
+            let receiptSql = "DELETE FROM uploaded_assets WHERE immich_id = ?;"
+            var receiptStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, receiptSql, -1, &receiptStatement, nil) == SQLITE_OK else {
+                self.connection.rollbackTransaction()
+                return false
+            }
+            for id in immichIds {
+                sqlite3_reset(receiptStatement)
+                sqlite3_clear_bindings(receiptStatement)
+                sqlite3_bind_text(receiptStatement, 1, (id as NSString).utf8String, -1, nil)
+                if sqlite3_step(receiptStatement) != SQLITE_DONE {
+                    failed = true
+                    break
+                }
+            }
+            sqlite3_finalize(receiptStatement)
+            if failed {
+                self.connection.rollbackTransaction()
+                return false
+            }
+
             guard self.connection.commitTransaction() else {
                 logError("Failed to commit server asset deletes: \(self.connection.lastErrorMessage)", category: .database)
                 self.connection.rollbackTransaction()

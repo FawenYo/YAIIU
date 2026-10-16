@@ -183,6 +183,11 @@ final class DatabaseManager {
         hashRepo.getHashesNotOnServerAsync(completion: completion)
     }
     
+    @discardableResult
+    func invalidateHashChecksForServerChanges(checksums: [String], fullReset: Bool) -> Bool {
+        hashRepo.invalidateHashChecksForServerChanges(checksums: checksums, fullReset: fullReset)
+    }
+
     func getMultiResourceHashesNotFullyOnServerAsync(completion: @escaping ([MultiResourceHashRecord]) -> Void) {
         hashRepo.getMultiResourceHashesNotFullyOnServerAsync(completion: completion)
     }
@@ -203,8 +208,8 @@ final class DatabaseManager {
         hashRepo.batchDeleteHashCacheRecords(localIdentifiers: localIdentifiers)
     }
 
-    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot]) {
-        hashRepo.resetCacheForModifiedAssets(snapshots: snapshots)
+    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool = false) {
+        hashRepo.resetCacheForModifiedAssets(snapshots: snapshots, pruneOrphans: pruneOrphans)
     }
     
     // MARK: - Server Assets Cache Management

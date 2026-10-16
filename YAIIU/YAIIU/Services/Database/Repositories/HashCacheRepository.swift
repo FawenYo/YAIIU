@@ -319,7 +319,9 @@ final class HashCacheRepository {
                             isFullyUploaded = hasUploadedPrimary || primaryOnServer
                         }
                         
-                        if isFullyUploaded {
+                        if !hasBeenChecked && hasServerCache {
+                            statusMap[identifier] = .pending
+                        } else if isFullyUploaded {
                             statusMap[identifier] = .uploaded
                         } else if hasBeenChecked {
                             // Already checked - show as not uploaded
@@ -428,6 +430,60 @@ final class HashCacheRepository {
         }
     }
     
+    /// Invalidate only checks affected by a remote delta. Run before changing the
+    /// server cache/ACK so a crash cannot strand a stale negative result.
+    /// Full sync invalidates every check but keeps the computed hashes.
+    @discardableResult
+    func invalidateHashChecksForServerChanges(checksums: [String], fullReset: Bool) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return false }
+            let unique = Array(Set(checksums))
+            guard fullReset || !unique.isEmpty else { return true }
+            guard self.connection.beginTransaction() else { return false }
+
+            let batches: [[String]] = fullReset ? [[]] : stride(from: 0, to: unique.count, by: 200).map {
+                Array(unique[$0..<min($0 + 200, unique.count)])
+            }
+            for batch in batches {
+                let sql: String
+                if fullReset {
+                    sql = "UPDATE hash_cache SET checked_at = NULL WHERE checked_at IS NOT NULL;"
+                } else {
+                    let args = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                    sql = """
+                        UPDATE hash_cache SET checked_at = NULL
+                        WHERE checked_at IS NOT NULL
+                          AND (sha1_hash IN (\(args)) OR raw_hash IN (\(args)));
+                        """
+                }
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+                if !fullReset {
+                    for (index, checksum) in batch.enumerated() {
+                        sqlite3_bind_text(statement, Int32(index + 1), (checksum as NSString).utf8String, -1, nil)
+                        sqlite3_bind_text(statement, Int32(index + 1 + batch.count), (checksum as NSString).utf8String, -1, nil)
+                    }
+                }
+                let success = sqlite3_step(statement) == SQLITE_DONE
+                sqlite3_finalize(statement)
+                guard success else {
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return false
+            }
+            return true
+        }
+    }
+
     func getMultiResourceHashesNotFullyOnServerAsync(completion: @escaping ([MultiResourceHashRecord]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
@@ -438,7 +494,7 @@ final class HashCacheRepository {
             let sql = """
                 SELECT asset_id, sha1_hash, raw_hash, has_raw, is_on_server, raw_on_server
                 FROM hash_cache
-                WHERE is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0);
+                WHERE checked_at IS NULL;
             """
             var statement: OpaquePointer?
             var records: [MultiResourceHashRecord] = []
@@ -521,26 +577,28 @@ final class HashCacheRepository {
 
     /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate
     /// has changed since the date was last stored. Assets with NULL stored dates are skipped.
-    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot]) {
-        guard !snapshots.isEmpty else { return }
+    func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool = false) {
+        guard !snapshots.isEmpty || pruneOrphans else { return }
 
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
-            self.resetCacheForModifiedAssetsInternal(snapshots: snapshots)
+            self.resetCacheForModifiedAssetsInternal(snapshots: snapshots, pruneOrphans: pruneOrphans)
         }
     }
 
-    private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot]) {
+    private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool) {
         // Fetch all stored modification dates in one query; NULL means not yet recorded
         let sql = "SELECT asset_id, asset_modification_date FROM hash_cache;"
         var statement: OpaquePointer?
         var storedDates: [String: Double] = [:]      // asset_id -> stored timestamp
         var nullDateIds: Set<String> = []             // asset_id with no stored date yet
+        var cachedIds: Set<String> = []
 
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
             while sqlite3_step(statement) == SQLITE_ROW {
                 if let idCString = sqlite3_column_text(statement, 0) {
                     let assetId = String(cString: idCString)
+                    cachedIds.insert(assetId)
                     if sqlite3_column_type(statement, 1) == SQLITE_NULL {
                         nullDateIds.insert(assetId)
                     } else {
@@ -557,72 +615,104 @@ final class HashCacheRepository {
             backfillModificationDates(snapshots: snapshots, assetIds: nullDateIds)
         }
 
-        guard !storedDates.isEmpty else { return }
+        // Only complete, hidden-inclusive snapshots may authorize deletion.
+        // Query queue-only/receipt-only IDs too: a photo removed before hashing
+        // must not leave a permanently retrying durable upload queue entry.
+        var missingIds: Set<String> = []
+        if pruneOrphans {
+            var persistedIds = cachedIds
+            for sql in [
+                "SELECT asset_id FROM background_upload_queue;",
+                "SELECT DISTINCT asset_id FROM uploaded_assets;"
+            ] {
+                var query: OpaquePointer?
+                guard sqlite3_prepare_v2(connection.db, sql, -1, &query, nil) == SQLITE_OK else {
+                    sqlite3_finalize(query)
+                    logError("Could not enumerate cached PhotoKit identifiers", category: .database)
+                    return
+                }
+                var failed = false
+                while true {
+                    let result = sqlite3_step(query)
+                    if result == SQLITE_ROW {
+                        if let id = sqlite3_column_text(query, 0) {
+                            persistedIds.insert(String(cString: id))
+                        }
+                    } else if result == SQLITE_DONE {
+                        break
+                    } else {
+                        failed = true
+                        break
+                    }
+                }
+                sqlite3_finalize(query)
+                if failed {
+                    logError("Could not finish cached PhotoKit identifier query", category: .database)
+                    return
+                }
+            }
+            missingIds = persistedIds.subtracting(Set(snapshots.map(\.localIdentifier)))
+        }
 
-        // Compare current modificationDate against stored date
-        var invalidatedIds: [String] = []
-
+        var modifiedIds = Set<String>()
         for snapshot in snapshots {
-            let identifier = snapshot.localIdentifier
-            guard let storedTimestamp = storedDates[identifier] else { continue }
-            guard let currentDate = snapshot.modificationDate else { continue }
-
-            let currentTimestamp = currentDate.timeIntervalSince1970
-            // Use 1-second tolerance to avoid floating point noise
-            if abs(currentTimestamp - storedTimestamp) > 1.0 {
-                invalidatedIds.append(identifier)
+            // Hidden assets appear here solely for deletion safety. Preserve
+            // their previous hashes until they return to the visible pipeline.
+            guard !snapshot.isHidden else { continue }
+            guard let stored = storedDates[snapshot.localIdentifier],
+                  let date = snapshot.modificationDate else { continue }
+            if abs(date.timeIntervalSince1970 - stored) > 1.0 {
+                modifiedIds.insert(snapshot.localIdentifier)
             }
         }
 
+        // A modified asset is re-enqueued by PhotoKit change tracking; deleting
+        // its queue row here would lose that work. Only truly missing IDs can
+        // have their durable queue and pending/failed jobs removed.
+        let invalidatedIds = missingIds.union(modifiedIds)
         guard !invalidatedIds.isEmpty else { return }
 
-        logInfo("Invalidating \(invalidatedIds.count) modified assets", category: .hash)
-
-        // Delete both hash_cache and uploaded_assets for each invalidated asset
-        connection.beginTransaction()
-
-        let hashDeleteSql = "DELETE FROM hash_cache WHERE asset_id = ?;"
-        let uploadDeleteSql = "DELETE FROM uploaded_assets WHERE asset_id = ?;"
-
-        var hashStmt: OpaquePointer?
-        var uploadStmt: OpaquePointer?
-
-        guard sqlite3_prepare_v2(connection.db, hashDeleteSql, -1, &hashStmt, nil) == SQLITE_OK,
-              sqlite3_prepare_v2(connection.db, uploadDeleteSql, -1, &uploadStmt, nil) == SQLITE_OK else {
-            sqlite3_finalize(hashStmt)
-            sqlite3_finalize(uploadStmt)
-            connection.rollbackTransaction()
+        guard connection.beginTransaction() else {
+            logError("Could not begin PhotoKit orphan reconciliation transaction", category: .database)
             return
         }
-
-        var failed = false
-
-        for assetId in invalidatedIds {
-            sqlite3_bind_text(hashStmt, 1, (assetId as NSString).utf8String, -1, nil)
-            if sqlite3_step(hashStmt) != SQLITE_DONE {
-                failed = true
-                break
+        let mutations: [(String, Set<String>)] = [
+            ("DELETE FROM hash_cache WHERE asset_id = ?;", invalidatedIds),
+            ("DELETE FROM uploaded_assets WHERE asset_id = ?;", invalidatedIds),
+            ("DELETE FROM background_upload_queue WHERE asset_id = ?;", missingIds),
+            ("DELETE FROM upload_jobs WHERE asset_id = ? AND status IN ('pending', 'failed');", missingIds)
+        ]
+        for (sql, ids) in mutations where !ids.isEmpty {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                connection.rollbackTransaction()
+                logError("Could not prepare PhotoKit orphan cleanup statement", category: .database)
+                return
             }
-            sqlite3_reset(hashStmt)
-
-            sqlite3_bind_text(uploadStmt, 1, (assetId as NSString).utf8String, -1, nil)
-            if sqlite3_step(uploadStmt) != SQLITE_DONE {
-                failed = true
-                break
+            var failed = false
+            for id in ids {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) != SQLITE_DONE {
+                    failed = true
+                    break
+                }
             }
-            sqlite3_reset(uploadStmt)
+            sqlite3_finalize(statement)
+            if failed {
+                connection.rollbackTransaction()
+                logError("PhotoKit orphan reconciliation rolled back after SQLite failure", category: .database)
+                return
+            }
         }
-
-        sqlite3_finalize(hashStmt)
-        sqlite3_finalize(uploadStmt)
-
-        if failed {
+        guard connection.commitTransaction() else {
             connection.rollbackTransaction()
-        } else {
-            connection.commitTransaction()
+            logError("PhotoKit orphan reconciliation commit failed", category: .database)
+            return
         }
-
-        logDebug("Invalidated assets: \(invalidatedIds.map { String($0.prefix(20)) })", category: .hash)
+        logInfo("Pruned \(missingIds.count) absent PhotoKit assets and invalidated \(modifiedIds.count) modified assets", category: .hash)
     }
 
     private func backfillModificationDates(snapshots: [PhotoAssetSnapshot], assetIds: Set<String>) {
