@@ -1309,7 +1309,10 @@ struct PhotoGridView: View {
     private func selectAllNotUploaded() {
         let statusCache = hashManager.syncStatusCache
         guard let fetchResult = photoLibraryManager.fetchResult,
-              !isSelectingAll, !isFilterLoading else { return }
+              !isSelectingAll, !isFilterLoading,
+              (currentFilter == .all ||
+               filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
+        let generation = photoLibraryManager.assetFetchGeneration
         // Selection must stay within the active Favorites/album/not-uploaded filter.
         let visibleIndices: [Int]? = currentFilter == .all ? nil : filteredIndices
 
@@ -1342,6 +1345,10 @@ struct PhotoGridView: View {
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
+                if self.photoLibraryManager.assetFetchGeneration != generation {
+                    self.isSelectingAll = false
+                    return
+                }
                 if self.isSelectionMode {
                     self.selectedAssets = ids
                 }
@@ -1360,7 +1367,9 @@ struct PhotoGridView: View {
     }
     
     private func uploadSelectedPhotos() {
-        guard !isFilterLoading else { return }
+        guard !isFilterLoading,
+              (currentFilter == .all ||
+               filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
         let identifiersToUpload = Array(selectedAssets)
         let manager = uploadManager
         
