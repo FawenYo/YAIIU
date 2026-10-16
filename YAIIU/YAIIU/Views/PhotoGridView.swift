@@ -612,8 +612,14 @@ struct PhotoGridView: View {
             // without starting the normal hash pipeline for zero photos.
             if !photoLibraryManager.isLoading &&
                PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized {
+                let manager = photoLibraryManager
                 Task.detached(priority: .utility) {
-                    DatabaseManager.shared.resetCacheForModifiedAssets(snapshots: [], pruneOrphans: true)
+                    // Zero visible assets may mean every photo was hidden.
+                    let snapshots = manager.allAssetSnapshots(includingHidden: true)
+                    guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+                    DatabaseManager.shared.resetCacheForModifiedAssets(
+                        snapshots: snapshots, pruneOrphans: true
+                    )
                 }
             }
             if hashManager.isProcessing {
@@ -628,7 +634,11 @@ struct PhotoGridView: View {
         
         let manager = photoLibraryManager
         Task.detached(priority: .utility) {
-            let snapshots = manager.allAssetSnapshots()
+            // One hidden-inclusive snapshot suffices for both cleanup and
+            // visible-only hashing, without enumerating the entire library twice.
+            let snapshots = manager.allAssetSnapshots(
+                includingHidden: PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+            )
             await MainActor.run {
                 HashManager.shared.startBackgroundProcessing(snapshots: snapshots)
             }
