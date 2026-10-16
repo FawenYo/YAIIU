@@ -81,11 +81,14 @@ enum TimezoneGeocodingError: Error {
 // next manual retry uses the currently configured server and credentials.
 private enum UploadQueueError: LocalizedError {
     case destinationChanged
+    case uploadRecordNotSaved
 
     var errorDescription: String? {
         switch self {
         case .destinationChanged:
             return "Immich server or account changed during upload. Retry to upload to the current destination."
+        case .uploadRecordNotSaved:
+            return "Could not confirm this upload on the current Immich server. Please retry."
         }
     }
 }
@@ -502,7 +505,7 @@ class UploadManager: ObservableObject {
                                     responseTracker.markFailed(error: UploadQueueError.destinationChanged)
                                     return
                                 }
-                                DatabaseManager.shared.recordUploadedAsset(
+                                let recorded = DatabaseManager.shared.recordUploadedAsset(
                                     localIdentifier: localIdentifier,
                                     resourceType: resourceType,
                                     filename: filename,
@@ -512,6 +515,10 @@ class UploadManager: ObservableObject {
                                     isFavorite: metadata.isFavorite,
                                     destinationIdentity: destinationIdentity
                                 )
+                                guard recorded else {
+                                    responseTracker.markFailed(error: UploadQueueError.uploadRecordNotSaved)
+                                    return
+                                }
                                 responseTracker.markCompleted()
                             case .failure(let error):
                                 responseTracker.markFailed(error: error)

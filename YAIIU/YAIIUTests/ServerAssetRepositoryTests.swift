@@ -2201,6 +2201,37 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(try bg.ensureDestinationIdentity("later-host-account"))
     }
 
+    func testForegroundCompletionRejectsOldAccountWithoutInsertingHistory() throws {
+        let hashes = HashCacheRepository(connection: connection)
+        hashes.saveMultiResourceHashCache(
+            localIdentifier: "foreground-switch", primaryHash: "local-sha1",
+            rawHash: nil, hasRAW: false
+        )
+        let backgroundDB = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertTrue(try backgroundDB.ensureDestinationIdentity("old-destination"))
+        XCTAssertTrue(try backgroundDB.ensureDestinationIdentity("new-destination"))
+        XCTAssertFalse(uploadRepository.recordUploadedAsset(
+            localIdentifier: "foreground-switch", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "old-remote",
+            destinationIdentity: "old-destination"
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'foreground-switch';
+        """), 0)
+        XCTAssertTrue(uploadRepository.recordUploadedAsset(
+            localIdentifier: "foreground-switch", resourceType: "jpeg",
+            filename: "new.jpg", immichId: "new-remote",
+            destinationIdentity: "new-destination"
+        ))
+        XCTAssertEqual(count("""
+            SELECT COUNT(*) FROM uploaded_assets
+            WHERE asset_id = 'foreground-switch'
+              AND immich_id = 'new-remote'
+              AND destination_identity = 'new-destination';
+        """), 1)
+    }
+
     func testSwitchingDestinationPreservesNewAccountUploadBeforeExtensionReset() throws {
         let hashes = HashCacheRepository(connection: connection)
         hashes.saveMultiResourceHashCache(

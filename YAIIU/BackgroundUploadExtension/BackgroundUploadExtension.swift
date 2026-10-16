@@ -108,6 +108,13 @@ final class BackgroundUploadExtensionCore {
         ) {
             log("Upload destination identity changed or was initialized; restarting PhotoKit bootstrap discovery")
         }
+        // Cancel prior-server jobs even when this account's catalog has no
+        // completed checkpoint. The host-verified identity above protects
+        // against partially published or stale extension settings.
+        let cancelledOldJobs = timeStage("cancel-old-destination") {
+            cancelPreviousDestinationJobs()
+        }
+        guard !isCancelled else { return .deferred }
         if !database.isServerCatalogReady() {
             logDebug("Server catalog unavailable or rebuilding; deferring PhotoKit job scheduling")
             return .deferred
@@ -115,7 +122,7 @@ final class BackgroundUploadExtensionCore {
 
         // Stage markers: the system can terminate the extension at any point
         // without a crash report; per-stage boundaries show how far a run got.
-        var madeProgress = timeStage("reconcile") { reconcileTrackedJobs() > 0 }
+        var madeProgress = timeStage("reconcile") { reconcileTrackedJobs() > 0 } || cancelledOldJobs
         guard !isCancelled else { return .deferred }
 
         if !database.isServerCatalogReady() { return .deferred }
@@ -160,6 +167,45 @@ final class BackgroundUploadExtensionCore {
     // stuck since well before this device last had upload conditions occupy the PhotoKit
     // job limit forever if never released. Cancellation auto-acknowledges them, freeing
     // capacity for new work.
+    // Only previous-destination jobs are cancelled before catalog readiness.
+    // Same-account deduplication and retry remain behind the catalog gate.
+    private func cancelPreviousDestinationJobs() -> Bool {
+        guard #available(iOS 26.5, *) else { return false }
+        let library = PHPhotoLibrary.shared()
+        let actions: [PHAssetResourceUploadJob.Action] = [.process, .retry]
+        var seen = Set<String>()
+        var cancelledAny = false
+
+        for action in actions {
+            let jobs = PHAssetResourceUploadJob.fetchJobs(action: action, options: nil)
+            for i in 0..<jobs.count where !isCancelled {
+                let job = jobs.object(at: i)
+                guard seen.insert(job.localIdentifier).inserted,
+                      !jobTargetsCurrentDestination(job) else { continue }
+                var requested = false
+                do {
+                    try library.performChangesAndWait {
+                        guard let request = PHAssetResourceUploadJobChangeRequest(for: job) else { return }
+                        request.cancel()
+                        requested = true
+                    }
+                } catch {
+                    logError("Could not cancel old-destination job \(job.localIdentifier): \(error.localizedDescription)")
+                }
+                guard requested else { continue }
+                cancelledAny = true
+                logWarning("Cancelled old-destination job \(job.localIdentifier)")
+                if let identity = identity(for: job) {
+                    database.deleteTrackedJob(
+                        assetId: identity.assetLocalIdentifier,
+                        resourceType: identity.resourceType
+                    )
+                }
+            }
+        }
+        return cancelledAny
+    }
+
     private func cancelRedundantJobs() -> Bool {
         guard #available(iOS 26.5, *) else { return false }
         let library = PHPhotoLibrary.shared()

@@ -36,6 +36,7 @@ final class DatabaseManager {
         uploadRepo.isAnyResourceUploaded(localIdentifier: localIdentifier)
     }
     
+    @discardableResult
     func recordUploadedAsset(
         localIdentifier: String,
         resourceType: String,
@@ -45,7 +46,7 @@ final class DatabaseManager {
         isDuplicate: Bool = false,
         isFavorite: Bool = false,
         destinationIdentity: String? = nil
-    ) {
+    ) -> Bool {
         uploadRepo.recordUploadedAsset(
             localIdentifier: localIdentifier,
             resourceType: resourceType,
