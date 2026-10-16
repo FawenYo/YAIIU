@@ -129,6 +129,25 @@ private class ResponseTracker {
     }
 }
 
+/// An asset may still await Immich's response after all of its bytes have been
+/// transferred. A one-shot permit lets that response wait continue without
+/// occupying an upload transfer slot.
+private final class UploadTransferPermit: @unchecked Sendable {
+    private let budget: ResourceBudget
+    private let lock = NSLock()
+    private var isReleased = false
+
+    init(budget: ResourceBudget) { self.budget = budget }
+
+    func release() {
+        lock.lock()
+        let shouldRelease = !isReleased
+        isReleased = true
+        lock.unlock()
+        if shouldRelease { budget.release(1) }
+    }
+}
+
 @MainActor
 class UploadManager: ObservableObject {
     @Published var uploadQueue: [UploadItem] = []
@@ -139,7 +158,11 @@ class UploadManager: ObservableObject {
     private var uploadTask: Task<Void, Never>?
     private var isPaused: Bool = false
     
+    // Two slots for transferring bytes; separately bound the number of
+    // in-flight requests waiting for Immich to acknowledge processing.
     private let uploadConcurrency = 2
+    private let maxInFlightUploads = 8
+    private let transferBudget = ResourceBudget(limit: 2)
     
     var completedCount: Int {
         uploadQueue.filter { $0.status == .completed }.count
@@ -274,6 +297,7 @@ class UploadManager: ObservableObject {
         var successCount = 0
         var failCount = 0
         
+        let transferBudget = self.transferBudget
         await withTaskGroup(of: (UploadItem, Bool).self) { group in
             var activeCount = 0
             var index = 0
@@ -286,7 +310,7 @@ class UploadManager: ObservableObject {
                     break
                 }
                 
-                while activeCount < uploadConcurrency && index < itemsToUpload.count {
+                while activeCount < maxInFlightUploads && index < itemsToUpload.count {
                     if isPaused { break }
                     
                     let item = itemsToUpload[index]
@@ -296,22 +320,40 @@ class UploadManager: ObservableObject {
                     
                     activeCount += 1
                     
-                    await MainActor.run {
-                        item.status = .uploading
-                        item.progress = 0
-                    }
-                    
-                    logDebug("Starting upload for: \(item.filename)", category: .upload)
-                    
                     group.addTask {
+                        // The response task remains active until Immich responds.
+                        // Release the transfer budget once its producer has sent
+                        // all resources, so another asset may start immediately.
+                        guard await transferBudget.acquire(1) else {
+                            return (item, false)
+                        }
+                        let permit = UploadTransferPermit(budget: transferBudget)
+                        if Task.isCancelled {
+                            permit.release()
+                            return (item, false)
+                        }
+
+                        await MainActor.run {
+                            item.status = .uploading
+                            item.progress = 0
+                        }
+                        logDebug("Starting upload for: \(item.filename)", category: .upload)
+
                         do {
-                            try await self.uploadItem(item, serverURL: serverURL, apiKey: apiKey)
+                            try await self.uploadItem(
+                                item, serverURL: serverURL, apiKey: apiKey,
+                                onTransferFinished: { permit.release() }
+                            )
                             return (item, true)
                         } catch {
                             logError("Upload failed for \(item.filename): \(error.localizedDescription)", category: .upload)
                             await MainActor.run {
-                                item.status = .failed
-                                item.errorMessage = error.localizedDescription
+                                if error is CancellationError {
+                                    item.status = .pending
+                                } else {
+                                    item.status = .failed
+                                    item.errorMessage = error.localizedDescription
+                                }
                             }
                             return (item, false)
                         }
@@ -376,7 +418,12 @@ class UploadManager: ObservableObject {
         }
     }
     
-    private func uploadItem(_ item: UploadItem, serverURL: String, apiKey: String) async throws {
+    private func uploadItem(
+        _ item: UploadItem,
+        serverURL: String,
+        apiKey: String,
+        onTransferFinished: @escaping @Sendable () -> Void
+    ) async throws {
         let asset = item.asset
         let localIdentifier = item.localIdentifier
         let metadata = await Task.detached(priority: .userInitiated) {
@@ -397,8 +444,9 @@ class UploadManager: ObservableObject {
         let totalResources = resources.count
 
         guard totalResources > 0 else {
+            onTransferFinished()
             logWarning("No uploadable resources found for: \(item.filename)", category: .upload)
-            return
+            throw ImmichAPIError.uploadFailed(reason: "No uploadable resources for \(item.filename)")
         }
 
         logDebug("Uploading \(totalResources) resource(s) for: \(item.filename)", category: .upload)
@@ -415,6 +463,9 @@ class UploadManager: ObservableObject {
             }
 
             Task.detached(priority: .userInitiated) { [weak item] in
+                // The resource producer, not the server-response waiter, owns
+                // the transfer permit until the final resource is dispatched.
+                defer { onTransferFinished() }
                 guard let item else {
                     enum UploadError: Error { case itemDeallocated }
                     responseTracker.markFailed(error: UploadError.itemDeallocated)
@@ -474,7 +525,9 @@ class UploadManager: ObservableObject {
                     await MainActor.run {
                         item.resourcesUploaded[resourceType] = true
                         item.progress = Double(currentIndex + 1) / Double(totalResources)
-                        if isLastResource { item.status = .processing }
+                        if isLastResource && item.status == .uploading {
+                            item.status = .processing
+                        }
                     }
                 }
             }
