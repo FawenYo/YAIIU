@@ -127,6 +127,10 @@
 "photoGrid.permission.openSettings" = "Open Settings";
 "photoGrid.filter.all" = "All Photos";
 "photoGrid.filter.notUploaded" = "Not Uploaded";
+"photoGrid.filter.favorites" = "Favorites";
+"photoGrid.filter.album" = "Album";
+"photoGrid.filter.chooseAlbum" = "Choose Album";
+"photoGrid.filter.noAlbums" = "No albums available";
 "photoGrid.filter.active" = "Showing %d items";
 "photoGrid.selectAllNotUploaded" = "All Not Uploaded";
 "photoGrid.section.today" = "Today";
