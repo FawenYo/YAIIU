@@ -183,6 +183,11 @@ final class DatabaseManager {
         hashRepo.getHashesNotOnServerAsync(completion: completion)
     }
     
+    @discardableResult
+    func invalidateHashChecksForServerChanges(checksums: [String], fullReset: Bool) -> Bool {
+        hashRepo.invalidateHashChecksForServerChanges(checksums: checksums, fullReset: fullReset)
+    }
+
     func getMultiResourceHashesNotFullyOnServerAsync(completion: @escaping ([MultiResourceHashRecord]) -> Void) {
         hashRepo.getMultiResourceHashesNotFullyOnServerAsync(completion: completion)
     }
