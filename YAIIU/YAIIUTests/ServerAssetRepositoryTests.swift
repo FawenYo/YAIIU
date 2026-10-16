@@ -7,6 +7,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
     private var connection: SQLiteConnection!
     private var repository: ServerAssetRepository!
     private var uploadRepository: UploadRecordRepository!
+    private var hashRepository: HashCacheRepository!
     override func setUp() {
         super.setUp()
         databaseURL = FileManager.default.temporaryDirectory
@@ -15,9 +16,11 @@ final class ServerAssetRepositoryTests: XCTestCase {
         connection.ensureInitialized()
         repository = ServerAssetRepository(connection: connection)
         uploadRepository = UploadRecordRepository(connection: connection)
+        hashRepository = HashCacheRepository(connection: connection)
     }
 
     override func tearDown() {
+        hashRepository = nil
         uploadRepository = nil
         repository = nil
         connection = nil
@@ -180,6 +183,79 @@ final class ServerAssetRepositoryTests: XCTestCase {
         )
 
         XCTAssertEqual(Set(ids), [videoId, rawId])
+    }
+
+    func testCompletedNegativeMatchesAreNotRecheckedWithoutServerDelta() async {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('existing-negative', 'sha-negative', 0, 100);
+        """)
+        let before = await uncheckedHashIds()
+        XCTAssertTrue(before.isEmpty)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForServerChanges(
+            checksums: [], fullReset: false
+        ))
+        let after = await uncheckedHashIds()
+        XCTAssertTrue(after.isEmpty)
+    }
+
+    func testDeltaInvalidatesOnlyMatchingPrimaryAndRawHashes() async {
+        execute("""
+            INSERT INTO hash_cache
+                (asset_id, sha1_hash, raw_hash, has_raw, is_on_server, calculated_at, checked_at)
+            VALUES
+                ('primary', 'sha-new', NULL, 0, 0, 0, 100),
+                ('raw-companion', 'sha-other', 'raw-new', 1, 1, 0, 100),
+                ('unrelated', 'sha-stable', NULL, 0, 0, 0, 100);
+        """)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForServerChanges(
+            checksums: ["sha-new", "raw-new"], fullReset: false
+        ))
+        let dirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(dirty), ["primary", "raw-companion"])
+    }
+
+    func testFullResetRetainsComputedHashes() async {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('first', 'sha-first', 0, 100), ('second', 'sha-second', 0, 100);
+        """)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForServerChanges(
+            checksums: [], fullReset: true
+        ))
+        let dirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(dirty), ["first", "second"])
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(
+            connection.db, "SELECT sha1_hash FROM hash_cache WHERE asset_id='first';",
+            -1, &statement, nil
+        ), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        XCTAssertEqual(String(cString: sqlite3_column_text(statement, 0)), "sha-first")
+    }
+
+    func testRemoteDeletionPrunesOnlyMatchingUploadReceipts() {
+        XCTAssertTrue(repository.saveServerAssets([record(checksum: "sha-deleted", iCloudId: nil)]))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "deleted-local", resourceType: "primary",
+            filename: "old.jpg", immichId: "asset-1"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "other-local", resourceType: "primary",
+            filename: "other.jpg", immichId: "other-server-id"
+        )
+        XCTAssertTrue(repository.deleteServerAssets(["asset-1"]))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "deleted-local"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "other-local"))
+    }
+
+    private func uncheckedHashIds() async -> [String] {
+        await withCheckedContinuation { continuation in
+            hashRepository.getMultiResourceHashesNotFullyOnServerAsync { records in
+                continuation.resume(returning: records.map(\.assetId))
+            }
+        }
     }
 
     private func installDeferredCommitFailure(triggerEvent: String) {
