@@ -1,6 +1,9 @@
 import Foundation
 import SQLite3
 
+// SQLite copies temporary Swift/NSString UTF-8 buffers at bind time.
+private let SQLITE_BIND_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 final class ServerAssetRepository {
     private let connection: SQLiteConnection
     
@@ -18,7 +21,7 @@ final class ServerAssetRepository {
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        sqlite3_bind_text(stmt, 1, (immichId as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         guard sqlite3_step(stmt) == SQLITE_ROW,
               let value = sqlite3_column_text(stmt, 0) else { return nil }
         return String(cString: value)
@@ -47,7 +50,7 @@ final class ServerAssetRepository {
         }
         var succeeded = true
         for checksum in checksums where !checksum.isEmpty {
-            sqlite3_bind_text(stmt, 1, (checksum as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 1, (checksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if sqlite3_step(stmt) != SQLITE_DONE {
                 succeeded = false
                 break
@@ -115,29 +118,29 @@ final class ServerAssetRepository {
             for asset in assets {
                 let oldChecksum = syncType == "delta"
                     ? self.matchableChecksum(for: asset.immichId) : nil
-                sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
 
                 if let sourceChecksum = asset.sourceChecksum {
-                    sqlite3_bind_text(statement, 3, (sourceChecksum as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 3, (sourceChecksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 } else {
                     sqlite3_bind_null(statement, 3)
                 }
 
                 if let filename = asset.originalFilename {
-                    sqlite3_bind_text(statement, 4, (filename as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 4, (filename as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 } else {
                     sqlite3_bind_null(statement, 4)
                 }
 
                 if let type = asset.assetType {
-                    sqlite3_bind_text(statement, 5, (type as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 5, (type as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 } else {
                     sqlite3_bind_null(statement, 5)
                 }
 
                 if let updatedAt = asset.updatedAt {
-                    sqlite3_bind_text(statement, 6, (updatedAt as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 6, (updatedAt as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 } else {
                     sqlite3_bind_null(statement, 6)
                 }
@@ -145,13 +148,13 @@ final class ServerAssetRepository {
                 sqlite3_bind_double(statement, 7, syncTime)
 
                 if let iCloudId = asset.iCloudId {
-                    sqlite3_bind_text(statement, 8, (iCloudId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 8, (iCloudId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 } else {
                     sqlite3_bind_null(statement, 8)
                 }
 
                 if let ownerId = asset.ownerId {
-                    sqlite3_bind_text(statement, 9, (ownerId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 9, (ownerId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 } else {
                     sqlite3_bind_null(statement, 9)
                 }
@@ -211,8 +214,8 @@ final class ServerAssetRepository {
             }
 
             for (immichId, iCloudId) in iCloudIdsByImmichId {
-                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     failed = true
                     logError("Failed to update iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
@@ -265,7 +268,7 @@ final class ServerAssetRepository {
 
             for immichId in immichIds {
                 let before = self.matchableChecksum(for: immichId)
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     failed = true
                     logError("Failed to clear iCloud ID and source checksum: \(self.connection.lastErrorMessage)", category: .database)
@@ -323,8 +326,8 @@ final class ServerAssetRepository {
 
             for (immichId, sourceChecksum) in sourceChecksumsByImmichId {
                 let oldChecksum = self.matchableChecksum(for: immichId)
-                sqlite3_bind_text(statement, 1, (sourceChecksum as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (sourceChecksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     failed = true
                     logError("Failed to update source checksum: \(self.connection.lastErrorMessage)", category: .database)
@@ -482,7 +485,7 @@ final class ServerAssetRepository {
                 // The filename/type is still available here; deleting the
                 // catalog entry first would make unresolved video history
                 // impossible to associate with the removed resource.
-                sqlite3_bind_text(unresolvedVideoStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(unresolvedVideoStatement, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(unresolvedVideoStatement) != SQLITE_DONE {
                     failed = true
                     logError("Failed to remove unresolved deleted Live Photo video history: \(self.connection.lastErrorMessage)", category: .database)
@@ -490,7 +493,7 @@ final class ServerAssetRepository {
                 }
                 sqlite3_reset(unresolvedVideoStatement)
                 sqlite3_clear_bindings(unresolvedVideoStatement)
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     failed = true
                     logError("Failed to delete server asset: \(self.connection.lastErrorMessage)", category: .database)
@@ -498,15 +501,15 @@ final class ServerAssetRepository {
                 }
                 // A deleted server record invalidates previous upload-history
                 // evidence as well as the cached checksum verdict.
-                sqlite3_bind_text(historyStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(historyStatement, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(historyStatement) != SQLITE_DONE {
                     failed = true
                     logError("Failed to remove deleted asset upload history: \(self.connection.lastErrorMessage)", category: .database)
                     break
                 }
                 if let oldChecksum {
-                    sqlite3_bind_text(unresolvedStatement, 1, (oldChecksum as NSString).utf8String, -1, nil)
-                    sqlite3_bind_text(unresolvedStatement, 2, (oldChecksum as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(unresolvedStatement, 1, (oldChecksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                    sqlite3_bind_text(unresolvedStatement, 2, (oldChecksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                     if sqlite3_step(unresolvedStatement) != SQLITE_DONE {
                         failed = true
                         logError("Failed to remove unresolved deleted asset history: \(self.connection.lastErrorMessage)", category: .database)
@@ -573,8 +576,8 @@ final class ServerAssetRepository {
             var statement: OpaquePointer?
             
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_text(statement, 1, (checksum as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (checksum as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (checksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                sqlite3_bind_text(statement, 2, (checksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 
                 exists = sqlite3_step(statement) == SQLITE_ROW
             }
@@ -601,8 +604,8 @@ final class ServerAssetRepository {
             var statement: OpaquePointer?
 
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_text(statement, 1, (checksum as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (checksum as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (checksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+                sqlite3_bind_text(statement, 2, (checksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
 
                 if sqlite3_step(statement) == SQLITE_ROW {
                     asset = ServerAssetRecord(
@@ -632,7 +635,7 @@ final class ServerAssetRepository {
             var statement: OpaquePointer?
 
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
 
                 if sqlite3_step(statement) == SQLITE_ROW {
                     asset = ServerAssetRecord(
@@ -666,7 +669,7 @@ final class ServerAssetRepository {
             var statement: OpaquePointer?
 
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
 
                 if sqlite3_step(statement) == SQLITE_ROW {
                     asset = ServerAssetRecord(
@@ -699,7 +702,7 @@ final class ServerAssetRepository {
             var statement: OpaquePointer?
             
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 
                 if sqlite3_step(statement) == SQLITE_ROW {
                     checksum = String(cString: sqlite3_column_text(statement, 0))
@@ -733,7 +736,7 @@ final class ServerAssetRepository {
                 var statement: OpaquePointer?
                 if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
                     for (index, iCloudId) in currentBatch.enumerated() {
-                        sqlite3_bind_text(statement, Int32(index + 1), (iCloudId as NSString).utf8String, -1, nil)
+                        sqlite3_bind_text(statement, Int32(index + 1), (iCloudId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                     }
                     
                     while sqlite3_step(statement) == SQLITE_ROW {

@@ -2,6 +2,9 @@ import Foundation
 import Photos
 import SQLite3
 
+// SQLite copies temporary Swift/NSString UTF-8 buffers at bind time.
+private let SQLITE_BIND_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 enum HashFailureRetryPolicy {
     static let delays: [TimeInterval] = [
         15 * 60,
@@ -62,7 +65,7 @@ final class HashCacheRepository {
             }
             defer { sqlite3_finalize(stmt) }
             let timestamp = Date().timeIntervalSince1970
-            sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_bind_double(stmt, 2, timestamp)
             sqlite3_bind_double(stmt, 3, timestamp)
             if let modificationDate {
@@ -70,9 +73,9 @@ final class HashCacheRepository {
             } else {
                 sqlite3_bind_null(stmt, 4)
             }
-            sqlite3_bind_text(stmt, 5, (iCloudId as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(stmt, 6, (expectedChecksum as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(stmt, 7, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 5, (iCloudId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(stmt, 6, (expectedChecksum as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(stmt, 7, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
             let inserted = sqlite3_changes(self.connection.db) == 1
             if inserted {
@@ -128,12 +131,12 @@ final class HashCacheRepository {
         var statement: OpaquePointer?
 
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(statement, 2, (sha1Hash as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(statement, 2, (sha1Hash as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
 
             if let rawHash = rawHash {
-                sqlite3_bind_text(statement, 4, (rawHash as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 4, (rawHash as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             } else {
                 sqlite3_bind_null(statement, 4)
             }
@@ -187,7 +190,7 @@ final class HashCacheRepository {
             sqlite3_finalize(stmt)
             return
         }
-        sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         var primaryPresent = false
         var rawPresent = false
         let hasLiveVideo = hasLivePhotoVideoRequirementInternal(localIdentifier: localIdentifier)
@@ -218,7 +221,7 @@ final class HashCacheRepository {
         sqlite3_bind_int(stmt, 1, primaryPresent ? 1 : 0)
         sqlite3_bind_int(stmt, 2, rawPresent ? 1 : 0)
         sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
-        sqlite3_bind_text(stmt, 4, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 4, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         let updated = sqlite3_step(stmt) == SQLITE_DONE
         sqlite3_finalize(stmt)
         if updated {
@@ -260,7 +263,7 @@ final class HashCacheRepository {
             var countStatement: OpaquePointer?
             let countSql = "SELECT retry_count FROM hash_failures WHERE asset_id = ?;"
             if sqlite3_prepare_v2(self.connection.db, countSql, -1, &countStatement, nil) == SQLITE_OK {
-                sqlite3_bind_text(countStatement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(countStatement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(countStatement) == SQLITE_ROW {
                     retryCount = Int(sqlite3_column_int(countStatement, 0))
                 }
@@ -291,11 +294,11 @@ final class HashCacheRepository {
                 return
             }
 
-            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_bind_double(statement, 2, now)
             sqlite3_bind_double(statement, 3, retryAfter)
             sqlite3_bind_int(statement, 4, Int32(nextRetryCount))
-            sqlite3_bind_text(statement, 5, (errorMessage as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 5, (errorMessage as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if let modificationDate {
                 sqlite3_bind_double(statement, 6, modificationDate.timeIntervalSince1970)
             } else {
@@ -319,7 +322,7 @@ final class HashCacheRepository {
             sqlite3_finalize(statement)
             return
         }
-        sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         sqlite3_step(statement)
         sqlite3_finalize(statement)
     }
@@ -344,7 +347,7 @@ final class HashCacheRepository {
         var record: HashCacheRecord?
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             
             if sqlite3_step(statement) == SQLITE_ROW {
                 let calculatedAt = sqlite3_column_double(statement, 4)
@@ -394,7 +397,7 @@ final class HashCacheRepository {
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
             sqlite3_bind_int(statement, 1, isOnServer ? 1 : 0)
             sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
-            sqlite3_bind_text(statement, 3, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 3, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_step(statement)
         }
         
@@ -418,7 +421,7 @@ final class HashCacheRepository {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
         sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
-        sqlite3_bind_text(statement, 2, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(statement, 2, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         sqlite3_step(statement)
         sqlite3_finalize(statement)
     }
@@ -430,7 +433,7 @@ final class HashCacheRepository {
         guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK else {
             return false
         }
-        sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
         return sqlite3_step(stmt) == SQLITE_ROW
     }
 
@@ -466,7 +469,7 @@ final class HashCacheRepository {
             sqlite3_bind_int(statement, 1, primaryOnServer ? 1 : 0)
             sqlite3_bind_int(statement, 2, rawOnServer ? 1 : 0)
             sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
-            sqlite3_bind_text(statement, 4, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 4, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_bind_int64(statement, 5, expectedRevision)
             let updated = sqlite3_step(statement) == SQLITE_DONE
                 && sqlite3_changes(self.connection.db) == 1
@@ -520,7 +523,7 @@ final class HashCacheRepository {
             sqlite3_bind_int(statement, 1, primaryOnServer ? 1 : 0)
             sqlite3_bind_int(statement, 2, rawOnServer ? 1 : 0)
             sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
-            sqlite3_bind_text(statement, 4, (localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 4, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_step(statement)
         }
         
@@ -1033,15 +1036,15 @@ final class HashCacheRepository {
         }
         var failed = false
         for id in additions {
-            sqlite3_bind_text(insertStmt, 1, (id as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(insertStmt, 2, (id as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(insertStmt, 1, (id as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
+            sqlite3_bind_text(insertStmt, 2, (id as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if sqlite3_step(insertStmt) != SQLITE_DONE { failed = true; break }
             sqlite3_reset(insertStmt)
             sqlite3_clear_bindings(insertStmt)
         }
         if !failed {
             for id in removals {
-                sqlite3_bind_text(deleteStmt, 1, (id as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(deleteStmt, 1, (id as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(deleteStmt) != SQLITE_DONE { failed = true; break }
                 sqlite3_reset(deleteStmt)
                 sqlite3_clear_bindings(deleteStmt)
@@ -1128,7 +1131,7 @@ final class HashCacheRepository {
                 "UPDATE live_photo_video_status SET video_on_server = 0 WHERE asset_id = ?;",
                 -1, &videoStmt, nil
             ) == SQLITE_OK {
-                sqlite3_bind_text(videoStmt, 1, (identifier as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(videoStmt, 1, (identifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 sqlite3_step(videoStmt)
             }
             sqlite3_finalize(videoStmt)
@@ -1162,14 +1165,14 @@ final class HashCacheRepository {
         var failed = false
 
         for assetId in invalidatedIds {
-            sqlite3_bind_text(hashStmt, 1, (assetId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(hashStmt, 1, (assetId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if sqlite3_step(hashStmt) != SQLITE_DONE {
                 failed = true
                 break
             }
             sqlite3_reset(hashStmt)
 
-            sqlite3_bind_text(uploadStmt, 1, (assetId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(uploadStmt, 1, (assetId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if sqlite3_step(uploadStmt) != SQLITE_DONE {
                 failed = true
                 break
@@ -1239,7 +1242,7 @@ final class HashCacheRepository {
         defer { sqlite3_finalize(statement) }
 
         for assetId in toDelete {
-            sqlite3_bind_text(statement, 1, (assetId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 1, (assetId as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             sqlite3_step(statement)
             sqlite3_reset(statement)
             sqlite3_clear_bindings(statement)
@@ -1261,7 +1264,7 @@ final class HashCacheRepository {
                   let modDate = snapshot.modificationDate else { continue }
 
             sqlite3_bind_double(statement, 1, modDate.timeIntervalSince1970)
-            sqlite3_bind_text(statement, 2, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 2, (snapshot.localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
             if sqlite3_step(statement) != SQLITE_DONE {
                 failed = true
                 break
@@ -1301,7 +1304,7 @@ final class HashCacheRepository {
             var statement: OpaquePointer?
             
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-                sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 if sqlite3_step(statement) != SQLITE_DONE {
                     logError("[HashCacheRepository] Error deleting hash cache record: \(String(cString: sqlite3_errmsg(self.connection.db)))")
                 }
@@ -1324,7 +1327,7 @@ final class HashCacheRepository {
             
             if sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK {
                 for (index, identifier) in localIdentifiers.enumerated() {
-                    sqlite3_bind_text(statement, Int32(index + 1), (identifier as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, Int32(index + 1), (identifier as NSString).utf8String, -1, SQLITE_BIND_TRANSIENT)
                 }
                 if sqlite3_step(statement) != SQLITE_DONE {
                     logError("[HashCacheRepository] Error batch deleting hash cache records: \(String(cString: sqlite3_errmsg(self.connection.db)))")
