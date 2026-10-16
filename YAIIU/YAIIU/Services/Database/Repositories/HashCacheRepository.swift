@@ -814,9 +814,6 @@ final class HashCacheRepository {
                 WHERE EXISTS (
                     SELECT 1 FROM hash_cache
                     WHERE hash_cache.asset_id = foreground_photo_pending_assets.asset_id
-                ) OR EXISTS (
-                    SELECT 1 FROM uploaded_assets
-                    WHERE uploaded_assets.asset_id = foreground_photo_pending_assets.asset_id
                 );
                 """
             guard sqlite3_exec(db, completed, nil, nil, nil) == SQLITE_OK else { return [] }
