@@ -628,7 +628,11 @@ struct PhotoGridView: View {
         }
         let manager = photoLibraryManager
         Task.detached(priority: .utility) {
+            // PhotoKit hash invalidation must not race with a server checksum
+            // check that is about to write its verification result.
+            await ServerAssetVerificationGate.shared.acquire()
             let work = manager.prepareForegroundPhotoWork()
+            await ServerAssetVerificationGate.shared.release()
             await MainActor.run {
                 foregroundWorkPreparing = false
                 if hashManager.isProcessing {
