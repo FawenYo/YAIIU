@@ -656,6 +656,9 @@ final class HashCacheRepository {
 
         var modifiedIds = Set<String>()
         for snapshot in snapshots {
+            // Hidden assets appear here solely for deletion safety. Preserve
+            // their previous hashes until they return to the visible pipeline.
+            guard !snapshot.isHidden else { continue }
             guard let stored = storedDates[snapshot.localIdentifier],
                   let date = snapshot.modificationDate else { continue }
             if abs(date.timeIntervalSince1970 - stored) > 1.0 {
