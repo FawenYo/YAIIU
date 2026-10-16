@@ -257,6 +257,13 @@ enum HashPipelinePolicy {
             lock.unlock()
         }
 
+        var isRunning: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if case .running = phase { return true }
+            return false
+        }
+
         func owns(_ runID: UUID) -> Bool {
             lock.lock()
             defer { lock.unlock() }
@@ -446,6 +453,14 @@ class HashManager: ObservableObject {
         }
     }
     
+    /// 'Preparing...' is only a UI placeholder. A real hash run owns a
+    /// RunState UUID; distinguishing the two avoids deadlocking the handoff
+    /// from the foreground PhotoKit change loader.
+    @MainActor
+    var hasActivePipeline: Bool {
+        runState.isRunning
+    }
+
     @MainActor
     func setPreparingState() {
         guard !isProcessing else { return }
