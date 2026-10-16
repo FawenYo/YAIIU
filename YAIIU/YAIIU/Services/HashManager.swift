@@ -543,12 +543,7 @@ class HashManager: ObservableObject {
             guard let self, self.isHashingActive else { return }
 
             self.requestDataPipelineState.abort()
-            self.logRequestDataMemory(
-                stage: "memory-warning",
-                batch: nil,
-                totalBatches: nil,
-                primaryBytes: nil
-            )
+            self.logRequestDataMemory(stage: "memory-warning", primaryBytes: nil)
             logWarning(
                 "requestData pipeline aborted on first iOS memory warning; cancelling in-flight PhotoKit data requests",
                 category: .hash
@@ -880,12 +875,7 @@ class HashManager: ObservableObject {
         requestDataPipelineState.reset()
 
         ThumbnailCache.shared.clearCache()
-        logRequestDataMemory(
-            stage: "pipeline-start",
-            batch: nil,
-            totalBatches: nil,
-            primaryBytes: 0
-        )
+        logRequestDataMemory(stage: "pipeline-start", primaryBytes: 0)
 
         hashTask = Task { [weak self] in
             guard let self else { return }
@@ -915,13 +905,6 @@ class HashManager: ObservableObject {
                 let upper = Swift.min(lower + localBatchSize, identifiers.count)
                 let batch = Array(identifiers[lower..<upper])
 
-                self.logRequestDataMemory(
-                    stage: "local-batch-start",
-                    batch: batchIndex + 1,
-                    totalBatches: localBatchCount,
-                    primaryBytes: cumulativePrimaryBytes
-                )
-
                 var items = await HashService.shared.hashBatchWithRequestData(
                     assetIds: batch,
                     allowNetworkAccess: false
@@ -934,11 +917,8 @@ class HashManager: ObservableObject {
                     break
                 }
 
-                var localSucceeded = 0
-                var localDeferred = 0
                 for item in items {
                     if item.isComplete, let hash = item.primaryHash {
-                        localSucceeded += 1
                         cumulativePrimaryBytes += item.totalFileSize
                         DatabaseManager.shared.saveMultiResourceHashCache(
                             localIdentifier: item.localIdentifier,
@@ -946,11 +926,6 @@ class HashManager: ObservableObject {
                             rawHash: item.rawHash,
                             hasRAW: item.hasRAW,
                             modificationDate: item.modificationDate
-                        )
-
-                        logDebug(
-                            "requestData local hash persisted: asset=\(item.localIdentifier), primaryBytes=\(item.primaryFileSize), rawBytes=\(item.rawFileSize ?? 0), hasRAW=\(item.hasRAW), batch=\(batchIndex + 1)/\(localBatchCount)",
-                            category: .hash
                         )
 
                         await MainActor.run {
@@ -966,24 +941,12 @@ class HashManager: ObservableObject {
                         }
                     } else {
                         networkIdentifiers.append(item.localIdentifier)
-                        localDeferred += 1
                     }
                 }
-
-                logDebug(
-                    "requestData local batch \(batchIndex + 1)/\(localBatchCount): succeeded=\(localSucceeded), networkDeferred=\(localDeferred)",
-                    category: .hash
-                )
 
                 items.removeAll(keepingCapacity: false)
                 await Task.yield()
 
-                self.logRequestDataMemory(
-                    stage: "local-batch-end",
-                    batch: batchIndex + 1,
-                    totalBatches: localBatchCount,
-                    primaryBytes: cumulativePrimaryBytes
-                )
             }
 
             guard self.isCurrentRun(runID),
@@ -1027,13 +990,6 @@ class HashManager: ObservableObject {
                 )
                 let batch = Array(networkIdentifiers[lower..<upper])
 
-                self.logRequestDataMemory(
-                    stage: "network-batch-start",
-                    batch: batchIndex + 1,
-                    totalBatches: networkBatchCount,
-                    primaryBytes: cumulativePrimaryBytes
-                )
-
                 var items = await HashService.shared.hashBatchWithRequestData(
                     assetIds: batch,
                     allowNetworkAccess: true
@@ -1055,11 +1011,6 @@ class HashManager: ObservableObject {
                             rawHash: item.rawHash,
                             hasRAW: item.hasRAW,
                             modificationDate: item.modificationDate
-                        )
-
-                        logDebug(
-                            "requestData network hash persisted: asset=\(item.localIdentifier), primaryBytes=\(item.primaryFileSize), rawBytes=\(item.rawFileSize ?? 0), hasRAW=\(item.hasRAW), batch=\(batchIndex + 1)/\(networkBatchCount)",
-                            category: .hash
                         )
 
                         await MainActor.run {
@@ -1099,12 +1050,6 @@ class HashManager: ObservableObject {
                 items.removeAll(keepingCapacity: false)
                 await Task.yield()
 
-                self.logRequestDataMemory(
-                    stage: "network-batch-end",
-                    batch: batchIndex + 1,
-                    totalBatches: networkBatchCount,
-                    primaryBytes: cumulativePrimaryBytes
-                )
             }
 
             await MainActor.run {
@@ -1117,12 +1062,7 @@ class HashManager: ObservableObject {
                     )
                     self.finishProcessing(runID: runID)
                 } else if !self.shouldStop && !Task.isCancelled {
-                    self.logRequestDataMemory(
-                        stage: "pipeline-complete",
-                        batch: nil,
-                        totalBatches: nil,
-                        primaryBytes: cumulativePrimaryBytes
-                    )
+                    self.logRequestDataMemory(stage: "pipeline-complete", primaryBytes: cumulativePrimaryBytes)
                     self.statusMessage = "Checking cloud status..."
                     self.startServerCheck(runID: runID)
                 } else {
@@ -1134,24 +1074,15 @@ class HashManager: ObservableObject {
 
     private func logRequestDataMemory(
         stage: String,
-        batch: Int?,
-        totalBatches: Int?,
         primaryBytes: Int64?
     ) {
-        let batchLabel: String
-        if let batch, let totalBatches {
-            batchLabel = "\(batch)/\(totalBatches)"
-        } else {
-            batchLabel = "-"
-        }
-
         let primaryMiB = primaryBytes.map {
             String(format: "%.1f", Double($0) / (1024.0 * 1024.0))
         } ?? "-"
 
         guard let footprint = ProcessMemoryMetrics.physFootprintBytes() else {
             logWarning(
-                "requestData memory: stage=\(stage), batch=\(batchLabel), physFootprintMiB=unavailable, cumulativePrimaryMiB=\(primaryMiB)",
+                "requestData memory: stage=\(stage), physFootprintMiB=unavailable, cumulativePrimaryMiB=\(primaryMiB)",
                 category: .hash
             )
             return
@@ -1159,7 +1090,7 @@ class HashManager: ObservableObject {
 
         let footprintMiB = Double(footprint) / (1024.0 * 1024.0)
         logInfo(
-            "requestData memory: stage=\(stage), batch=\(batchLabel), physFootprintBytes=\(footprint), physFootprintMiB=\(String(format: "%.1f", footprintMiB)), cumulativePrimaryMiB=\(primaryMiB)",
+            "requestData memory: stage=\(stage), physFootprintBytes=\(footprint), physFootprintMiB=\(String(format: "%.1f", footprintMiB)), cumulativePrimaryMiB=\(primaryMiB)",
             category: .hash
         )
     }
