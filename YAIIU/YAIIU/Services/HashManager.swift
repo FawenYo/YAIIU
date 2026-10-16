@@ -477,7 +477,7 @@ class HashManager: ObservableObject {
     @MainActor
     func startBackgroundProcessing(snapshots: [PhotoAssetSnapshot]) {
         startBackgroundProcessing(
-            identifiers: snapshots.map { $0.localIdentifier },
+            identifiers: PhotoAssetSnapshot.visibleIdentifiers(in: snapshots),
             snapshotsToInvalidate: snapshots
         )
     }
@@ -1046,36 +1046,13 @@ class HashManager: ObservableObject {
                 existingIdentifiers.insert(asset.localIdentifier)
             }
             
-            // Find orphan records (in database but no longer in Photo Library)
-            var orphanIdentifiers: [String] = []
-            var validRecords: [MultiResourceHashRecord] = []
-            
-            for record in records {
-                if existingIdentifiers.contains(record.assetId) {
-                    validRecords.append(record)
-                } else {
-                    orphanIdentifiers.append(record.assetId)
-                }
-            }
-            
-            // Clean up orphan records from database
+            // A missing PhotoKit fetch result is NOT proof of deletion. It
+            // could be hidden, iCloud-restoring, or inaccessible under Limited
+            // Photos authorization. Never delete cached hashes here. The full
+            // hidden-inclusive snapshot independently reconciles true orphans.
+            let validRecords = records.filter { existingIdentifiers.contains($0.assetId) }
             guard self.isCurrentRun(runID), !Task.isCancelled else { return }
 
-            if !orphanIdentifiers.isEmpty {
-                logInfo("Cleaning up \(orphanIdentifiers.count) orphan hash cache records for deleted photos", category: .hash)
-                DatabaseManager.shared.batchDeleteHashCacheRecords(localIdentifiers: orphanIdentifiers)
-                
-                // Also remove from memory cache
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    for identifier in orphanIdentifiers {
-                        self.syncStatusCache.removeValue(forKey: identifier)
-                    }
-                    self.objectWillChange.send()
-                }
-                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
-            }
-            
             // Update count to only include valid records
             if validRecords.isEmpty {
                 await MainActor.run {
