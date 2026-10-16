@@ -501,7 +501,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         category: .hash
                     )
                 }
-                return .incremental(db.getPendingForegroundPhotoIdentifiers())
+                return .incremental(visibleForegroundPendingIdentifiers())
             } catch let error as NSError
                 where error.domain == PHPhotosErrorDomain &&
                     (error.code == PHPhotosError.persistentChangeTokenExpired.rawValue ||
@@ -515,7 +515,32 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
     }
 
+    /// A delayed extension event may re-enqueue previously hidden assets.
+    /// Check only pending IDs, never the whole library, and retain
+    /// temporarily unavailable IDs for a subsequent pass.
+    private func visibleForegroundPendingIdentifiers() -> [String] {
+        let pending = DatabaseManager.shared.getPendingForegroundPhotoIdentifiers()
+        guard !pending.isEmpty else { return [] }
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        let result = PHAsset.fetchAssets(withLocalIdentifiers: pending, options: options)
+        var visible = Set<String>()
+        var hidden = Set<String>()
+        result.enumerateObjects { asset, _, _ in
+            if asset.isHidden {
+                hidden.insert(asset.localIdentifier)
+            } else {
+                visible.insert(asset.localIdentifier)
+            }
+        }
+        if !hidden.isEmpty {
+            DatabaseManager.shared.discardForegroundPendingIdentifiers(hidden)
+        }
+        return pending.filter { visible.contains($0) }
+    }
+
     private func bootstrapForegroundPhotoWork() -> ForegroundPhotoWork {
+        logInfo("Foreground PhotoKit bootstrap started", category: .hash)
         // Capture BEFORE the full scan: edits during enumeration must replay
         // on the next delta, not disappear behind the checkpoint.
         do {
@@ -538,7 +563,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 return .fallbackSnapshot(snapshots)
             }
             logInfo("Foreground PhotoKit initial checkpoint built; assets=\(snapshots.count)", category: .hash)
-            return .incremental(DatabaseManager.shared.getPendingForegroundPhotoIdentifiers())
+            return .incremental(visibleForegroundPendingIdentifiers())
         } catch {
             logWarning("Could not capture foreground PhotoKit change token: \(error.localizedDescription)", category: .hash)
             return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
