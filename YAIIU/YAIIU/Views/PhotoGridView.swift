@@ -753,13 +753,21 @@ struct PhotoGridView: View {
     }
     
     private var filterIndicatorView: some View {
-        HStack {
+        HStack(spacing: 8) {
             Image(systemName: currentFilter.iconName)
                 .foregroundColor(.orange)
-            Text(L10n.PhotoGrid.filterActive(displayCount))
+            Text(currentFilter == .album ? (selectedAlbum?.title ?? L10n.PhotoGrid.filterAlbum) : currentFilter.localizedTitle)
                 .font(.subheadline)
-                .foregroundColor(.secondary)
-            Spacer()
+                .lineLimit(1)
+            if isFilterLoading {
+                ProgressView()
+                    .scaleEffect(0.7)
+            } else {
+                Text(L10n.PhotoGrid.filterActive(displayCount))
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 4)
             Button {
                 applyFilter(.all)
             } label: {
@@ -771,14 +779,19 @@ struct PhotoGridView: View {
         .padding(.vertical, 8)
         .background(Color(.systemGray6))
     }
-    
+
     @ViewBuilder
     private var filterMenuButton: some View {
         if !hashManager.isProcessing {
             Menu {
                 ForEach(PhotoFilterOption.allCases) { option in
                     Button {
-                        applyFilter(option)
+                        if option == .album {
+                            albumSearch = ""
+                            isAlbumPickerPresented = true
+                        } else {
+                            applyFilter(option)
+                        }
                     } label: {
                         Label {
                             if option == .notUploaded {
@@ -789,6 +802,8 @@ struct PhotoGridView: View {
                         } icon: {
                             if currentFilter == option {
                                 Image(systemName: "checkmark")
+                            } else {
+                                Image(systemName: option.iconName)
                             }
                         }
                     }
@@ -799,25 +814,126 @@ struct PhotoGridView: View {
             }
         }
     }
-    
-    // MARK: - Filter Cache Management
-    
-    private func applyFilter(_ filter: PhotoFilterOption) {
-        if isSelectionMode {
-            selectedAssets.removeAll()
+
+    private var albumPickerSheet: some View {
+        NavigationStack {
+            List {
+                if isLoadingAlbums {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                } else if visibleAlbumChoices.isEmpty {
+                    Text(L10n.PhotoGrid.filterNoAlbums)
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(visibleAlbumChoices) { album in
+                        Button {
+                            selectedAlbum = album
+                            isAlbumPickerPresented = false
+                            applyFilter(.album)
+                        } label: {
+                            HStack {
+                                Text(album.title)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if currentFilter == .album && selectedAlbum?.id == album.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(L10n.PhotoGrid.filterChooseAlbum)
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $albumSearch)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L10n.PhotoGrid.cancel) {
+                        isAlbumPickerPresented = false
+                    }
+                }
+            }
+            .task {
+                loadAlbumChoices()
+            }
         }
-        
+    }
+
+    private func loadAlbumChoices() {
+        albumLoadTask?.cancel()
+        isLoadingAlbums = true
+        albumLoadTask = Task {
+            let albums = await Task.detached(priority: .utility) {
+                PhotoLibraryManager.availableAlbums()
+            }.value
+            guard !Task.isCancelled else { return }
+            albumChoices = albums
+            isLoadingAlbums = false
+        }
+    }
+
+    // MARK: - Filter Cache Management
+
+    private func applyFilter(_ filter: PhotoFilterOption) {
+        selectionTask?.cancel()
+        isSelectingAll = false
+        selectedAssets.removeAll()
+        dragState.reset()
+        photoFilterTask?.cancel()
+        photoFilterVersion += 1
+        isFilterLoading = false
         currentFilter = filter
-        
-        if filter == .notUploaded {
-            // filteredIndices is kept current by recomputeCounts(); rebuild it
-            // off the main thread so tapping the filter never blocks the UI on
-            // large libraries. recomputeCounts() flips refreshToken once the new
-            // indices land, so avoid rebuilding here with the stale set first.
+        filteredIndices = []
+        if filter != .album {
+            selectedAlbum = nil
+        }
+
+        switch filter {
+        case .notUploaded:
             recomputeCounts()
-        } else {
-            // Other filters use the full set immediately, so rebuild now.
+        case .favorites, .album:
+            refreshPhotoKitFilter()
+        case .all:
             refreshToken = UUID()
+        }
+    }
+
+    /// Only enumerate the selected PhotoKit collection off the main actor. The
+    /// resulting indices refer to the main gallery's original fetch order.
+    private func refreshPhotoKitFilter() {
+        guard currentFilter == .favorites || currentFilter == .album else { return }
+        photoFilterTask?.cancel()
+        photoFilterVersion += 1
+        let version = photoFilterVersion
+        let filter = currentFilter
+        let identifiers = photoLibraryManager.orderedLocalIdentifiers
+        let albumID = selectedAlbum?.id
+        isFilterLoading = true
+
+        photoFilterTask = Task(priority: .utility) {
+            let indices = await Task.detached(priority: .utility) {
+                switch filter {
+                case .favorites:
+                    return PhotoLibraryManager.favoriteIndices(in: identifiers)
+                case .album:
+                    guard let albumID else { return [Int]() }
+                    return PhotoLibraryManager.albumIndices(in: identifiers, albumID: albumID)
+                default:
+                    return [Int]()
+                }
+            }.value
+
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !Task.isCancelled, version == self.photoFilterVersion,
+                      self.currentFilter == filter else { return }
+                self.filteredIndices = indices
+                self.isFilterLoading = false
+                self.refreshToken = UUID()
+            }
         }
     }
 
@@ -904,8 +1020,8 @@ struct PhotoGridView: View {
                 // overwrite with a stale value (stale-wins race).
                 guard !Task.isCancelled, version == self.countComputeVersion else { return }
                 self.cachedNotUploadedCount = notUploadedIndices.count
-                self.filteredIndices = notUploadedIndices
                 if self.currentFilter == .notUploaded {
+                    self.filteredIndices = notUploadedIndices
                     self.refreshToken = UUID()
                 }
             }
