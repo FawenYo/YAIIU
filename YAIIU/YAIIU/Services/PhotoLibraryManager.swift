@@ -455,6 +455,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 let changes = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
                 var processedBatches = 0
                 var touchedAssets = 0
+                var insertedCount = 0
+                var updatedCount = 0
+                var deletedCount = 0
                 for change in changes {
                     let details = try change.changeDetails(for: .asset)
                     let deleted = details.deletedLocalIdentifiers
@@ -494,10 +497,19 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     }
                     processedBatches += 1
                     touchedAssets += affected.count + deleted.count
+                    insertedCount += details.insertedLocalIdentifiers.count
+                    updatedCount += details.updatedLocalIdentifiers.count
+                    deletedCount += deleted.count
+                    for identifier in details.insertedLocalIdentifiers {
+                        logDebug("Foreground PhotoKit inserted: asset=\(identifier)", category: .hash)
+                    }
+                    for identifier in details.updatedLocalIdentifiers {
+                        logDebug("Foreground PhotoKit updated: asset=\(identifier)", category: .hash)
+                    }
                 }
                 if processedBatches > 0 {
                     logInfo(
-                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets",
+                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount))",
                         category: .hash
                     )
                 }
