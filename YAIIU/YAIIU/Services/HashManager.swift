@@ -968,12 +968,34 @@ class HashManager: ObservableObject {
                 category: .hash
             )
 
+            // PhotoKit can resolve a modification date only after its resources
+            // have been materialized. Avoid persisting a newly hashed asset with
+            // an unknown version when the date is now available.
+            var modificationDate = files.plan.modificationDate
+            if modificationDate == nil {
+                let fetch = PHAsset.fetchAssets(
+                    withLocalIdentifiers: [identifier], options: nil
+                )
+                modificationDate = fetch.firstObject?.modificationDate
+                if modificationDate == nil {
+                    logWarning(
+                        "Hash cache version unavailable after hashing: asset=\(identifier); a later PhotoKit update may require rehashing",
+                        category: .hash
+                    )
+                } else {
+                    logDebug(
+                        "Hash cache modification date recovered after resource materialization: asset=\(identifier)",
+                        category: .hash
+                    )
+                }
+            }
+
             DatabaseManager.shared.saveMultiResourceHashCache(
                 localIdentifier: result.localIdentifier,
                 primaryHash: result.primaryHash,
                 rawHash: result.rawHash,
                 hasRAW: result.hasRAW,
-                modificationDate: files.plan.modificationDate
+                modificationDate: modificationDate
             )
             guard isCurrentRun(runID) else { return }
 
