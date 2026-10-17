@@ -157,7 +157,7 @@ final class HashCacheRepository {
                     // asset using the same queue rule as regular server checks.
                     guard self.enqueueIfMissingOnServerInternal(
                         localIdentifier: item.localIdentifier
-                    ) else { return }
+                    ) else { return false }
                 }
             }
             guard self.connection.commitTransaction() else {
