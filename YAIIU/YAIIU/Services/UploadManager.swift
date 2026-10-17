@@ -223,8 +223,11 @@ class UploadManager: ObservableObject {
             if !entries.isEmpty {
                 let identifiers = entries.map { $0.asset.localIdentifier }
                 if let cached = DatabaseManager.shared.cachedHashIdentifiers(for: identifiers) {
+                    let cachedCount = entries.reduce(0) { count, entry in
+                        count + (cached.contains(entry.asset.localIdentifier) ? 1 : 0)
+                    }
                     logInfo(
-                        "Upload hash cache preflight: total=\(entries.count), cached=\(entries.filter { cached.contains($0.asset.localIdentifier) }.count), missing=\(entries.filter { !cached.contains($0.asset.localIdentifier) }.count)",
+                        "Upload hash cache preflight: total=\(entries.count), cached=\(cachedCount), missing=\(entries.count - cachedCount)",
                         category: .hash
                     )
                     for entry in entries.prefix(10) {
