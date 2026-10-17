@@ -718,6 +718,48 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertFalse(queuedIds().contains(id))
     }
 
+    func testBackgroundPhotoKitRehashDoesNotKeepOldCompletedJobsWithoutReceipts() {
+        let id = "foreground-rehashed"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-new",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 120)
+        )
+        execute("""
+            INSERT INTO upload_jobs (asset_id, resource_type, filename, status, created_at, updated_at)
+            VALUES ('foreground-rehashed', 'jpeg', 'image.jpg', 'completed', 0, 0);
+        """)
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
+            updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 120)],
+            tokenData: Data([1])
+        )
+        XCTAssertEqual(summary?.retainedVersions, 1)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE asset_id = 'foreground-rehashed';"), 0)
+    }
+
+    func testBackgroundExtensionFallsBackWhenHostHasNotMigratedVersionColumn() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "legacy", primaryHash: "sha-old",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        // Simulate an old app-group database that the host has not migrated.
+        execute("ALTER TABLE hash_cache DROP COLUMN asset_modification_date;")
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: ["legacy"], deletedAssetIds: [],
+            updatedAssetModificationDates: ["legacy": Date(timeIntervalSince1970: 100)],
+            tokenData: Data([1])
+        )
+        XCTAssertEqual(summary?.retainedVersions, 0)
+        XCTAssertEqual(summary?.invalidatedVersions, 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'legacy';"), 0)
+        XCTAssertEqual(background.loadChangeToken(), Data([1]))
+    }
+
     private func sqlCount(_ sql: String) -> Int {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
