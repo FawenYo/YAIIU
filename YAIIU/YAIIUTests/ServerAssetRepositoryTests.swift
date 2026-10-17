@@ -550,6 +550,43 @@ final class ServerAssetRepositoryTests: XCTestCase {
               AND sha1_hash = 'matching-hash' AND raw_hash = 'raw-hash'
               AND has_raw = 1 AND asset_modification_date = 150 AND is_on_server = 1;
             """), 1)
+        // The imported primary exists remotely, but its RAW companion still
+        // needs checking and must not be stranded after checked_at is set.
+        XCTAssertTrue(queuedIds().contains("matching"))
+    }
+
+    func testUploadVersionHeaderRetainsSubsecondPrecisionAndRejectsLegacyJobs() {
+        let recorded = Date(timeIntervalSince1970: 1_791_297_704.25)
+        let same = Date(timeIntervalSince1970: 1_791_297_704.25)
+        let edited = Date(timeIntervalSince1970: 1_791_297_704.75)
+        let header = PhotoAssetVersionPolicy.uploadVersionHeader(for: recorded)
+
+        XCTAssertNotNil(header)
+        XCTAssertTrue(PhotoAssetVersionPolicy.matchesUploadVersion(header, currentDate: same))
+        XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion(header, currentDate: edited))
+        XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion(header, currentDate: nil))
+        XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion(nil, currentDate: same))
+        XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion("not-a-version", currentDate: same))
+        XCTAssertNil(PhotoAssetVersionPolicy.uploadVersionHeader(for: nil))
+    }
+
+    func testBatchedUploadCachePresenceAcrossSQLiteParameterChunks() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "asset-0", primaryHash: "first",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "asset-401", primaryHash: "second",
+            rawHash: "raw", hasRAW: true,
+            modificationDate: Date(timeIntervalSince1970: 200)
+        )
+        let selected = (0..<450).map { "asset-\($0)" }
+        XCTAssertEqual(
+            hashRepository.cachedHashIdentifiers(for: selected),
+            Set(["asset-0", "asset-401"])
+        )
+        XCTAssertEqual(hashRepository.cachedHashIdentifiers(for: []), Set<String>())
     }
 
     func testForegroundBootstrapKeepsUnknownVersionUnverified() {
