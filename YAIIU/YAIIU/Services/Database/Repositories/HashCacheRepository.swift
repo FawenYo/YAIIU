@@ -87,23 +87,77 @@ final class HashCacheRepository {
         sqlite3_finalize(statement)
     }
     
+    /// Immich SQLite imports have hashes but no trusted PhotoKit version.
+    /// Never replace an existing (possibly JPEG+RAW) hash with import data:
+    /// doing so would erase version, RAW and upload-state information.
     func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) {
+        guard !items.isEmpty else { return }
+        connection.ensureInitialized()
         connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
-            
-            self.connection.beginTransaction()
-            
-            for item in items {
-                self.saveHashCacheInternal(
-                    localIdentifier: item.localIdentifier,
-                    sha1Hash: item.sha1Hash,
-                    rawHash: nil,
-                    hasRAW: false,
-                    modificationDate: nil
-                )
+            guard let self else { return }
+            let db = self.connection.db
+            guard self.connection.beginTransaction() else {
+                logError("Could not begin hash import transaction", category: .database)
+                return
             }
-            
-            self.connection.commitTransaction()
+            var committed = false
+            defer { if !committed { self.connection.rollbackTransaction() } }
+
+            let insertSQL = """
+                INSERT OR IGNORE INTO hash_cache
+                (asset_id, sha1_hash, is_on_server, calculated_at,
+                 raw_hash, raw_on_server, has_raw, asset_modification_date)
+                VALUES (?, ?, 0, ?, NULL, 0, 0, NULL);
+                """
+            // A remote receipt inferred from imported SQLite is applicable
+            // only when the *current* cached checksum is the same.
+            let serverSQL = """
+                UPDATE hash_cache SET is_on_server = 1, checked_at = ?
+                WHERE asset_id = ? AND sha1_hash = ?;
+                """
+            var insert: OpaquePointer?
+            var server: OpaquePointer?
+            guard sqlite3_prepare_v2(db, insertSQL, -1, &insert, nil) == SQLITE_OK,
+                  sqlite3_prepare_v2(db, serverSQL, -1, &server, nil) == SQLITE_OK else {
+                sqlite3_finalize(insert)
+                sqlite3_finalize(server)
+                logError("Could not prepare hash import statements: \(String(cString: sqlite3_errmsg(db)))", category: .database)
+                return
+            }
+            defer {
+                sqlite3_finalize(insert)
+                sqlite3_finalize(server)
+            }
+
+            let now = Date().timeIntervalSince1970
+            for item in items {
+                sqlite3_reset(insert)
+                sqlite3_clear_bindings(insert)
+                guard sqlite3_bind_text(insert, 1, (item.localIdentifier as NSString).utf8String, -1, nil) == SQLITE_OK,
+                      sqlite3_bind_text(insert, 2, (item.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
+                      sqlite3_bind_double(insert, 3, now) == SQLITE_OK,
+                      sqlite3_step(insert) == SQLITE_DONE else {
+                    logError("Hash import insert failed: \(String(cString: sqlite3_errmsg(db)))", category: .database)
+                    return
+                }
+
+                if item.syncStatus == "checked" {
+                    sqlite3_reset(server)
+                    sqlite3_clear_bindings(server)
+                    guard sqlite3_bind_double(server, 1, now) == SQLITE_OK,
+                          sqlite3_bind_text(server, 2, (item.localIdentifier as NSString).utf8String, -1, nil) == SQLITE_OK,
+                          sqlite3_bind_text(server, 3, (item.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
+                          sqlite3_step(server) == SQLITE_DONE else {
+                        logError("Hash import server status update failed: \(String(cString: sqlite3_errmsg(db)))", category: .database)
+                        return
+                    }
+                }
+            }
+            guard self.connection.commitTransaction() else {
+                logError("Could not commit hash import transaction", category: .database)
+                return
+            }
+            committed = true
         }
     }
     
@@ -743,19 +797,13 @@ final class HashCacheRepository {
                 }
                 sqlite3_finalize(query)
                 guard queryOK else { return false }
+                // Unknown cached versions are legitimate (e.g. imported
+                // checksums). A snapshot alone does not prove that those
+                // hashes match its modification date; leave NULL untouched.
                 guard runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", modified),
-                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified),
-                      execute("""
-                        UPDATE hash_cache SET asset_modification_date = (
-                            SELECT s.modified_at FROM foreground_snapshot s
-                            WHERE s.asset_id = hash_cache.asset_id
-                        )
-                        WHERE asset_modification_date IS NULL
-                          AND asset_id IN (
-                            SELECT asset_id FROM foreground_snapshot
-                            WHERE modified_at IS NOT NULL
-                          );
-                        """) else { return false }
+                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified) else {
+                    return false
+                }
 
                 let missingFromSnapshot =
                     "asset_id NOT IN (SELECT asset_id FROM foreground_snapshot)"
@@ -965,7 +1013,6 @@ final class HashCacheRepository {
         let sql = "SELECT asset_id, asset_modification_date FROM hash_cache;"
         var statement: OpaquePointer?
         var storedDates: [String: Double] = [:]      // asset_id -> stored timestamp
-        var nullDateIds: Set<String> = []             // asset_id with no stored date yet
         var cachedIds: Set<String> = []
 
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -973,9 +1020,7 @@ final class HashCacheRepository {
                 if let idCString = sqlite3_column_text(statement, 0) {
                     let assetId = String(cString: idCString)
                     cachedIds.insert(assetId)
-                    if sqlite3_column_type(statement, 1) == SQLITE_NULL {
-                        nullDateIds.insert(assetId)
-                    } else {
+                    if sqlite3_column_type(statement, 1) != SQLITE_NULL {
                         storedDates[assetId] = sqlite3_column_double(statement, 1)
                     }
                 }
@@ -983,11 +1028,8 @@ final class HashCacheRepository {
         }
         sqlite3_finalize(statement)
 
-        // Backfill modificationDate for pre-migration rows that have no stored date.
-        // Cannot be done at migration time because PHAsset is unavailable there.
-        if !nullDateIds.isEmpty {
-            backfillModificationDates(snapshots: snapshots, assetIds: nullDateIds)
-        }
+        // Do not assign current PhotoKit dates to legacy or imported hashes
+        // without verifying the bytes represented by their checksum.
 
         // Only complete, hidden-inclusive snapshots may authorize deletion.
         // Query queue-only/receipt-only IDs too: a photo removed before hashing
@@ -1087,39 +1129,6 @@ final class HashCacheRepository {
             return
         }
         logInfo("Pruned \(missingIds.count) absent PhotoKit assets and invalidated \(modifiedIds.count) modified assets", category: .hash)
-    }
-
-    private func backfillModificationDates(snapshots: [PhotoAssetSnapshot], assetIds: Set<String>) {
-        let sql = "UPDATE hash_cache SET asset_modification_date = ? WHERE asset_id = ?;"
-        var statement: OpaquePointer?
-
-        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(statement) }
-
-        connection.beginTransaction()
-        var failed = false
-        var count = 0
-        for snapshot in snapshots {
-            guard assetIds.contains(snapshot.localIdentifier),
-                  let modDate = snapshot.modificationDate else { continue }
-
-            sqlite3_bind_double(statement, 1, modDate.timeIntervalSince1970)
-            sqlite3_bind_text(statement, 2, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
-            if sqlite3_step(statement) != SQLITE_DONE {
-                failed = true
-                break
-            }
-            count += 1
-            sqlite3_reset(statement)
-        }
-
-        if failed {
-            connection.rollbackTransaction()
-            logError("Failed to backfill modification dates, rolling back.", category: .hash)
-        } else {
-            connection.commitTransaction()
-            logInfo("Backfilled modificationDate for \(count) pre-migration hash_cache entries", category: .hash)
-        }
     }
 
     // MARK: - Clear
