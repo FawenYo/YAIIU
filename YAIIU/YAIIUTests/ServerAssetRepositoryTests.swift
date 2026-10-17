@@ -506,6 +506,61 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(secondRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
     }
 
+    func testUnversionedHashBackfillPreservesRAWAndServerState() {
+        let id = "imported-raw"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "primary",
+            rawHash: "raw", hasRAW: true, modificationDate: nil
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg",
+            filename: "a.jpg", immichId: "remote"
+        )
+        let pending = hashRepository.unversionedHashCacheRows()
+        XCTAssertTrue(pending.contains { $0.localIdentifier == id && $0.sha1Hash == "primary" })
+        XCTAssertEqual(hashRepository.backfillUnversionedHashDates([
+            (localIdentifier: id, sha1Hash: "primary",
+             modificationDate: Date(timeIntervalSince1970: 123.5))
+        ]), 1)
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'imported-raw'
+            AND asset_modification_date = 123.5 AND has_raw = 1 AND raw_hash = 'raw';
+            """), 1)
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertFalse(hashRepository.unversionedHashCacheRows().contains {
+            $0.localIdentifier == id
+        })
+        // Idempotent after the initial baseline.
+        XCTAssertEqual(hashRepository.backfillUnversionedHashDates([
+            (localIdentifier: id, sha1Hash: "primary",
+             modificationDate: Date(timeIntervalSince1970: 999))
+        ]), 0)
+    }
+
+    func testUnversionedHashBackfillNeverOverwritesConcurrentHash() {
+        let id = "concurrent-version"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "old",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        let old = hashRepository.unversionedHashCacheRows()
+        XCTAssertTrue(old.contains { $0.localIdentifier == id && $0.sha1Hash == "old" })
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "new",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 400)
+        )
+        XCTAssertEqual(hashRepository.backfillUnversionedHashDates([
+            (localIdentifier: id, sha1Hash: "old",
+             modificationDate: Date(timeIntervalSince1970: 100))
+        ]), 0)
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'concurrent-version' AND sha1_hash = 'new'
+              AND asset_modification_date = 400;
+            """), 1)
+    }
+
     func testImmichImportDoesNotOverwriteVersionedRAWCacheOrReceipts() {
         let id = "existing-pair"
         hashRepository.saveMultiResourceHashCache(
