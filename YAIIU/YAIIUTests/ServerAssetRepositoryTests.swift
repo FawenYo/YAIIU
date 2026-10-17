@@ -646,7 +646,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion(header, currentDate: nil))
         XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion(nil, currentDate: same))
         XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion("not-a-version", currentDate: same))
-        XCTAssertNil(PhotoAssetVersionPolicy.uploadVersionHeader(for: nil))
+        XCTAssertEqual(PhotoAssetVersionPolicy.uploadVersionHeader(for: nil), "unknown")
+        XCTAssertTrue(PhotoAssetVersionPolicy.matchesUploadVersion("unknown", currentDate: nil))
+        XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion("unknown", currentDate: same))
+        XCTAssertFalse(PhotoAssetVersionPolicy.matchesUploadVersion(header, currentDate: nil))
     }
 
     func testBatchedUploadCachePresenceAcrossSQLiteParameterChunks() {

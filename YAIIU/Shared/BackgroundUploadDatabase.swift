@@ -18,12 +18,15 @@ enum PhotoAssetVersionPolicy {
 
     /// Bit-exact version for PhotoKit upload jobs: ISO8601 headers normally
     /// round to whole seconds and cannot safely identify subsecond edits.
-    static func uploadVersionHeader(for date: Date?) -> String? {
-        guard let date else { return nil }
+    static func uploadVersionHeader(for date: Date?) -> String {
+        guard let date else { return "unknown" }
         return String(date.timeIntervalSince1970.bitPattern)
     }
 
     static func matchesUploadVersion(_ header: String?, currentDate: Date?) -> Bool {
+        // No PhotoKit modificationDate is a legitimate state. Match an
+        // explicitly-created unknown-version job only while it stays unknown.
+        if currentDate == nil { return header == "unknown" }
         guard let header, let recordedBits = UInt64(header),
               let currentDate else { return false }
         return recordedBits == currentDate.timeIntervalSince1970.bitPattern
