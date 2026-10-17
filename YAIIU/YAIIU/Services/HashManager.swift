@@ -653,8 +653,11 @@ class HashManager: ObservableObject {
                     // for a RAW asset would erase has_raw/raw_hash and make the primary
                     // result hide its RAW companion from background discovery.
                     let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-                    if let asset = fetch.firstObject,
-                       AssetResourceSelector.select(for: asset)?.rawResource != nil {
+                    guard let asset = fetch.firstObject else {
+                        remainingIdentifiers.append(identifier)
+                        continue
+                    }
+                    if AssetResourceSelector.select(for: asset)?.rawResource != nil {
                         remainingIdentifiers.append(identifier)
                         continue
                     }
@@ -663,7 +666,8 @@ class HashManager: ObservableObject {
                         localIdentifier: identifier,
                         primaryHash: checksum,
                         rawHash: nil,
-                        hasRAW: false
+                        hasRAW: false,
+                        modificationDate: asset.modificationDate
                     )
                     guard !Task.isCancelled, self.isCurrentRun(runID) else { return }
                     
