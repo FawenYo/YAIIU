@@ -102,7 +102,8 @@ final class DatabaseManager {
         )
     }
     
-    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) {
+    @discardableResult
+    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) -> Bool {
         hashRepo.batchSaveHashCache(items: items)
     }
     

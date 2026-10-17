@@ -90,15 +90,16 @@ final class HashCacheRepository {
     /// Immich SQLite imports have hashes but no trusted PhotoKit version.
     /// Never replace an existing (possibly JPEG+RAW) hash with import data:
     /// doing so would erase version, RAW and upload-state information.
-    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) {
-        guard !items.isEmpty else { return }
+    @discardableResult
+    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) -> Bool {
+        guard !items.isEmpty else { return true }
         connection.ensureInitialized()
-        connection.dbQueue.sync { [weak self] in
-            guard let self else { return }
+        return connection.dbQueue.sync { [weak self] () -> Bool in
+            guard let self else { return false }
             let db = self.connection.db
             guard self.connection.beginTransaction() else {
                 logError("Could not begin hash import transaction", category: .database)
-                return
+                return false
             }
             var committed = false
             defer { if !committed { self.connection.rollbackTransaction() } }
@@ -122,7 +123,7 @@ final class HashCacheRepository {
                 sqlite3_finalize(insert)
                 sqlite3_finalize(server)
                 logError("Could not prepare hash import statements: \(String(cString: sqlite3_errmsg(db)))", category: .database)
-                return
+                return false
             }
             defer {
                 sqlite3_finalize(insert)
@@ -138,7 +139,7 @@ final class HashCacheRepository {
                       sqlite3_bind_double(insert, 3, now) == SQLITE_OK,
                       sqlite3_step(insert) == SQLITE_DONE else {
                     logError("Hash import insert failed: \(String(cString: sqlite3_errmsg(db)))", category: .database)
-                    return
+                    return false
                 }
 
                 if item.syncStatus == "checked" {
@@ -149,7 +150,7 @@ final class HashCacheRepository {
                           sqlite3_bind_text(server, 3, (item.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
                           sqlite3_step(server) == SQLITE_DONE else {
                         logError("Hash import server status update failed: \(String(cString: sqlite3_errmsg(db)))", category: .database)
-                        return
+                        return false
                     }
                     // The imported primary may match while a preserved RAW
                     // companion is still absent. Schedule that incomplete
@@ -161,9 +162,10 @@ final class HashCacheRepository {
             }
             guard self.connection.commitTransaction() else {
                 logError("Could not commit hash import transaction", category: .database)
-                return
+                return false
             }
             committed = true
+            return true
         }
     }
     

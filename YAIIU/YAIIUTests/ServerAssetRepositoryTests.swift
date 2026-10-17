@@ -621,10 +621,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
             BEFORE INSERT ON background_upload_queue
             BEGIN SELECT RAISE(ABORT, 'queue write failed'); END;
         """)
-        hashRepository.batchSaveHashCache(items: [
+        XCTAssertFalse(hashRepository.batchSaveHashCache(items: [
             (localIdentifier: "incomplete-raw", sha1Hash: "primary",
              fileSize: 0, syncStatus: "checked")
-        ])
+        ]))
         XCTAssertEqual(sqlCount("""
             SELECT COUNT(*) FROM hash_cache
             WHERE asset_id = 'incomplete-raw' AND is_on_server = 0

@@ -156,7 +156,17 @@ class ImmichSQLiteImporter {
             }
             // Batch import preserves existing hashes and applies the imported
             // remote status only if its checksum matches the cached one.
-            DatabaseManager.shared.batchSaveHashCache(items: batchItems)
+            guard DatabaseManager.shared.batchSaveHashCache(items: batchItems) else {
+                let message = "SQLite import failed after \(importedCount) of \(totalCount) records"
+                logError(message, category: .importer)
+                return ImportResult(
+                    totalRecords: totalCount + skippedCount,
+                    importedRecords: importedCount,
+                    skippedRecords: totalCount - importedCount + skippedCount,
+                    alreadyOnServer: hashDataList.prefix(importedCount).filter { $0.isOnServer }.count,
+                    errorMessage: message
+                )
+            }
             
             importedCount += batch.count
             
