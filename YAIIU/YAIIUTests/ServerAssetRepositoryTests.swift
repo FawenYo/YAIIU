@@ -506,42 +506,101 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(secondRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
     }
 
-    func testForegroundBootstrapBackfillsMissingModificationDate() {
+    func testImmichImportDoesNotOverwriteVersionedRAWCacheOrReceipts() {
+        let id = "existing-pair"
         hashRepository.saveMultiResourceHashCache(
-            localIdentifier: "legacy", primaryHash: "sha-legacy",
+            localIdentifier: id, primaryHash: "existing-primary",
+            rawHash: "existing-raw", hasRAW: true,
+            modificationDate: Date(timeIntervalSince1970: 123)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg",
+            filename: "image.jpg", immichId: "existing-remote"
+        )
+        hashRepository.batchSaveHashCache(items: [
+            (localIdentifier: id, sha1Hash: "different-import", fileSize: 0, syncStatus: "checked"),
+            (localIdentifier: "imported-new", sha1Hash: "imported-hash", fileSize: 0, syncStatus: "checked")
+        ])
+
+        XCTAssertEqual(hashRepository.getHashCache(localIdentifier: id)?.sha1Hash, "existing-primary")
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'existing-pair'
+              AND raw_hash = 'existing-raw' AND has_raw = 1
+              AND asset_modification_date = 123 AND is_on_server = 0;
+            """), 1)
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertEqual(hashRepository.getHashCache(localIdentifier: "imported-new")?.sha1Hash, "imported-hash")
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'imported-new'
+              AND asset_modification_date IS NULL AND is_on_server = 1;
+            """), 1)
+    }
+
+    func testImmichReimportMatchingHashPreservesVersionAndMarksOnServer() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "matching", primaryHash: "matching-hash",
+            rawHash: "raw-hash", hasRAW: true,
+            modificationDate: Date(timeIntervalSince1970: 150)
+        )
+        hashRepository.batchSaveHashCache(items: [
+            (localIdentifier: "matching", sha1Hash: "matching-hash", fileSize: 0, syncStatus: "checked")
+        ])
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'matching'
+              AND sha1_hash = 'matching-hash' AND raw_hash = 'raw-hash'
+              AND has_raw = 1 AND asset_modification_date = 150 AND is_on_server = 1;
+            """), 1)
+    }
+
+    func testForegroundBootstrapKeepsUnknownVersionUnverified() {
+        let id = "legacy"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-legacy",
             rawHash: nil, hasRAW: false, modificationDate: nil
         )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg",
+            filename: "image.jpg", immichId: "existing-remote"
+        )
         XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
-            snapshots: [
-                PhotoAssetSnapshot(
-                    localIdentifier: "legacy", modificationDate: Date(timeIntervalSince1970: 100)
-                )
-            ],
-            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: id, modificationDate: Date(timeIntervalSince1970: 100)
+            )],
+            pendingIdentifiers: [id], deletedIdentifiers: [],
             tokenData: Data([1]), bootstrap: true
         ))
-        // A metadata-only change at the same date must not discard this
-        // expensive hash; a real content edit must.
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'legacy' AND asset_modification_date IS NULL;
+            """), 1)
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        // A later PhotoKit update cannot falsely reuse the unknown version.
         XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
-            snapshots: [
-                PhotoAssetSnapshot(
-                    localIdentifier: "legacy", modificationDate: Date(timeIntervalSince1970: 100)
-                )
-            ],
-            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: id, modificationDate: Date(timeIntervalSince1970: 100)
+            )],
+            pendingIdentifiers: [id], deletedIdentifiers: [],
             tokenData: Data([2]), bootstrap: false
         ))
-        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "legacy"))
-        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
-            snapshots: [
-                PhotoAssetSnapshot(
-                    localIdentifier: "legacy", modificationDate: Date(timeIntervalSince1970: 120)
-                )
-            ],
-            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
-            tokenData: Data([3]), bootstrap: false
-        ))
-        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "legacy"))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
+    }
+
+    func testFallbackSnapshotDoesNotBackfillUnverifiedVersion() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "fallback-legacy", primaryHash: "cached",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: "fallback-legacy", modificationDate: Date(timeIntervalSince1970: 200)
+            )]
+        )
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'fallback-legacy' AND asset_modification_date IS NULL;
+            """), 1)
     }
 
     func testUnknownModificationDateIsConservativelyInvalidatedOnUpdate() {
