@@ -109,6 +109,10 @@ final class DatabaseManager {
     func getHashCache(localIdentifier: String) -> HashCacheRecord? {
         hashRepo.getHashCache(localIdentifier: localIdentifier)
     }
+
+    func cachedHashIdentifiers(for identifiers: [String]) -> Set<String>? {
+        hashRepo.cachedHashIdentifiers(for: identifiers)
+    }
     
     func updateHashCacheServerStatus(localIdentifier: String, isOnServer: Bool, syncStatus: String = "checked") {
         hashRepo.updateHashCacheServerStatus(localIdentifier: localIdentifier, isOnServer: isOnServer)
