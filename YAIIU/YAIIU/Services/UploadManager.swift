@@ -218,24 +218,25 @@ class UploadManager: ObservableObject {
                 let filename = resources.first.map { $0.resolvedFilename() } ?? "unknown"
                 entries.append((asset, filename, hasRAW, resources.count))
             }
-            // Capture cache existence before the foreground upload begins.
-            // This distinguishes a pre-existing cache miss from invalidation during upload.
-            var cachedCount = 0
-            for entry in entries {
-                let isCached = DatabaseManager.shared.getHashCache(
-                    localIdentifier: entry.asset.localIdentifier
-                ) != nil
-                if isCached { cachedCount += 1 }
-                logDebug(
-                    "Upload hash cache preflight: asset=\(entry.asset.localIdentifier), cached=\(isCached)",
-                    category: .hash
-                )
-            }
+            // Diagnostic only: batch database reads and cap per-asset disk logs
+            // so Select All does not delay queue creation for thousands of assets.
             if !entries.isEmpty {
-                logInfo(
-                    "Upload hash cache preflight: total=\(entries.count), cached=\(cachedCount), missing=\(entries.count - cachedCount)",
-                    category: .hash
-                )
+                let identifiers = entries.map { $0.asset.localIdentifier }
+                if let cached = DatabaseManager.shared.cachedHashIdentifiers(for: identifiers) {
+                    logInfo(
+                        "Upload hash cache preflight: total=\(entries.count), cached=\(entries.filter { cached.contains($0.asset.localIdentifier) }.count), missing=\(entries.filter { !cached.contains($0.asset.localIdentifier) }.count)",
+                        category: .hash
+                    )
+                    for entry in entries.prefix(10) {
+                        let isCached = cached.contains(entry.asset.localIdentifier)
+                        logDebug(
+                            "Upload hash cache preflight: asset=\(entry.asset.localIdentifier), cached=\(isCached)",
+                            category: .hash
+                        )
+                    }
+                } else {
+                    logWarning("Upload hash cache preflight unavailable", category: .hash)
+                }
             }
             let prepared = PreparedUploadQueue(entries: entries, skippedCount: skippedCount)
 
