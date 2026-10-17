@@ -555,6 +555,30 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(queuedIds().contains("matching"))
     }
 
+    func testImportRollsBackServerStatusIfRAWQueueInsertFails() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "incomplete-raw", primaryHash: "primary",
+            rawHash: "raw", hasRAW: true,
+            modificationDate: Date(timeIntervalSince1970: 250)
+        )
+        execute("""
+            CREATE TRIGGER reject_import_queue
+            BEFORE INSERT ON background_upload_queue
+            BEGIN SELECT RAISE(ABORT, 'queue write failed'); END;
+        """)
+        hashRepository.batchSaveHashCache(items: [
+            (localIdentifier: "incomplete-raw", sha1Hash: "primary",
+             fileSize: 0, syncStatus: "checked")
+        ])
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'incomplete-raw' AND is_on_server = 0
+              AND checked_at IS NULL AND raw_hash = 'raw'
+              AND asset_modification_date = 250;
+            """), 1)
+        XCTAssertFalse(queuedIds().contains("incomplete-raw"))
+    }
+
     func testUploadVersionHeaderRetainsSubsecondPrecisionAndRejectsLegacyJobs() {
         let recorded = Date(timeIntervalSince1970: 1_791_297_704.25)
         let same = Date(timeIntervalSince1970: 1_791_297_704.25)
