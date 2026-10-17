@@ -649,7 +649,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         for id in ids {
             if id != "receipt-only" {
                 hashRepository.saveMultiResourceHashCache(
-                    localIdentifier: id, primaryHash: "sha-\\(id)",
+                    localIdentifier: id, primaryHash: "sha-\(id)",
                     rawHash: nil, hasRAW: false,
                     modificationDate: id == "legacy" ? nil : Date(timeIntervalSince1970: 100)
                 )
