@@ -560,6 +560,15 @@ struct PhotoGridView: View {
             libraryRefreshTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
+                // PhotoKit refreshes must not clear an active selection, but
+                // identifiers of assets actually deleted from the library
+                // should not remain selected. Only reconcile a finished
+                // identifier snapshot, never the transient empty one.
+                if isSelectionMode && !selectedAssets.isEmpty &&
+                   (currentFilter == .all || currentFilter == .notUploaded) &&
+                   photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration {
+                    selectedAssets.formIntersection(Set(photoLibraryManager.orderedLocalIdentifiers))
+                }
                 recomputeCounts()
                 if currentFilter == .favorites || currentFilter == .album {
                     refreshPhotoKitFilter()
