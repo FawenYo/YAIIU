@@ -154,7 +154,9 @@ final class HashCacheRepository {
                     // The imported primary may match while a preserved RAW
                     // companion is still absent. Schedule that incomplete
                     // asset using the same queue rule as regular server checks.
-                    self.enqueueIfMissingOnServerInternal(localIdentifier: item.localIdentifier)
+                    guard self.enqueueIfMissingOnServerInternal(
+                        localIdentifier: item.localIdentifier
+                    ) else { return }
                 }
             }
             guard self.connection.commitTransaction() else {
@@ -300,7 +302,8 @@ final class HashCacheRepository {
         enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
     }
 
-    private func enqueueIfMissingOnServerInternal(localIdentifier: String) {
+    @discardableResult
+    private func enqueueIfMissingOnServerInternal(localIdentifier: String) -> Bool {
         let sql = """
         INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
         SELECT asset_id, ?
@@ -310,11 +313,23 @@ final class HashCacheRepository {
           AND (is_on_server = 0 OR (has_raw = 1 AND raw_on_server = 0));
         """
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else { return }
-        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
-        sqlite3_bind_text(statement, 2, (localIdentifier as NSString).utf8String, -1, nil)
-        sqlite3_step(statement)
-        sqlite3_finalize(statement)
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            logError("Could not prepare missing-resource upload queue insert", category: .database)
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        let success =
+            sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970) == SQLITE_OK &&
+            sqlite3_bind_text(
+                statement, 2, (localIdentifier as NSString).utf8String,
+                -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            ) == SQLITE_OK &&
+            sqlite3_step(statement) == SQLITE_DONE
+        if !success {
+            logError("Could not queue asset with missing resources: \(localIdentifier)", category: .database)
+        }
+        return success
     }
     
     func updateMultiResourceHashCacheServerStatus(
