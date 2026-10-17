@@ -458,6 +458,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 var insertedCount = 0
                 var updatedCount = 0
                 var deletedCount = 0
+                var sampleIdentifiersLogged = 0
                 for change in changes {
                     let details = try change.changeDetails(for: .asset)
                     let deleted = details.deletedLocalIdentifiers
@@ -500,11 +501,17 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     insertedCount += details.insertedLocalIdentifiers.count
                     updatedCount += details.updatedLocalIdentifiers.count
                     deletedCount += deleted.count
+                    // Keep aggregate counts exact but bound disk log volume
+                    // when PhotoKit delivers a very large persistent change set.
                     for identifier in details.insertedLocalIdentifiers {
+                        guard sampleIdentifiersLogged < 10 else { break }
                         logDebug("Foreground PhotoKit inserted: asset=\(identifier)", category: .hash)
+                        sampleIdentifiersLogged += 1
                     }
                     for identifier in details.updatedLocalIdentifiers {
+                        guard sampleIdentifiersLogged < 10 else { break }
                         logDebug("Foreground PhotoKit updated: asset=\(identifier)", category: .hash)
+                        sampleIdentifiersLogged += 1
                     }
                 }
                 if processedBatches > 0 {
