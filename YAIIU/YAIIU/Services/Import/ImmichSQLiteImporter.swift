@@ -154,13 +154,9 @@ class ImmichSQLiteImporter {
                  fileSize: Int64(0),
                  syncStatus: item.isOnServer ? "checked" : "pending")
             }
+            // Batch import preserves existing hashes and applies the imported
+            // remote status only if its checksum matches the cached one.
             DatabaseManager.shared.batchSaveHashCache(items: batchItems)
-            
-            let onServerItems = batch.filter { $0.isOnServer }
-            if !onServerItems.isEmpty {
-                let results = onServerItems.map { ($0.localIdentifier, true) }
-                DatabaseManager.shared.batchUpdateHashCacheServerStatus(results: results)
-            }
             
             importedCount += batch.count
             
