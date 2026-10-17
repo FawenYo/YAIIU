@@ -807,6 +807,9 @@ final class HashCacheRepository {
             var changedDateCount = 0
             var missingCurrentDateCount = 0
             var cacheDetails: [String] = []
+            func recordCacheDetail(_ message: String) {
+                if cacheDetails.count < 10 { cacheDetails.append(message) }
+            }
 
             // Bootstrap reconciles old hashes/receipts/queue entries using the
             // authoritative full-library snapshot (including hidden assets).
@@ -916,7 +919,7 @@ final class HashCacheRepository {
                 for snapshot in snapshots where !snapshot.isHidden {
                     guard let date = snapshot.modificationDate else {
                         missingCurrentDateCount += 1
-                        cacheDetails.append("Foreground PhotoKit missing current modification date: asset=\(snapshot.localIdentifier)")
+                        recordCacheDetail("Foreground PhotoKit missing current modification date: asset=\(snapshot.localIdentifier)")
                         continue
                     }
                     sqlite3_reset(statement)
@@ -927,7 +930,7 @@ final class HashCacheRepository {
                         if sqlite3_column_type(statement, 0) == SQLITE_NULL {
                             missingStoredDateCount += 1
                             modified.insert(snapshot.localIdentifier)
-                            cacheDetails.append(
+                            recordCacheDetail(
                                 "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=missing_stored_date, current=\(date.timeIntervalSince1970)"
                             )
                         } else {
@@ -935,7 +938,7 @@ final class HashCacheRepository {
                             if date.timeIntervalSince1970 != stored {
                                 changedDateCount += 1
                                 modified.insert(snapshot.localIdentifier)
-                                cacheDetails.append(
+                                recordCacheDetail(
                                     "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=modification_date_changed, stored=\(stored), current=\(date.timeIntervalSince1970)"
                                 )
                             } else {
@@ -944,7 +947,7 @@ final class HashCacheRepository {
                         }
                     } else if step == SQLITE_DONE {
                         missingCacheCount += 1
-                        cacheDetails.append("Foreground PhotoKit asset has no prior hash cache: asset=\(snapshot.localIdentifier)")
+                        recordCacheDetail("Foreground PhotoKit asset has no prior hash cache: asset=\(snapshot.localIdentifier)")
                     } else {
                         checkOK = false
                         break
