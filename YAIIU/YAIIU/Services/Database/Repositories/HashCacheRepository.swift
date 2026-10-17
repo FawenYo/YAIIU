@@ -208,6 +208,63 @@ final class HashCacheRepository {
         return record
     }
     
+    /// A bounded, batched cache-presence lookup for upload diagnostics.
+    /// It avoids one synchronous database dispatch and one log per asset.
+    func cachedHashIdentifiers(for identifiers: [String]) -> Set<String>? {
+        guard !identifiers.isEmpty else { return [] }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] () -> Set<String>? in
+            guard let self else { return nil }
+            let db = self.connection.db
+            let uniqueIdentifiers = Array(Set(identifiers))
+            var cached = Set<String>()
+            // Stay below SQLite's older 999-parameter limit.
+            for start in stride(from: 0, to: uniqueIdentifiers.count, by: 400) {
+                let end = min(start + 400, uniqueIdentifiers.count)
+                let batch = Array(uniqueIdentifiers[start..<end])
+                let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                let sql = "SELECT asset_id FROM hash_cache WHERE asset_id IN (\(placeholders));"
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    logError("Could not prepare hash cache preflight query", category: .database)
+                    return nil
+                }
+                var valid = true
+                for (index, identifier) in batch.enumerated() {
+                    if sqlite3_bind_text(
+                        statement, Int32(index + 1), (identifier as NSString).utf8String,
+                        -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                    ) != SQLITE_OK {
+                        valid = false
+                        break
+                    }
+                }
+                if valid {
+                    while true {
+                        let result = sqlite3_step(statement)
+                        if result == SQLITE_ROW {
+                            if let id = sqlite3_column_text(statement, 0) {
+                                cached.insert(String(cString: id))
+                            }
+                        } else if result == SQLITE_DONE {
+                            break
+                        } else {
+                            valid = false
+                            break
+                        }
+                    }
+                }
+                sqlite3_finalize(statement)
+                guard valid else {
+                    logError("Hash cache preflight query failed", category: .database)
+                    return nil
+                }
+            }
+            return cached
+        }
+    }
+
     // MARK: - Update Methods
     
     func updateHashCacheServerStatus(localIdentifier: String, isOnServer: Bool) {
