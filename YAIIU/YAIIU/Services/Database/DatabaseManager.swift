@@ -106,6 +106,17 @@ final class DatabaseManager {
         hashRepo.batchSaveHashCache(items: items)
     }
     
+    func unversionedHashCacheRows() -> [(localIdentifier: String, sha1Hash: String)] {
+        hashRepo.unversionedHashCacheRows()
+    }
+
+    @discardableResult
+    func backfillUnversionedHashDates(
+        _ updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)]
+    ) -> Int {
+        hashRepo.backfillUnversionedHashDates(updates)
+    }
+
     func getHashCache(localIdentifier: String) -> HashCacheRecord? {
         hashRepo.getHashCache(localIdentifier: localIdentifier)
     }

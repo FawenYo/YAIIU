@@ -167,6 +167,91 @@ final class HashCacheRepository {
         }
     }
     
+    /// Import/legacy caches can hold a valid hash but no PhotoKit version.
+    /// Return only unknown-version rows; no original media is requested.
+    func unversionedHashCacheRows() -> [(localIdentifier: String, sha1Hash: String)] {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return [] }
+            var statement: OpaquePointer?
+            let sql = """
+                SELECT asset_id, sha1_hash
+                FROM hash_cache
+                WHERE asset_modification_date IS NULL;
+                """
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                logError("Could not prepare unknown hash-version lookup", category: .database)
+                return []
+            }
+            defer { sqlite3_finalize(statement) }
+            var rows: [(localIdentifier: String, sha1Hash: String)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let identifier = sqlite3_column_text(statement, 0),
+                      let checksum = sqlite3_column_text(statement, 1) else { continue }
+                rows.append((
+                    localIdentifier: String(cString: identifier),
+                    sha1Hash: String(cString: checksum)
+                ))
+            }
+            return rows
+        }
+    }
+
+    /// One-time baseline for pre-versioned hashes. This records PhotoKit's
+    /// current modification date, NOT proof that imported bytes equal current
+    /// media. The caller must knowingly accept that historical limitation.
+    /// Only fill still-NULL rows with the same checksum seen at snapshot time,
+    /// so concurrent hashing cannot be overwritten.
+    @discardableResult
+    func backfillUnversionedHashDates(
+        _ updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)]
+    ) -> Int {
+        guard !updates.isEmpty else { return 0 }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return 0 }
+            guard self.connection.beginTransaction() else {
+                logError("Could not begin unknown hash-version backfill", category: .database)
+                return 0
+            }
+            var committed = false
+            defer { if !committed { self.connection.rollbackTransaction() } }
+            var statement: OpaquePointer?
+            let sql = """
+                UPDATE hash_cache
+                SET asset_modification_date = ?
+                WHERE asset_id = ? AND sha1_hash = ?
+                  AND asset_modification_date IS NULL;
+                """
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                logError("Could not prepare unknown hash-version backfill", category: .database)
+                return 0
+            }
+            defer { sqlite3_finalize(statement) }
+            var written = 0
+            for update in updates {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                guard sqlite3_bind_double(statement, 1, update.modificationDate.timeIntervalSince1970) == SQLITE_OK,
+                      sqlite3_bind_text(statement, 2, (update.localIdentifier as NSString).utf8String, -1, nil) == SQLITE_OK,
+                      sqlite3_bind_text(statement, 3, (update.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
+                      sqlite3_step(statement) == SQLITE_DONE else {
+                    logError("Unknown hash-version backfill failed", category: .database)
+                    return 0
+                }
+                written += Int(sqlite3_changes(self.connection.db))
+            }
+            guard self.connection.commitTransaction() else {
+                logError("Could not commit unknown hash-version backfill", category: .database)
+                return 0
+            }
+            committed = true
+            return written
+        }
+    }
+
     // MARK: - Query Methods
     
     func getHashCache(localIdentifier: String) -> HashCacheRecord? {
