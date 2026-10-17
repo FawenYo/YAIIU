@@ -1161,8 +1161,8 @@ final class HashCacheRepository {
 
     // MARK: - Modified Asset Invalidation
 
-    /// Deletes hash_cache and uploaded_assets rows for assets whose modificationDate
-    /// has changed since the date was last stored. Assets with NULL stored dates are skipped.
+    /// Deletes hashes with changed versions. A visible unknown-version hash
+    /// also requires re-verification on fallback snapshots (e.g. Limited Photos).
     func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool = false) {
         guard !snapshots.isEmpty || pruneOrphans else { return }
 
@@ -1239,8 +1239,14 @@ final class HashCacheRepository {
             // Hidden assets appear here solely for deletion safety. Preserve
             // their previous hashes until they return to the visible pipeline.
             guard !snapshot.isHidden else { continue }
+            guard cachedIds.contains(snapshot.localIdentifier) else { continue }
             guard let stored = storedDates[snapshot.localIdentifier],
-                  let date = snapshot.modificationDate else { continue }
+                  let date = snapshot.modificationDate else {
+                // Existing cache with no trusted comparable version:
+                // require local hashing rather than silently reusing it.
+                modifiedIds.insert(snapshot.localIdentifier)
+                continue
+            }
             if date.timeIntervalSince1970 != stored {
                 modifiedIds.insert(snapshot.localIdentifier)
             }

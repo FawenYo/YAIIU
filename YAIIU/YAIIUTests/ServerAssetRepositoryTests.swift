@@ -703,20 +703,30 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
     }
 
-    func testFallbackSnapshotDoesNotBackfillUnverifiedVersion() {
+    func testFallbackSnapshotRehashesUnknownVisibleVersion() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "fallback-legacy", primaryHash: "cached",
             rawHash: nil, hasRAW: false, modificationDate: nil
         )
-        hashRepository.resetCacheForModifiedAssets(
-            snapshots: [PhotoAssetSnapshot(
-                localIdentifier: "fallback-legacy", modificationDate: Date(timeIntervalSince1970: 200)
-            )]
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "fallback-legacy", resourceType: "jpeg",
+            filename: "photo.jpg", immichId: "remote"
         )
-        XCTAssertEqual(sqlCount("""
-            SELECT COUNT(*) FROM hash_cache
-            WHERE asset_id = 'fallback-legacy' AND asset_modification_date IS NULL;
-            """), 1)
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "hidden-legacy", primaryHash: "hidden",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        hashRepository.resetCacheForModifiedAssets(
+            snapshots: [
+                PhotoAssetSnapshot(localIdentifier: "fallback-legacy",
+                                   modificationDate: Date(timeIntervalSince1970: 200)),
+                PhotoAssetSnapshot(localIdentifier: "hidden-legacy",
+                                   modificationDate: nil, isHidden: true)
+            ]
+        )
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "fallback-legacy"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "fallback-legacy"))
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "hidden-legacy"))
     }
 
     func testUnknownModificationDateIsConservativelyInvalidatedOnUpdate() {
