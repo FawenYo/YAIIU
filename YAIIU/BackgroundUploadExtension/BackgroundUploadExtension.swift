@@ -986,6 +986,12 @@ final class BackgroundUploadExtensionCore {
             fmt.string(from: modified),
             forHTTPHeaderField: "X-File-Modified-At"
         )
+        // This header is only for matching an acknowledged upload to the
+        // exact PhotoKit asset version. Keep the API's ISO8601 header unchanged.
+        req.setValue(
+            PhotoAssetVersionPolicy.uploadVersionHeader(for: asset.modificationDate),
+            forHTTPHeaderField: "X-YAIIU-Asset-Version"
+        )
         req.setValue(isFavorite ? "true" : "false", forHTTPHeaderField: "X-Is-Favorite")
         req.setValue(
             resolvedFilename,
@@ -1153,7 +1159,6 @@ final class BackgroundUploadExtensionCore {
     }
 
     private static let assetExistenceCache = OSAllocatedUnfairLock<Set<String>>(initialState: [])
-    private static let iso8601Formatter = ISO8601DateFormatter()
 
     private static func assetExists(identifier: String) -> Bool {
         // Cache hits only: an asset can be transiently absent during iCloud
@@ -1176,10 +1181,13 @@ final class BackgroundUploadExtensionCore {
             return false
         }
 
-        if let value = job.destination.value(forHTTPHeaderField: "X-File-Modified-At"),
-           let uploadedDate = Self.iso8601Formatter.date(from: value),
-           let currentDate = asset.modificationDate,
-           abs(uploadedDate.timeIntervalSince(currentDate)) > 1 {
+        // Reject unversioned legacy jobs conservatively: their existing
+        // second-granularity ISO8601 header cannot distinguish nearby edits.
+        // New jobs carry the precise Date bit-pattern separately.
+        guard PhotoAssetVersionPolicy.matchesUploadVersion(
+            job.destination.value(forHTTPHeaderField: "X-YAIIU-Asset-Version"),
+            currentDate: asset.modificationDate
+        ) else {
             return false
         }
 
