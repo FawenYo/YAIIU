@@ -609,6 +609,130 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
     }
 
+    func testBackgroundPhotoKitMetadataUpdateRetainsKnownHashAndUploadReceipts() {
+        let id = "unchanged-raw-pair"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-jpeg", rawHash: "sha-raw",
+            hasRAW: true, modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg", filename: "image.jpg", immichId: "remote-jpeg"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "raw", filename: "image.dng", immichId: "remote-raw"
+        )
+        execute("""
+            INSERT INTO upload_jobs (asset_id, resource_type, filename, status, created_at, updated_at)
+            VALUES ('unchanged-raw-pair', 'jpeg', 'image.jpg', 'completed', 0, 0),
+                   ('unchanged-raw-pair', 'raw', 'image.dng', 'completed', 0, 0);
+        """)
+
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
+            updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 100)],
+            tokenData: Data([1])
+        )
+
+        XCTAssertEqual(summary?.retainedVersions, 1)
+        XCTAssertEqual(summary?.invalidatedVersions, 0)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE raw_hash = 'sha-raw';"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'unchanged-raw-pair';"), 2)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE asset_id = 'unchanged-raw-pair';"), 2)
+        XCTAssertEqual(background.loadChangeToken(), Data([1]))
+        XCTAssertTrue(queuedIds().contains(id))
+    }
+
+    func testBackgroundPhotoKitInvalidatesChangedAndUnversionedAssets() {
+        let ids = ["edited", "legacy", "missing-date", "receipt-only"]
+        for id in ids {
+            if id != "receipt-only" {
+                hashRepository.saveMultiResourceHashCache(
+                    localIdentifier: id, primaryHash: "sha-\\(id)",
+                    rawHash: nil, hasRAW: false,
+                    modificationDate: id == "legacy" ? nil : Date(timeIntervalSince1970: 100)
+                )
+            }
+            uploadRepository.recordUploadedAsset(
+                localIdentifier: id, resourceType: "jpeg", filename: "image.jpg", immichId: "remote"
+            )
+        }
+        execute("""
+            INSERT INTO upload_jobs (asset_id, resource_type, filename, status, created_at, updated_at)
+            VALUES ('edited', 'jpeg', 'image.jpg', 'completed', 0, 0),
+                   ('legacy', 'jpeg', 'image.jpg', 'completed', 0, 0);
+        """)
+
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: Set(ids), deletedAssetIds: [],
+            updatedAssetModificationDates: [
+                "edited": Date(timeIntervalSince1970: 120),
+                "legacy": Date(timeIntervalSince1970: 100),
+                "receipt-only": Date(timeIntervalSince1970: 100)
+            ],
+            tokenData: Data([2])
+        )
+
+        XCTAssertEqual(summary?.retainedVersions, 0)
+        XCTAssertEqual(summary?.invalidatedVersions, ids.count)
+        for id in ids {
+            XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
+            XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+            XCTAssertTrue(queuedIds().contains(id))
+        }
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE status = 'completed';"), 0)
+        XCTAssertEqual(background.loadChangeToken(), Data([2]))
+    }
+
+    func testBackgroundPhotoKitInvalidationFailureRollsBackTokenAndRecords() {
+        let id = "edited"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-original", rawHash: nil,
+            hasRAW: false, modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg", filename: "image.jpg", immichId: "remote"
+        )
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        XCTAssertNotNil(background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [], deletedAssetIds: [],
+            updatedAssetModificationDates: [:], tokenData: Data([1])
+        ))
+        execute("""
+            CREATE TRIGGER reject_changed_hash
+            BEFORE DELETE ON hash_cache
+            BEGIN SELECT RAISE(ABORT, 'forced failure'); END;
+        """)
+
+        XCTAssertNil(background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
+            updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 120)],
+            tokenData: Data([2])
+        ))
+
+        XCTAssertEqual(background.loadChangeToken(), Data([1]))
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertFalse(queuedIds().contains(id))
+    }
+
+    private func sqlCount(_ sql: String) -> Int {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            XCTFail("Could not prepare count query")
+            return -1
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            XCTFail("Could not read count query")
+            return -1
+        }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
     private func hexBlob(_ sql: String) -> String? {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
