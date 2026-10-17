@@ -169,6 +169,9 @@ class ImmichSQLiteImporter {
         }
         
         logInfo("Import completed: \(importedCount) records imported, \(onServerCount) already on server, \(skippedCount) skipped", category: .importer)
+        // Imports intentionally create NULL versions. Populate the current
+        // PhotoKit baseline before the next foreground delta reconciliation.
+        PhotoLibraryManager.shared.backfillUnknownHashVersionsAfterImport()
         
         return ImportResult(
             totalRecords: totalCount + skippedCount,
