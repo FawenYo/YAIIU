@@ -151,6 +151,10 @@ final class HashCacheRepository {
                         logError("Hash import server status update failed: \(String(cString: sqlite3_errmsg(db)))", category: .database)
                         return
                     }
+                    // The imported primary may match while a preserved RAW
+                    // companion is still absent. Schedule that incomplete
+                    // asset using the same queue rule as regular server checks.
+                    self.enqueueIfMissingOnServerInternal(localIdentifier: item.localIdentifier)
                 }
             }
             guard self.connection.commitTransaction() else {
