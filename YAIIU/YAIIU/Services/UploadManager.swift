@@ -218,6 +218,25 @@ class UploadManager: ObservableObject {
                 let filename = resources.first.map { $0.resolvedFilename() } ?? "unknown"
                 entries.append((asset, filename, hasRAW, resources.count))
             }
+            // Capture cache existence before any PhotoKit resource is requested for upload.
+            // This distinguishes a pre-existing cache miss from invalidation during upload.
+            var cachedCount = 0
+            for entry in entries {
+                let isCached = DatabaseManager.shared.getHashCache(
+                    localIdentifier: entry.asset.localIdentifier
+                ) != nil
+                if isCached { cachedCount += 1 }
+                logDebug(
+                    "Upload hash cache preflight: asset=\(entry.asset.localIdentifier), cached=\(isCached)",
+                    category: .hash
+                )
+            }
+            if !entries.isEmpty {
+                logInfo(
+                    "Upload hash cache preflight: total=\(entries.count), cached=\(cachedCount), missing=\(entries.count - cachedCount)",
+                    category: .hash
+                )
+            }
             let prepared = PreparedUploadQueue(entries: entries, skippedCount: skippedCount)
 
             await MainActor.run {
