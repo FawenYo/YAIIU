@@ -15,6 +15,19 @@ enum PhotoAssetVersionPolicy {
         // including one second or less, must be treated as a new version.
         return currentModificationDate.timeIntervalSince1970 == storedModificationTime
     }
+
+    /// Bit-exact version for PhotoKit upload jobs: ISO8601 headers normally
+    /// round to whole seconds and cannot safely identify subsecond edits.
+    static func uploadVersionHeader(for date: Date?) -> String? {
+        guard let date else { return nil }
+        return String(date.timeIntervalSince1970.bitPattern)
+    }
+
+    static func matchesUploadVersion(_ header: String?, currentDate: Date?) -> Bool {
+        guard let header, let recordedBits = UInt64(header),
+              let currentDate else { return false }
+        return recordedBits == currentDate.timeIntervalSince1970.bitPattern
+    }
 }
 
 struct PhotoAssetChangeCommitSummary {
