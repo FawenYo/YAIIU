@@ -71,7 +71,17 @@ final class HashCacheRepository {
                 sqlite3_bind_null(statement, 6)
             }
 
-            sqlite3_step(statement)
+            if sqlite3_step(statement) != SQLITE_DONE {
+                logError(
+                    "Hash cache write failed: asset=\(localIdentifier), error=\(String(cString: sqlite3_errmsg(connection.db)))",
+                    category: .database
+                )
+            }
+        } else {
+            logError(
+                "Hash cache insert preparation failed: asset=\(localIdentifier), error=\(String(cString: sqlite3_errmsg(connection.db)))",
+                category: .database
+            )
         }
 
         sqlite3_finalize(statement)
@@ -660,6 +670,14 @@ final class HashCacheRepository {
                 return true
             }
 
+            // Diagnostic counters are emitted only after the change transaction commits.
+            var unchangedCachedCount = 0
+            var missingCacheCount = 0
+            var missingStoredDateCount = 0
+            var changedDateCount = 0
+            var missingCurrentDateCount = 0
+            var cacheDetails: [String] = []
+
             // Bootstrap reconciles old hashes/receipts/queue entries using the
             // authoritative full-library snapshot (including hidden assets).
             // The token is sampled BEFORE enumerating, so later changes replay.
@@ -772,18 +790,38 @@ final class HashCacheRepository {
                 }
                 var checkOK = true
                 for snapshot in snapshots where !snapshot.isHidden {
-                    guard let date = snapshot.modificationDate else { continue }
+                    guard let date = snapshot.modificationDate else {
+                        missingCurrentDateCount += 1
+                        cacheDetails.append("Foreground PhotoKit missing current modification date: asset=\(snapshot.localIdentifier)")
+                        continue
+                    }
                     sqlite3_reset(statement)
                     sqlite3_clear_bindings(statement)
                     sqlite3_bind_text(statement, 1, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
                     let step = sqlite3_step(statement)
-                    if step == SQLITE_ROW &&
-                        (sqlite3_column_type(statement, 0) == SQLITE_NULL ||
-                         date.timeIntervalSince1970 != sqlite3_column_double(statement, 0)) {
-                        // Legacy cached hashes without modification dates cannot
-                        // safely assert that a changed PhotoKit asset is unchanged.
-                        modified.insert(snapshot.localIdentifier)
-                    } else if step != SQLITE_ROW && step != SQLITE_DONE {
+                    if step == SQLITE_ROW {
+                        if sqlite3_column_type(statement, 0) == SQLITE_NULL {
+                            missingStoredDateCount += 1
+                            modified.insert(snapshot.localIdentifier)
+                            cacheDetails.append(
+                                "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=missing_stored_date, current=\(date.timeIntervalSince1970)"
+                            )
+                        } else {
+                            let stored = sqlite3_column_double(statement, 0)
+                            if date.timeIntervalSince1970 != stored {
+                                changedDateCount += 1
+                                modified.insert(snapshot.localIdentifier)
+                                cacheDetails.append(
+                                    "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=modification_date_changed, stored=\(stored), current=\(date.timeIntervalSince1970)"
+                                )
+                            } else {
+                                unchangedCachedCount += 1
+                            }
+                        }
+                    } else if step == SQLITE_DONE {
+                        missingCacheCount += 1
+                        cacheDetails.append("Foreground PhotoKit asset has no prior hash cache: asset=\(snapshot.localIdentifier)")
+                    } else {
                         checkOK = false
                         break
                     }
@@ -836,6 +874,15 @@ final class HashCacheRepository {
             sqlite3_finalize(tokenStatement)
             guard tokenOK, self.connection.commitTransaction() else { return false }
             committed = true
+            if !bootstrap && !snapshots.isEmpty {
+                logInfo(
+                    "Foreground PhotoKit cache reconciliation: snapshots=\(snapshots.count), cachedUnchanged=\(unchangedCachedCount), noCache=\(missingCacheCount), invalidatedMissingDate=\(missingStoredDateCount), invalidatedChangedDate=\(changedDateCount), currentDateUnknown=\(missingCurrentDateCount)",
+                    category: .hash
+                )
+                for detail in cacheDetails {
+                    logDebug(detail, category: .hash)
+                }
+            }
             return true
         }
     }
