@@ -11,7 +11,9 @@ enum PhotoAssetVersionPolicy {
         currentModificationDate: Date?
     ) -> Bool {
         guard let storedModificationTime, let currentModificationDate else { return false }
-        return abs(currentModificationDate.timeIntervalSince1970 - storedModificationTime) <= 1.0
+        // SQLite REAL preserves the original Double timestamp. Any change,
+        // including one second or less, must be treated as a new version.
+        return currentModificationDate.timeIntervalSince1970 == storedModificationTime
     }
 }
 
