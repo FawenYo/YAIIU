@@ -773,30 +773,37 @@ final class BackgroundUploadDatabase {
             if !updatedAssetModificationDates.isEmpty && !updatedAssetIds.isEmpty {
                 let sql = "SELECT asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1"
                 var versionStmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, sql, -1, &versionStmt, nil) == SQLITE_OK else {
-                    sqlite3_finalize(versionStmt)
-                    return nil
-                }
-                defer { sqlite3_finalize(versionStmt) }
+                if sqlite3_prepare_v2(db, sql, -1, &versionStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(versionStmt) }
 
-                for assetId in updatedAssetIds {
-                    guard let currentDate = updatedAssetModificationDates[assetId] else { continue }
-                    sqlite3_reset(versionStmt)
-                    sqlite3_clear_bindings(versionStmt)
-                    guard sqlite3_bind_text(versionStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-                        return nil
-                    }
-                    let result = sqlite3_step(versionStmt)
-                    if result == SQLITE_ROW {
-                        let storedDate: TimeInterval? = sqlite3_column_type(versionStmt, 0) == SQLITE_NULL
-                            ? nil : sqlite3_column_double(versionStmt, 0)
-                        if PhotoAssetVersionPolicy.canReuseCachedHash(
-                            storedModificationTime: storedDate,
-                            currentModificationDate: currentDate
-                        ) {
-                            invalidatedUpdatedIds.remove(assetId)
+                    for assetId in updatedAssetIds {
+                        guard let currentDate = updatedAssetModificationDates[assetId] else { continue }
+                        sqlite3_reset(versionStmt)
+                        sqlite3_clear_bindings(versionStmt)
+                        guard sqlite3_bind_text(versionStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                            return nil
                         }
-                    } else if result != SQLITE_DONE {
+                        let result = sqlite3_step(versionStmt)
+                        if result == SQLITE_ROW {
+                            let storedDate: TimeInterval? = sqlite3_column_type(versionStmt, 0) == SQLITE_NULL
+                                ? nil : sqlite3_column_double(versionStmt, 0)
+                            if PhotoAssetVersionPolicy.canReuseCachedHash(
+                                storedModificationTime: storedDate,
+                                currentModificationDate: currentDate
+                            ) {
+                                invalidatedUpdatedIds.remove(assetId)
+                            }
+                        } else if result != SQLITE_DONE {
+                            return nil
+                        }
+                    }
+                } else {
+                    let error = String(cString: sqlite3_errmsg(db))
+                    sqlite3_finalize(versionStmt)
+                    // An older extension may launch before the host migrates the
+                    // version column. Fall back to the original conservative
+                    // invalidation rather than blocking the durable checkpoint.
+                    guard error.contains("no such column: asset_modification_date") else {
                         return nil
                     }
                 }
@@ -825,6 +832,35 @@ final class BackgroundUploadDatabase {
                     }
                 }
                 sqlite3_finalize(stmt)
+            }
+
+            // The foreground may have invalidated an old upload receipt,
+            // rehashed the changed asset, and saved a matching current version
+            // before this extension processes its PhotoKit token. A completed
+            // job without its resource receipt is stale even when hash dates now
+            // match: remove it so createOrUpdateJob can track its replacement.
+            let staleJobSQL = """
+                DELETE FROM upload_jobs
+                WHERE asset_id = ? AND status = 'completed'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM uploaded_assets AS receipt
+                      WHERE receipt.asset_id = upload_jobs.asset_id
+                        AND receipt.resource_type = upload_jobs.resource_type
+                  )
+            """
+            var staleJobStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, staleJobSQL, -1, &staleJobStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(staleJobStmt)
+                return nil
+            }
+            defer { sqlite3_finalize(staleJobStmt) }
+            for assetId in updatedAssetIds {
+                sqlite3_reset(staleJobStmt)
+                sqlite3_clear_bindings(staleJobStmt)
+                guard sqlite3_bind_text(staleJobStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                      sqlite3_step(staleJobStmt) == SQLITE_DONE else {
+                    return nil
+                }
             }
 
             // Enqueue all updated identifiers even when a cached version is
