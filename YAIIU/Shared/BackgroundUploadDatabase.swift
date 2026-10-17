@@ -996,7 +996,7 @@ final class BackgroundUploadDatabase {
 
             let result = sqlite3_step(stmt)
             if result == SQLITE_ROW { return true }
-            if result == SQLITE_DONE { return nil }
+            if result == SQLITE_DONE { return false }
             throw sqliteError("Read queue existence")
         }
     }
