@@ -705,7 +705,7 @@ final class HashCacheRepository {
                     JOIN foreground_snapshot s ON s.asset_id = h.asset_id
                     WHERE s.is_hidden = 0 AND s.modified_at IS NOT NULL
                       AND h.asset_modification_date IS NOT NULL
-                      AND ABS(s.modified_at - h.asset_modification_date) > 1.0;
+                      AND s.modified_at != h.asset_modification_date;
                     """
                 var query: OpaquePointer?
                 guard sqlite3_prepare_v2(db, modifiedQuery, -1, &query, nil) == SQLITE_OK else {
@@ -779,7 +779,7 @@ final class HashCacheRepository {
                     let step = sqlite3_step(statement)
                     if step == SQLITE_ROW &&
                         (sqlite3_column_type(statement, 0) == SQLITE_NULL ||
-                         abs(date.timeIntervalSince1970 - sqlite3_column_double(statement, 0)) > 1) {
+                         date.timeIntervalSince1970 != sqlite3_column_double(statement, 0)) {
                         // Legacy cached hashes without modification dates cannot
                         // safely assert that a changed PhotoKit asset is unchanged.
                         modified.insert(snapshot.localIdentifier)
@@ -988,7 +988,7 @@ final class HashCacheRepository {
             guard !snapshot.isHidden else { continue }
             guard let stored = storedDates[snapshot.localIdentifier],
                   let date = snapshot.modificationDate else { continue }
-            if abs(date.timeIntervalSince1970 - stored) > 1.0 {
+            if date.timeIntervalSince1970 != stored {
                 modifiedIds.insert(snapshot.localIdentifier)
             }
         }
