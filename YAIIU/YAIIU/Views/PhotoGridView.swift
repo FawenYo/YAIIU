@@ -538,7 +538,10 @@ struct PhotoGridView: View {
             photoFilterVersion += 1
             selectionTask?.cancel()
             isSelectingAll = false
-            selectedAssets.removeAll()
+            // A new PhotoKit fetch invalidates indices, not local identifiers.
+            // Keep the user's in-progress selection while upload completion or
+            // library edits trigger a refresh. Filter membership is reconciled
+            // when the new identifier snapshot arrives.
             if showingPhotoDetail { showingPhotoDetail = false }
             filteredIndices = []
             filteredIndicesGeneration = nil
@@ -557,6 +560,15 @@ struct PhotoGridView: View {
             libraryRefreshTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
+                // PhotoKit refreshes must not clear an active selection, but
+                // identifiers of assets actually deleted from the library
+                // should not remain selected. Only reconcile a finished
+                // identifier snapshot, never the transient empty one.
+                if isSelectionMode && !selectedAssets.isEmpty &&
+                   (currentFilter == .all || currentFilter == .notUploaded) &&
+                   photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration {
+                    selectedAssets.formIntersection(Set(photoLibraryManager.orderedLocalIdentifiers))
+                }
                 recomputeCounts()
                 if currentFilter == .favorites || currentFilter == .album {
                     refreshPhotoKitFilter()
@@ -980,6 +992,7 @@ struct PhotoGridView: View {
         let generation = photoLibraryManager.assetFetchGeneration
         let identifiers = photoLibraryManager.orderedLocalIdentifiers
         let albumID = selectedAlbum?.id
+        let shouldReconcileSelection = isSelectionMode && !selectedAssets.isEmpty
 
         // An all-assets fetch is published before its corresponding identifier
         // snapshot is built. Do not interpret index-based filters in that gap.
@@ -989,7 +1002,6 @@ struct PhotoGridView: View {
             return
         }
 
-        let selectedAtStart = selectedAssets
         selectionTask?.cancel()
         isSelectingAll = false
         isFilterLoading = true
@@ -1011,19 +1023,13 @@ struct PhotoGridView: View {
 
             guard !Task.isCancelled else { return }
 
-            // Preserve only previously selected photos that still belong to the
-            // refreshed filter. Do the membership walk off-main for large albums.
-            var retained = Set<String>()
-            if !selectedAtStart.isEmpty {
-                retained.reserveCapacity(selectedAtStart.count)
-                for index in indices {
-                    if Task.isCancelled { return }
-                    let identifier = identifiers[index]
-                    if selectedAtStart.contains(identifier) {
-                        retained.insert(identifier)
-                    }
-                }
-            }
+            // Build membership off-main only if a selection existed at task
+            // start; most filter refreshes need no extra set of identifiers.
+            // Later selection edits are reconciled against the CURRENT set
+            // when publishing, not against an obsolete selection snapshot.
+            let visibleIdentifiers: Set<String>? = shouldReconcileSelection
+                ? Set(indices.map { identifiers[$0] }) : nil
+            guard !Task.isCancelled else { return }
 
             await MainActor.run {
                 guard !Task.isCancelled, version == self.photoFilterVersion,
@@ -1036,8 +1042,8 @@ struct PhotoGridView: View {
                     // than leave it showing a removed/incorrect album item.
                     self.showingPhotoDetail = false
                 }
-                if self.isSelectionMode {
-                    self.selectedAssets.formIntersection(retained)
+                if self.isSelectionMode, let visibleIdentifiers {
+                    self.selectedAssets.formIntersection(visibleIdentifiers)
                 }
                 self.filteredIndices = indices
                 self.filteredIndicesGeneration = generation
@@ -1408,7 +1414,17 @@ struct PhotoGridView: View {
                filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
         let identifiersToUpload = Array(selectedAssets)
         let manager = uploadManager
-        
+
+        // End this selection session immediately. The PhotoKit fetch below may
+        // take time; its eventual completion must not cancel a NEW selection
+        // session the user has started in the meantime.
+        selectionTask?.cancel()
+        selectionTask = nil
+        isSelectingAll = false
+        isSelectionMode = false
+        selectedAssets.removeAll()
+        dragState.reset()
+
         Task.detached(priority: .userInitiated) {
             let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiersToUpload, options: nil)
             var assetsToUpload: [PHAsset] = []
@@ -1419,9 +1435,6 @@ struct PhotoGridView: View {
             
             await MainActor.run {
                 manager.uploadAssets(assetsToUpload)
-                isSelectionMode = false
-                selectedAssets.removeAll()
-                dragState.reset()
             }
         }
     }
