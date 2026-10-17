@@ -218,6 +218,29 @@ class UploadManager: ObservableObject {
                 let filename = resources.first.map { $0.resolvedFilename() } ?? "unknown"
                 entries.append((asset, filename, hasRAW, resources.count))
             }
+            // Diagnostic only: batch database reads and cap per-asset disk logs
+            // so Select All does not delay queue creation for thousands of assets.
+            if !entries.isEmpty {
+                let identifiers = entries.map { $0.asset.localIdentifier }
+                if let cached = DatabaseManager.shared.cachedHashIdentifiers(for: identifiers) {
+                    let cachedCount = entries.reduce(0) { count, entry in
+                        count + (cached.contains(entry.asset.localIdentifier) ? 1 : 0)
+                    }
+                    logInfo(
+                        "Upload hash cache preflight: total=\(entries.count), cached=\(cachedCount), missing=\(entries.count - cachedCount)",
+                        category: .hash
+                    )
+                    for entry in entries.prefix(10) {
+                        let isCached = cached.contains(entry.asset.localIdentifier)
+                        logDebug(
+                            "Upload hash cache preflight: asset=\(entry.asset.localIdentifier), cached=\(isCached)",
+                            category: .hash
+                        )
+                    }
+                } else {
+                    logWarning("Upload hash cache preflight unavailable", category: .hash)
+                }
+            }
             let prepared = PreparedUploadQueue(entries: entries, skippedCount: skippedCount)
 
             await MainActor.run {

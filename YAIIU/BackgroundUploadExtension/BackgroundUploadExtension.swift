@@ -654,6 +654,8 @@ final class BackgroundUploadExtensionCore {
             var insertedCount = 0
             var updatedCount = 0
             var deletedCount = 0
+            var retainedVersionCount = 0
+            var invalidatedVersionCount = 0
 
             for change in changes {
                 guard !isCancelled else { return .cancelled }
@@ -661,12 +663,28 @@ final class BackgroundUploadExtensionCore {
                 let inserted = details.insertedLocalIdentifiers
                 let deleted = details.deletedLocalIdentifiers
                 let updated = details.updatedLocalIdentifiers
+                // PhotoKit can report metadata or iCloud storage state as updates.
+                // Fetch current versions without downloading original resources.
+                var modificationDates: [String: Date] = [:]
+                if !updated.isEmpty {
+                    let options = PHFetchOptions()
+                    options.includeHiddenAssets = true
+                    let assets = PHAsset.fetchAssets(
+                        withLocalIdentifiers: Array(updated), options: options
+                    )
+                    assets.enumerateObjects { asset, _, _ in
+                        if let date = asset.modificationDate {
+                            modificationDates[asset.localIdentifier] = date
+                        }
+                    }
+                }
                 let nextTokenData = try archiveChangeToken(change.changeToken)
 
-                guard database.commitPersistentChange(
+                guard let summary = database.commitPersistentChange(
                     insertedAssetIds: inserted,
                     updatedAssetIds: updated,
                     deletedAssetIds: deleted,
+                    updatedAssetModificationDates: modificationDates,
                     tokenData: nextTokenData
                 ) else {
                     throw NSError(
@@ -683,10 +701,12 @@ final class BackgroundUploadExtensionCore {
                 insertedCount += inserted.count
                 updatedCount += updated.count
                 deletedCount += deleted.count
+                retainedVersionCount += summary.retainedVersions
+                invalidatedVersionCount += summary.invalidatedVersions
             }
 
             if changeCount > 0 {
-                log("Persistent changes: \(changeCount) batch(es), \(insertedCount) inserted, \(updatedCount) updated, \(deletedCount) deleted")
+                log("Persistent changes: \(changeCount) batch(es), \(insertedCount) inserted, \(updatedCount) updated (\(retainedVersionCount) cached versions retained, \(invalidatedVersionCount) invalidated/unknown), \(deletedCount) deleted")
             }
             return isCancelled ? .cancelled : .ready
         } catch let error as NSError
@@ -966,6 +986,12 @@ final class BackgroundUploadExtensionCore {
             fmt.string(from: modified),
             forHTTPHeaderField: "X-File-Modified-At"
         )
+        // This header is only for matching an acknowledged upload to the
+        // exact PhotoKit asset version. Keep the API's ISO8601 header unchanged.
+        req.setValue(
+            PhotoAssetVersionPolicy.uploadVersionHeader(for: asset.modificationDate),
+            forHTTPHeaderField: "X-YAIIU-Asset-Version"
+        )
         req.setValue(isFavorite ? "true" : "false", forHTTPHeaderField: "X-Is-Favorite")
         req.setValue(
             resolvedFilename,
@@ -1133,7 +1159,6 @@ final class BackgroundUploadExtensionCore {
     }
 
     private static let assetExistenceCache = OSAllocatedUnfairLock<Set<String>>(initialState: [])
-    private static let iso8601Formatter = ISO8601DateFormatter()
 
     private static func assetExists(identifier: String) -> Bool {
         // Cache hits only: an asset can be transiently absent during iCloud
@@ -1156,10 +1181,13 @@ final class BackgroundUploadExtensionCore {
             return false
         }
 
-        if let value = job.destination.value(forHTTPHeaderField: "X-File-Modified-At"),
-           let uploadedDate = Self.iso8601Formatter.date(from: value),
-           let currentDate = asset.modificationDate,
-           abs(uploadedDate.timeIntervalSince(currentDate)) > 1 {
+        // Reject unversioned legacy jobs conservatively: their existing
+        // second-granularity ISO8601 header cannot distinguish nearby edits.
+        // New jobs carry the precise Date bit-pattern separately.
+        guard PhotoAssetVersionPolicy.matchesUploadVersion(
+            job.destination.value(forHTTPHeaderField: "X-YAIIU-Asset-Version"),
+            currentDate: asset.modificationDate
+        ) else {
             return false
         }
 

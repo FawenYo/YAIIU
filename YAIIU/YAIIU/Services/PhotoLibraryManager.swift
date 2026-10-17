@@ -426,6 +426,61 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     private static let foregroundChangeQueue =
         DispatchQueue(label: "com.fawenyo.yaiiu.foreground-photo-changes")
 
+    /// Serialized with foreground PhotoKit reconciliation so an import or
+    /// startup baseline cannot race a second baseline pass.
+    private var hasBackfilledUnknownHashVersions = false
+
+    /// The importer runs on a worker queue. Re-run after importing new NULL
+    /// records rather than relying only on application startup.
+    func backfillUnknownHashVersionsAfterImport() {
+        Self.foregroundChangeQueue.sync {
+            self.backfillUnknownHashVersionsLocked(force: true)
+        }
+    }
+
+    private func backfillUnknownHashVersionsLocked(force: Bool) {
+        guard force || !hasBackfilledUnknownHashVersions else { return }
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
+        hasBackfilledUnknownHashVersions = true
+
+        let db = DatabaseManager.shared
+        let rows = db.unversionedHashCacheRows()
+        guard !rows.isEmpty else { return }
+
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        var matched = 0
+        var filled = 0
+        // Fetch only identifiers with NULL cached dates, never resource bytes.
+        // Chunking caps temporary allocations for large Immich imports.
+        for start in stride(from: 0, to: rows.count, by: 300) {
+            let batch = Array(rows[start..<min(start + 300, rows.count)])
+            let checksums = Dictionary(uniqueKeysWithValues: batch.map {
+                ($0.localIdentifier, $0.sha1Hash)
+            })
+            let assets = PHAsset.fetchAssets(
+                withLocalIdentifiers: batch.map(\.localIdentifier),
+                options: options
+            )
+            var updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)] = []
+            assets.enumerateObjects { asset, _, _ in
+                guard let date = asset.modificationDate,
+                      let checksum = checksums[asset.localIdentifier] else { return }
+                updates.append((
+                    localIdentifier: asset.localIdentifier,
+                    sha1Hash: checksum,
+                    modificationDate: date
+                ))
+            }
+            matched += updates.count
+            filled += db.backfillUnversionedHashDates(updates)
+        }
+        logInfo(
+            "PhotoKit hash-version baseline: unversioned=\(rows.count), foundDate=\(matched), filled=\(filled), unresolved=\(rows.count - filled)",
+            category: .hash
+        )
+    }
+
     /// Call on a background queue, never on the first-paint UI path.
     /// On normal launches this reads PhotoKit persistent history plus durable
     /// unresolved IDs; it does NOT walk the entire asset library.
@@ -444,6 +499,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
 
             let db = DatabaseManager.shared
+            // Establish a current PhotoKit baseline for legacy/imported NULLs
+            // before changed-asset reconciliation discards them on metadata events.
+            backfillUnknownHashVersionsLocked(force: false)
             guard let tokenData = db.loadForegroundPhotoToken(),
                   let token = try? NSKeyedUnarchiver.unarchivedObject(
                       ofClass: PHPersistentChangeToken.self, from: tokenData
@@ -455,6 +513,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 let changes = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
                 var processedBatches = 0
                 var touchedAssets = 0
+                var insertedCount = 0
+                var updatedCount = 0
+                var deletedCount = 0
+                var sampleIdentifiersLogged = 0
                 for change in changes {
                     let details = try change.changeDetails(for: .asset)
                     let deleted = details.deletedLocalIdentifiers
@@ -494,10 +556,25 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     }
                     processedBatches += 1
                     touchedAssets += affected.count + deleted.count
+                    insertedCount += details.insertedLocalIdentifiers.count
+                    updatedCount += details.updatedLocalIdentifiers.count
+                    deletedCount += deleted.count
+                    // Keep aggregate counts exact but bound disk log volume
+                    // when PhotoKit delivers a very large persistent change set.
+                    for identifier in details.insertedLocalIdentifiers {
+                        guard sampleIdentifiersLogged < 10 else { break }
+                        logDebug("Foreground PhotoKit inserted: asset=\(identifier)", category: .hash)
+                        sampleIdentifiersLogged += 1
+                    }
+                    for identifier in details.updatedLocalIdentifiers {
+                        guard sampleIdentifiersLogged < 10 else { break }
+                        logDebug("Foreground PhotoKit updated: asset=\(identifier)", category: .hash)
+                        sampleIdentifiersLogged += 1
+                    }
                 }
                 if processedBatches > 0 {
                     logInfo(
-                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets",
+                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount))",
                         category: .hash
                     )
                 }

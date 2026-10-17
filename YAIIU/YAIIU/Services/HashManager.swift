@@ -565,137 +565,19 @@ class HashManager: ObservableObject {
         }
     }
     
+    /// A stable iCloud ID identifies a PhotoKit asset, not the current bytes.
+    /// A previously uploaded checksum may belong to an older edit of that asset;
+    /// do not cache it or mark the current version uploaded without hashing.
     private func tryICloudIdMatching(identifiers: [String], runID: UUID, completion: @escaping ([String]) -> Void) {
-        guard #available(iOS 16, *) else {
-            guard isCurrentRun(runID), !shouldStop else { return }
-            completion(identifiers)
-            return
-        }
-        
-        let hasServerCache = DatabaseManager.shared.getServerAssetsCacheCount() > 0
-        guard hasServerCache else {
-            logInfo("iCloud ID matching skipped: server cache empty, candidates=\(identifiers.count)", category: .hash)
-            guard isCurrentRun(runID), !shouldStop else { return }
-            completion(identifiers)
-            return
-        }
-        
-        statusMessage = "Checking iCloud ID matches..."
-        let matchingStartedAt = Date()
-        logInfo("iCloud ID matching started: candidates=\(identifiers.count)", category: .hash)
-        
-        matchingTask?.cancel()
-        matchingTask = Task {
-            var remainingIdentifiers: [String] = []
-            var matchCount = 0
-            var identifierToICloudId: [String: String] = [:]
-            let totalBatches = (identifiers.count + iCloudIdBatchSize - 1) / iCloudIdBatchSize
-            for batchIndex in 0..<totalBatches {
-                guard !Task.isCancelled, self.isCurrentRun(runID) else {
-                    await MainActor.run { self.finishProcessing(runID: runID) }
-                    return
-                }
-                let start = batchIndex * iCloudIdBatchSize
-                let end = min(start + iCloudIdBatchSize, identifiers.count)
-                let batch = Array(identifiers[start..<end])
-                
-                let iCloudIdMap = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: batch)
-                for (identifier, result) in iCloudIdMap {
-                    if let cloudId = try? result.get() {
-                        identifierToICloudId[identifier] = cloudId.stringValue
-                    }
-                }
-            }
-
-            logInfo(
-                "iCloud ID mapping complete: mapped=\(identifierToICloudId.count), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(matchingStartedAt)))s",
-                category: .hash
-            )
-            
-            guard !Task.isCancelled, self.isCurrentRun(runID) else {
-                await MainActor.run { self.finishProcessing(runID: runID) }
-                return
-            }
-
-            if identifierToICloudId.isEmpty {
-                await MainActor.run {
-                    guard !Task.isCancelled, self.isCurrentRun(runID), !self.shouldStop else {
-                        self.finishProcessing(runID: runID)
-                        return
-                    }
-                    completion(identifiers)
-                }
-                return
-            }
-            
-            guard !Task.isCancelled, self.isCurrentRun(runID) else {
-                await MainActor.run { self.finishProcessing(runID: runID) }
-                return
-            }
-            let iCloudIds = Array(identifierToICloudId.values)
-            let checksumMap = DatabaseManager.shared.getChecksumsByICloudIds(iCloudIds)
-            logInfo(
-                "Remote checksum lookup complete: requested=\(iCloudIds.count), matched=\(checksumMap.count), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(matchingStartedAt)))s",
-                category: .hash
-            )
-            
-            for identifier in identifiers {
-                guard !Task.isCancelled, self.isCurrentRun(runID) else {
-                    await MainActor.run { self.finishProcessing(runID: runID) }
-                    return
-                }
-                if let iCloudId = identifierToICloudId[identifier],
-                   let checksum = checksumMap[iCloudId] {
-                    guard !Task.isCancelled, self.isCurrentRun(runID) else { return }
-
-                    // One PhotoKit asset can map to multiple Immich files (JPEG+RAW).
-                    // The iCloud-ID shortcut returns only one checksum, so accepting it
-                    // for a RAW asset would erase has_raw/raw_hash and make the primary
-                    // result hide its RAW companion from background discovery.
-                    let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
-                    if let asset = fetch.firstObject,
-                       AssetResourceSelector.select(for: asset)?.rawResource != nil {
-                        remainingIdentifiers.append(identifier)
-                        continue
-                    }
-
-                    DatabaseManager.shared.saveMultiResourceHashCache(
-                        localIdentifier: identifier,
-                        primaryHash: checksum,
-                        rawHash: nil,
-                        hasRAW: false
-                    )
-                    guard !Task.isCancelled, self.isCurrentRun(runID) else { return }
-                    
-                    DatabaseManager.shared.updateMultiResourceHashCacheServerStatus(
-                        localIdentifier: identifier,
-                        primaryOnServer: true,
-                        rawOnServer: false
-                    )
-                    
-                    matchCount += 1
-                } else {
-                    remainingIdentifiers.append(identifier)
-                }
-            }
-            
-            if matchCount > 0 {
-                logInfo("Found \(matchCount) hashes via iCloud ID matching, \(remainingIdentifiers.count) still need calculation", category: .hash)
-            }
-            
-            await MainActor.run {
-                guard !Task.isCancelled, self.isCurrentRun(runID), !self.shouldStop else {
-                    self.finishProcessing(runID: runID)
-                    return
-                }
-                self.iCloudIdMatchCount = matchCount
-                logInfo("iCloud ID matching finished: matched=\(matchCount), remaining=\(remainingIdentifiers.count), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(matchingStartedAt)))s", category: .hash)
-                completion(remainingIdentifiers)
-            }
-        }
+        guard isCurrentRun(runID), !shouldStop else { return }
+        logInfo(
+            "iCloud ID checksum shortcut skipped: verifying local resources for \(identifiers.count) asset(s)",
+            category: .hash
+        )
+        completion(identifiers)
     }
-    
-    /// Producer-consumer hashing: a download window streams originals to temp
+
+        /// Producer-consumer hashing: a download window streams originals to temp
     /// files (admitted by a shared byte budget so the on-disk footprint stays
     /// bounded), while a smaller hash gate consumes finished files and deletes
     /// them right after hashing. Downloads pipeline ahead of hashing instead of
@@ -964,6 +846,15 @@ class HashManager: ObservableObject {
                 category: .hash
             )
 
+            // Only associate a hash with the version observed while selecting its
+            // source resources. A date read after hashing could describe an edit
+            // made after the temporary files were captured.
+            if files.plan.modificationDate == nil {
+                logWarning(
+                    "Hash cache version unavailable at resource selection: asset=\(identifier); a later PhotoKit update may require rehashing",
+                    category: .hash
+                )
+            }
             DatabaseManager.shared.saveMultiResourceHashCache(
                 localIdentifier: result.localIdentifier,
                 primaryHash: result.primaryHash,
