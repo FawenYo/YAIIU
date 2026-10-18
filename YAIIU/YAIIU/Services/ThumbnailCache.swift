@@ -82,9 +82,19 @@ final class ThumbnailCache {
     /// Called for PhotoKit in-place edits before the new fetch is published.
     /// NSCache's existing 50 MB budget will evict unreachable old revisions.
     func invalidateThumbnail(for localIdentifier: String) {
+        // Retire requests for the old revision before publishing the new key.
+        // Otherwise an iCloud request can continue downloading for an asset
+        // whose completed image can never be displayed.
         os_unfair_lock_lock(&pendingLock)
         assetRevisions[localIdentifier, default: 0] &+= 1
+        let prefix = "\(localIdentifier)_r"
+        let keys = activeRequestIDs.keys.filter { $0.hasPrefix(prefix) }
+        let requestIDs = keys.compactMap { activeRequestIDs.removeValue(forKey: $0) }
+        for key in keys { pendingRequests.removeValue(forKey: key) }
         os_unfair_lock_unlock(&pendingLock)
+        for requestID in requestIDs {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
     }
 
     func getThumbnail(
@@ -124,8 +134,9 @@ final class ThumbnailCache {
             contentMode: .aspectFill,
             options: options
         ) { [weak self] image, info in
-            guard let self = self else { return }
-            
+            guard let self = self,
+                  self.key(for: asset.localIdentifier, targetSize: targetSize) == keyString else { return }
+
             let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
             let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
             
@@ -181,20 +192,31 @@ final class ThumbnailCache {
         }
         
         os_unfair_lock_lock(&pendingLock)
-        activeRequestIDs[keyString] = requestID
+        let currentRevision = assetRevisions[asset.localIdentifier] ?? 0
+        let expectedKey = "\(asset.localIdentifier)_r\(currentRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+        let stillPending = pendingRequests[keyString] != nil && expectedKey == keyString
+        if stillPending { activeRequestIDs[keyString] = requestID }
         os_unfair_lock_unlock(&pendingLock)
+        // Covers invalidation between requestImage() and requestID registration.
+        if expectedKey != keyString {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
     }
     
     func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
-        let keyString = key(for: assetIdentifier, targetSize: targetSize)
-        
+        // A view can disappear after the asset revision changed. Cancel any
+        // revision of its requested size, not just the current cache key.
+        let prefix = "\(assetIdentifier)_r"
+        let suffix = "_\(Int(targetSize.width))x\(Int(targetSize.height))"
         os_unfair_lock_lock(&pendingLock)
-        if let requestID = activeRequestIDs.removeValue(forKey: keyString) {
-            pendingRequests.removeValue(forKey: keyString)
-            os_unfair_lock_unlock(&pendingLock)
+        let keys = activeRequestIDs.keys.filter {
+            $0.hasPrefix(prefix) && $0.hasSuffix(suffix)
+        }
+        let requestIDs = keys.compactMap { activeRequestIDs.removeValue(forKey: $0) }
+        for key in keys { pendingRequests.removeValue(forKey: key) }
+        os_unfair_lock_unlock(&pendingLock)
+        for requestID in requestIDs {
             cachingImageManager.cancelImageRequest(requestID)
-        } else {
-            os_unfair_lock_unlock(&pendingLock)
         }
     }
     
