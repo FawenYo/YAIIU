@@ -430,12 +430,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// startup baseline cannot race a second baseline pass.
     private var hasBackfilledUnknownHashVersions = false
 
-    /// The importer runs on a worker queue. Re-run after importing new NULL
-    /// records rather than relying only on application startup.
+    /// An import can re-introduce NULL versions while the app is running.
+    /// Replay any outstanding PhotoKit changes before binding imported hashes
+    /// to dates; calling the baseline directly would hide an offline edit.
     func backfillUnknownHashVersionsAfterImport() {
-        Self.foregroundChangeQueue.sync {
-            self.backfillUnknownHashVersionsLocked(force: true)
-        }
+        _ = prepareForegroundPhotoWork(forceVersionBaseline: true)
     }
 
     private func backfillUnknownHashVersionsLocked(force: Bool) {
@@ -485,6 +484,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// On normal launches this reads PhotoKit persistent history plus durable
     /// unresolved IDs; it does NOT walk the entire asset library.
     func prepareForegroundPhotoWork() -> ForegroundPhotoWork {
+        prepareForegroundPhotoWork(forceVersionBaseline: false)
+    }
+
+    /// Both startup and post-import reconciliation use the same serialized
+    /// PhotoKit journal replay before any unknown hash receives a baseline.
+    private func prepareForegroundPhotoWork(forceVersionBaseline: Bool) -> ForegroundPhotoWork {
         Self.foregroundChangeQueue.sync {
             let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
             guard authorization == .authorized || authorization == .limited else {
@@ -499,9 +504,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
 
             let db = DatabaseManager.shared
-            // Establish a current PhotoKit baseline for legacy/imported NULLs
-            // before changed-asset reconciliation discards them on metadata events.
-            backfillUnknownHashVersionsLocked(force: false)
             guard let tokenData = db.loadForegroundPhotoToken(),
                   let token = try? NSKeyedUnarchiver.unarchivedObject(
                       ofClass: PHPersistentChangeToken.self, from: tokenData
@@ -578,6 +580,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         category: .hash
                     )
                 }
+                // Baseline only after successful, durable journal replay.
+                // Updated unknown-version hashes were already invalidated.
+                backfillUnknownHashVersionsLocked(force: forceVersionBaseline)
                 return .incremental(visibleForegroundPendingIdentifiers())
             } catch let error as NSError
                 where error.domain == PHPhotosErrorDomain &&
