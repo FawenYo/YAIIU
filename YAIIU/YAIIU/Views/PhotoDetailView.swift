@@ -1484,6 +1484,7 @@ struct PhotoDetailView: View {
         ) { image, info in
             let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
             let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let errorDescription = (info?[PHImageErrorKey] as? Error)?.localizedDescription ?? "no image returned"
             guard !isCancelled else { return }
 
             Task { @MainActor in
@@ -1493,8 +1494,7 @@ struct PhotoDetailView: View {
                     self.fullImage = image
                 } else if !isDegraded {
                     self.imageLoadFailed = true
-                    let error = info?[PHImageErrorKey] as? Error
-                    logWarning("Unable to load photo preview: \(error?.localizedDescription ?? "no image returned")", category: .app)
+                    logWarning("Unable to load photo preview: \(errorDescription)", category: .app)
                 }
             }
         }
