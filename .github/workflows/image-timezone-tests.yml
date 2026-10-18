@@ -26,16 +26,23 @@ jobs:
         run: |
           xcrun simctl list devices available
           python3 - <<'PY'
-          import json, os, subprocess
+          import json, os, re, subprocess
           info = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
-          devices = [
-              device for group in info.get("devices", {}).values()
-              for device in group
-              if device.get("isAvailable", False) and "iPhone" in device.get("name", "")
-          ]
-          if not devices:
-              raise SystemExit("No available iPhone simulator found")
-          chosen = devices[0]
+          compatible = []
+          for runtime, group in info.get("devices", {}).items():
+              match = re.search(r"iOS-(\\d+)-(\\d+)", runtime)
+              if not match:
+                  continue
+              version = (int(match.group(1)), int(match.group(2)))
+              # BackgroundUploadExtension requires iOS 26.2 or newer.
+              if version < (26, 2):
+                  continue
+              for device in group:
+                  if device.get("isAvailable", False) and "iPhone" in device.get("name", ""):
+                      compatible.append((version, device))
+          if not compatible:
+              raise SystemExit("No available iPhone simulator on iOS 26.2+")
+          chosen = max(compatible, key=lambda item: item[0])[1]
           print("Using", chosen["name"], chosen["udid"])
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               print("udid=" + chosen["udid"], file=output)
