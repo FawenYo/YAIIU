@@ -25,6 +25,7 @@ final class ThumbnailCache {
     /// A revision changes the cache key without clearing unrelated photos.
     /// Old in-flight PhotoKit results can only populate their obsolete key.
     private var assetRevisions: [String: UInt64] = [:]
+    private var fullLibraryRevision: UInt64 = 0
     private var pendingLock = os_unfair_lock()
     
     private init() {
@@ -75,8 +76,9 @@ final class ThumbnailCache {
     private func key(for localIdentifier: String, targetSize: CGSize) -> String {
         os_unfair_lock_lock(&pendingLock)
         let revision = assetRevisions[localIdentifier] ?? 0
+        let libraryRevision = fullLibraryRevision
         os_unfair_lock_unlock(&pendingLock)
-        return "\(localIdentifier)_r\(revision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+        return "\(localIdentifier)_r\(revision)_g\(libraryRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
     }
 
     /// Called for PhotoKit in-place edits before the new fetch is published.
@@ -98,6 +100,25 @@ final class ThumbnailCache {
         for requestID in requestIDs {
             cachingImageManager.cancelImageRequest(requestID)
         }
+    }
+
+    /// A nonincremental PhotoKit change does not identify individual edits.
+    /// Retire old requests and version every cache key once; normal incremental
+    /// updates still invalidate only the photos they actually changed.
+    func invalidateAllThumbnails() {
+        os_unfair_lock_lock(&pendingLock)
+        fullLibraryRevision &+= 1
+        assetRevisions.removeAll()
+        let requestIDs = Array(activeRequestIDs.values)
+        activeRequestIDs.removeAll()
+        pendingRequests.removeAll()
+        os_unfair_lock_unlock(&pendingLock)
+
+        for requestID in requestIDs {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
+        cache.removeAllObjects()
+        cachingImageManager.stopCachingImagesForAllAssets()
     }
 
     func getThumbnail(
@@ -196,7 +217,7 @@ final class ThumbnailCache {
         
         os_unfair_lock_lock(&pendingLock)
         let currentRevision = assetRevisions[asset.localIdentifier] ?? 0
-        let expectedKey = "\(asset.localIdentifier)_r\(currentRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+        let expectedKey = "\(asset.localIdentifier)_r\(currentRevision)_g\(fullLibraryRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
         let stillPending = pendingRequests[keyString] != nil && expectedKey == keyString
         if stillPending {
             activeRequestIDs[keyString] = requestID
