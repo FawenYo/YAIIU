@@ -811,6 +811,11 @@ struct PhotoGridView: View {
         .onPreferenceChange(FirstRowOffsetKey.self) { offset in
             firstRowTopOffset = offset
         }
+        .onChange(of: refreshToken) { _, _ in
+            // Reusing grid cell identities does not produce appear/disappear
+            // callbacks when PhotoKit rebinds the photos at existing indices.
+            refreshCurrentVisibleDate()
+        }
     }
     
     private func updateVisibleDate(for displayIndex: Int, assetIndex: Int, isAppearing: Bool) {
@@ -820,8 +825,12 @@ struct PhotoGridView: View {
             visibleDisplayIndices.remove(displayIndex)
         }
         
-        // Update date text based on current minimum visible item
-        guard let minDisplayIndex = visibleDisplayIndices.min() else { return }
+        refreshCurrentVisibleDate()
+    }
+
+    private func refreshCurrentVisibleDate() {
+        guard let minDisplayIndex = visibleDisplayIndices.min(),
+              minDisplayIndex < displayCount else { return }
         let minAssetIndex = resolveActualIndex(minDisplayIndex)
         guard let date = assetForDisplay(at: minAssetIndex)?.creationDate else { return }
         
