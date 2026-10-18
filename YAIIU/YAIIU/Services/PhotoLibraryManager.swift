@@ -155,6 +155,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // exact fetch generation finishes.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            // Invalidate only edited photos; changing the cache key prevents
+            // an older in-flight thumbnail from replacing the edited content.
+            for identifier in changedIdentifiers {
+                ThumbnailCache.shared.invalidateThumbnail(for: identifier)
+                RAWFormatChecker.shared.invalidateCachedStatus(for: identifier)
+            }
             self.changedAssetIdentifiersForFetch = changedIdentifiers
             self.assetFetchGeneration &+= 1
             let generation = self.assetFetchGeneration
