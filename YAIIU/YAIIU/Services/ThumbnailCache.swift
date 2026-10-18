@@ -90,7 +90,10 @@ final class ThumbnailCache {
         let prefix = "\(localIdentifier)_r"
         let keys = activeRequestIDs.keys.filter { $0.hasPrefix(prefix) }
         let requestIDs = keys.compactMap { activeRequestIDs.removeValue(forKey: $0) }
-        for key in keys { pendingRequests.removeValue(forKey: key) }
+        // A request can be invalidated before requestImage returns its ID.
+        // Remove these pending callbacks too so obsolete closures are released.
+        let pendingKeys = pendingRequests.keys.filter { $0.hasPrefix(prefix) }
+        for key in pendingKeys { pendingRequests.removeValue(forKey: key) }
         os_unfair_lock_unlock(&pendingLock)
         for requestID in requestIDs {
             cachingImageManager.cancelImageRequest(requestID)
@@ -195,7 +198,11 @@ final class ThumbnailCache {
         let currentRevision = assetRevisions[asset.localIdentifier] ?? 0
         let expectedKey = "\(asset.localIdentifier)_r\(currentRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
         let stillPending = pendingRequests[keyString] != nil && expectedKey == keyString
-        if stillPending { activeRequestIDs[keyString] = requestID }
+        if stillPending {
+            activeRequestIDs[keyString] = requestID
+        } else if expectedKey != keyString {
+            pendingRequests.removeValue(forKey: keyString)
+        }
         os_unfair_lock_unlock(&pendingLock)
         // Covers invalidation between requestImage() and requestID registration.
         if expectedKey != keyString {
@@ -213,7 +220,10 @@ final class ThumbnailCache {
             $0.hasPrefix(prefix) && $0.hasSuffix(suffix)
         }
         let requestIDs = keys.compactMap { activeRequestIDs.removeValue(forKey: $0) }
-        for key in keys { pendingRequests.removeValue(forKey: key) }
+        let pendingKeys = pendingRequests.keys.filter {
+            $0.hasPrefix(prefix) && $0.hasSuffix(suffix)
+        }
+        for key in pendingKeys { pendingRequests.removeValue(forKey: key) }
         os_unfair_lock_unlock(&pendingLock)
         for requestID in requestIDs {
             cachingImageManager.cancelImageRequest(requestID)
