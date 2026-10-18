@@ -733,6 +733,10 @@ struct PhotoGridView: View {
                 simpleGridView
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .onChange(of: refreshToken) { _, _ in
+                // Visible cells are rebound without onAppear after PhotoKit changes.
+                refreshCurrentVisibleDate()
+            }
             .onAppear { gridContainerWidth = geometry.size.width }
             .onChange(of: geometry.size.width) { _, w in gridContainerWidth = w }
             .onChange(of: thumbnailTargetSize) { _, _ in
@@ -810,11 +814,6 @@ struct PhotoGridView: View {
         }
         .onPreferenceChange(FirstRowOffsetKey.self) { offset in
             firstRowTopOffset = offset
-        }
-        .onChange(of: refreshToken) { _, _ in
-            // Reusing grid cell identities does not produce appear/disappear
-            // callbacks when PhotoKit rebinds the photos at existing indices.
-            refreshCurrentVisibleDate()
         }
     }
     
