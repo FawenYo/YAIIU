@@ -54,6 +54,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild test \
+            -collect-test-diagnostics never \
             -project YAIIU/YAIIU.xcodeproj \
             -scheme YAIIU \
             -configuration Debug \
