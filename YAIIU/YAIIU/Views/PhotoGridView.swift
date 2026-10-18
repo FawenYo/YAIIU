@@ -500,6 +500,12 @@ struct PhotoGridView: View {
             if newValue > 0 && oldValue == 0 {
                 prefetchThumbnails(aroundDisplayIndex: 0)
             }
+            // The last asset can disappear while its detail view is open.
+            // Clear the presentation state even though the displayCount guard
+            // has already removed PhotoDetailView from the hierarchy.
+            if newValue == 0 && showingPhotoDetail && currentFilter == .all {
+                showingPhotoDetail = false
+            }
         }
         .onChange(of: photoLibraryManager.isLoading) { oldValue, newValue in
             if oldValue == true && newValue == false {
