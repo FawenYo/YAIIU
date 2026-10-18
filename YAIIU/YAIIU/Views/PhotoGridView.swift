@@ -542,7 +542,9 @@ struct PhotoGridView: View {
             // Keep the user's in-progress selection while upload completion or
             // library edits trigger a refresh. Filter membership is reconciled
             // when the new identifier snapshot arrives.
-            if showingPhotoDetail { showingPhotoDetail = false }
+            // Index snapshots are replaced during PhotoKit refresh, but an
+            // unfiltered detail view can keep its PHAsset and reconcile its index.
+            if showingPhotoDetail && currentFilter != .all { showingPhotoDetail = false }
             filteredIndices = []
             filteredIndicesGeneration = nil
             // Old full-library ranges refer to the previous fetch. Avoid
@@ -1522,6 +1524,9 @@ private struct PhotoGridItemView: View {
                     refreshToken: refreshToken,
                     isGeometrySource: !isThisAssetSelected
                 )
+                // The grid can reuse the same display index after an insert or
+                // filter change. Never reuse the previous photo's @State image.
+                .id(asset.localIdentifier)
             } else {
                 Rectangle()
                     .fill(Color.gray.opacity(0.3))
