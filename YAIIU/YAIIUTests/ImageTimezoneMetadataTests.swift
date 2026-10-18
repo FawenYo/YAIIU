@@ -74,11 +74,9 @@ final class ImageTimezoneMetadataTests: XCTestCase {
         XCTAssertNotEqual(output, url, "PNG screenshots must continue receiving capture offsets")
 
         let source = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
-        let metadata = try XCTUnwrap(CGImageSourceCopyMetadataAtIndex(source, 0, nil))
-        let offset = CGImageMetadataCopyStringValueWithPath(
-            metadata, nil, "exif:OffsetTimeOriginal" as CFString
-        )
-        XCTAssertEqual(offset.map { String($0) }, "+08:00")
+        let imageProperties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any])
+        let nativeExif = try XCTUnwrap(imageProperties[kCGImagePropertyExifDictionary as String] as? [String: Any])
+        XCTAssertEqual(nativeExif[kCGImagePropertyExifOffsetTimeOriginal as String] as? String, "+08:00")
     }
 
     /// Reproduces the screenshot path: a PNG with an existing EXIF capture date,
@@ -124,11 +122,9 @@ final class ImageTimezoneMetadataTests: XCTestCase {
         XCTAssertEqual(exif[kCGImagePropertyExifUserComment as String] as? String, "Screenshot")
         // Pixel payload and every PNG ancillary chunk except eXIf stay byte-identical.
         XCTAssertEqual(nonExifPNGChunks(originalBytes), nonExifPNGChunks(try Data(contentsOf: output)))
-        let metadata = try XCTUnwrap(CGImageSourceCopyMetadataAtIndex(source, 0, nil))
-        let offset = CGImageMetadataCopyStringValueWithPath(
-            metadata, nil, "exif:OffsetTimeOriginal" as CFString
-        )
-        XCTAssertEqual(offset.map { String($0) }, "+08:00")
+        let imageProperties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any])
+        let nativeExif = try XCTUnwrap(imageProperties[kCGImagePropertyExifDictionary as String] as? [String: Any])
+        XCTAssertEqual(nativeExif[kCGImagePropertyExifOffsetTimeOriginal as String] as? String, "+08:00")
     }
 
     private func nonExifPNGChunks(_ data: Data) -> [[UInt8]] {
