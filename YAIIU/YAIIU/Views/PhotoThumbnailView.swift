@@ -46,6 +46,12 @@ final class RAWFormatChecker {
         return cache[assetIdentifier]
     }
     
+    func invalidateCachedStatus(for localIdentifier: String) {
+        os_unfair_lock_lock(&cacheLock)
+        cache.removeValue(forKey: localIdentifier)
+        os_unfair_lock_unlock(&cacheLock)
+    }
+
     func clearCache() {
         os_unfair_lock_lock(&cacheLock)
         cache.removeAll()
@@ -60,6 +66,9 @@ struct PhotoThumbnailView: View {
     let syncStatus: PhotoSyncStatus
     let namespace: Namespace.ID?
     let refreshToken: UUID?
+    let targetSize: CGSize
+    /// Non-nil only when this photo was edited in the latest PhotoKit fetch.
+    let editGeneration: Int?
     /// When true, this view is the source of the matched geometry effect.
     /// Set to false when the detail view is showing to avoid duplicate sources.
     let isGeometrySource: Bool
@@ -70,6 +79,7 @@ struct PhotoThumbnailView: View {
     @State private var videoDuration: TimeInterval = 0
     @State private var isVideo: Bool = false
     @State private var loadTask: Task<Void, Never>?
+    @State private var thumbnailLoadRevision = 0
     @State private var isViewActive: Bool = false
     
     init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, isUploaded: Bool) {
@@ -79,6 +89,8 @@ struct PhotoThumbnailView: View {
         self.syncStatus = isUploaded ? .uploaded : .pending
         self.namespace = nil
         self.refreshToken = nil
+        self.targetSize = ThumbnailCache.defaultTargetSize
+        self.editGeneration = nil
         self.isGeometrySource = true
     }
     
@@ -89,6 +101,8 @@ struct PhotoThumbnailView: View {
         self.syncStatus = syncStatus
         self.namespace = nil
         self.refreshToken = nil
+        self.targetSize = ThumbnailCache.defaultTargetSize
+        self.editGeneration = nil
         self.isGeometrySource = true
     }
     
@@ -99,16 +113,20 @@ struct PhotoThumbnailView: View {
         self.syncStatus = syncStatus
         self.namespace = namespace
         self.refreshToken = nil
+        self.targetSize = ThumbnailCache.defaultTargetSize
+        self.editGeneration = nil
         self.isGeometrySource = isGeometrySource
     }
     
-    init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, syncStatus: PhotoSyncStatus, namespace: Namespace.ID?, refreshToken: UUID?, isGeometrySource: Bool = true) {
+    init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, syncStatus: PhotoSyncStatus, namespace: Namespace.ID?, refreshToken: UUID?, targetSize: CGSize = ThumbnailCache.defaultTargetSize, editGeneration: Int? = nil, isGeometrySource: Bool = true) {
         self.asset = asset
         self.isSelected = isSelected
         self.isSelectionMode = isSelectionMode
         self.syncStatus = syncStatus
         self.namespace = namespace
         self.refreshToken = refreshToken
+        self.targetSize = targetSize
+        self.editGeneration = editGeneration
         self.isGeometrySource = isGeometrySource
     }
     
@@ -205,9 +223,18 @@ struct PhotoThumbnailView: View {
         }
         .onDisappear {
             isViewActive = false
+            thumbnailLoadRevision &+= 1
             loadTask?.cancel()
             loadTask = nil
-            ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier)
+            ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier, targetSize: targetSize)
+        }
+        .onChange(of: targetSize) { oldSize, _ in
+            ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier, targetSize: oldSize)
+            if isViewActive { loadAssetInfo() }
+        }
+        .onChange(of: editGeneration) { _, newGeneration in
+            // Keep the previous image until the edited preview arrives.
+            if newGeneration != nil && isViewActive { loadAssetInfo() }
         }
     }
     
@@ -295,6 +322,8 @@ struct PhotoThumbnailView: View {
     }
     
     private func loadAssetInfo() {
+        thumbnailLoadRevision &+= 1
+        let revision = thumbnailLoadRevision
         isVideo = asset.mediaType == .video
         videoDuration = asset.duration
         isFavorite = asset.isFavorite
@@ -302,13 +331,11 @@ struct PhotoThumbnailView: View {
         loadTask?.cancel()
         
         // Check RAW cache first to avoid expensive PHAssetResource lookup
-        if let cachedRAW = RAWFormatChecker.shared.getCachedRAWStatus(for: asset.localIdentifier) {
-            hasRAW = cachedRAW
-        }
+        hasRAW = RAWFormatChecker.shared.getCachedRAWStatus(for: asset.localIdentifier) ?? false
         
         loadTask = Task { @MainActor in
-            ThumbnailCache.shared.getThumbnail(for: asset) { [self] image in
-                guard self.isViewActive else { return }
+            ThumbnailCache.shared.getThumbnail(for: asset, targetSize: targetSize) { [self] image in
+                guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
                 if let image = image {
                     self.thumbnail = image
                 }
@@ -324,7 +351,7 @@ struct PhotoThumbnailView: View {
                     return RAWFormatChecker.shared.hasRAWResource(for: assetId, resources: resources)
                 }.value
                 
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.thumbnailLoadRevision == revision else { return }
                 self.hasRAW = hasRAWResource
             }
         }
