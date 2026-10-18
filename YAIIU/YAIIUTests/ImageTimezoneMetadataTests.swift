@@ -81,6 +81,53 @@ final class ImageTimezoneMetadataTests: XCTestCase {
         XCTAssertEqual(offset.map { String($0) }, "+08:00")
     }
 
+    /// Reproduces the screenshot path: a PNG with an existing EXIF capture date,
+    /// TIFF date, and a user comment, rather than the blank 4x4 PNG used before.
+    func testPNGWithScreenshotEXIFKeepsCaptureDateAndAddsTimezone() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let capture = "2026:10:17 00:14:46"
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+            url as CFURL, "public.png" as CFString, 1, nil
+        ))
+        let properties: [String: Any] = [
+            kCGImagePropertyExifDictionary as String: [
+                kCGImagePropertyExifDateTimeOriginal as String: capture,
+                kCGImagePropertyExifUserComment as String: "Screenshot",
+            ],
+            kCGImagePropertyTIFFDictionary as String: [
+                kCGImagePropertyTIFFDateTime as String: capture,
+            ]
+        ]
+        CGImageDestinationAddImage(destination, try XCTUnwrap(makeImage().cgImage), properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+
+        let inputSource = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let originalProps = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(inputSource, 0, nil) as? [String: Any])
+        let originalExif = try XCTUnwrap(originalProps[kCGImagePropertyExifDictionary as String] as? [String: Any])
+        XCTAssertEqual(originalExif[kCGImagePropertyExifDateTimeOriginal as String] as? String, capture)
+
+        let output = try ImageTimezoneMetadata.addingOffsetIfMissing(
+            to: url, filename: "IMG_8425.PNG", mimeType: "image/png",
+            timezone: taipeiTimeZone, at: Date()
+        )
+        defer { if output != url { try? FileManager.default.removeItem(at: output) } }
+        XCTAssertNotEqual(output, url, "Existing EXIF in screenshots must not block adding a missing offset")
+
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let props = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any])
+        let exif = try XCTUnwrap(props[kCGImagePropertyExifDictionary as String] as? [String: Any])
+        XCTAssertEqual(exif[kCGImagePropertyExifDateTimeOriginal as String] as? String, capture)
+        XCTAssertEqual(exif[kCGImagePropertyExifUserComment as String] as? String, "Screenshot")
+        let metadata = try XCTUnwrap(CGImageSourceCopyMetadataAtIndex(source, 0, nil))
+        let offset = CGImageMetadataCopyStringValueWithPath(
+            metadata, nil, "exif:OffsetTimeOriginal" as CFString
+        )
+        XCTAssertEqual(offset.map { String($0) }, "+08:00")
+    }
+
     private func makeImage() -> UIImage {
         UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { renderer in
             renderer.cgContext.setFillColor(UIColor.orange.cgColor)
