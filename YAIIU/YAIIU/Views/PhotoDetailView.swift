@@ -739,6 +739,7 @@ struct PhotoDetailView: View {
     @State private var dragProgress: CGFloat = 0
     @State private var imageRequestID: PHImageRequestID?
     @State private var imageLoadGeneration = 0
+    @State private var assetContentGeneration = 0
     @State private var imageLoadFailed: Bool = false
     
     @State private var player: AVPlayer?
@@ -1479,6 +1480,7 @@ struct PhotoDetailView: View {
     
     private func cleanupCurrentAsset() {
         imageLoadGeneration &+= 1
+        assetContentGeneration &+= 1
         if let requestID = imageRequestID {
             PHImageManager.default().cancelImageRequest(requestID)
             imageRequestID = nil
@@ -1556,6 +1558,7 @@ struct PhotoDetailView: View {
     }
     
     private func loadVideoThumbnail(for asset: PHAsset) {
+        let contentGeneration = assetContentGeneration
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
@@ -1572,16 +1575,17 @@ struct PhotoDetailView: View {
             options: options
         ) { image, info in
             Task { @MainActor in
-                if asset.localIdentifier == self.currentAsset?.localIdentifier {
-                    if let image = image {
-                        self.fullImage = image
-                    }
+                guard self.assetContentGeneration == contentGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if let image {
+                    self.fullImage = image
                 }
             }
         }
     }
     
     private func loadVideo(for asset: PHAsset) {
+        let contentGeneration = assetContentGeneration
         isVideoLoading = true
         
         let options = PHVideoRequestOptions()
@@ -1590,7 +1594,8 @@ struct PhotoDetailView: View {
         
         PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
             Task { @MainActor in
-                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                guard self.assetContentGeneration == contentGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
                 self.isVideoLoading = false
                 
                 if let playerItem = playerItem {
@@ -1611,6 +1616,7 @@ struct PhotoDetailView: View {
     }
     
     private func loadMetadata(for asset: PHAsset) {
+        let contentGeneration = assetContentGeneration
         location = asset.location
         
         Task.detached(priority: .userInitiated) {
@@ -1620,6 +1626,7 @@ struct PhotoDetailView: View {
             let resourceFilename = primaryResource.resolvedFilename(using: asset)
             
             await MainActor.run {
+                guard self.assetContentGeneration == contentGeneration else { return }
                 self.fileName = resourceFilename
             }
             
@@ -1627,6 +1634,7 @@ struct PhotoDetailView: View {
             // size badge; requestData streaming here retained the whole file.
             let fileSizeValue = (primaryResource.value(forKey: "fileSize") as? CLong).map(Int64.init)
             await MainActor.run {
+                guard self.assetContentGeneration == contentGeneration else { return }
                 self.fileSize = fileSizeValue
             }
         }
@@ -1649,6 +1657,7 @@ struct PhotoDetailView: View {
                         }
                         let locationString = parts.joined(separator: ", ")
                         await MainActor.run {
+                            guard self.assetContentGeneration == contentGeneration else { return }
                             self.locationName = locationString
                         }
                     }
@@ -1704,6 +1713,7 @@ struct PhotoDetailView: View {
                 let lensModel = exif[kCGImagePropertyExifLensModel as String] as? String
                 
                 await MainActor.run {
+                    guard self.assetContentGeneration == contentGeneration else { return }
                     self.exposureInfo = finalExposureInfo
                     self.lensInfo = lensModel
                 }
@@ -1720,6 +1730,7 @@ struct PhotoDetailView: View {
                     }
                     
                     await MainActor.run {
+                        guard self.assetContentGeneration == contentGeneration else { return }
                         self.cameraInfo = cameraName
                     }
                 }
