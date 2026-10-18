@@ -42,8 +42,9 @@ enum ImageTimezoneMetadata {
 
         let offset = formattedOffset(timezone.secondsFromGMT(for: date))
         let metadata: CGMutableImageMetadata
-        if let sourceMetadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil) {
-            metadata = CGImageMetadataCreateMutableCopy(sourceMetadata)
+        if let sourceMetadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil),
+           let copiedMetadata = CGImageMetadataCreateMutableCopy(sourceMetadata) {
+            metadata = copiedMetadata
         } else {
             metadata = CGImageMetadataCreateMutable()
         }
