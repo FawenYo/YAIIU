@@ -204,8 +204,9 @@ final class ThumbnailCache {
             pendingRequests.removeValue(forKey: keyString)
         }
         os_unfair_lock_unlock(&pendingLock)
-        // Covers invalidation between requestImage() and requestID registration.
-        if expectedKey != keyString {
+        // Covers either invalidation or view cancellation between
+        // requestImage() and request-ID registration.
+        if !stillPending {
             cachingImageManager.cancelImageRequest(requestID)
         }
     }
