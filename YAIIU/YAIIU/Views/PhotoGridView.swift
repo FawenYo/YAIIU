@@ -1214,6 +1214,34 @@ struct PhotoGridView: View {
                 }
             }
 
+            var statusEntryCount = statusCache.count
+            // A transient status-cache replacement must not turn a populated
+            // gallery into a false empty result. When a previously populated
+            // list first reaches zero, confirm against the latest status map
+            // after a short quiet interval before publishing it.
+            let hadItems = await MainActor.run { (self?.cachedNotUploadedCount ?? 0) > 0 }
+            if notUploadedIndices.isEmpty && hadItems {
+                do {
+                    try await Task.sleep(nanoseconds: 400_000_000)
+                } catch { return }
+                guard !Task.isCancelled else { return }
+                let (latestStatuses, latestGeneration, latestSnapshot) = await MainActor.run {
+                    (hash.syncStatusCache, manager.assetFetchGeneration, manager.orderedIdentifiersGeneration)
+                }
+                guard latestGeneration == generation, latestSnapshot == generation else { return }
+                notUploadedIndices.removeAll(keepingCapacity: true)
+                uploadedCount = 0
+                statusEntryCount = latestStatuses.count
+                for (index, id) in identifiers.enumerated() {
+                    if Task.isCancelled { return }
+                    if latestStatuses[id] == .uploaded {
+                        uploadedCount += 1
+                    } else {
+                        notUploadedIndices.append(index)
+                    }
+                }
+            }
+
             await MainActor.run {
                 // A later change may supersede either the PhotoKit generation
                 // or this particular status-cache scan.
@@ -1229,14 +1257,14 @@ struct PhotoGridView: View {
                     logWarning(
                         "Not-uploaded count dropped to zero: previous=\(previousCount), " +
                         "assets=\(identifiers.count), uploaded=\(uploadedCount), " +
-                        "statusEntries=\(statusCache.count), generation=\(generation), " +
+                        "statusEntries=\(statusEntryCount), generation=\(generation), " +
                         "filter=\(self.currentFilter), activeHash=\(hash.isProcessing)",
                         category: .app
                     )
                 } else if previousCount == 0 && newCount > 0 && self.currentFilter == .notUploaded {
                     logInfo(
                         "Not-uploaded count restored: count=\(newCount), " +
-                        "assets=\(identifiers.count), statusEntries=\(statusCache.count), " +
+                        "assets=\(identifiers.count), statusEntries=\(statusEntryCount), " +
                         "generation=\(generation)",
                         category: .app
                     )
