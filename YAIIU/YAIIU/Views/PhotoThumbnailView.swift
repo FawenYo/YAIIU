@@ -238,6 +238,10 @@ struct PhotoThumbnailView: View {
             loadTask?.cancel()
             loadTask = nil
             ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier, targetSize: targetSize)
+            // LazyVGrid can retain @State for rows far outside the viewport.
+            // Release the decoded UIImage as soon as the cell disappears;
+            // NSCache (with its own memory budget) handles revisits instead.
+            thumbnail = nil
         }
         .onChange(of: targetSize) { oldSize, _ in
             ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier, targetSize: oldSize)
