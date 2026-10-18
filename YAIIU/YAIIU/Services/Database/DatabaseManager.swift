@@ -102,12 +102,28 @@ final class DatabaseManager {
         )
     }
     
-    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) {
+    @discardableResult
+    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) -> Bool {
         hashRepo.batchSaveHashCache(items: items)
     }
     
+    func unversionedHashCacheRows() -> [(localIdentifier: String, sha1Hash: String)] {
+        hashRepo.unversionedHashCacheRows()
+    }
+
+    @discardableResult
+    func backfillUnversionedHashDates(
+        _ updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)]
+    ) -> Int {
+        hashRepo.backfillUnversionedHashDates(updates)
+    }
+
     func getHashCache(localIdentifier: String) -> HashCacheRecord? {
         hashRepo.getHashCache(localIdentifier: localIdentifier)
+    }
+
+    func cachedHashIdentifiers(for identifiers: [String]) -> Set<String>? {
+        hashRepo.cachedHashIdentifiers(for: identifiers)
     }
     
     func updateHashCacheServerStatus(localIdentifier: String, isOnServer: Bool, syncStatus: String = "checked") {

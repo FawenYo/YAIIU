@@ -154,12 +154,18 @@ class ImmichSQLiteImporter {
                  fileSize: Int64(0),
                  syncStatus: item.isOnServer ? "checked" : "pending")
             }
-            DatabaseManager.shared.batchSaveHashCache(items: batchItems)
-            
-            let onServerItems = batch.filter { $0.isOnServer }
-            if !onServerItems.isEmpty {
-                let results = onServerItems.map { ($0.localIdentifier, true) }
-                DatabaseManager.shared.batchUpdateHashCacheServerStatus(results: results)
+            // Batch import preserves existing hashes and applies the imported
+            // remote status only if its checksum matches the cached one.
+            guard DatabaseManager.shared.batchSaveHashCache(items: batchItems) else {
+                let message = "SQLite import failed after \(importedCount) of \(totalCount) records"
+                logError(message, category: .importer)
+                return ImportResult(
+                    totalRecords: totalCount + skippedCount,
+                    importedRecords: importedCount,
+                    skippedRecords: totalCount - importedCount + skippedCount,
+                    alreadyOnServer: hashDataList.prefix(importedCount).filter { $0.isOnServer }.count,
+                    errorMessage: message
+                )
             }
             
             importedCount += batch.count
@@ -173,6 +179,9 @@ class ImmichSQLiteImporter {
         }
         
         logInfo("Import completed: \(importedCount) records imported, \(onServerCount) already on server, \(skippedCount) skipped", category: .importer)
+        // Imports intentionally create NULL versions. Populate the current
+        // PhotoKit baseline before the next foreground delta reconciliation.
+        PhotoLibraryManager.shared.backfillUnknownHashVersionsAfterImport()
         
         return ImportResult(
             totalRecords: totalCount + skippedCount,
