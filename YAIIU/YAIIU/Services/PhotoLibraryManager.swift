@@ -56,6 +56,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Only updated assets from the most recent fetch replacement need a
     /// preview/metadata reload; inserts and reorders should not reset playback.
     private(set) var changedAssetIdentifiersForFetch: Set<String> = []
+    /// The generation at which PhotoKit last required a nonincremental reload.
+    /// A pending full reload also carries through superseding notifications.
+    private(set) var fullReloadGeneration: Int = 0
 
     /// Local identifiers in fetch order, materialized once per library load so
     /// callers can derive counts/filters without re-enumerating the lazy
@@ -134,7 +137,8 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
         // Some in-place PHAsset edits report changedObjects without index
         // moves. Do not drop these, or favorite/thumbnail updates stay stale.
-        let changedIdentifiers = Set(changes.changedObjects.map(\.localIdentifier))
+        let changedIdentifiers: Set<String> = changes.hasIncrementalChanges
+            ? Set(changes.changedObjects.map(\.localIdentifier)) : []
 
         // Skip only for incremental notifications that carry no actual edits.
         // Registering the observer (and some foreground transitions) can deliver
@@ -159,11 +163,17 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // exact fetch generation finishes.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            // Invalidate only edited photos; changing the cache key prevents
-            // an older in-flight thumbnail from replacing the edited content.
-            for identifier in changedIdentifiers {
-                ThumbnailCache.shared.invalidateThumbnail(for: identifier)
-                RAWFormatChecker.shared.invalidateCachedStatus(for: identifier)
+            // For nonincremental changes PhotoKit cannot identify which assets
+            // changed, so all cached previews and RAW metadata must be refreshed.
+            // Incremental edits keep their lightweight per-asset invalidation.
+            if !changes.hasIncrementalChanges {
+                ThumbnailCache.shared.invalidateAllThumbnails()
+                RAWFormatChecker.shared.clearCache()
+            } else {
+                for identifier in changedIdentifiers {
+                    ThumbnailCache.shared.invalidateThumbnail(for: identifier)
+                    RAWFormatChecker.shared.invalidateCachedStatus(for: identifier)
+                }
             }
             // Successive PhotoKit notifications may supersede an in-flight
             // identifier enumeration. Keep all edits until a generation finishes;
@@ -173,8 +183,17 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             } else {
                 self.changedAssetIdentifiersForFetch.formUnion(changedIdentifiers)
             }
+            // If a second PhotoKit notification supersedes an unfinished
+            // nonincremental scan, the surviving generation still needs the
+            // full thumbnail/metadata refresh.
+            let awaitingFullReload = self.fullReloadGeneration > 0 &&
+                self.fullReloadGeneration == self.assetFetchGeneration &&
+                self.orderedIdentifiersGeneration != self.assetFetchGeneration
             self.assetFetchGeneration &+= 1
             let generation = self.assetFetchGeneration
+            if !changes.hasIncrementalChanges || awaitingFullReload {
+                self.fullReloadGeneration = generation
+            }
             self.orderedIdentifiersGeneration = nil
             self.orderedLocalIdentifiers = []
             self.fetchResultLock.lock()
