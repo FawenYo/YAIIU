@@ -1219,7 +1219,7 @@ struct PhotoGridView: View {
             // gallery into a false empty result. When a previously populated
             // list first reaches zero, confirm against the latest status map
             // after a short quiet interval before publishing it.
-            let hadItems = await MainActor.run { (self?.cachedNotUploadedCount ?? 0) > 0 }
+            let hadItems = await MainActor.run { self.cachedNotUploadedCount > 0 }
             if notUploadedIndices.isEmpty && hadItems {
                 do {
                     try await Task.sleep(nanoseconds: 400_000_000)
