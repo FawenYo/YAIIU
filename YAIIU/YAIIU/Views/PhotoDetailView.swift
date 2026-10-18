@@ -1090,9 +1090,23 @@ struct PhotoDetailView: View {
                 zoomableView
             }
         } else if imageLoadFailed {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 30))
+            Button {
+                if let requestID = imageRequestID {
+                    PHImageManager.default().cancelImageRequest(requestID)
+                    imageRequestID = nil
+                }
+                imageLoadFailed = false
+                loadFullImage(for: asset)
+            } label: {
+                VStack(spacing: 8) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 30))
+                    Text(L10n.InitialSetup.retry)
+                        .font(.subheadline)
+                }
                 .foregroundColor(.white)
+            }
+            .buttonStyle(.plain)
         } else {
             ProgressView()
                 .scaleEffect(1.5)
