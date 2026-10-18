@@ -5,14 +5,26 @@ import os.lock
 
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
-    /// Pixel dimensions, not SwiftUI points; 480px covers a 3x iPhone grid cell.
+    /// Fallback for callers without a measured grid width.
     static let defaultTargetSize = CGSize(width: 480, height: 480)
+
+    /// Request the rendered grid cell's pixel size, rounded up to avoid a
+    /// new PhotoKit cache key for tiny layout changes. Cap iPad allocations.
+    static func targetSize(forGridCellWidth width: CGFloat, displayScale: CGFloat) -> CGSize {
+        guard width > 0, displayScale > 0 else { return defaultTargetSize }
+        let requiredPixels = ceil(width * displayScale)
+        let side = min(1024, max(480, ceil(requiredPixels / 64) * 64))
+        return CGSize(width: side, height: side)
+    }
     
     private let cache = NSCache<NSString, UIImage>()
     private let cachingImageManager = PHCachingImageManager()
     
     private var pendingRequests: [String: [(UIImage?) -> Void]] = [:]
     private var activeRequestIDs: [String: PHImageRequestID] = [:]
+    /// A revision changes the cache key without clearing unrelated photos.
+    /// Old in-flight PhotoKit results can only populate their obsolete key.
+    private var assetRevisions: [String: UInt64] = [:]
     private var pendingLock = os_unfair_lock()
     
     private init() {
@@ -60,12 +72,27 @@ final class ThumbnailCache {
         cache.countLimit = 200
     }
     
+    private func key(for localIdentifier: String, targetSize: CGSize) -> String {
+        os_unfair_lock_lock(&pendingLock)
+        let revision = assetRevisions[localIdentifier] ?? 0
+        os_unfair_lock_unlock(&pendingLock)
+        return "\(localIdentifier)_r\(revision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+    }
+
+    /// Called for PhotoKit in-place edits before the new fetch is published.
+    /// NSCache's existing 50 MB budget will evict unreachable old revisions.
+    func invalidateThumbnail(for localIdentifier: String) {
+        os_unfair_lock_lock(&pendingLock)
+        assetRevisions[localIdentifier, default: 0] &+= 1
+        os_unfair_lock_unlock(&pendingLock)
+    }
+
     func getThumbnail(
         for asset: PHAsset,
         targetSize: CGSize = ThumbnailCache.defaultTargetSize,
         completion: @escaping (UIImage?) -> Void
     ) {
-        let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
+        let cacheKey = key(for: asset.localIdentifier, targetSize: targetSize) as NSString
         
         if let cachedImage = cache.object(forKey: cacheKey) {
             DispatchQueue.main.async {
@@ -159,7 +186,7 @@ final class ThumbnailCache {
     }
     
     func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
-        let keyString = "\(assetIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+        let keyString = key(for: assetIdentifier, targetSize: targetSize)
         
         os_unfair_lock_lock(&pendingLock)
         if let requestID = activeRequestIDs.removeValue(forKey: keyString) {
@@ -174,7 +201,7 @@ final class ThumbnailCache {
     /// Prefetch thumbnails for better scrolling performance
     func prefetchThumbnails(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let uncachedAssets = assets.filter { asset in
-            let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
+            let cacheKey = key(for: asset.localIdentifier, targetSize: targetSize) as NSString
             return cache.object(forKey: cacheKey) == nil
         }
         
@@ -214,18 +241,8 @@ final class ThumbnailCache {
         cachingImageManager.stopCachingImagesForAllAssets()
     }
     
-    /// Remove cached thumbnail for specific asset
+    /// Keep legacy callers invalidating every cached resolution of this asset.
     func removeThumbnail(for localIdentifier: String) {
-        let defaultSize = Self.defaultTargetSize
-        let keysToRemove = [
-            "\(localIdentifier)_\(Int(defaultSize.width))x\(Int(defaultSize.height))",
-            "\(localIdentifier)_200x200",
-            "\(localIdentifier)_100x100",
-            "\(localIdentifier)_400x400"
-        ]
-        
-        for key in keysToRemove {
-            cache.removeObject(forKey: key as NSString)
-        }
+        invalidateThumbnail(for: localIdentifier)
     }
 }
