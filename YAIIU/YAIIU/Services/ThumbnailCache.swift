@@ -19,7 +19,7 @@ final class ThumbnailCache {
         cache.countLimit = 200
         cache.totalCostLimit = 50 * 1024 * 1024
         
-        cachingImageManager.allowsCachingHighQualityImages = true
+        cachingImageManager.allowsCachingHighQualityImages = false
         
         NotificationCenter.default.addObserver(
             self,
@@ -112,7 +112,15 @@ final class ThumbnailCache {
             
             if let image = image {
                 if !isDegraded {
-                    let cost = Int(image.size.width * image.size.height * 4)
+                    let cost: Int
+                    if let cgImage = image.cgImage {
+                        cost = cgImage.bytesPerRow * cgImage.height
+                    } else {
+                        // UIImage.size is in points; NSCache needs the decoded pixel cost.
+                        let width = image.size.width * image.scale
+                        let height = image.size.height * image.scale
+                        cost = Int(width * height * 4)
+                    }
                     self.cache.setObject(image, forKey: cacheKey, cost: cost)
                 }
                 
@@ -173,9 +181,9 @@ final class ThumbnailCache {
         guard !uncachedAssets.isEmpty else { return }
         
         let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
+        options.deliveryMode = .fastFormat
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .exact
+        options.resizeMode = .fast
         
         cachingImageManager.startCachingImages(
             for: uncachedAssets,
@@ -188,9 +196,9 @@ final class ThumbnailCache {
     /// Stop prefetching thumbnails
     func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let options = PHImageRequestOptions()
-        options.deliveryMode = .highQualityFormat
+        options.deliveryMode = .fastFormat
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .exact
+        options.resizeMode = .fast
         
         cachingImageManager.stopCachingImages(
             for: assets,
