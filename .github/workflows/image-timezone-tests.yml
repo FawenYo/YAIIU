@@ -1,0 +1,58 @@
+name: Image Timezone Regression Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "YAIIU/YAIIU/Services/ImageTimezoneMetadata.swift"
+      - "YAIIU/YAIIUTests/ImageTimezoneMetadataTests.swift"
+      - ".github/workflows/image-timezone-tests.yml"
+
+concurrency:
+  group: timezone-tests-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshot-timezone:
+    name: Validate Screenshot Timezone
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select installed iOS simulator
+        id: simulator
+        shell: bash
+        run: |
+          xcrun simctl list devices available
+          python3 - <<'PY'
+          import json, os, subprocess
+          info = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
+          devices = [
+              device for group in info.get("devices", {}).values()
+              for device in group
+              if device.get("isAvailable", False) and "iPhone" in device.get("name", "")
+          ]
+          if not devices:
+              raise SystemExit("No available iPhone simulator found")
+          chosen = devices[0]
+          print("Using", chosen["name"], chosen["udid"])
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print("udid=" + chosen["udid"], file=output)
+          PY
+
+      - name: Run timezone regression XCTest suite
+        env:
+          SIMULATOR_ID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project YAIIU/YAIIU.xcodeproj \
+            -scheme YAIIU \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -only-testing:YAIIUTests/ImageTimezoneMetadataTests \
+            -parallel-testing-enabled NO \
+            -derivedDataPath "$RUNNER_TEMP/YAIIU-ImageTimezone-Tests" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/image-timezone-tests.log"
