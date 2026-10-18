@@ -165,7 +165,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 ThumbnailCache.shared.invalidateThumbnail(for: identifier)
                 RAWFormatChecker.shared.invalidateCachedStatus(for: identifier)
             }
-            self.changedAssetIdentifiersForFetch = changedIdentifiers
+            // Successive PhotoKit notifications may supersede an in-flight
+            // identifier enumeration. Keep all edits until a generation finishes;
+            // otherwise edit A followed by insertion B can lose A's reload.
+            if self.orderedIdentifiersGeneration == self.assetFetchGeneration {
+                self.changedAssetIdentifiersForFetch = changedIdentifiers
+            } else {
+                self.changedAssetIdentifiersForFetch.formUnion(changedIdentifiers)
+            }
             self.assetFetchGeneration &+= 1
             let generation = self.assetFetchGeneration
             self.orderedIdentifiersGeneration = nil
