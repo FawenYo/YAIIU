@@ -506,6 +506,59 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(secondRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
     }
 
+    func testPendingPhotoKitEditInvalidatesUnknownHashBeforeVersionBaseline() {
+        let id = "offline-edited"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "before-edit",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg",
+            filename: "original.jpg", immichId: "old-remote"
+        )
+        let pending = hashRepository.unversionedHashCacheRows()
+        XCTAssertTrue(pending.contains { $0.localIdentifier == id })
+
+        // Simulate replaying a persistent edit made while the app was closed.
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: id,
+                modificationDate: Date(timeIntervalSince1970: 300)
+            )],
+            pendingIdentifiers: [id], deletedIdentifiers: [],
+            tokenData: Data([7]), bootstrap: false
+        ))
+        XCTAssertEqual(hashRepository.backfillUnversionedHashDates([
+            (localIdentifier: id, sha1Hash: "before-edit",
+             modificationDate: Date(timeIntervalSince1970: 300))
+        ]), 0)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
+    }
+
+    func testImportThenPendingPhotoKitEditCannotBaselineOldChecksum() {
+        let id = "imported-while-offline"
+        XCTAssertTrue(hashRepository.batchSaveHashCache(items: [
+            (localIdentifier: id, sha1Hash: "old-import",
+             fileSize: 0, syncStatus: "checked")
+        ]))
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: id,
+                modificationDate: Date(timeIntervalSince1970: 500)
+            )],
+            pendingIdentifiers: [id], deletedIdentifiers: [],
+            tokenData: Data([9]), bootstrap: false
+        ))
+        XCTAssertEqual(hashRepository.backfillUnversionedHashDates([
+            (localIdentifier: id, sha1Hash: "old-import",
+             modificationDate: Date(timeIntervalSince1970: 500))
+        ]), 0)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
+    }
+
     func testUnversionedHashBackfillPreservesRAWAndServerState() {
         let id = "imported-raw"
         hashRepository.saveMultiResourceHashCache(
