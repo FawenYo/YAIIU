@@ -30,7 +30,7 @@ jobs:
           info = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "-j"]))
           compatible = []
           for runtime, group in info.get("devices", {}).items():
-              match = re.search(r"iOS-(\\d+)-(\\d+)", runtime)
+              match = re.search(r"iOS-(\d+)-(\d+)", runtime)
               if not match:
                   continue
               version = (int(match.group(1)), int(match.group(2)))
