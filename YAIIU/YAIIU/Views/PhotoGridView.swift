@@ -1768,10 +1768,13 @@ private struct PhotoGridItemView: View {
         if let id = newAsset?.localIdentifier {
             // Advance the revision with the NEW PHAsset so stale pre-edit
             // image requests cannot overwrite the updated thumbnail.
-            appliedEditGeneration = (filteredFetchResult == nil ||
-                                     filteredFetchResult === photoLibraryManager.fetchResult) &&
-                                     photoLibraryManager.changedAssetIdentifiersForFetch.contains(id)
-                ? photoLibraryManager.assetFetchGeneration : nil
+            let isCurrentFetch = filteredFetchResult == nil ||
+                filteredFetchResult === photoLibraryManager.fetchResult
+            let generation = photoLibraryManager.assetFetchGeneration
+            let needsContentRefresh = photoLibraryManager.changedAssetIdentifiersForFetch.contains(id) ||
+                photoLibraryManager.fullReloadGeneration == generation
+            appliedEditGeneration = isCurrentFetch && needsContentRefresh
+                ? generation : nil
             syncStatus = hashManager.getSyncStatus(for: id)
         } else {
             appliedEditGeneration = nil
