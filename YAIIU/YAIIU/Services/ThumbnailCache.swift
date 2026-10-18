@@ -5,6 +5,8 @@ import os.lock
 
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
+    /// Pixel dimensions, not SwiftUI points; 480px covers a 3x iPhone grid cell.
+    static let defaultTargetSize = CGSize(width: 480, height: 480)
     
     private let cache = NSCache<NSString, UIImage>()
     private let cachingImageManager = PHCachingImageManager()
@@ -17,7 +19,7 @@ final class ThumbnailCache {
         cache.countLimit = 200
         cache.totalCostLimit = 50 * 1024 * 1024
         
-        cachingImageManager.allowsCachingHighQualityImages = false
+        cachingImageManager.allowsCachingHighQualityImages = true
         
         NotificationCenter.default.addObserver(
             self,
@@ -60,7 +62,7 @@ final class ThumbnailCache {
     
     func getThumbnail(
         for asset: PHAsset,
-        targetSize: CGSize = CGSize(width: 200, height: 200),
+        targetSize: CGSize = ThumbnailCache.defaultTargetSize,
         completion: @escaping (UIImage?) -> Void
     ) {
         let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
@@ -87,7 +89,7 @@ final class ThumbnailCache {
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = true
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         let requestID = cachingImageManager.requestImage(
             for: asset,
@@ -148,7 +150,7 @@ final class ThumbnailCache {
         os_unfair_lock_unlock(&pendingLock)
     }
     
-    func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = CGSize(width: 200, height: 200)) {
+    func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let keyString = "\(assetIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))"
         
         os_unfair_lock_lock(&pendingLock)
@@ -162,7 +164,7 @@ final class ThumbnailCache {
     }
     
     /// Prefetch thumbnails for better scrolling performance
-    func prefetchThumbnails(for assets: [PHAsset], targetSize: CGSize = CGSize(width: 200, height: 200)) {
+    func prefetchThumbnails(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let uncachedAssets = assets.filter { asset in
             let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
             return cache.object(forKey: cacheKey) == nil
@@ -171,9 +173,9 @@ final class ThumbnailCache {
         guard !uncachedAssets.isEmpty else { return }
         
         let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat
+        options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         cachingImageManager.startCachingImages(
             for: uncachedAssets,
@@ -184,11 +186,11 @@ final class ThumbnailCache {
     }
     
     /// Stop prefetching thumbnails
-    func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = CGSize(width: 200, height: 200)) {
+    func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat
+        options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         cachingImageManager.stopCachingImages(
             for: assets,
@@ -207,6 +209,7 @@ final class ThumbnailCache {
     /// Remove cached thumbnail for specific asset
     func removeThumbnail(for localIdentifier: String) {
         let keysToRemove = [
+            "\(localIdentifier)_480x480",
             "\(localIdentifier)_200x200",
             "\(localIdentifier)_100x100",
             "\(localIdentifier)_400x400"
