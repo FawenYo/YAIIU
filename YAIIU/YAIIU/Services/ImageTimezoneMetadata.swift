@@ -267,8 +267,13 @@ private enum PNGExifTimezoneEditor {
     }
 
     static func addingOffsetIfMissing(to source: URL, offset: String) -> URL? {
-        guard let original = try? Data(contentsOf: source),
-              original.count <= 64 * 1024 * 1024,
+        // Bound memory before allocating the input; PhotoKit can supply very
+        // large PNGs and the upload path normally streams them.
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: source.path),
+              let byteSize = attributes[.size] as? NSNumber,
+              byteSize.int64Value <= 32 * 1024 * 1024,
+              let original = try? Data(contentsOf: source),
+              original.count <= 32 * 1024 * 1024,
               let changed = addingOffset(to: original, offset: offset) else {
             return nil
         }
