@@ -301,6 +301,11 @@ struct PhotoGridView: View {
     /// until its replacement is complete. Never resolve old indices in a new fetch.
     @State private var filteredFetchResult: PHFetchResult<PHAsset>?
     @State private var filteredIndicesGeneration: Int?
+    /// Retain the last not-uploaded indices together with their owning fetch
+    /// so switching filters never shows a false zero while rebuilding.
+    @State private var cachedNotUploadedIndices: [Int] = []
+    @State private var cachedNotUploadedFetchResult: PHFetchResult<PHAsset>?
+    @State private var cachedNotUploadedGeneration: Int?
     @State private var cachedNotUploadedCount: Int = 0
     @State private var countRefreshTask: Task<Void, Never>?
     @State private var recomputeTask: Task<Void, Never>?
@@ -1032,9 +1037,18 @@ struct PhotoGridView: View {
 
         switch filter {
         case .notUploaded:
-            // First entry is pending until the authoritative snapshot is
-            // computed. Show loading, not a misleading "0 items" result.
-            isFilterLoading = photoLibraryManager.assetCount > 0
+            if let previousFetch = cachedNotUploadedFetchResult {
+                filteredIndices = cachedNotUploadedIndices
+                filteredFetchResult = previousFetch
+                filteredIndicesGeneration = cachedNotUploadedGeneration
+            }
+            let isCurrent = filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration
+            isFilterLoading = !isCurrent && photoLibraryManager.assetCount > 0
+            logInfo(
+                "Not-uploaded filter opened: visible=\(displayCount), current=\(isCurrent), " +
+                "assets=\(photoLibraryManager.assetCount), generation=\(photoLibraryManager.assetFetchGeneration)",
+                category: .app
+            )
             recomputeCounts()
         case .favorites, .album:
             refreshPhotoKitFilter()
