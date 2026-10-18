@@ -738,6 +738,7 @@ struct PhotoDetailView: View {
     @State private var scale: CGFloat = 1.0
     @State private var dragProgress: CGFloat = 0
     @State private var imageRequestID: PHImageRequestID?
+    @State private var imageLoadGeneration = 0
     @State private var imageLoadFailed: Bool = false
     
     @State private var player: AVPlayer?
@@ -815,6 +816,13 @@ struct PhotoDetailView: View {
         }
         return photoLibraryManager.assetCount
     }
+
+    /// Freeze swipe navigation while PhotoKit is rebuilding its ordered index.
+    /// The currently open asset can still be viewed or dismissed.
+    private var isNavigationIndexReady: Bool {
+        displayIndices != nil ||
+            photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration
+    }
     
     private func resolveActualIndex(_ displayIndex: Int) -> Int {
         if let indices = displayIndices, displayIndex < indices.count {
@@ -886,23 +894,46 @@ struct PhotoDetailView: View {
             cleanupCurrentAsset()
         }
         .onChange(of: currentIndex) { _, _ in
+            // An index correction after a PhotoKit refresh is not navigation to
+            // another photo: preserve zoom, info panel, and video playback.
+            if let currentAsset,
+               photoLibraryManager.asset(at: resolveActualIndex(currentIndex))?.localIdentifier == currentAsset.localIdentifier {
+                return
+            }
             cleanupCurrentAsset()
             resetAssetStates()
             loadAssetAtCurrentIndex()
         }
         .onReceive(photoLibraryManager.$orderedIdentifiersGeneration.receive(on: RunLoop.main)) { generation in
-            // Preserve the open photo while a foreground PhotoKit refresh changes
-            // its position. Close only when this photo actually left the library.
             guard displayIndices == nil,
                   let generation,
                   generation == photoLibraryManager.assetFetchGeneration,
-                  let identifier = currentAsset?.localIdentifier else { return }
-            if let updatedIndex = photoLibraryManager.orderedLocalIdentifiers.firstIndex(of: identifier) {
-                if updatedIndex != currentIndex {
-                    currentIndex = updatedIndex
-                }
-            } else {
+                  photoLibraryManager.orderedIdentifiersGeneration == generation,
+                  let previousAsset = currentAsset else { return }
+
+            // Once this fetch's identifier list is ready, reconcile by identity
+            // rather than by the stale numeric position.
+            guard let updatedIndex = photoLibraryManager.orderedLocalIdentifiers.firstIndex(of: previousAsset.localIdentifier),
+                  let updatedAsset = photoLibraryManager.asset(at: updatedIndex),
+                  updatedAsset.localIdentifier == previousAsset.localIdentifier else {
                 isPresented = false
+                return
+            }
+
+            let wasEdited = photoLibraryManager.changedAssetIdentifiersForFetch.contains(previousAsset.localIdentifier)
+                || updatedAsset.modificationDate != previousAsset.modificationDate
+            if updatedIndex != currentIndex {
+                currentIndex = updatedIndex
+            }
+            if wasEdited {
+                // Fetch result change details report content/metadata edits even
+                // when an asset remains at the exact same index.
+                cleanupCurrentAsset()
+                resetAssetStates()
+                currentAsset = updatedAsset
+                loadCurrentAsset()
+            } else {
+                currentAsset = updatedAsset
             }
         }
     }
@@ -1018,11 +1049,11 @@ struct PhotoDetailView: View {
     // MARK: - Navigation
     
     private var canNavigateToPrevious: Bool {
-        currentIndex > 0
+        isNavigationIndexReady && currentIndex > 0
     }
-    
+
     private var canNavigateToNext: Bool {
-        currentIndex < totalCount - 1
+        isNavigationIndexReady && currentIndex < totalCount - 1
     }
     
     private func navigateToPrevious() {
@@ -1032,7 +1063,10 @@ struct PhotoDetailView: View {
         }
         hasNavigated = true
         withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = UIScreen.main.bounds.width }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex -= 1; horizontalOffset = 0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            if canNavigateToPrevious { currentIndex -= 1 }
+            horizontalOffset = 0
+        }
     }
     
     private func navigateToNext() {
@@ -1042,7 +1076,10 @@ struct PhotoDetailView: View {
         }
         hasNavigated = true
         withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = -UIScreen.main.bounds.width }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex += 1; horizontalOffset = 0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            if canNavigateToNext { currentIndex += 1 }
+            horizontalOffset = 0
+        }
     }
     
     // MARK: - Content Views
@@ -1441,6 +1478,7 @@ struct PhotoDetailView: View {
     }
     
     private func cleanupCurrentAsset() {
+        imageLoadGeneration &+= 1
         if let requestID = imageRequestID {
             PHImageManager.default().cancelImageRequest(requestID)
             imageRequestID = nil
@@ -1477,6 +1515,8 @@ struct PhotoDetailView: View {
     // MARK: - Data Loading
     
     private func loadFullImage(for asset: PHAsset) {
+        imageLoadGeneration &+= 1
+        let requestGeneration = imageLoadGeneration
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
@@ -1503,6 +1543,7 @@ struct PhotoDetailView: View {
 
             Task { @MainActor in
                 guard self.isPresented,
+                      self.imageLoadGeneration == requestGeneration,
                       asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
                 if let image {
                     self.fullImage = image
