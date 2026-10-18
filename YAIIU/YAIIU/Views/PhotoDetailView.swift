@@ -921,7 +921,11 @@ struct PhotoDetailView: View {
                 return
             }
 
+            // A nonincremental PhotoKit change supplies no per-asset edit
+            // identifiers. Refresh the open asset just as the grid does when
+            // the current fetch generation requires a full content reload.
             let wasEdited = photoLibraryManager.changedAssetIdentifiersForFetch.contains(previousAsset.localIdentifier)
+                || photoLibraryManager.fullReloadGeneration == generation
                 || updatedAsset.modificationDate != previousAsset.modificationDate
             if updatedIndex != currentIndex {
                 currentIndex = updatedIndex
