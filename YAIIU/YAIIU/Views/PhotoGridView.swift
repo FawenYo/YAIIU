@@ -304,6 +304,9 @@ struct PhotoGridView: View {
     @State private var selectionTask: Task<Void, Never>?
     
     @State private var refreshToken: UUID = UUID()
+    /// Reset scroll/grid identity only for a deliberate filter change, not
+    /// for every PhotoKit or sync status refresh.
+    @State private var gridResetToken: UUID = UUID()
     @State private var processingTask: Task<Void, Never>?
     @State private var selectedPhotoIndex: Int = 0
     @State private var showingPhotoDetail = false
@@ -738,9 +741,9 @@ struct PhotoGridView: View {
                 )
                 .frame(width: 0, height: 0)
             }
-            // Keep the existing LazyVGrid and visible thumbnail state when
-            // PhotoKit refreshes. Replacing the grid identity briefly removes
-            // every image and produces a white/empty flash while scrolling.
+            // Keep existing visible cells during PhotoKit refreshes. Reset
+            // grid/scroll position only when the user explicitly changes filter.
+            .id(gridResetToken)
         }
         .coordinateSpace(name: "scrollView")
         .refreshable {
@@ -960,6 +963,7 @@ struct PhotoGridView: View {
 
     private func applyFilter(_ filter: PhotoFilterOption) {
         stopPrefetching()
+        gridResetToken = UUID()
         selectionTask?.cancel()
         isSelectingAll = false
         selectedAssets.removeAll()
