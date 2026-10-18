@@ -164,7 +164,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         }
         
         // Skip redundant updates for same image when bounds unchanged
-        if currentImageSize == image.size && lastLayoutBounds == bounds.size { return }
+        if imageView.image === image && lastLayoutBounds == bounds.size { return }
         
         currentImageSize = image.size
         imageView.image = image
@@ -737,7 +737,8 @@ struct PhotoDetailView: View {
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
     @State private var dragProgress: CGFloat = 0
-    @State private var imageLoadTask: Task<Void, Never>?
+    @State private var imageRequestID: PHImageRequestID?
+    @State private var imageLoadFailed: Bool = false
     
     @State private var player: AVPlayer?
     @State private var isVideoLoading: Bool = false
@@ -765,6 +766,10 @@ struct PhotoDetailView: View {
         case dismiss
     }
     
+    /// Downsample large originals to a safe display/zoom preview size.
+    /// Requesting PHImageManagerMaximumSize can decode 40–50MP RAW photos at once.
+    private static let maxDisplayImageDimension: CGFloat = 4096
+
     private let dismissThreshold: CGFloat = 150
     private let horizontalSwipeThreshold: CGFloat = 80
     
@@ -884,6 +889,21 @@ struct PhotoDetailView: View {
             cleanupCurrentAsset()
             resetAssetStates()
             loadAssetAtCurrentIndex()
+        }
+        .onReceive(photoLibraryManager.$orderedIdentifiersGeneration.receive(on: RunLoop.main)) { generation in
+            // Preserve the open photo while a foreground PhotoKit refresh changes
+            // its position. Close only when this photo actually left the library.
+            guard displayIndices == nil,
+                  let generation,
+                  generation == photoLibraryManager.assetFetchGeneration,
+                  let identifier = currentAsset?.localIdentifier else { return }
+            if let updatedIndex = photoLibraryManager.orderedLocalIdentifiers.firstIndex(of: identifier) {
+                if updatedIndex != currentIndex {
+                    currentIndex = updatedIndex
+                }
+            } else {
+                isPresented = false
+            }
         }
     }
     
@@ -1069,6 +1089,10 @@ struct PhotoDetailView: View {
             } else {
                 zoomableView
             }
+        } else if imageLoadFailed {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 30))
+                .foregroundColor(.white)
         } else {
             ProgressView()
                 .scaleEffect(1.5)
@@ -1403,7 +1427,10 @@ struct PhotoDetailView: View {
     }
     
     private func cleanupCurrentAsset() {
-        imageLoadTask?.cancel()
+        if let requestID = imageRequestID {
+            PHImageManager.default().cancelImageRequest(requestID)
+            imageRequestID = nil
+        }
         player?.pause()
         player = nil
         if let observer = playerEndObserver {
@@ -1415,6 +1442,7 @@ struct PhotoDetailView: View {
     private func resetAssetStates() {
         currentAsset = nil
         fullImage = nil
+        imageLoadFailed = false
         scale = 1.0
         offset = .zero
         dragProgress = 0
@@ -1435,33 +1463,38 @@ struct PhotoDetailView: View {
     // MARK: - Data Loading
     
     private func loadFullImage(for asset: PHAsset) {
-        imageLoadTask = Task {
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isNetworkAccessAllowed = true
-            options.isSynchronous = false
-            options.resizeMode = .none
-            
-            await withCheckedContinuation { continuation in
-                PHImageManager.default().requestImage(
-                    for: asset,
-                    targetSize: PHImageManagerMaximumSize,
-                    contentMode: .aspectFit,
-                    options: options
-                ) { image, info in
-                    let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                    
-                    Task { @MainActor in
-                        if asset.localIdentifier == self.currentAsset?.localIdentifier {
-                            if let image = image {
-                                self.fullImage = image
-                            }
-                        }
-                        
-                        if !isDegraded {
-                            continuation.resume()
-                        }
-                    }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+        options.resizeMode = .exact
+
+        // A bounded PhotoKit image is sufficient for a sharp screen/zoom preview.
+        // The original file remains untouched for uploads and metadata extraction.
+        let targetSize = CGSize(
+            width: max(1, min(CGFloat(asset.pixelWidth), Self.maxDisplayImageDimension)),
+            height: max(1, min(CGFloat(asset.pixelHeight), Self.maxDisplayImageDimension))
+        )
+
+        imageRequestID = PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { image, info in
+            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            guard !isCancelled else { return }
+
+            Task { @MainActor in
+                guard self.isPresented,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if let image {
+                    self.fullImage = image
+                } else if !isDegraded {
+                    self.imageLoadFailed = true
+                    let error = info?[PHImageErrorKey] as? Error
+                    logWarning("Unable to load photo preview: \(error?.localizedDescription ?? "no image returned")", category: .app)
                 }
             }
         }
