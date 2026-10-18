@@ -11,6 +11,7 @@ final class RAWFormatChecker {
     
     private var cache: [String: Bool] = [:]
     private var revisions: [String: UInt64] = [:]
+    private var globalRevision: UInt64 = 0
     private var cacheLock = os_unfair_lock()
     
     private init() {}
@@ -27,6 +28,7 @@ final class RAWFormatChecker {
     func hasRAWResource(for assetIdentifier: String, resources: [PHAssetResource]) -> Bool {
         os_unfair_lock_lock(&cacheLock)
         let revision = revisions[assetIdentifier] ?? 0
+        let fullRevision = globalRevision
         if let cached = cache[assetIdentifier] {
             os_unfair_lock_unlock(&cacheLock)
             return cached
@@ -37,7 +39,8 @@ final class RAWFormatChecker {
         
         os_unfair_lock_lock(&cacheLock)
         // Avoid a stale in-flight resource inspection repopulating an edited asset.
-        if revisions[assetIdentifier, default: 0] == revision {
+        if revisions[assetIdentifier, default: 0] == revision &&
+           globalRevision == fullRevision {
             cache[assetIdentifier] = hasRAW
         }
         os_unfair_lock_unlock(&cacheLock)
@@ -60,6 +63,7 @@ final class RAWFormatChecker {
 
     func clearCache() {
         os_unfair_lock_lock(&cacheLock)
+        globalRevision &+= 1
         cache.removeAll()
         revisions.removeAll()
         os_unfair_lock_unlock(&cacheLock)
