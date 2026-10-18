@@ -266,6 +266,7 @@ private enum DateFormatting {
 
 struct PhotoGridView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var uploadManager: UploadManager
     @ObservedObject private var photoLibraryManager = PhotoLibraryManager.shared
@@ -277,6 +278,7 @@ struct PhotoGridView: View {
     @State private var showingUploadConfirmation = false
     @State private var hasAppeared = false
     @State private var lastPrefetchedRange: Range<Int>?
+    @State private var lastPrefetchedTargetSize: CGSize?
     /// At most ~60 PhotoKit assets from the filtered display window.
     @State private var lastPrefetchedFilteredAssets: [PHAsset] = []
     @State private var isSyncing = false
@@ -324,6 +326,16 @@ struct PhotoGridView: View {
     }
     
     private let prefetchBuffer = 30
+
+    /// One pixel size for the uniform three-column grid, used by both visible
+    /// thumbnail requests and PhotoKit preheating/cancellation.
+    private var thumbnailTargetSize: CGSize {
+        guard gridContainerWidth > 0 else { return ThumbnailCache.defaultTargetSize }
+        let spacing = CGFloat(Self.columnCount - 1) * Self.gridSpacing
+        let usable = gridContainerWidth - Self.gridHorizontalPadding * 2 - spacing
+        let cellWidth = max(1, usable / CGFloat(Self.columnCount))
+        return ThumbnailCache.targetSize(forGridCellWidth: cellWidth, displayScale: displayScale)
+    }
     
     private var displayCount: Int {
         switch currentFilter {
@@ -554,9 +566,13 @@ struct PhotoGridView: View {
             // interpreting them against the newly swapped result.
             lastPrefetchedRange = nil
             if !lastPrefetchedFilteredAssets.isEmpty {
-                ThumbnailCache.shared.stopPrefetching(for: lastPrefetchedFilteredAssets)
+                ThumbnailCache.shared.stopPrefetching(
+                    for: lastPrefetchedFilteredAssets,
+                    targetSize: lastPrefetchedTargetSize ?? thumbnailTargetSize
+                )
                 lastPrefetchedFilteredAssets = []
             }
+            lastPrefetchedTargetSize = nil
             refreshToken = UUID()
         }
         .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
@@ -693,6 +709,12 @@ struct PhotoGridView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .onAppear { gridContainerWidth = geometry.size.width }
             .onChange(of: geometry.size.width) { _, w in gridContainerWidth = w }
+            .onChange(of: thumbnailTargetSize) { _, _ in
+                stopPrefetching()
+                if displayCount > 0 {
+                    prefetchThumbnails(aroundDisplayIndex: visibleDisplayIndices.min() ?? 0)
+                }
+            }
             .onDisappear {
                 visibleDisplayIndices.removeAll()
             }
@@ -806,6 +828,7 @@ struct PhotoGridView: View {
             selectedAssets: $selectedAssets,
             namespace: photoTransitionNamespace,
             refreshToken: refreshToken,
+            thumbnailTargetSize: thumbnailTargetSize,
             showingPhotoDetail: showingPhotoDetail,
             selectedPhotoIndex: selectedPhotoIndex,
             onTap: {
@@ -1178,14 +1201,20 @@ struct PhotoGridView: View {
     }
     
     private func stopPrefetching() {
+        let targetSize = lastPrefetchedTargetSize ?? thumbnailTargetSize
         if let range = lastPrefetchedRange {
-            ThumbnailCache.shared.stopPrefetching(for: photoLibraryManager.assets(in: range))
+            ThumbnailCache.shared.stopPrefetching(
+                for: photoLibraryManager.assets(in: range), targetSize: targetSize
+            )
             lastPrefetchedRange = nil
         }
         if !lastPrefetchedFilteredAssets.isEmpty {
-            ThumbnailCache.shared.stopPrefetching(for: lastPrefetchedFilteredAssets)
+            ThumbnailCache.shared.stopPrefetching(
+                for: lastPrefetchedFilteredAssets, targetSize: targetSize
+            )
             lastPrefetchedFilteredAssets = []
         }
+        lastPrefetchedTargetSize = nil
     }
 
     private func prefetchThumbnails(aroundDisplayIndex displayIndex: Int) {
@@ -1196,6 +1225,12 @@ struct PhotoGridView: View {
         let start = max(0, displayIndex - prefetchBuffer)
         let end = min(displayCount, displayIndex + prefetchBuffer + 1)
         guard start < end else { return }
+
+        let targetSize = thumbnailTargetSize
+        if let previousSize = lastPrefetchedTargetSize, previousSize != targetSize {
+            stopPrefetching()
+        }
+        lastPrefetchedTargetSize = targetSize
 
         if currentFilter == .all {
             let newRange = start..<end
@@ -1208,7 +1243,8 @@ struct PhotoGridView: View {
                 let stale = previousRange.filter { !newRange.contains($0) }
                 if !stale.isEmpty {
                     ThumbnailCache.shared.stopPrefetching(
-                        for: stale.compactMap { photoLibraryManager.asset(at: $0) }
+                        for: stale.compactMap { photoLibraryManager.asset(at: $0) },
+                        targetSize: targetSize
                     )
                 }
             }
@@ -1217,7 +1253,8 @@ struct PhotoGridView: View {
             lastPrefetchedRange = newRange
             if !fresh.isEmpty {
                 ThumbnailCache.shared.prefetchThumbnails(
-                    for: fresh.compactMap { photoLibraryManager.asset(at: $0) }
+                    for: fresh.compactMap { photoLibraryManager.asset(at: $0) },
+                    targetSize: targetSize
                 )
             }
             return
@@ -1233,8 +1270,8 @@ struct PhotoGridView: View {
         let oldIDs = Set(lastPrefetchedFilteredAssets.map(\.localIdentifier))
         let stale = lastPrefetchedFilteredAssets.filter { !currentIDs.contains($0.localIdentifier) }
         let fresh = assets.filter { !oldIDs.contains($0.localIdentifier) }
-        if !stale.isEmpty { ThumbnailCache.shared.stopPrefetching(for: stale) }
-        if !fresh.isEmpty { ThumbnailCache.shared.prefetchThumbnails(for: fresh) }
+        if !stale.isEmpty { ThumbnailCache.shared.stopPrefetching(for: stale, targetSize: targetSize) }
+        if !fresh.isEmpty { ThumbnailCache.shared.prefetchThumbnails(for: fresh, targetSize: targetSize) }
         lastPrefetchedFilteredAssets = assets
     }
 
@@ -1522,6 +1559,7 @@ private struct PhotoGridItemView: View {
     @Binding var selectedAssets: Set<String>
     let namespace: Namespace.ID
     let refreshToken: UUID
+    let thumbnailTargetSize: CGSize
     let showingPhotoDetail: Bool
     let selectedPhotoIndex: Int
     let onTap: () -> Void
@@ -1530,6 +1568,7 @@ private struct PhotoGridItemView: View {
     let onDisappear: () -> Void
     
     @State private var asset: PHAsset?
+    @State private var appliedEditGeneration: Int?
     @State private var syncStatus: PhotoSyncStatus = .pending
     
     var body: some View {
@@ -1544,6 +1583,8 @@ private struct PhotoGridItemView: View {
                     syncStatus: syncStatus,
                     namespace: namespace,
                     refreshToken: refreshToken,
+                    targetSize: thumbnailTargetSize,
+                    editGeneration: appliedEditGeneration,
                     isGeometrySource: !isThisAssetSelected
                 )
                 // The grid can reuse the same display index after an insert or
@@ -1591,7 +1632,13 @@ private struct PhotoGridItemView: View {
         let newAsset = photoLibraryManager.asset(at: assetIndex)
         asset = newAsset
         if let id = newAsset?.localIdentifier {
+            // Advance the revision with the NEW PHAsset so stale pre-edit
+            // image requests cannot overwrite the updated thumbnail.
+            appliedEditGeneration = photoLibraryManager.changedAssetIdentifiersForFetch.contains(id)
+                ? photoLibraryManager.assetFetchGeneration : nil
             syncStatus = hashManager.getSyncStatus(for: id)
+        } else {
+            appliedEditGeneration = nil
         }
     }
 }
