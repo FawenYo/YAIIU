@@ -356,6 +356,12 @@ struct PhotoGridView: View {
         }
     }
 
+    /// A background PhotoKit refresh does not invalidate the old, retained
+    /// filtered fetch. Users can still select its visible assets by identifier.
+    private var canSelectDisplayedPhotos: Bool {
+        displayCount > 0 && (currentFilter == .all || filteredFetchResult != nil)
+    }
+
     private var visibleAlbumChoices: [PhotoAlbumOption] {
         guard !albumSearch.isEmpty else { return albumChoices }
         return albumChoices.filter { $0.title.localizedCaseInsensitiveContains(albumSearch) }
@@ -404,7 +410,7 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.select) {
                                 isSelectionMode = true
                             }
-                            .disabled(displayCount == 0 || isFilterLoading)
+                            .disabled(!canSelectDisplayedPhotos)
                         }
                     }
 
@@ -413,14 +419,14 @@ struct PhotoGridView: View {
                             Button(L10n.PhotoGrid.selectAllNotUploaded) {
                                 selectAllNotUploaded()
                             }
-                            .disabled(hashManager.isProcessing || isSelectingAll || isFilterLoading)
+                            .disabled(hashManager.isProcessing || isSelectingAll || !canSelectDisplayedPhotos)
 
                             Spacer()
 
                             Button(L10n.PhotoGrid.upload(selectedAssets.count)) {
                                 showingUploadConfirmation = true
                             }
-                            .disabled(selectedAssets.isEmpty || isFilterLoading)
+                            .disabled(selectedAssets.isEmpty || isSelectingAll)
                         }
                     }
                 }
@@ -864,18 +870,19 @@ struct PhotoGridView: View {
             showingPhotoDetail: showingPhotoDetail,
             selectedPhotoIndex: selectedPhotoIndex,
             onTap: {
-                guard !isFilterLoading else { return }
                 if isSelectionMode {
+                    guard canSelectDisplayedPhotos else { return }
                     toggleSelection(at: assetIndex)
                 } else {
+                    // Detail navigation still needs the current fetch generation.
                     openPhotoDetail(at: displayIndex)
                 }
             },
             onLongPress: {
-                guard !isFilterLoading else { return }
+                guard canSelectDisplayedPhotos else { return }
                 if !isSelectionMode {
                     isSelectionMode = true
-                    if let id = photoLibraryManager.localIdentifier(at: assetIndex) {
+                    if let id = assetForDisplay(at: assetIndex)?.localIdentifier {
                         selectedAssets.insert(id)
                     }
                 }
@@ -1478,7 +1485,7 @@ struct PhotoGridView: View {
     }
     
     private func handleDragBegan(at point: CGPoint) {
-        guard !isFilterLoading, let idx = displayIndex(at: point) else { return }
+        guard canSelectDisplayedPhotos, let idx = displayIndex(at: point) else { return }
         let actualIdx = resolveActualIndex(idx)
         
         dragState.baseSelection = selectedAssets
@@ -1493,7 +1500,7 @@ struct PhotoGridView: View {
     }
     
     private func handleDragChanged(at point: CGPoint) {
-        guard !isFilterLoading, let anchor = dragState.anchorIndex else { return }
+        guard canSelectDisplayedPhotos, let anchor = dragState.anchorIndex else { return }
         guard let idx = displayIndex(at: point) else { return }
         guard idx != dragState.currentIndex else { return }
         
@@ -1524,12 +1531,12 @@ struct PhotoGridView: View {
     
     private func selectAllNotUploaded() {
         let statusCache = hashManager.syncStatusCache
-        guard let fetchResult = photoLibraryManager.fetchResult,
-              !isSelectingAll, !isFilterLoading,
-              (currentFilter == .all ||
-               filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
-        let generation = photoLibraryManager.assetFetchGeneration
-        // Selection must stay within the active Favorites/album/not-uploaded filter.
+        guard canSelectDisplayedPhotos, !isSelectingAll,
+              let fetchResult = currentFilter == .all
+                ? photoLibraryManager.fetchResult : filteredFetchResult else { return }
+        let selectedFilter = currentFilter
+        // The visible indices belong to the retained fetch, not necessarily
+        // the manager's newest PhotoKit generation.
         let visibleIndices: [Int]? = currentFilter == .all ? nil : filteredIndices
 
         isSelectingAll = true
@@ -1561,11 +1568,10 @@ struct PhotoGridView: View {
 
             await MainActor.run {
                 guard !Task.isCancelled else { return }
-                if self.photoLibraryManager.assetFetchGeneration != generation {
-                    self.isSelectingAll = false
-                    return
-                }
-                if self.isSelectionMode {
+                let displayedFetch = self.currentFilter == .all
+                    ? self.photoLibraryManager.fetchResult : self.filteredFetchResult
+                if self.currentFilter == selectedFilter &&
+                   displayedFetch === fetchResult && self.isSelectionMode {
                     self.selectedAssets = ids
                 }
                 self.isSelectingAll = false
@@ -1583,9 +1589,9 @@ struct PhotoGridView: View {
     }
     
     private func uploadSelectedPhotos() {
-        guard !isFilterLoading,
-              (currentFilter == .all ||
-               filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
+        // Selected identifiers are stable across PhotoKit generations; resolve
+        // them against the CURRENT library when the upload actually begins.
+        guard !selectedAssets.isEmpty else { return }
         let identifiersToUpload = Array(selectedAssets)
         let manager = uploadManager
 
