@@ -41,7 +41,12 @@ enum ImageTimezoneMetadata {
         guard existingOffset(in: source) == nil else { return fileURL }
 
         let offset = formattedOffset(timezone.secondsFromGMT(for: date))
-        let metadata = CGImageMetadataCreateMutable()
+        let metadata: CGMutableImageMetadata
+        if let sourceMetadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil) {
+            metadata = CGImageMetadataCreateMutableCopy(sourceMetadata)
+        } else {
+            metadata = CGImageMetadataCreateMutable()
+        }
         guard CGImageMetadataSetValueWithPath(metadata, nil, offsetPath, offset as CFString) else {
             logWarning("Capture timezone skipped for \(filename): could not construct EXIF offset", category: .upload)
             return fileURL
@@ -148,13 +153,9 @@ enum ImageTimezoneMetadata {
             guard let afterExif = after[exifKey] as? [String: Any] else {
                 return "EXIF metadata disappeared"
             }
-            let requiredEXIFKeys: [String] = isPNG
-                ? [
-                    kCGImagePropertyExifDateTimeOriginal as String,
-                    kCGImagePropertyExifDateTimeDigitized as String,
-                    kCGImagePropertyExifUserComment as String,
-                ]
-                : Array(beforeExif.keys).filter { $0 != (kCGImagePropertyExifOffsetTimeOriginal as String) }
+            let requiredEXIFKeys = Array(beforeExif.keys).filter {
+                $0 != (kCGImagePropertyExifOffsetTimeOriginal as String)
+            }
             for key in requiredEXIFKeys {
                 if !equalIfPresent(beforeExif[key], afterExif[key]) {
                     return "existing EXIF field changed (\(key))"
