@@ -216,8 +216,9 @@ final class ThumbnailCache {
     
     /// Remove cached thumbnail for specific asset
     func removeThumbnail(for localIdentifier: String) {
+        let defaultSize = Self.defaultTargetSize
         let keysToRemove = [
-            "\(localIdentifier)_480x480",
+            "\(localIdentifier)_\(Int(defaultSize.width))x\(Int(defaultSize.height))",
             "\(localIdentifier)_200x200",
             "\(localIdentifier)_100x100",
             "\(localIdentifier)_400x400"
