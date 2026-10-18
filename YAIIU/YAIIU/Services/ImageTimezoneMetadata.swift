@@ -123,6 +123,7 @@ enum ImageTimezoneMetadata {
             kCGImagePropertyPixelWidth, kCGImagePropertyPixelHeight,
             kCGImagePropertyDepth, kCGImagePropertyColorModel,
             kCGImagePropertyHasAlpha, kCGImagePropertyProfileName,
+            kCGImagePropertyOrientation,
         ]
         for key in pixelKeys {
             if !equalIfPresent(before[key as String], after[key as String]) {
@@ -169,6 +170,7 @@ enum ImageTimezoneMetadata {
                 kCGImagePropertyTIFFDateTime as String,
                 kCGImagePropertyTIFFMake as String,
                 kCGImagePropertyTIFFModel as String,
+                kCGImagePropertyTIFFOrientation as String,
             ] {
                 if !equalIfPresent(beforeTIFF?[key], afterTIFF?[key]) {
                     return "existing TIFF field changed (\(key))"
