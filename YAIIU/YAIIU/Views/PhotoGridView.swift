@@ -898,7 +898,11 @@ struct PhotoGridView: View {
             Text(currentFilter == .album ? (selectedAlbum?.title ?? L10n.PhotoGrid.filterAlbum) : currentFilter.localizedTitle)
                 .font(.subheadline)
                 .lineLimit(1)
-            if isFilterLoading {
+            // A PhotoKit refresh can be in flight while we still display a
+            // valid previous PHFetchResult. Keep its count visible instead of
+            // replacing the number with an indefinite loading spinner.
+            // Only show progress before the first filtered snapshot exists.
+            if isFilterLoading && filteredFetchResult == nil {
                 ProgressView()
                     .scaleEffect(0.7)
             } else {
