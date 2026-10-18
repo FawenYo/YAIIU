@@ -304,8 +304,8 @@ struct PhotoGridView: View {
     @State private var selectionTask: Task<Void, Never>?
     
     @State private var refreshToken: UUID = UUID()
-    /// Reset scroll/grid identity only for a deliberate filter change, not
-    /// for every PhotoKit or sync status refresh.
+    /// Reset scroll/grid identity only for deliberate filter changes or
+    /// pull-to-refresh, not for every PhotoKit or sync status refresh.
     @State private var gridResetToken: UUID = UUID()
     @State private var processingTask: Task<Void, Never>?
     @State private var selectedPhotoIndex: Int = 0
@@ -1250,6 +1250,9 @@ struct PhotoGridView: View {
         firstRowTopOffset = 0
         
         refreshToken = UUID()
+        // Preserve the original intentional scroll reset on manual refresh,
+        // while keeping background PhotoKit updates free of grid-wide flashes.
+        gridResetToken = UUID()
 
         recomputeCounts()
     }
