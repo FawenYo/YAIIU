@@ -132,6 +132,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             return
         }
 
+        // Some in-place PHAsset edits report changedObjects without index
+        // moves. Do not drop these, or favorite/thumbnail updates stay stale.
+        let changedIdentifiers = Set(changes.changedObjects.map(\.localIdentifier))
+
         // Skip only for incremental notifications that carry no actual edits.
         // Registering the observer (and some foreground transitions) can deliver
         // such a change; republishing then rebuilds the grid and blanks all
@@ -141,14 +145,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             let insertedEmpty = changes.insertedIndexes?.isEmpty ?? true
             let removedEmpty = changes.removedIndexes?.isEmpty ?? true
             let changedEmpty = changes.changedIndexes?.isEmpty ?? true
-            if insertedEmpty && removedEmpty && changedEmpty && !changes.hasMoves {
+            if insertedEmpty && removedEmpty && changedEmpty &&
+               !changes.hasMoves && changedIdentifiers.isEmpty {
                 return
             }
         }
 
         let updatedResult = changes.fetchResultAfterChanges
         let count = updatedResult.count
-        let changedIdentifiers = Set(changes.changedObjects.map(\.localIdentifier))
 
         // Swap the fetch and invalidate its previous index snapshot on the main
         // actor. Do not publish index-based filters until enumeration of this
