@@ -437,7 +437,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         _ = prepareForegroundPhotoWork(forceVersionBaseline: true)
     }
 
-    private func backfillUnknownHashVersionsLocked(force: Bool) {
+    private func backfillUnknownHashVersionsLocked(
+        force: Bool,
+        excludingIdentifiers: Set<String> = []
+    ) {
         guard force || !hasBackfilledUnknownHashVersions else { return }
         guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return }
         hasBackfilledUnknownHashVersions = true
@@ -453,7 +456,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // Fetch only identifiers with NULL cached dates, never resource bytes.
         // Chunking caps temporary allocations for large Immich imports.
         for start in stride(from: 0, to: rows.count, by: 300) {
-            let batch = Array(rows[start..<min(start + 300, rows.count)])
+            let batch = rows[start..<min(start + 300, rows.count)]
+                .filter { !excludingIdentifiers.contains($0.localIdentifier) }
+            guard !batch.isEmpty else { continue }
             let checksums = Dictionary(uniqueKeysWithValues: batch.map {
                 ($0.localIdentifier, $0.sha1Hash)
             })
@@ -519,12 +524,15 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 var updatedCount = 0
                 var deletedCount = 0
                 var sampleIdentifiersLogged = 0
+                var replayedIdentifiers = Set<String>()
                 for change in changes {
                     let details = try change.changeDetails(for: .asset)
                     let deleted = details.deletedLocalIdentifiers
                     let affected = details.insertedLocalIdentifiers
                         .union(details.updatedLocalIdentifiers)
                         .subtracting(deleted)
+                    replayedIdentifiers.formUnion(affected)
+                    replayedIdentifiers.formUnion(deleted)
 
                     // Fetch only changed identifiers, including hidden assets to
                     // distinguish legitimate hidden updates from removals.
@@ -582,7 +590,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 }
                 // Baseline only after successful, durable journal replay.
                 // Updated unknown-version hashes were already invalidated.
-                backfillUnknownHashVersionsLocked(force: forceVersionBaseline)
+                backfillUnknownHashVersionsLocked(
+                    force: forceVersionBaseline,
+                    excludingIdentifiers: replayedIdentifiers
+                )
                 return .incremental(visibleForegroundPendingIdentifiers())
             } catch let error as NSError
                 where error.domain == PHPhotosErrorDomain &&
