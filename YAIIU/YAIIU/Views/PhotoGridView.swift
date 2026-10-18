@@ -1193,36 +1193,67 @@ struct PhotoGridView: View {
         countComputeVersion += 1
         let version = countComputeVersion
 
-        recomputeTask = Task(priority: .utility) {
+        // Task { } inherits the caller's @MainActor isolation, regardless
+        // of priority. Keep the full-library status scan off the UI thread.
+        recomputeTask = Task.detached(priority: .utility) { [weak self] in
             let (statusCache, identifiers, generation, snapshotGeneration) = await MainActor.run {
                 (hash.syncStatusCache, manager.orderedLocalIdentifiers,
                  manager.assetFetchGeneration, manager.orderedIdentifiersGeneration)
             }
-            guard snapshotGeneration == generation else { return }
+            guard snapshotGeneration == generation, !Task.isCancelled else { return }
 
             var notUploadedIndices: [Int] = []
             notUploadedIndices.reserveCapacity(identifiers.count / 4)
+            var uploadedCount = 0
             for (index, id) in identifiers.enumerated() {
                 if Task.isCancelled { return }
-                if statusCache[id] != .uploaded {
+                if statusCache[id] == .uploaded {
+                    uploadedCount += 1
+                } else {
                     notUploadedIndices.append(index)
                 }
             }
 
             await MainActor.run {
-                // Discard results from superseded invocations; without this guard
-                // a task that read an earlier cache snapshot could finish last and
-                // overwrite with a stale value (stale-wins race).
-                guard !Task.isCancelled, version == self.countComputeVersion,
+                // A later change may supersede either the PhotoKit generation
+                // or this particular status-cache scan.
+                guard let self, !Task.isCancelled,
+                      version == self.countComputeVersion,
                       manager.assetFetchGeneration == generation,
-                      manager.orderedIdentifiersGeneration == generation else { return }
-                self.cachedNotUploadedCount = notUploadedIndices.count
+                      manager.orderedIdentifiersGeneration == generation,
+                      let result = manager.fetchResult else { return }
+
+                let previousCount = self.cachedNotUploadedCount
+                let newCount = notUploadedIndices.count
+                if newCount == 0 && previousCount > 0 {
+                    logWarning(
+                        "Not-uploaded count dropped to zero: previous=\(previousCount), " +
+                        "assets=\(identifiers.count), uploaded=\(uploadedCount), " +
+                        "statusEntries=\(statusCache.count), generation=\(generation), " +
+                        "filter=\(self.currentFilter), activeHash=\(hash.isProcessing)",
+                        category: .app
+                    )
+                } else if previousCount == 0 && newCount > 0 && self.currentFilter == .notUploaded {
+                    logInfo(
+                        "Not-uploaded count restored: count=\(newCount), " +
+                        "assets=\(identifiers.count), statusEntries=\(statusCache.count), " +
+                        "generation=\(generation)",
+                        category: .app
+                    )
+                }
+                self.cachedNotUploadedCount = newCount
+                // Retain a valid indexed result even when another filter is
+                // active; returning to Not Uploaded should be instantaneous.
+                self.cachedNotUploadedIndices = notUploadedIndices
+                self.cachedNotUploadedFetchResult = result
+                self.cachedNotUploadedGeneration = generation
+
                 if self.currentFilter == .notUploaded {
                     if self.showingPhotoDetail && self.filteredIndices != notUploadedIndices {
                         self.showingPhotoDetail = false
                     }
                     self.filteredIndices = notUploadedIndices
-                    self.filteredFetchResult = manager.fetchResult
+                    self.filteredFetchResult = result
                     self.filteredIndicesGeneration = generation
                     self.isFilterLoading = false
                     self.refreshToken = UUID()
