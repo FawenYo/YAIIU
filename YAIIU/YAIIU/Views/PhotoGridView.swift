@@ -1195,7 +1195,7 @@ struct PhotoGridView: View {
 
         // Task { } inherits the caller's @MainActor isolation, regardless
         // of priority. Keep the full-library status scan off the UI thread.
-        recomputeTask = Task.detached(priority: .utility) { [weak self] in
+        recomputeTask = Task.detached(priority: .utility) { [self] in
             let (statusCache, identifiers, generation, snapshotGeneration) = await MainActor.run {
                 (hash.syncStatusCache, manager.orderedLocalIdentifiers,
                  manager.assetFetchGeneration, manager.orderedIdentifiersGeneration)
@@ -1245,7 +1245,7 @@ struct PhotoGridView: View {
             await MainActor.run {
                 // A later change may supersede either the PhotoKit generation
                 // or this particular status-cache scan.
-                guard let self, !Task.isCancelled,
+                guard !Task.isCancelled,
                       version == self.countComputeVersion,
                       manager.assetFetchGeneration == generation,
                       manager.orderedIdentifiersGeneration == generation,
