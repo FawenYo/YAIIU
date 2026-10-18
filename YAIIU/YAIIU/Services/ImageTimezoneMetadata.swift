@@ -47,6 +47,17 @@ enum ImageTimezoneMetadata {
         } else {
             metadata = CGImageMetadataCreateMutable()
         }
+        if mimeType.lowercased() == "image/png",
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+           let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any],
+           let comment = exif[kCGImagePropertyExifUserComment as String] as? String,
+           !comment.isEmpty {
+            let path = "exif:UserComment" as CFString
+            guard CGImageMetadataSetValueWithPath(metadata, nil, path, comment as CFString) else {
+                logWarning("Capture timezone skipped for \(filename): unable to carry EXIF UserComment", category: .upload)
+                return fileURL
+            }
+        }
         guard CGImageMetadataSetValueWithPath(metadata, nil, offsetPath, offset as CFString) else {
             logWarning("Capture timezone skipped for \(filename): could not construct EXIF offset", category: .upload)
             return fileURL
