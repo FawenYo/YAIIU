@@ -53,6 +53,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Both the fetch and the identifier snapshot get the same generation.
     @Published private(set) var assetFetchGeneration: Int = 0
     @Published private(set) var orderedIdentifiersGeneration: Int? = nil
+    /// Only updated assets from the most recent fetch replacement need a
+    /// preview/metadata reload; inserts and reorders should not reset playback.
+    private(set) var changedAssetIdentifiersForFetch: Set<String> = []
 
     /// Local identifiers in fetch order, materialized once per library load so
     /// callers can derive counts/filters without re-enumerating the lazy
@@ -145,12 +148,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
         let updatedResult = changes.fetchResultAfterChanges
         let count = updatedResult.count
+        let changedIdentifiers = Set(changes.changedObjects.map(\.localIdentifier))
 
         // Swap the fetch and invalidate its previous index snapshot on the main
         // actor. Do not publish index-based filters until enumeration of this
         // exact fetch generation finishes.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.changedAssetIdentifiersForFetch = changedIdentifiers
             self.assetFetchGeneration &+= 1
             let generation = self.assetFetchGeneration
             self.orderedIdentifiersGeneration = nil
@@ -313,6 +318,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             return PHAsset.fetchAssets(with: fetchOptions)
         }.value
 
+        changedAssetIdentifiersForFetch = []
         assetFetchGeneration &+= 1
         let generation = assetFetchGeneration
         orderedIdentifiersGeneration = nil
