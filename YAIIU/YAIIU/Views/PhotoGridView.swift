@@ -738,7 +738,9 @@ struct PhotoGridView: View {
                 )
                 .frame(width: 0, height: 0)
             }
-            .id(refreshToken)
+            // Keep the existing LazyVGrid and visible thumbnail state when
+            // PhotoKit refreshes. Replacing the grid identity briefly removes
+            // every image and produces a white/empty flash while scrolling.
         }
         .coordinateSpace(name: "scrollView")
         .refreshable {
@@ -1193,14 +1195,27 @@ struct PhotoGridView: View {
 
         if currentFilter == .all {
             let newRange = start..<end
-            if let oldRange = lastPrefetchedRange {
-                let stale = oldRange.filter { !newRange.contains($0) }
-                ThumbnailCache.shared.stopPrefetching(
-                    for: stale.compactMap { photoLibraryManager.asset(at: $0) }
+            let previousRange = lastPrefetchedRange
+            guard previousRange != newRange else { return }
+
+            // Visible rows shift the preheat window by only one or two assets.
+            // Do not repeatedly submit the entire ~60-asset window to PhotoKit.
+            if let previousRange {
+                let stale = previousRange.filter { !newRange.contains($0) }
+                if !stale.isEmpty {
+                    ThumbnailCache.shared.stopPrefetching(
+                        for: stale.compactMap { photoLibraryManager.asset(at: $0) }
+                    )
+                }
+            }
+
+            let fresh = newRange.filter { previousRange?.contains($0) != true }
+            lastPrefetchedRange = newRange
+            if !fresh.isEmpty {
+                ThumbnailCache.shared.prefetchThumbnails(
+                    for: fresh.compactMap { photoLibraryManager.asset(at: $0) }
                 )
             }
-            lastPrefetchedRange = newRange
-            ThumbnailCache.shared.prefetchThumbnails(for: photoLibraryManager.assets(in: newRange))
             return
         }
 
@@ -1548,6 +1563,12 @@ private struct PhotoGridItemView: View {
         }
         .onChange(of: assetIndex) { _, _ in
             // Reload asset when index changes (e.g., filter updates)
+            loadAsset()
+        }
+        .onChange(of: refreshToken) { _, _ in
+            // Grid identity now stays stable across PhotoKit updates. Rebind
+            // existing visible cells even when their numeric index did not
+            // change but the PHFetchResult or filter membership did.
             loadAsset()
         }
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { newCache in
