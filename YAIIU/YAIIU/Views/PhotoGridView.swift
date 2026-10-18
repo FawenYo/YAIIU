@@ -1032,6 +1032,9 @@ struct PhotoGridView: View {
 
         switch filter {
         case .notUploaded:
+            // First entry is pending until the authoritative snapshot is
+            // computed. Show loading, not a misleading "0 items" result.
+            isFilterLoading = photoLibraryManager.assetCount > 0
             recomputeCounts()
         case .favorites, .album:
             refreshPhotoKitFilter()
