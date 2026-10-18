@@ -108,6 +108,7 @@ final class ImageTimezoneMetadataTests: XCTestCase {
         let originalProps = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(inputSource, 0, nil) as? [String: Any])
         let originalExif = try XCTUnwrap(originalProps[kCGImagePropertyExifDictionary as String] as? [String: Any])
         XCTAssertEqual(originalExif[kCGImagePropertyExifDateTimeOriginal as String] as? String, capture)
+        let originalBytes = try Data(contentsOf: url)
 
         let output = try ImageTimezoneMetadata.addingOffsetIfMissing(
             to: url, filename: "IMG_8425.PNG", mimeType: "image/png",
@@ -121,11 +122,29 @@ final class ImageTimezoneMetadataTests: XCTestCase {
         let exif = try XCTUnwrap(props[kCGImagePropertyExifDictionary as String] as? [String: Any])
         XCTAssertEqual(exif[kCGImagePropertyExifDateTimeOriginal as String] as? String, capture)
         XCTAssertEqual(exif[kCGImagePropertyExifUserComment as String] as? String, "Screenshot")
+        // Pixel payload and every PNG ancillary chunk except eXIf stay byte-identical.
+        XCTAssertEqual(nonExifPNGChunks(originalBytes), nonExifPNGChunks(try Data(contentsOf: output)))
         let metadata = try XCTUnwrap(CGImageSourceCopyMetadataAtIndex(source, 0, nil))
         let offset = CGImageMetadataCopyStringValueWithPath(
             metadata, nil, "exif:OffsetTimeOriginal" as CFString
         )
         XCTAssertEqual(offset.map { String($0) }, "+08:00")
+    }
+
+    private func nonExifPNGChunks(_ data: Data) -> [[UInt8]] {
+        guard data.count >= 8 else { return [] }
+        var result: [[UInt8]] = []
+        var pos = 8
+        while pos + 12 <= data.count {
+            let length = Int(data[pos]) << 24 |
+                Int(data[pos + 1]) << 16 |
+                Int(data[pos + 2]) << 8 | Int(data[pos + 3])
+            guard length <= data.count - pos - 12 else { return [] }
+            let name = String(data: data[(pos + 4)..<(pos + 8)], encoding: .ascii) ?? ""
+            if name != "eXIf" { result.append(Array(data[pos..<(pos + 12 + length)])) }
+            pos += 12 + length
+        }
+        return result
     }
 
     private func makeImage() -> UIImage {
