@@ -192,6 +192,9 @@ struct UploadItemRow: View {
                     case .pending:
                         Image(systemName: "clock")
                             .foregroundColor(.gray)
+                    case .preparing:
+                        ProgressView()
+                            .scaleEffect(0.8)
                     case .uploading:
                         ProgressView()
                             .scaleEffect(0.8)

@@ -314,6 +314,7 @@ enum L10n {
     // MARK: - Upload Status
     enum UploadStatus {
         static var pending: String { "uploadStatus.pending".localized }
+        static var preparing: String { "uploadStatus.preparing".localized }
         static func uploading(_ percent: Int) -> String {
             return "uploadStatus.uploading".localized(with: percent)
         }
