@@ -6,6 +6,7 @@ import SwiftUI
 
 enum UploadStatus: String {
     case pending = "pending"
+    case preparing = "preparing"
     case uploading = "uploading"
     case processing = "processing"
     case completed = "completed"
@@ -43,6 +44,8 @@ class UploadItem: Identifiable, ObservableObject {
         switch status {
         case .pending:
             return L10n.UploadStatus.pending
+        case .preparing:
+            return L10n.UploadStatus.preparing
         case .uploading:
             return L10n.UploadStatus.uploading(Int(progress * 100))
         case .processing:
@@ -58,6 +61,8 @@ class UploadItem: Identifiable, ObservableObject {
         switch status {
         case .pending:
             return .gray
+        case .preparing:
+            return .orange
         case .uploading:
             return .blue
         case .processing:
@@ -174,7 +179,7 @@ class UploadManager: ObservableObject {
     var overallProgress: Double {
         guard totalCount > 0 else { return 0 }
         let completed = Double(completedCount)
-        let uploadingItems = uploadQueue.filter { $0.status == .uploading }
+        let uploadingItems = uploadQueue.filter { $0.status == .uploading || $0.status == .preparing }
         let uploadingProgress = uploadingItems.reduce(0.0) { $0 + $1.progress } / Double(max(1, totalCount))
         return (completed / Double(totalCount)) + uploadingProgress
     }
@@ -356,7 +361,7 @@ class UploadManager: ObservableObject {
                         }
 
                         await MainActor.run {
-                            item.status = .uploading
+                            item.status = .preparing
                             item.progress = 0
                         }
                         logDebug("Starting upload for: \(item.filename)", category: .upload)
@@ -503,6 +508,14 @@ class UploadManager: ObservableObject {
                     let currentIndex = index
                     let isLastResource = (index + 1 == totalResources)
 
+                    await MainActor.run {
+                        // Each resource (including RAW partners) has its own
+                        // preparation phase before URLSession starts sending.
+                        if item.status != .failed && item.status != .completed {
+                            item.status = .preparing
+                        }
+                    }
+
                     do {
                         _ = try await ImmichAPIService.shared.uploadResourceNonBlocking(
                             resource: resource,
@@ -517,30 +530,39 @@ class UploadManager: ObservableObject {
                             timezone: metadata.timezone,
                             iCloudId: metadata.iCloudId,
                             latitude: metadata.latitude,
-                            longitude: metadata.longitude
-                        ) { progress in
-                            let baseProgress = Double(currentIndex) / Double(totalResources)
-                            let resourceProgress = progress / Double(totalResources)
-                            Task { @MainActor in
-                                item.progress = baseProgress + resourceProgress
+                            longitude: metadata.longitude,
+                            progressHandler: { progress in
+                                let baseProgress = Double(currentIndex) / Double(totalResources)
+                                let resourceProgress = progress / Double(totalResources)
+                                Task { @MainActor in
+                                    item.progress = baseProgress + resourceProgress
+                                }
+                            },
+                            onTransferStarted: {
+                                Task { @MainActor in
+                                    if item.status == .preparing {
+                                        item.status = .uploading
+                                    }
+                                }
+                            },
+                            responseHandler: { result, uploadedFileSize in
+                                switch result {
+                                case .success(let response):
+                                    DatabaseManager.shared.recordUploadedAsset(
+                                        localIdentifier: localIdentifier,
+                                        resourceType: resourceType,
+                                        filename: filename,
+                                        immichId: response.id,
+                                        fileSize: uploadedFileSize,
+                                        isDuplicate: response.duplicate ?? false,
+                                        isFavorite: metadata.isFavorite
+                                    )
+                                    responseTracker.markCompleted()
+                                case .failure(let error):
+                                    responseTracker.markFailed(error: error)
+                                }
                             }
-                        } responseHandler: { result, uploadedFileSize in
-                            switch result {
-                            case .success(let response):
-                                DatabaseManager.shared.recordUploadedAsset(
-                                    localIdentifier: localIdentifier,
-                                    resourceType: resourceType,
-                                    filename: filename,
-                                    immichId: response.id,
-                                    fileSize: uploadedFileSize,
-                                    isDuplicate: response.duplicate ?? false,
-                                    isFavorite: metadata.isFavorite
-                                )
-                                responseTracker.markCompleted()
-                            case .failure(let error):
-                                responseTracker.markFailed(error: error)
-                            }
-                        }
+                        )
                     } catch {
                         responseTracker.markFailed(error: error)
                         break
