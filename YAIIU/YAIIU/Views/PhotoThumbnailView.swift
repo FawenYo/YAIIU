@@ -13,8 +13,53 @@ final class RAWFormatChecker {
     private var revisions: [String: UInt64] = [:]
     private var globalRevision: UInt64 = 0
     private var cacheLock = os_unfair_lock()
+    /// Bound PhotoKit metadata work even when the user rapidly scrolls past
+    /// thousands of uncached assets. Cancelled operations skip the lookup.
+    private let inspectionQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "com.fawenyo.yaiiu.raw-resource-inspection"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 2
+        return queue
+    }()
     
     private init() {}
+
+    /// Enqueue only a local identifier: queued work must not retain a PHAsset.
+    /// The caller owns cancellation when its thumbnail leaves the viewport.
+    @discardableResult
+    func checkRAWStatus(
+        for assetIdentifier: String,
+        completion: @escaping (Bool) -> Void
+    ) -> Operation? {
+        if let cached = getCachedRAWStatus(for: assetIdentifier) {
+            DispatchQueue.main.async { completion(cached) }
+            return nil
+        }
+
+        let operation = BlockOperation()
+        operation.addExecutionBlock { [weak self, weak operation] in
+            guard let self, operation?.isCancelled == false else { return }
+            autoreleasepool {
+                let result = PHAsset.fetchAssets(
+                    withLocalIdentifiers: [assetIdentifier], options: nil
+                )
+                guard let asset = result.firstObject,
+                      operation?.isCancelled == false else { return }
+                let resources = PHAssetResource.assetResources(for: asset)
+                guard operation?.isCancelled == false else { return }
+                let hasRAW = self.hasRAWResource(
+                    for: assetIdentifier, resources: resources
+                )
+                DispatchQueue.main.async { [weak operation] in
+                    guard operation?.isCancelled == false else { return }
+                    completion(hasRAW)
+                }
+            }
+        }
+        inspectionQueue.addOperation(operation)
+        return operation
+    }
     
     static func isRAWResource(_ resource: PHAssetResource) -> Bool {
         if resource.type == .alternatePhoto {
@@ -89,7 +134,7 @@ struct PhotoThumbnailView: View {
     @State private var isFavorite: Bool = false
     @State private var videoDuration: TimeInterval = 0
     @State private var isVideo: Bool = false
-    @State private var loadTask: Task<Void, Never>?
+    @State private var rawCheckOperation: Operation?
     @State private var thumbnailLoadRevision = 0
     @State private var isViewActive: Bool = false
     
@@ -235,8 +280,8 @@ struct PhotoThumbnailView: View {
         .onDisappear {
             isViewActive = false
             thumbnailLoadRevision &+= 1
-            loadTask?.cancel()
-            loadTask = nil
+            rawCheckOperation?.cancel()
+            rawCheckOperation = nil
             ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier, targetSize: targetSize)
             // LazyVGrid can retain @State for rows far outside the viewport.
             // Release the decoded UIImage as soon as the cell disappears;
@@ -342,36 +387,31 @@ struct PhotoThumbnailView: View {
         isVideo = asset.mediaType == .video
         videoDuration = asset.duration
         isFavorite = asset.isFavorite
-        
-        loadTask?.cancel()
-        
-        // Check RAW cache first to avoid expensive PHAssetResource lookup
-        hasRAW = RAWFormatChecker.shared.getCachedRAWStatus(for: asset.localIdentifier) ?? false
-        
-        loadTask = Task { @MainActor in
-            ThumbnailCache.shared.getThumbnail(for: asset, targetSize: targetSize) { [self] image in
-                guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
-                if let image = image {
-                    self.thumbnail = image
-                }
+
+        rawCheckOperation?.cancel()
+        rawCheckOperation = nil
+
+        let assetIdentifier = asset.localIdentifier
+        let cachedRAW = RAWFormatChecker.shared.getCachedRAWStatus(for: assetIdentifier)
+        hasRAW = cachedRAW ?? false
+
+        ThumbnailCache.shared.getThumbnail(for: asset, targetSize: targetSize) { [self] image in
+            guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
+            if let image {
+                self.thumbnail = image
             }
-            
-            // Only check RAW if not already cached
-            if RAWFormatChecker.shared.getCachedRAWStatus(for: asset.localIdentifier) == nil {
-                let assetId = asset.localIdentifier
-                let assetRef = asset
-                
-                let hasRAWResource = await Task.detached(priority: .utility) {
-                    let resources = PHAssetResource.assetResources(for: assetRef)
-                    return RAWFormatChecker.shared.hasRAWResource(for: assetId, resources: resources)
-                }.value
-                
-                guard !Task.isCancelled, self.thumbnailLoadRevision == revision else { return }
+        }
+
+        if cachedRAW == nil {
+            rawCheckOperation = RAWFormatChecker.shared.checkRAWStatus(
+                for: assetIdentifier
+            ) { [self] hasRAWResource in
+                guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
                 self.hasRAW = hasRAWResource
             }
         }
     }
-    
+
     private func formatDuration(_ duration: TimeInterval) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
