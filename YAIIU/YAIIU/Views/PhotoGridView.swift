@@ -279,7 +279,7 @@ struct PhotoGridView: View {
     @State private var hasAppeared = false
     @State private var lastPrefetchedRange: Range<Int>?
     @State private var lastPrefetchedTargetSize: CGSize?
-    /// At most ~60 PhotoKit assets from the filtered display window.
+    /// At most 25 PhotoKit assets from the filtered display window.
     @State private var lastPrefetchedFilteredAssets: [PHAsset] = []
     @State private var isSyncing = false
     @State private var currentFilter: PhotoFilterOption = .all
@@ -333,7 +333,7 @@ struct PhotoGridView: View {
         Array(repeating: GridItem(.flexible(), spacing: Self.gridSpacing), count: Self.columnCount)
     }
     
-    private let prefetchBuffer = 30
+    private let prefetchBuffer = 12
 
     /// One pixel size for the uniform three-column grid, used by both visible
     /// thumbnail requests and PhotoKit preheating/cancellation.
@@ -1372,7 +1372,7 @@ struct PhotoGridView: View {
             guard previousRange != newRange else { return }
 
             // Visible rows shift the preheat window by only one or two assets.
-            // Do not repeatedly submit the entire ~60-asset window to PhotoKit.
+            // Do not repeatedly submit the entire 25-asset window to PhotoKit.
             if let previousRange {
                 let stale = previousRange.filter { !newRange.contains($0) }
                 if !stale.isEmpty {

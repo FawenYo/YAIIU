@@ -262,9 +262,12 @@ final class ThumbnailCache {
         guard !uncachedAssets.isEmpty else { return }
         
         let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat
+        // Match the visible cell's quality and resize request so preheating
+        // does not decode a second fast-format variant for the same asset.
+        // Keep networking disabled to avoid downloading offscreen iCloud items.
+        options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         cachingImageManager.startCachingImages(
             for: uncachedAssets,
@@ -277,9 +280,12 @@ final class ThumbnailCache {
     /// Stop prefetching thumbnails
     func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat
+        // Match the visible cell's quality and resize request so preheating
+        // does not decode a second fast-format variant for the same asset.
+        // Keep networking disabled to avoid downloading offscreen iCloud items.
+        options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         cachingImageManager.stopCachingImages(
             for: assets,
