@@ -53,7 +53,10 @@ class ImmichAPIService: NSObject {
     private var uploadSession: URLSession!
     private var uploadDelegates: [Int: UploadTaskDelegate] = [:]
     private let delegateQueue = DispatchQueue(label: "com.yaiiu.upload.delegate", attributes: .concurrent)
-    private static let uploadFileGate = ResourceBudget(limit: 1)
+    // Keep PhotoKit export/metadata rewriting sequential to protect memory.
+    // Once a stream starts, the UploadManager transfer budget (2) bounds
+    // actual concurrent network sends independently of this gate.
+    private static let uploadPreparationGate = ResourceBudget(limit: 1)
     
     override private init() {
         super.init()
@@ -84,6 +87,7 @@ class ImmichAPIService: NSObject {
         latitude: Double? = nil,
         longitude: Double? = nil,
         progressHandler: ((Double) -> Void)? = nil,
+        onTransferStarted: (() -> Void)? = nil,
         responseHandler: ((Result<UploadResponse, Error>, Int64) -> Void)? = nil
     ) async throws -> Int64 {
         guard let url = URL(string: "\(serverURL)/api/assets") else {
@@ -92,15 +96,23 @@ class ImmichAPIService: NSObject {
         }
 
 
-        guard await Self.uploadFileGate.acquire(1) else {
+        guard await Self.uploadPreparationGate.acquire(1) else {
             throw CancellationError()
+        }
+        // A failure at any point during preparation releases the gate. On
+        // success it is released when the stream is scheduled, not after the
+        // stream finishes writing its bytes.
+        var holdsPreparationSlot = true
+        defer {
+            if holdsPreparationSlot {
+                Self.uploadPreparationGate.release(1)
+            }
         }
         var ownsPreparedFile = true
         let originalFileURL: URL
         do {
             originalFileURL = try await ResourceFileAccess.tempFile(for: resource)
         } catch {
-            Self.uploadFileGate.release(1)
             throw error
         }
 
@@ -118,7 +130,6 @@ class ImmichAPIService: NSObject {
             }.value
         } catch {
             try? FileManager.default.removeItem(at: originalFileURL)
-            Self.uploadFileGate.release(1)
             throw error
         }
         defer {
@@ -127,7 +138,6 @@ class ImmichAPIService: NSObject {
                 if fileURL != originalFileURL {
                     try? FileManager.default.removeItem(at: fileURL)
                 }
-                Self.uploadFileGate.release(1)
             }
         }
         let sourceChecksum: String?
@@ -227,10 +237,9 @@ class ImmichAPIService: NSObject {
                 self.uploadDelegates[taskId] = taskDelegate
             }
 
-            task.resume()
-
-            // Transfer cleanup ownership before the asynchronous pump can
-            // finish, avoiding a double release if bytes are sent immediately.
+            // The pump now owns both temporary files until it finishes;
+            // preparation of the next asset can proceed while these bytes
+            // are being streamed by URLSession.
             ownsPreparedFile = false
             self.pumpAssetData(
                 fileURL: fileURL,
@@ -243,9 +252,12 @@ class ImmichAPIService: NSObject {
                     if fileURL != originalFileURL {
                         try? FileManager.default.removeItem(at: fileURL)
                     }
-                    Self.uploadFileGate.release(1)
                 }
             )
+            holdsPreparationSlot = false
+            Self.uploadPreparationGate.release(1)
+            onTransferStarted?()
+            task.resume()
         }
 
         return assetFileSize
