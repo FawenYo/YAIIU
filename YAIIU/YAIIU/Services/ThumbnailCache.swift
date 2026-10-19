@@ -81,6 +81,17 @@ final class ThumbnailCache {
         return "\(localIdentifier)_r\(revision)_g\(libraryRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
     }
 
+    /// Visible cells compare the exact cache invalidation revision, so
+    /// consecutive PhotoKit notifications cannot overwrite each other's edits.
+    func contentRevision(for localIdentifier: String) -> PhotoAssetContentRevision {
+        os_unfair_lock_lock(&pendingLock)
+        defer { os_unfair_lock_unlock(&pendingLock) }
+        return PhotoAssetContentRevision(
+            library: fullLibraryRevision,
+            asset: assetRevisions[localIdentifier] ?? 0
+        )
+    }
+
     /// Called for PhotoKit in-place edits before the new fetch is published.
     /// NSCache's existing 50 MB budget will evict unreachable old revisions.
     func invalidateThumbnail(for localIdentifier: String) {
@@ -262,9 +273,12 @@ final class ThumbnailCache {
         guard !uncachedAssets.isEmpty else { return }
         
         let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat
+        // Match the visible cell's quality and resize request so preheating
+        // does not decode a second fast-format variant for the same asset.
+        // Keep networking disabled to avoid downloading offscreen iCloud items.
+        options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         cachingImageManager.startCachingImages(
             for: uncachedAssets,
@@ -277,9 +291,12 @@ final class ThumbnailCache {
     /// Stop prefetching thumbnails
     func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let options = PHImageRequestOptions()
-        options.deliveryMode = .fastFormat
+        // Match the visible cell's quality and resize request so preheating
+        // does not decode a second fast-format variant for the same asset.
+        // Keep networking disabled to avoid downloading offscreen iCloud items.
+        options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = false
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         cachingImageManager.stopCachingImages(
             for: assets,
