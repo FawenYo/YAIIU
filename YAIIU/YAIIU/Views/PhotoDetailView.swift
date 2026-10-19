@@ -734,6 +734,7 @@ struct PhotoDetailView: View {
     
     @State private var currentIndex: Int
     @State private var currentAsset: PHAsset?
+    @State private var currentContentRevision: PhotoAssetContentRevision?
     @State private var fullImage: UIImage?
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
@@ -949,8 +950,15 @@ struct PhotoDetailView: View {
             // A nonincremental PhotoKit change supplies no per-asset edit
             // identifiers. Refresh the open asset just as the grid does when
             // the current fetch generation requires a full content reload.
-            let wasEdited = photoLibraryManager.changedAssetIdentifiersForFetch.contains(previousAsset.localIdentifier)
-                || photoLibraryManager.fullReloadGeneration == generation
+            let updatedContentRevision = ThumbnailCache.shared.contentRevision(
+                for: updatedAsset.localIdentifier
+            )
+            let wasEdited = PhotoAssetContentRevision.needsReload(
+                previousIdentifier: previousAsset.localIdentifier,
+                previousRevision: currentContentRevision,
+                currentIdentifier: updatedAsset.localIdentifier,
+                currentRevision: updatedContentRevision
+            ) || photoLibraryManager.fullReloadGeneration == generation
                 || updatedAsset.modificationDate != previousAsset.modificationDate
             if updatedIndex != currentIndex {
                 currentIndex = updatedIndex
@@ -961,9 +969,11 @@ struct PhotoDetailView: View {
                 cleanupCurrentAsset()
                 resetAssetStates()
                 currentAsset = updatedAsset
+                currentContentRevision = updatedContentRevision
                 loadCurrentAsset()
             } else {
                 currentAsset = updatedAsset
+                currentContentRevision = updatedContentRevision
             }
         }
     }
@@ -971,7 +981,10 @@ struct PhotoDetailView: View {
     private func loadAssetAtCurrentIndex() {
         let actualIndex = resolveActualIndex(currentIndex)
         currentAsset = photoLibraryManager.asset(at: actualIndex)
-        if currentAsset != nil {
+        if let currentAsset {
+            currentContentRevision = ThumbnailCache.shared.contentRevision(
+                for: currentAsset.localIdentifier
+            )
             loadCurrentAsset()
         }
     }
@@ -1524,6 +1537,7 @@ struct PhotoDetailView: View {
     
     private func resetAssetStates() {
         currentAsset = nil
+        currentContentRevision = nil
         fullImage = nil
         imageLoadFailed = false
         scale = 1.0

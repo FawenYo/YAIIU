@@ -21,3 +21,21 @@ struct PhotoLibraryIndexGeneration {
         value == previousGeneration && snapshotIsReady && snapshotCount == assetCount
     }
 }
+
+struct PhotoAssetContentRevision: Equatable {
+    let library: UInt64
+    let asset: UInt64
+
+    /// A newly shown asset performs its normal initial load. Only a changed
+    /// revision for the *same* visible asset needs an additional reload.
+    static func needsReload(
+        previousIdentifier: String?,
+        previousRevision: Self?,
+        currentIdentifier: String,
+        currentRevision: Self
+    ) -> Bool {
+        guard previousIdentifier == currentIdentifier,
+              let previousRevision else { return false }
+        return previousRevision != currentRevision
+    }
+}

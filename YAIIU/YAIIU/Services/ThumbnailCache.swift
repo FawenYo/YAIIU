@@ -81,6 +81,17 @@ final class ThumbnailCache {
         return "\(localIdentifier)_r\(revision)_g\(libraryRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
     }
 
+    /// Visible cells compare the exact cache invalidation revision, so
+    /// consecutive PhotoKit notifications cannot overwrite each other's edits.
+    func contentRevision(for localIdentifier: String) -> PhotoAssetContentRevision {
+        os_unfair_lock_lock(&pendingLock)
+        defer { os_unfair_lock_unlock(&pendingLock) }
+        return PhotoAssetContentRevision(
+            library: fullLibraryRevision,
+            asset: assetRevisions[localIdentifier] ?? 0
+        )
+    }
+
     /// Called for PhotoKit in-place edits before the new fetch is published.
     /// NSCache's existing 50 MB budget will evict unreachable old revisions.
     func invalidateThumbnail(for localIdentifier: String) {

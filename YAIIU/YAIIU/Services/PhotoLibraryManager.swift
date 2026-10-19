@@ -71,9 +71,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     private var indexGeneration = PhotoLibraryIndexGeneration()
     var assetIndexGeneration: Int { indexGeneration.value }
     @Published private(set) var orderedIdentifiersGeneration: Int? = nil
-    /// Only updated assets from the most recent fetch replacement need a
-    /// preview/metadata reload; inserts and reorders should not reset playback.
-    private(set) var changedAssetIdentifiersForFetch: Set<String> = []
     /// The generation at which PhotoKit last required a nonincremental reload.
     /// A pending full reload also carries through superseding notifications.
     private(set) var fullReloadGeneration: Int = 0
@@ -216,14 +213,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     ThumbnailCache.shared.invalidateThumbnail(for: identifier)
                     RAWFormatChecker.shared.invalidateCachedStatus(for: identifier)
                 }
-            }
-            // Successive PhotoKit notifications may supersede an in-flight
-            // identifier enumeration. Keep all edits until a generation finishes;
-            // otherwise edit A followed by insertion B can lose A's reload.
-            if self.orderedIdentifiersGeneration == self.assetFetchGeneration {
-                self.changedAssetIdentifiersForFetch = identifiersToInvalidate
-            } else {
-                self.changedAssetIdentifiersForFetch.formUnion(identifiersToInvalidate)
             }
             // If a second PhotoKit notification supersedes an unfinished
             // nonincremental scan, the surviving generation still needs the
@@ -402,7 +391,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             return PHAsset.fetchAssets(with: fetchOptions)
         }.value
 
-        changedAssetIdentifiersForFetch = []
         indexGeneration.recordReload()
         assetFetchGeneration &+= 1
         let generation = assetFetchGeneration

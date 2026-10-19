@@ -1762,6 +1762,8 @@ private struct PhotoGridItemView: View {
     @State private var asset: PHAsset?
     @State private var isCellActive = false
     @State private var appliedEditGeneration: Int?
+    @State private var observedAssetIdentifier: String?
+    @State private var observedContentRevision: PhotoAssetContentRevision?
     @State private var syncStatus: PhotoSyncStatus = .pending
     
     var body: some View {
@@ -1805,6 +1807,8 @@ private struct PhotoGridItemView: View {
             // LazyVGrid may retain offscreen rows; drop their PhotoKit objects.
             asset = nil
             appliedEditGeneration = nil
+            observedAssetIdentifier = nil
+            observedContentRevision = nil
             onDisappear()
         }
         .onChange(of: assetIndex) { _, _ in
@@ -1841,18 +1845,34 @@ private struct PhotoGridItemView: View {
         }
         asset = newAsset
         if let id = newAsset?.localIdentifier {
-            // Advance the revision with the NEW PHAsset so stale pre-edit
-            // image requests cannot overwrite the updated thumbnail.
             let isCurrentFetch = filteredFetchSnapshot == nil ||
                 filteredFetchSnapshot?.value === photoLibraryManager.fetchResult
-            let generation = photoLibraryManager.assetFetchGeneration
-            let needsContentRefresh = photoLibraryManager.changedAssetIdentifiersForFetch.contains(id) ||
-                photoLibraryManager.fullReloadGeneration == generation
-            appliedEditGeneration = isCurrentFetch && needsContentRefresh
-                ? generation : nil
+            if isCurrentFetch {
+                // Compare PhotoKit's actual cache invalidation revision, rather
+                // than a mutable changed-ID set from the latest notification.
+                let revision = ThumbnailCache.shared.contentRevision(for: id)
+                let needsContentRefresh = PhotoAssetContentRevision.needsReload(
+                    previousIdentifier: observedAssetIdentifier,
+                    previousRevision: observedContentRevision,
+                    currentIdentifier: id,
+                    currentRevision: revision
+                )
+                if observedAssetIdentifier != id {
+                    // .id(asset.localIdentifier) replaces the thumbnail on reuse.
+                    appliedEditGeneration = nil
+                } else if needsContentRefresh {
+                    // Retain this token across unrelated updates until the next
+                    // real edit, rather than hiding a not-yet-rendered change.
+                    appliedEditGeneration = photoLibraryManager.assetFetchGeneration
+                }
+                observedAssetIdentifier = id
+                observedContentRevision = revision
+            }
             syncStatus = hashManager.getSyncStatus(for: id)
         } else {
             appliedEditGeneration = nil
+            observedAssetIdentifier = nil
+            observedContentRevision = nil
         }
     }
 }
