@@ -51,4 +51,62 @@ final class PhotoGridFetchStorageTests: XCTestCase {
 
         XCTAssertNil(cellSnapshot.value)
     }
+
+    func testVisibleDetailCanOpenWhileContentRefreshRebuildsFilters() {
+        let storage = PhotoGridFetchStorage<Fetch>()
+        var generation = PhotoLibraryIndexGeneration()
+        generation.recordReload()
+        storage.filtered = Fetch()
+        storage.filteredIndexGeneration = generation.value
+
+        // The full fetch generation and filter-loading state may change while
+        // iCloud thumbnails finish. Neither changes these visible positions.
+        for _ in 0..<3 {
+            generation.recordChange(
+                isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false
+            )
+            XCTAssertTrue(storage.canOpenFilteredDetail(
+                at: 2, displayCount: 4, indexGeneration: generation.value
+            ))
+        }
+    }
+
+    func testVisibleDetailRejectsOldPositionsAfterInsertionAndContentRefresh() {
+        let storage = PhotoGridFetchStorage<Fetch>()
+        var generation = PhotoLibraryIndexGeneration()
+        storage.filtered = Fetch()
+        storage.filteredIndexGeneration = generation.value
+        generation.recordChange(
+            isIncremental: true, insertedCount: 1, removedCount: 0, hasMoves: false
+        )
+        generation.recordChange(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false
+        )
+
+        XCTAssertFalse(storage.canOpenFilteredDetail(
+            at: 2, displayCount: 4, indexGeneration: generation.value
+        ))
+    }
+
+    func testDetailRejectsMissingSnapshotOrUnknownPositionGeneration() {
+        let storage = PhotoGridFetchStorage<Fetch>()
+        XCTAssertFalse(storage.canOpenFilteredDetail(at: 0, displayCount: 1, indexGeneration: 0))
+        storage.filtered = Fetch()
+        XCTAssertFalse(storage.canOpenFilteredDetail(at: 0, displayCount: 1, indexGeneration: 0))
+        storage.filteredIndexGeneration = 0
+        storage.filtered = nil
+        XCTAssertFalse(storage.canOpenFilteredDetail(at: 0, displayCount: 1, indexGeneration: 0))
+    }
+
+    func testDetailRejectsPositionsOutsideVisibleSnapshot() {
+        let storage = PhotoGridFetchStorage<Fetch>()
+        storage.filtered = Fetch()
+        storage.filteredIndexGeneration = 0
+
+        for (index, count) in [(-1, 4), (4, 4), (0, 0)] {
+            XCTAssertFalse(storage.canOpenFilteredDetail(
+                at: index, displayCount: count, indexGeneration: 0
+            ))
+        }
+    }
 }

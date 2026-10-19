@@ -1067,6 +1067,7 @@ struct PhotoGridView: View {
         currentFilter = filter
         filteredIndices = []
         filteredFetchResult = nil
+        fetchStorage.filteredIndexGeneration = nil
         filteredIndicesGeneration = nil
         if showingPhotoDetail { showingPhotoDetail = false }
         if filter != .album {
@@ -1078,6 +1079,7 @@ struct PhotoGridView: View {
             if let previousFetch = cachedNotUploadedFetchResult {
                 filteredIndices = cachedNotUploadedIndices
                 filteredFetchResult = previousFetch
+                fetchStorage.filteredIndexGeneration = fetchStorage.cachedNotUploadedIndexGeneration
                 filteredIndicesGeneration = cachedNotUploadedGeneration
             }
             let isCurrent = filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration
@@ -1161,6 +1163,7 @@ struct PhotoGridView: View {
                 }
                 self.filteredIndices = indices
                 self.filteredFetchResult = self.photoLibraryManager.fetchResult
+                self.fetchStorage.filteredIndexGeneration = self.photoLibraryManager.assetIndexGeneration
                 self.filteredIndicesGeneration = generation
                 self.isFilterLoading = false
                 self.refreshToken = UUID()
@@ -1312,6 +1315,7 @@ struct PhotoGridView: View {
                 // active; returning to Not Uploaded should be instantaneous.
                 self.cachedNotUploadedIndices = notUploadedIndices
                 self.cachedNotUploadedFetchResult = result
+                self.fetchStorage.cachedNotUploadedIndexGeneration = manager.assetIndexGeneration
                 self.cachedNotUploadedGeneration = generation
 
                 if self.currentFilter == .notUploaded {
@@ -1320,6 +1324,7 @@ struct PhotoGridView: View {
                     }
                     self.filteredIndices = notUploadedIndices
                     self.filteredFetchResult = result
+                    self.fetchStorage.filteredIndexGeneration = manager.assetIndexGeneration
                     self.filteredIndicesGeneration = generation
                     self.isFilterLoading = false
                     self.refreshToken = UUID()
@@ -1329,9 +1334,15 @@ struct PhotoGridView: View {
     }
     
     private func openPhotoDetail(at index: Int) {
-        guard !isFilterLoading, index < displayCount,
-              (currentFilter == .all ||
-               filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
+        // Keep the visible snapshot interactive while content-only updates
+        // rebuild filters. Structural changes still reject stale positions.
+        let canOpen = currentFilter == .all
+            ? (!isFilterLoading && index >= 0 && index < displayCount)
+            : fetchStorage.canOpenFilteredDetail(
+                at: index, displayCount: displayCount,
+                indexGeneration: photoLibraryManager.assetIndexGeneration
+            )
+        guard canOpen else { return }
         selectedPhotoIndex = index
         photoDetailIndexGeneration = photoLibraryManager.assetIndexGeneration
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
