@@ -66,6 +66,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// The grid may only interpret index-based filters against this fetch generation.
     /// Both the fetch and the identifier snapshot get the same generation.
     @Published private(set) var assetFetchGeneration: Int = 0
+    /// Content-only fetch replacements preserve numeric positions. Structural
+    /// changes and explicit reloads invalidate every open filtered index.
+    private var indexGeneration = PhotoLibraryIndexGeneration()
+    var assetIndexGeneration: Int { indexGeneration.value }
     @Published private(set) var orderedIdentifiersGeneration: Int? = nil
     /// Only updated assets from the most recent fetch replacement need a
     /// preview/metadata reload; inserts and reorders should not reset playback.
@@ -152,6 +156,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
 
         let hasIncrementalChanges = changes.hasIncrementalChanges
+        let insertedCount = changes.insertedIndexes?.count ?? 0
+        let removedCount = changes.removedIndexes?.count ?? 0
+        let hasMoves = changes.hasMoves
 
         // Skip only for incremental notifications that carry no actual edits.
         // Registering the observer (and some foreground transitions) can deliver
@@ -214,6 +221,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             let awaitingFullReload = self.fullReloadGeneration > 0 &&
                 self.fullReloadGeneration == self.assetFetchGeneration &&
                 self.orderedIdentifiersGeneration != self.assetFetchGeneration
+            self.indexGeneration.recordChange(
+                isIncremental: hasIncrementalChanges,
+                insertedCount: insertedCount, removedCount: removedCount, hasMoves: hasMoves
+            )
             self.assetFetchGeneration &+= 1
             let generation = self.assetFetchGeneration
             if !hasIncrementalChanges || awaitingFullReload {
@@ -368,6 +379,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }.value
 
         changedAssetIdentifiersForFetch = []
+        indexGeneration.recordReload()
         assetFetchGeneration &+= 1
         let generation = assetFetchGeneration
         orderedIdentifiersGeneration = nil

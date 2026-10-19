@@ -725,6 +725,7 @@ struct ZoomableImageView: UIViewRepresentable {
 struct PhotoDetailView: View {
     let photoLibraryManager: PhotoLibraryManager
     let displayIndices: [Int]?
+    let displayIndexGeneration: Int?
     let initialIndex: Int
     let namespace: Namespace.ID
     let refreshToken: UUID?
@@ -818,11 +819,14 @@ struct PhotoDetailView: View {
         return photoLibraryManager.assetCount
     }
 
-    /// Freeze swipe navigation while PhotoKit is rebuilding its ordered index.
-    /// The currently open asset can still be viewed or dismissed.
+    /// Filtered positions survive content-only updates, but stop navigation as
+    /// soon as structural changes invalidate them. Unfiltered detail waits for
+    /// its identifier snapshot before navigating through a replacement fetch.
     private var isNavigationIndexReady: Bool {
-        displayIndices != nil ||
-            photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration
+        if displayIndices != nil {
+            return displayIndexGeneration == photoLibraryManager.assetIndexGeneration
+        }
+        return photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration
     }
     
     private func resolveActualIndex(_ displayIndex: Int) -> Int {
@@ -840,9 +844,10 @@ struct PhotoDetailView: View {
         infoPanelProgress > 0
     }
     
-    init(photoLibraryManager: PhotoLibraryManager, displayIndices: [Int]?, initialIndex: Int, namespace: Namespace.ID, refreshToken: UUID? = nil, isPresented: Binding<Bool>) {
+    init(photoLibraryManager: PhotoLibraryManager, displayIndices: [Int]?, displayIndexGeneration: Int?, initialIndex: Int, namespace: Namespace.ID, refreshToken: UUID? = nil, isPresented: Binding<Bool>) {
         self.photoLibraryManager = photoLibraryManager
         self.displayIndices = displayIndices
+        self.displayIndexGeneration = displayIndexGeneration
         self.initialIndex = initialIndex
         self.namespace = namespace
         self.refreshToken = refreshToken

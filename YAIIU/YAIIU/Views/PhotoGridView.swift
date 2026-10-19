@@ -327,6 +327,7 @@ struct PhotoGridView: View {
     @State private var processingTask: Task<Void, Never>?
     @State private var selectedPhotoIndex: Int = 0
     @State private var showingPhotoDetail = false
+    @State private var photoDetailIndexGeneration: Int?
     @Namespace private var photoTransitionNamespace
     
     @StateObject private var dragState = DragSelectionState()
@@ -457,6 +458,7 @@ struct PhotoGridView: View {
                 PhotoDetailView(
                     photoLibraryManager: photoLibraryManager,
                     displayIndices: currentFilter == .all ? nil : filteredIndices,
+                    displayIndexGeneration: photoDetailIndexGeneration,
                     initialIndex: selectedPhotoIndex,
                     namespace: photoTransitionNamespace,
                     refreshToken: refreshToken,
@@ -584,9 +586,13 @@ struct PhotoGridView: View {
             // Keep the user's in-progress selection while upload completion or
             // library edits trigger a refresh. Filter membership is reconciled
             // when the new identifier snapshot arrives.
-            // Index snapshots are replaced during PhotoKit refresh, but an
-            // unfiltered detail view can keep its PHAsset and reconcile its index.
-            if showingPhotoDetail && currentFilter != .all { showingPhotoDetail = false }
+            // Content-only changes (including iCloud download completion) keep
+            // positions valid. Close filtered detail only when positions may
+            // have changed; filter membership is checked after recomputation.
+            if showingPhotoDetail && currentFilter != .all &&
+               photoDetailIndexGeneration != photoLibraryManager.assetIndexGeneration {
+                showingPhotoDetail = false
+            }
             // Invalidate the new-fetch mapping, but preserve the previous
             // filteredIndices + owning PHFetchResult until recomputation finishes.
             // Otherwise every upload/library edit briefly reports 0 photos.
@@ -1327,6 +1333,7 @@ struct PhotoGridView: View {
               (currentFilter == .all ||
                filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration) else { return }
         selectedPhotoIndex = index
+        photoDetailIndexGeneration = photoLibraryManager.assetIndexGeneration
         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
             showingPhotoDetail = true
         }
