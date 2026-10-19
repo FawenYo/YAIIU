@@ -151,28 +151,37 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             return
         }
 
-        // Some in-place PHAsset edits report changedObjects without index
-        // moves. Do not drop these, or favorite/thumbnail updates stay stale.
-        let changedIdentifiers: Set<String> = changes.hasIncrementalChanges
-            ? Set(changes.changedObjects.map(\.localIdentifier)) : []
+        let hasIncrementalChanges = changes.hasIncrementalChanges
 
         // Skip only for incremental notifications that carry no actual edits.
         // Registering the observer (and some foreground transitions) can deliver
         // such a change; republishing then rebuilds the grid and blanks all
         // thumbnails. Non-incremental changes (e.g. permission or full-library
         // updates) must still be applied, otherwise the grid goes stale.
-        if changes.hasIncrementalChanges {
+        if hasIncrementalChanges {
             let insertedEmpty = changes.insertedIndexes?.isEmpty ?? true
             let removedEmpty = changes.removedIndexes?.isEmpty ?? true
             let changedEmpty = changes.changedIndexes?.isEmpty ?? true
-            if insertedEmpty && removedEmpty && changedEmpty &&
-               !changes.hasMoves && changedIdentifiers.isEmpty {
+            if insertedEmpty && removedEmpty && changedEmpty && !changes.hasMoves {
                 return
             }
         }
 
         let updatedResult = changes.fetchResultAfterChanges
         let count = updatedResult.count
+
+        // changedIndexes is relative to the after state, including in-place edits.
+        // changedObjects eagerly materializes an array of every changed PHAsset;
+        // avoid that array and drain each PhotoKit lookup's temporary buffers.
+        var changedIdentifiers: Set<String> = []
+        if hasIncrementalChanges, let changedIndexes = changes.changedIndexes {
+            PhotoLibraryEnumeration.forEach(
+                indices: changedIndexes, objectAt: { updatedResult.object(at: $0) }
+            ) { asset, _ in
+                changedIdentifiers.insert(asset.localIdentifier)
+            }
+        }
+        let identifiersToInvalidate = changedIdentifiers
 
         // Swap the fetch and invalidate its previous index snapshot on the main
         // actor. Do not publish index-based filters until enumeration of this
@@ -182,11 +191,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             // For nonincremental changes PhotoKit cannot identify which assets
             // changed, so all cached previews and RAW metadata must be refreshed.
             // Incremental edits keep their lightweight per-asset invalidation.
-            if !changes.hasIncrementalChanges {
+            if !hasIncrementalChanges {
                 ThumbnailCache.shared.invalidateAllThumbnails()
                 RAWFormatChecker.shared.clearCache()
             } else {
-                for identifier in changedIdentifiers {
+                for identifier in identifiersToInvalidate {
                     ThumbnailCache.shared.invalidateThumbnail(for: identifier)
                     RAWFormatChecker.shared.invalidateCachedStatus(for: identifier)
                 }
@@ -195,9 +204,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             // identifier enumeration. Keep all edits until a generation finishes;
             // otherwise edit A followed by insertion B can lose A's reload.
             if self.orderedIdentifiersGeneration == self.assetFetchGeneration {
-                self.changedAssetIdentifiersForFetch = changedIdentifiers
+                self.changedAssetIdentifiersForFetch = identifiersToInvalidate
             } else {
-                self.changedAssetIdentifiersForFetch.formUnion(changedIdentifiers)
+                self.changedAssetIdentifiersForFetch.formUnion(identifiersToInvalidate)
             }
             // If a second PhotoKit notification supersedes an unfinished
             // nonincremental scan, the surviving generation still needs the
@@ -207,7 +216,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 self.orderedIdentifiersGeneration != self.assetFetchGeneration
             self.assetFetchGeneration &+= 1
             let generation = self.assetFetchGeneration
-            if !changes.hasIncrementalChanges || awaitingFullReload {
+            if !hasIncrementalChanges || awaitingFullReload {
                 self.fullReloadGeneration = generation
             }
             self.orderedIdentifiersGeneration = nil

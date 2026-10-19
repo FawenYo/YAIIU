@@ -57,6 +57,52 @@ final class PhotoLibraryEnumerationTests: XCTestCase {
         XCTAssertEqual(indices, [0, 1, 2])
     }
 
+    func testSparseChangesOnlyReadSelectedAfterChangeIndices() {
+        // Insertion and removal shift indices; changedIndexes uses the after state.
+        let after = ["inserted", "unchanged", "edited", "moved", "also-edited"]
+        var fetched: [Int] = []
+        var identifiers: Set<String> = []
+        let completed = PhotoLibraryEnumeration.forEach(
+            indices: IndexSet([2, 4]),
+            objectAt: { index in
+                fetched.append(index)
+                return after[index]
+            }
+        ) { identifier, _ in
+            identifiers.insert(identifier)
+        }
+        XCTAssertTrue(completed)
+        XCTAssertEqual(fetched, [2, 4])
+        XCTAssertEqual(identifiers, ["edited", "also-edited"])
+    }
+
+    func testSparseChangesDoNotMaterializeTheWholeChangedObjectArray() {
+        let counter = LifetimeCounter()
+        autoreleasepool {
+            let completed = PhotoLibraryEnumeration.forEach(
+                indices: IndexSet(stride(from: 0, to: 2_000, by: 2)),
+                objectAt: { _ in
+                    _ = Unmanaged.passRetained(Temporary(counter: counter)).autorelease()
+                    return Temporary(counter: counter)
+                }
+            ) { _, _ in }
+            XCTAssertTrue(completed)
+            XCTAssertEqual(counter.live, 0)
+            XCTAssertLessThanOrEqual(counter.peak, 2)
+        }
+    }
+
+    func testEmptyChangesDoNotFetchObjects() {
+        let completed = PhotoLibraryEnumeration.forEach(
+            indices: IndexSet(),
+            objectAt: { index in
+                XCTFail("Empty change set fetched an asset")
+                return index
+            }
+        ) { _, _ in XCTFail("Empty change set consumed an asset") }
+        XCTAssertTrue(completed)
+    }
+
     func testCancellationStopsBeforeFetchingNextAsset() {
         var fetched: [Int] = []
         var visited: [Int] = []

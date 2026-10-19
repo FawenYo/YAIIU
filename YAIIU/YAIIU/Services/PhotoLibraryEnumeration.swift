@@ -10,7 +10,18 @@ enum PhotoLibraryEnumeration {
         shouldStop: () -> Bool = { false },
         _ body: (Object, Int) -> Void
     ) -> Bool {
-        for index in 0..<count {
+        forEach(indices: 0..<count, objectAt: objectAt, shouldStop: shouldStop, body)
+    }
+
+    /// Read a sparse selection without materializing a complete object array.
+    @discardableResult
+    static func forEach<Indices: Sequence, Object>(
+        indices: Indices,
+        objectAt: (Int) -> Object,
+        shouldStop: () -> Bool = { false },
+        _ body: (Object, Int) -> Void
+    ) -> Bool where Indices.Element == Int {
+        for index in indices {
             guard !shouldStop() else { return false }
             autoreleasepool {
                 body(objectAt(index), index)
