@@ -1702,6 +1702,7 @@ private struct PhotoGridItemView: View {
     let onDisappear: () -> Void
     
     @State private var asset: PHAsset?
+    @State private var isCellActive = false
     @State private var appliedEditGeneration: Int?
     @State private var syncStatus: PhotoSyncStatus = .pending
     
@@ -1737,21 +1738,25 @@ private struct PhotoGridItemView: View {
             onLongPress()
         }
         .onAppear {
+            isCellActive = true
             loadAsset()
             onAppear()
         }
         .onDisappear {
+            isCellActive = false
+            // LazyVGrid may retain offscreen rows; drop their PhotoKit objects.
+            asset = nil
+            appliedEditGeneration = nil
             onDisappear()
         }
         .onChange(of: assetIndex) { _, _ in
-            // Reload asset when index changes (e.g., filter updates)
-            loadAsset()
+            // Rebind only visible rows. Offscreen rows have released their assets.
+            if isCellActive { loadAsset() }
         }
         .onChange(of: refreshToken) { _, _ in
-            // Grid identity now stays stable across PhotoKit updates. Rebind
-            // existing visible cells even when their numeric index did not
-            // change but the PHFetchResult or filter membership did.
-            loadAsset()
+            // Update visible cells after a PhotoKit fetch replacement without
+            // rematerializing assets in offscreen LazyVGrid state.
+            if isCellActive { loadAsset() }
         }
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { newCache in
             guard let id = asset?.localIdentifier else { return }
