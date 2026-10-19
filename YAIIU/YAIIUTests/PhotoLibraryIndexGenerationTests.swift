@@ -103,4 +103,53 @@ final class PhotoLibraryIndexGenerationTests: XCTestCase {
             from: snapshotGeneration, snapshotIsReady: true, snapshotCount: 100, assetCount: 100
         ))
     }
+    func testBackToBackEditsPreserveBothAssetsUntilRendering() {
+        // The UI can receive only the latest fetch after edits to A and B.
+        let original = PhotoAssetContentRevision(library: 0, asset: 0)
+        let changed = PhotoAssetContentRevision(library: 0, asset: 1)
+        for id in ["A", "B"] {
+            XCTAssertTrue(PhotoAssetContentRevision.needsReload(
+                previousIdentifier: id, previousRevision: original,
+                currentIdentifier: id, currentRevision: changed
+            ))
+        }
+    }
+
+    func testUnrelatedUpdateDoesNotReloadAlreadyRefreshedAsset() {
+        let observed = PhotoAssetContentRevision(library: 0, asset: 1)
+        XCTAssertFalse(PhotoAssetContentRevision.needsReload(
+            previousIdentifier: "A", previousRevision: observed,
+            currentIdentifier: "A", currentRevision: observed
+        ))
+    }
+
+    func testMultipleEditsBeforeRenderStillTriggerOneRefresh() {
+        XCTAssertTrue(PhotoAssetContentRevision.needsReload(
+            previousIdentifier: "A",
+            previousRevision: PhotoAssetContentRevision(library: 2, asset: 1),
+            currentIdentifier: "A",
+            currentRevision: PhotoAssetContentRevision(library: 2, asset: 3)
+        ))
+    }
+
+    func testFullLibraryResetTriggersRefresh() {
+        XCTAssertTrue(PhotoAssetContentRevision.needsReload(
+            previousIdentifier: "A",
+            previousRevision: PhotoAssetContentRevision(library: 2, asset: 5),
+            currentIdentifier: "A",
+            currentRevision: PhotoAssetContentRevision(library: 3, asset: 0)
+        ))
+    }
+
+    func testNewAssetUsesInitialLoadInsteadOfReload() {
+        let rev = PhotoAssetContentRevision(library: 0, asset: 0)
+        XCTAssertFalse(PhotoAssetContentRevision.needsReload(
+            previousIdentifier: nil, previousRevision: nil,
+            currentIdentifier: "A", currentRevision: rev
+        ))
+        XCTAssertFalse(PhotoAssetContentRevision.needsReload(
+            previousIdentifier: "A", previousRevision: rev,
+            currentIdentifier: "B", currentRevision: rev
+        ))
+    }
 }
