@@ -37,6 +37,20 @@ enum ForegroundPhotoWork {
     case unavailable
 }
 
+extension PhotoLibraryEnumeration {
+    @discardableResult
+    static func forEach<Object>(
+        in result: PHFetchResult<Object>,
+        shouldStop: () -> Bool = { false },
+        _ body: (Object, Int) -> Void
+    ) -> Bool {
+        forEach(
+            count: result.count, objectAt: { result.object(at: $0) },
+            shouldStop: shouldStop, body
+        )
+    }
+}
+
 /// Manages photo library access with lazy loading for optimal memory performance.
 /// Uses PHFetchResult directly instead of materializing all PHAsset objects into arrays.
 final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
@@ -66,6 +80,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// large libraries).
     @Published private(set) var orderedLocalIdentifiers: [String] = []
     
+    private var identifierScanTask: Task<[String]?, Never>?
     private var _fetchResult: PHFetchResult<PHAsset>?
     private let fetchResultLock = NSLock()
     private var albumFetchResult: PHFetchResult<PHAssetCollection>?
@@ -96,6 +111,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     }
 
     deinit {
+        identifierScanTask?.cancel()
         if isObservingLibrary {
             PHPhotoLibrary.shared().unregisterChangeObserver(self)
         }
@@ -201,17 +217,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             self.fetchResultLock.unlock()
             self.assetCount = count
 
-            Task.detached(priority: .utility) { [weak self] in
-                var identifiers: [String] = []
-                identifiers.reserveCapacity(count)
-                updatedResult.enumerateObjects { asset, _, stop in
-                    if Task.isCancelled {
-                        stop.pointee = true
-                        return
-                    }
-                    identifiers.append(asset.localIdentifier)
-                }
-                guard !Task.isCancelled else { return }
+            let scanTask = self.startIdentifierScan(for: updatedResult)
+            Task { [weak self] in
+                guard let identifiers = await scanTask.value else { return }
                 await MainActor.run { [weak self] in
                     guard let self,
                           self.assetFetchGeneration == generation,
@@ -231,7 +239,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         )
         var albums: [PhotoAlbumOption] = []
         albums.reserveCapacity(collections.count)
-        collections.enumerateObjects { collection, _, _ in
+        PhotoLibraryEnumeration.forEach(in: collections) { collection, _ in
             albums.append(PhotoAlbumOption(
                 id: collection.localIdentifier,
                 title: collection.localizedTitle ?? ""
@@ -267,11 +275,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         options.includeHiddenAssets = false
         let assets = PHAsset.fetchAssets(in: collection, options: options)
         var members = Set<String>(minimumCapacity: assets.count)
-        assets.enumerateObjects { asset, _, stop in
-            if Task.isCancelled {
-                stop.pointee = true
-                return
-            }
+        PhotoLibraryEnumeration.forEach(in: assets, shouldStop: { Task.isCancelled }) { asset, _ in
             members.insert(asset.localIdentifier)
         }
         guard !Task.isCancelled else { return [] }
@@ -369,17 +373,16 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // Build the full identifier list off the critical path. It is only needed for
         // the "not uploaded" filter/count, not for the default grid, so publishing it
         // after first paint keeps launch responsive.
-        let identifiers = await Task.detached(priority: .utility) {
-            var ids: [String] = []
-            ids.reserveCapacity(result.count)
-            result.enumerateObjects { asset, _, _ in
-                ids.append(asset.localIdentifier)
-            }
-            return ids
-        }.value
+        let scanTask = startIdentifierScan(for: result)
+        let identifiers = await withTaskCancellationHandler {
+            await scanTask.value
+        } onCancel: {
+            scanTask.cancel()
+        }
         // A PhotoKit change may have replaced the fetch during enumeration.
         // Never let a delayed snapshot overwrite a newer fetch generation.
-        guard assetFetchGeneration == generation, fetchResult === result else { return }
+        guard !Task.isCancelled, let identifiers,
+              assetFetchGeneration == generation, fetchResult === result else { return }
         orderedLocalIdentifiers = identifiers
         orderedIdentifiersGeneration = generation
         libraryRevision &+= 1
@@ -388,6 +391,23 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         await AlbumSyncService.shared.syncIfEnabled()
     }
     
+    @MainActor
+    private func startIdentifierScan(for result: PHFetchResult<PHAsset>) -> Task<[String]?, Never> {
+        identifierScanTask?.cancel()
+        let task = Task.detached(priority: .utility) { () -> [String]? in
+            var identifiers: [String] = []
+            identifiers.reserveCapacity(result.count)
+            let completed = PhotoLibraryEnumeration.forEach(
+                in: result, shouldStop: { Task.isCancelled }
+            ) { asset, _ in
+                identifiers.append(asset.localIdentifier)
+            }
+            return completed ? identifiers : nil
+        }
+        identifierScanTask = task
+        return task
+    }
+
     /// Returns the formatted date for a given asset index.
     func creationDate(at index: Int) -> Date? {
         guard let asset = asset(at: index) else { return nil }
@@ -403,10 +423,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         return result.object(at: index)
     }
     
-    /// Returns local identifier at specific index without materializing PHAsset.
-    /// Useful for ID-based operations where full asset object isn't needed.
+    /// Bound temporary PhotoKit allocations when only the identifier is needed.
     func localIdentifier(at index: Int) -> String? {
-        return asset(at: index)?.localIdentifier
+        return autoreleasepool { asset(at: index)?.localIdentifier }
     }
     
     /// Returns assets within index range for batch operations.
@@ -420,13 +439,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         return result.objects(at: indexSet)
     }
     
-    /// Returns all local identifiers. This is efficient as it only accesses identifiers.
+    /// Returns all identifiers with bounded temporary PhotoKit allocations.
     func allLocalIdentifiers() -> [String] {
         guard let result = fetchResult else { return [] }
         var identifiers: [String] = []
         identifiers.reserveCapacity(result.count)
 
-        result.enumerateObjects { asset, _, _ in
+        PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             identifiers.append(asset.localIdentifier)
         }
         return identifiers
@@ -448,14 +467,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
         var snapshots: [PhotoAssetSnapshot] = []
         snapshots.reserveCapacity(result.count)
-        result.enumerateObjects { asset, _, _ in
-            autoreleasepool {
-                snapshots.append(PhotoAssetSnapshot(
-                    localIdentifier: asset.localIdentifier,
-                    modificationDate: asset.modificationDate,
-                    isHidden: asset.isHidden
-                ))
-            }
+        PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
+            snapshots.append(PhotoAssetSnapshot(
+                localIdentifier: asset.localIdentifier,
+                modificationDate: asset.modificationDate,
+                isHidden: asset.isHidden
+            ))
         }
         return snapshots
     }
@@ -509,7 +526,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 options: options
             )
             var updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)] = []
-            assets.enumerateObjects { asset, _, _ in
+            PhotoLibraryEnumeration.forEach(in: assets) { asset, _ in
                 guard let date = asset.modificationDate,
                       let checksum = checksums[asset.localIdentifier] else { return }
                 updates.append((
@@ -585,7 +602,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     )
                     var snapshots: [PhotoAssetSnapshot] = []
                     snapshots.reserveCapacity(fetched.count)
-                    fetched.enumerateObjects { asset, _, _ in
+                    PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
                         snapshots.append(PhotoAssetSnapshot(
                             localIdentifier: asset.localIdentifier,
                             modificationDate: asset.modificationDate,
@@ -661,7 +678,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let result = PHAsset.fetchAssets(withLocalIdentifiers: pending, options: options)
         var visible = Set<String>()
         var hidden = Set<String>()
-        result.enumerateObjects { asset, _, _ in
+        PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             if asset.isHidden {
                 hidden.insert(asset.localIdentifier)
             } else {
