@@ -17,6 +17,7 @@
 		2A00000D0000000000000001 /* ImmichAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00000E0000000000000001 /* ImmichAPIService.swift */; };
 		2A00000F0000000000000001 /* PhotoLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000100000000000000001 /* PhotoLibraryManager.swift */; };
 		PE0000010000000000000001 /* PhotoLibraryEnumeration.swift in Sources */ = {isa = PBXBuildFile; fileRef = PE0000020000000000000001 /* PhotoLibraryEnumeration.swift */; };
+		PF0000010000000000000001 /* PhotoGridFetchStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = PF0000020000000000000001 /* PhotoGridFetchStorage.swift */; };
 		2A0000110000000000000001 /* DatabaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000120000000000000001 /* DatabaseManager.swift */; };
 		2A0000130000000000000001 /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000140000000000000001 /* SettingsManager.swift */; };
 		2A0000150000000000000001 /* UploadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000160000000000000001 /* UploadManager.swift */; };
@@ -51,6 +52,7 @@
         TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */; };
 		TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000170000000000000001 /* HashPipelinePolicyTests.swift */; };
 		PT0000010000000000000001 /* PhotoLibraryEnumerationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */; };
+		PU0000010000000000000001 /* PhotoGridFetchStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PU0000020000000000000001 /* PhotoGridFetchStorageTests.swift */; };
 		TZ0000030000000000000001 /* ImageTimezoneMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TZ0000040000000000000001 /* ImageTimezoneMetadataTests.swift */; };
         BU0000030000000000000001 /* BackgroundUploadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BU0000020000000000000001 /* BackgroundUploadPolicy.swift */; };
 		BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F352C2EFED90000747537 /* SharedLogTypes.swift */; };
@@ -113,6 +115,7 @@
 		2A00000E0000000000000001 /* ImmichAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmichAPIService.swift; sourceTree = "<group>"; };
 		2A0000100000000000000001 /* PhotoLibraryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryManager.swift; sourceTree = "<group>"; };
 		PE0000020000000000000001 /* PhotoLibraryEnumeration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryEnumeration.swift; sourceTree = "<group>"; };
+		PF0000020000000000000001 /* PhotoGridFetchStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoGridFetchStorage.swift; sourceTree = "<group>"; };
 		2A0000120000000000000001 /* DatabaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DatabaseManager.swift; sourceTree = "<group>"; };
 		2A0000140000000000000001 /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
 		2A0000160000000000000001 /* UploadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadManager.swift; sourceTree = "<group>"; };
@@ -150,6 +153,7 @@
         TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadPolicyTests.swift; sourceTree = "<group>"; };
 		TS0000170000000000000001 /* HashPipelinePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashPipelinePolicyTests.swift; sourceTree = "<group>"; };
 		PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryEnumerationTests.swift; sourceTree = "<group>"; };
+		PU0000020000000000000001 /* PhotoGridFetchStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoGridFetchStorageTests.swift; sourceTree = "<group>"; };
 		TZ0000040000000000000001 /* ImageTimezoneMetadataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageTimezoneMetadataTests.swift; sourceTree = "<group>"; };
 		BC7F352C2EFED90000747537 /* SharedLogTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedLogTypes.swift; sourceTree = "<group>"; };
 		RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PHAssetResource+ResolvedFilename.swift"; sourceTree = "<group>"; };
@@ -292,6 +296,7 @@
 				NR0000020000000000000001 /* NetworkReachability.swift */,
 				2A0000100000000000000001 /* PhotoLibraryManager.swift */,
 				PE0000020000000000000001 /* PhotoLibraryEnumeration.swift */,
+				PF0000020000000000000001 /* PhotoGridFetchStorage.swift */,
 				2A0000140000000000000001 /* SettingsManager.swift */,
 				2A0000160000000000000001 /* UploadManager.swift */,
 				2A00002F0000000000000001 /* HashService.swift */,
@@ -405,6 +410,7 @@
                 TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */,
 				TS0000170000000000000001 /* HashPipelinePolicyTests.swift */,
 				PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */,
+				PU0000020000000000000001 /* PhotoGridFetchStorageTests.swift */,
 				TZ0000040000000000000001 /* ImageTimezoneMetadataTests.swift */,
 			);
 			path = YAIIUTests;
@@ -554,6 +560,7 @@
 				2A00000D0000000000000001 /* ImmichAPIService.swift in Sources */,
 				2A00000F0000000000000001 /* PhotoLibraryManager.swift in Sources */,
 				PE0000010000000000000001 /* PhotoLibraryEnumeration.swift in Sources */,
+				PF0000010000000000000001 /* PhotoGridFetchStorage.swift in Sources */,
 				2A0000110000000000000001 /* DatabaseManager.swift in Sources */,
 				DB0000010000000000000001 /* SQLiteConnection.swift in Sources */,
 				DB0000030000000000000001 /* DatabaseModels.swift in Sources */,
@@ -617,6 +624,7 @@
                 TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */,
 				TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */,
 				PT0000010000000000000001 /* PhotoLibraryEnumerationTests.swift in Sources */,
+				PU0000010000000000000001 /* PhotoGridFetchStorageTests.swift in Sources */,
 				TZ0000030000000000000001 /* ImageTimezoneMetadataTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

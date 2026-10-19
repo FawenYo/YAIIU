@@ -297,14 +297,21 @@ struct PhotoGridView: View {
     @State private var photoFilterVersion = 0
     
     @State private var filteredIndices: [Int] = []
-    /// Keep the PHFetchResult that owns these filtered numeric indices alive
-    /// until its replacement is complete. Never resolve old indices in a new fetch.
-    @State private var filteredFetchResult: PHFetchResult<PHAsset>?
+    /// Keep indexed fetch ownership out of State's saved value history. Existing
+    /// index/generation state and refreshToken publish replacements together.
+    @State private var fetchStorage = PhotoGridFetchStorage<PHFetchResult<PHAsset>>()
+    private var filteredFetchResult: PHFetchResult<PHAsset>? {
+        get { fetchStorage.filtered }
+        nonmutating set { fetchStorage.filtered = newValue }
+    }
     @State private var filteredIndicesGeneration: Int?
     /// Retain the last not-uploaded indices together with their owning fetch
     /// so switching filters never shows a false zero while rebuilding.
     @State private var cachedNotUploadedIndices: [Int] = []
-    @State private var cachedNotUploadedFetchResult: PHFetchResult<PHAsset>?
+    private var cachedNotUploadedFetchResult: PHFetchResult<PHAsset>? {
+        get { fetchStorage.cachedNotUploaded }
+        nonmutating set { fetchStorage.cachedNotUploaded = newValue }
+    }
     @State private var cachedNotUploadedGeneration: Int?
     @State private var cachedNotUploadedCount: Int = 0
     @State private var countRefreshTask: Task<Void, Never>?
@@ -873,7 +880,7 @@ struct PhotoGridView: View {
         PhotoGridItemView(
             photoLibraryManager: photoLibraryManager,
             hashManager: hashManager,
-            filteredFetchResult: currentFilter == .all ? nil : filteredFetchResult,
+            filteredFetchSnapshot: currentFilter == .all ? nil : fetchStorage.filteredSnapshot,
             displayIndex: displayIndex,
             assetIndex: assetIndex,
             isSelectionMode: isSelectionMode,
@@ -1686,7 +1693,7 @@ struct PhotoGridView: View {
 private struct PhotoGridItemView: View {
     let photoLibraryManager: PhotoLibraryManager
     let hashManager: HashManager
-    let filteredFetchResult: PHFetchResult<PHAsset>?
+    let filteredFetchSnapshot: PhotoGridFetchStorage<PHFetchResult<PHAsset>>.Snapshot?
     let displayIndex: Int
     let assetIndex: Int
     let isSelectionMode: Bool
@@ -1769,9 +1776,15 @@ private struct PhotoGridItemView: View {
     
     private func loadAsset() {
         let newAsset: PHAsset?
-        if let snapshot = filteredFetchResult {
-            newAsset = assetIndex >= 0 && assetIndex < snapshot.count
-                ? snapshot.object(at: assetIndex) : nil
+        if let binding = filteredFetchSnapshot {
+            // An expired filtered binding stays empty. Falling back to the
+            // manager would resolve this old index against a different fetch.
+            let snapshot = binding.value
+            newAsset = if let snapshot, assetIndex >= 0 && assetIndex < snapshot.count {
+                snapshot.object(at: assetIndex)
+            } else {
+                nil
+            }
         } else {
             newAsset = photoLibraryManager.asset(at: assetIndex)
         }
@@ -1779,8 +1792,8 @@ private struct PhotoGridItemView: View {
         if let id = newAsset?.localIdentifier {
             // Advance the revision with the NEW PHAsset so stale pre-edit
             // image requests cannot overwrite the updated thumbnail.
-            let isCurrentFetch = filteredFetchResult == nil ||
-                filteredFetchResult === photoLibraryManager.fetchResult
+            let isCurrentFetch = filteredFetchSnapshot == nil ||
+                filteredFetchSnapshot?.value === photoLibraryManager.fetchResult
             let generation = photoLibraryManager.assetFetchGeneration
             let needsContentRefresh = photoLibraryManager.changedAssetIdentifiersForFetch.contains(id) ||
                 photoLibraryManager.fullReloadGeneration == generation
