@@ -5,12 +5,27 @@ import os.lock
 
 final class ThumbnailCache {
     static let shared = ThumbnailCache()
+    /// Fallback for callers without a measured grid width.
+    static let defaultTargetSize = CGSize(width: 480, height: 480)
+
+    /// Request the rendered grid cell's pixel size, rounded up to avoid a
+    /// new PhotoKit cache key for tiny layout changes. Cap iPad allocations.
+    static func targetSize(forGridCellWidth width: CGFloat, displayScale: CGFloat) -> CGSize {
+        guard width > 0, displayScale > 0 else { return defaultTargetSize }
+        let requiredPixels = ceil(width * displayScale)
+        let side = min(1024, max(480, ceil(requiredPixels / 64) * 64))
+        return CGSize(width: side, height: side)
+    }
     
     private let cache = NSCache<NSString, UIImage>()
     private let cachingImageManager = PHCachingImageManager()
     
     private var pendingRequests: [String: [(UIImage?) -> Void]] = [:]
     private var activeRequestIDs: [String: PHImageRequestID] = [:]
+    /// A revision changes the cache key without clearing unrelated photos.
+    /// Old in-flight PhotoKit results can only populate their obsolete key.
+    private var assetRevisions: [String: UInt64] = [:]
+    private var fullLibraryRevision: UInt64 = 0
     private var pendingLock = os_unfair_lock()
     
     private init() {
@@ -58,12 +73,60 @@ final class ThumbnailCache {
         cache.countLimit = 200
     }
     
+    private func key(for localIdentifier: String, targetSize: CGSize) -> String {
+        os_unfair_lock_lock(&pendingLock)
+        let revision = assetRevisions[localIdentifier] ?? 0
+        let libraryRevision = fullLibraryRevision
+        os_unfair_lock_unlock(&pendingLock)
+        return "\(localIdentifier)_r\(revision)_g\(libraryRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+    }
+
+    /// Called for PhotoKit in-place edits before the new fetch is published.
+    /// NSCache's existing 50 MB budget will evict unreachable old revisions.
+    func invalidateThumbnail(for localIdentifier: String) {
+        // Retire requests for the old revision before publishing the new key.
+        // Otherwise an iCloud request can continue downloading for an asset
+        // whose completed image can never be displayed.
+        os_unfair_lock_lock(&pendingLock)
+        assetRevisions[localIdentifier, default: 0] &+= 1
+        let prefix = "\(localIdentifier)_r"
+        let keys = activeRequestIDs.keys.filter { $0.hasPrefix(prefix) }
+        let requestIDs = keys.compactMap { activeRequestIDs.removeValue(forKey: $0) }
+        // A request can be invalidated before requestImage returns its ID.
+        // Remove these pending callbacks too so obsolete closures are released.
+        let pendingKeys = pendingRequests.keys.filter { $0.hasPrefix(prefix) }
+        for key in pendingKeys { pendingRequests.removeValue(forKey: key) }
+        os_unfair_lock_unlock(&pendingLock)
+        for requestID in requestIDs {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
+    }
+
+    /// A nonincremental PhotoKit change does not identify individual edits.
+    /// Retire old requests and version every cache key once; normal incremental
+    /// updates still invalidate only the photos they actually changed.
+    func invalidateAllThumbnails() {
+        os_unfair_lock_lock(&pendingLock)
+        fullLibraryRevision &+= 1
+        assetRevisions.removeAll()
+        let requestIDs = Array(activeRequestIDs.values)
+        activeRequestIDs.removeAll()
+        pendingRequests.removeAll()
+        os_unfair_lock_unlock(&pendingLock)
+
+        for requestID in requestIDs {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
+        cache.removeAllObjects()
+        cachingImageManager.stopCachingImagesForAllAssets()
+    }
+
     func getThumbnail(
         for asset: PHAsset,
-        targetSize: CGSize = CGSize(width: 200, height: 200),
+        targetSize: CGSize = ThumbnailCache.defaultTargetSize,
         completion: @escaping (UIImage?) -> Void
     ) {
-        let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
+        let cacheKey = key(for: asset.localIdentifier, targetSize: targetSize) as NSString
         
         if let cachedImage = cache.object(forKey: cacheKey) {
             DispatchQueue.main.async {
@@ -87,7 +150,7 @@ final class ThumbnailCache {
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = true
-        options.resizeMode = .fast
+        options.resizeMode = .exact
         
         let requestID = cachingImageManager.requestImage(
             for: asset,
@@ -95,8 +158,9 @@ final class ThumbnailCache {
             contentMode: .aspectFill,
             options: options
         ) { [weak self] image, info in
-            guard let self = self else { return }
-            
+            guard let self = self,
+                  self.key(for: asset.localIdentifier, targetSize: targetSize) == keyString else { return }
+
             let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
             let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
             
@@ -110,7 +174,15 @@ final class ThumbnailCache {
             
             if let image = image {
                 if !isDegraded {
-                    let cost = Int(image.size.width * image.size.height * 4)
+                    let cost: Int
+                    if let cgImage = image.cgImage {
+                        cost = cgImage.bytesPerRow * cgImage.height
+                    } else {
+                        // UIImage.size is in points; NSCache needs the decoded pixel cost.
+                        let width = image.size.width * image.scale
+                        let height = image.size.height * image.scale
+                        cost = Int(width * height * 4)
+                    }
                     self.cache.setObject(image, forKey: cacheKey, cost: cost)
                 }
                 
@@ -144,27 +216,46 @@ final class ThumbnailCache {
         }
         
         os_unfair_lock_lock(&pendingLock)
-        activeRequestIDs[keyString] = requestID
+        let currentRevision = assetRevisions[asset.localIdentifier] ?? 0
+        let expectedKey = "\(asset.localIdentifier)_r\(currentRevision)_g\(fullLibraryRevision)_\(Int(targetSize.width))x\(Int(targetSize.height))"
+        let stillPending = pendingRequests[keyString] != nil && expectedKey == keyString
+        if stillPending {
+            activeRequestIDs[keyString] = requestID
+        } else if expectedKey != keyString {
+            pendingRequests.removeValue(forKey: keyString)
+        }
         os_unfair_lock_unlock(&pendingLock)
+        // Covers either invalidation or view cancellation between
+        // requestImage() and request-ID registration.
+        if !stillPending {
+            cachingImageManager.cancelImageRequest(requestID)
+        }
     }
     
-    func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = CGSize(width: 200, height: 200)) {
-        let keyString = "\(assetIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))"
-        
+    func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
+        // A view can disappear after the asset revision changed. Cancel any
+        // revision of its requested size, not just the current cache key.
+        let prefix = "\(assetIdentifier)_r"
+        let suffix = "_\(Int(targetSize.width))x\(Int(targetSize.height))"
         os_unfair_lock_lock(&pendingLock)
-        if let requestID = activeRequestIDs.removeValue(forKey: keyString) {
-            pendingRequests.removeValue(forKey: keyString)
-            os_unfair_lock_unlock(&pendingLock)
+        let keys = activeRequestIDs.keys.filter {
+            $0.hasPrefix(prefix) && $0.hasSuffix(suffix)
+        }
+        let requestIDs = keys.compactMap { activeRequestIDs.removeValue(forKey: $0) }
+        let pendingKeys = pendingRequests.keys.filter {
+            $0.hasPrefix(prefix) && $0.hasSuffix(suffix)
+        }
+        for key in pendingKeys { pendingRequests.removeValue(forKey: key) }
+        os_unfair_lock_unlock(&pendingLock)
+        for requestID in requestIDs {
             cachingImageManager.cancelImageRequest(requestID)
-        } else {
-            os_unfair_lock_unlock(&pendingLock)
         }
     }
     
     /// Prefetch thumbnails for better scrolling performance
-    func prefetchThumbnails(for assets: [PHAsset], targetSize: CGSize = CGSize(width: 200, height: 200)) {
+    func prefetchThumbnails(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let uncachedAssets = assets.filter { asset in
-            let cacheKey = "\(asset.localIdentifier)_\(Int(targetSize.width))x\(Int(targetSize.height))" as NSString
+            let cacheKey = key(for: asset.localIdentifier, targetSize: targetSize) as NSString
             return cache.object(forKey: cacheKey) == nil
         }
         
@@ -184,7 +275,7 @@ final class ThumbnailCache {
     }
     
     /// Stop prefetching thumbnails
-    func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = CGSize(width: 200, height: 200)) {
+    func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
         let options = PHImageRequestOptions()
         options.deliveryMode = .fastFormat
         options.isNetworkAccessAllowed = false
@@ -204,16 +295,8 @@ final class ThumbnailCache {
         cachingImageManager.stopCachingImagesForAllAssets()
     }
     
-    /// Remove cached thumbnail for specific asset
+    /// Keep legacy callers invalidating every cached resolution of this asset.
     func removeThumbnail(for localIdentifier: String) {
-        let keysToRemove = [
-            "\(localIdentifier)_200x200",
-            "\(localIdentifier)_100x100",
-            "\(localIdentifier)_400x400"
-        ]
-        
-        for key in keysToRemove {
-            cache.removeObject(forKey: key as NSString)
-        }
+        invalidateThumbnail(for: localIdentifier)
     }
 }

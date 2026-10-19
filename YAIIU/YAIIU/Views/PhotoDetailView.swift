@@ -164,7 +164,7 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         }
         
         // Skip redundant updates for same image when bounds unchanged
-        if currentImageSize == image.size && lastLayoutBounds == bounds.size { return }
+        if imageView.image === image && lastLayoutBounds == bounds.size { return }
         
         currentImageSize = image.size
         imageView.image = image
@@ -737,7 +737,10 @@ struct PhotoDetailView: View {
     @State private var offset: CGSize = .zero
     @State private var scale: CGFloat = 1.0
     @State private var dragProgress: CGFloat = 0
-    @State private var imageLoadTask: Task<Void, Never>?
+    @State private var imageRequestID: PHImageRequestID?
+    @State private var imageLoadGeneration = 0
+    @State private var assetContentGeneration = 0
+    @State private var imageLoadFailed: Bool = false
     
     @State private var player: AVPlayer?
     @State private var isVideoLoading: Bool = false
@@ -765,6 +768,10 @@ struct PhotoDetailView: View {
         case dismiss
     }
     
+    /// Downsample large originals to a safe display/zoom preview size.
+    /// Requesting PHImageManagerMaximumSize can decode 40–50MP RAW photos at once.
+    private static let maxDisplayImageDimension: CGFloat = 4096
+
     private let dismissThreshold: CGFloat = 150
     private let horizontalSwipeThreshold: CGFloat = 80
     
@@ -809,6 +816,13 @@ struct PhotoDetailView: View {
             return indices.count
         }
         return photoLibraryManager.assetCount
+    }
+
+    /// Freeze swipe navigation while PhotoKit is rebuilding its ordered index.
+    /// The currently open asset can still be viewed or dismissed.
+    private var isNavigationIndexReady: Bool {
+        displayIndices != nil ||
+            photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration
     }
     
     private func resolveActualIndex(_ displayIndex: Int) -> Int {
@@ -881,9 +895,51 @@ struct PhotoDetailView: View {
             cleanupCurrentAsset()
         }
         .onChange(of: currentIndex) { _, _ in
+            // An index correction after a PhotoKit refresh is not navigation to
+            // another photo: preserve zoom, info panel, and video playback.
+            if let currentAsset,
+               photoLibraryManager.asset(at: resolveActualIndex(currentIndex))?.localIdentifier == currentAsset.localIdentifier {
+                return
+            }
             cleanupCurrentAsset()
             resetAssetStates()
             loadAssetAtCurrentIndex()
+        }
+        .onReceive(photoLibraryManager.$orderedIdentifiersGeneration.receive(on: RunLoop.main)) { generation in
+            guard displayIndices == nil,
+                  let generation,
+                  generation == photoLibraryManager.assetFetchGeneration,
+                  photoLibraryManager.orderedIdentifiersGeneration == generation,
+                  let previousAsset = currentAsset else { return }
+
+            // Once this fetch's identifier list is ready, reconcile by identity
+            // rather than by the stale numeric position.
+            guard let updatedIndex = photoLibraryManager.orderedLocalIdentifiers.firstIndex(of: previousAsset.localIdentifier),
+                  let updatedAsset = photoLibraryManager.asset(at: updatedIndex),
+                  updatedAsset.localIdentifier == previousAsset.localIdentifier else {
+                isPresented = false
+                return
+            }
+
+            // A nonincremental PhotoKit change supplies no per-asset edit
+            // identifiers. Refresh the open asset just as the grid does when
+            // the current fetch generation requires a full content reload.
+            let wasEdited = photoLibraryManager.changedAssetIdentifiersForFetch.contains(previousAsset.localIdentifier)
+                || photoLibraryManager.fullReloadGeneration == generation
+                || updatedAsset.modificationDate != previousAsset.modificationDate
+            if updatedIndex != currentIndex {
+                currentIndex = updatedIndex
+            }
+            if wasEdited {
+                // Fetch result change details report content/metadata edits even
+                // when an asset remains at the exact same index.
+                cleanupCurrentAsset()
+                resetAssetStates()
+                currentAsset = updatedAsset
+                loadCurrentAsset()
+            } else {
+                currentAsset = updatedAsset
+            }
         }
     }
     
@@ -998,11 +1054,11 @@ struct PhotoDetailView: View {
     // MARK: - Navigation
     
     private var canNavigateToPrevious: Bool {
-        currentIndex > 0
+        isNavigationIndexReady && currentIndex > 0
     }
-    
+
     private var canNavigateToNext: Bool {
-        currentIndex < totalCount - 1
+        isNavigationIndexReady && currentIndex < totalCount - 1
     }
     
     private func navigateToPrevious() {
@@ -1012,7 +1068,10 @@ struct PhotoDetailView: View {
         }
         hasNavigated = true
         withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = UIScreen.main.bounds.width }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex -= 1; horizontalOffset = 0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            if canNavigateToPrevious { currentIndex -= 1 }
+            horizontalOffset = 0
+        }
     }
     
     private func navigateToNext() {
@@ -1022,7 +1081,10 @@ struct PhotoDetailView: View {
         }
         hasNavigated = true
         withAnimation(.easeOut(duration: 0.2)) { horizontalOffset = -UIScreen.main.bounds.width }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { currentIndex += 1; horizontalOffset = 0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            if canNavigateToNext { currentIndex += 1 }
+            horizontalOffset = 0
+        }
     }
     
     // MARK: - Content Views
@@ -1069,6 +1131,24 @@ struct PhotoDetailView: View {
             } else {
                 zoomableView
             }
+        } else if imageLoadFailed {
+            Button {
+                if let requestID = imageRequestID {
+                    PHImageManager.default().cancelImageRequest(requestID)
+                    imageRequestID = nil
+                }
+                imageLoadFailed = false
+                loadFullImage(for: asset)
+            } label: {
+                VStack(spacing: 8) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 30))
+                    Text(L10n.InitialSetup.retry)
+                        .font(.subheadline)
+                }
+                .foregroundColor(.white)
+            }
+            .buttonStyle(.plain)
         } else {
             ProgressView()
                 .scaleEffect(1.5)
@@ -1403,7 +1483,12 @@ struct PhotoDetailView: View {
     }
     
     private func cleanupCurrentAsset() {
-        imageLoadTask?.cancel()
+        imageLoadGeneration &+= 1
+        assetContentGeneration &+= 1
+        if let requestID = imageRequestID {
+            PHImageManager.default().cancelImageRequest(requestID)
+            imageRequestID = nil
+        }
         player?.pause()
         player = nil
         if let observer = playerEndObserver {
@@ -1415,6 +1500,7 @@ struct PhotoDetailView: View {
     private func resetAssetStates() {
         currentAsset = nil
         fullImage = nil
+        imageLoadFailed = false
         scale = 1.0
         offset = .zero
         dragProgress = 0
@@ -1435,39 +1521,48 @@ struct PhotoDetailView: View {
     // MARK: - Data Loading
     
     private func loadFullImage(for asset: PHAsset) {
-        imageLoadTask = Task {
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isNetworkAccessAllowed = true
-            options.isSynchronous = false
-            options.resizeMode = .none
-            
-            await withCheckedContinuation { continuation in
-                PHImageManager.default().requestImage(
-                    for: asset,
-                    targetSize: PHImageManagerMaximumSize,
-                    contentMode: .aspectFit,
-                    options: options
-                ) { image, info in
-                    let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                    
-                    Task { @MainActor in
-                        if asset.localIdentifier == self.currentAsset?.localIdentifier {
-                            if let image = image {
-                                self.fullImage = image
-                            }
-                        }
-                        
-                        if !isDegraded {
-                            continuation.resume()
-                        }
-                    }
+        imageLoadGeneration &+= 1
+        let requestGeneration = imageLoadGeneration
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+        options.resizeMode = .exact
+
+        // A bounded PhotoKit image is sufficient for a sharp screen/zoom preview.
+        // The original file remains untouched for uploads and metadata extraction.
+        let targetSize = CGSize(
+            width: max(1, min(CGFloat(asset.pixelWidth), Self.maxDisplayImageDimension)),
+            height: max(1, min(CGFloat(asset.pixelHeight), Self.maxDisplayImageDimension))
+        )
+
+        imageRequestID = PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { image, info in
+            let isCancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            let errorDescription = (info?[PHImageErrorKey] as? Error)?.localizedDescription ?? "no image returned"
+            guard !isCancelled else { return }
+
+            Task { @MainActor in
+                guard self.isPresented,
+                      self.imageLoadGeneration == requestGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if let image {
+                    self.fullImage = image
+                } else if !isDegraded {
+                    self.imageLoadFailed = true
+                    logWarning("Unable to load photo preview: \(errorDescription)", category: .app)
                 }
             }
         }
     }
     
     private func loadVideoThumbnail(for asset: PHAsset) {
+        let contentGeneration = assetContentGeneration
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
@@ -1484,16 +1579,17 @@ struct PhotoDetailView: View {
             options: options
         ) { image, info in
             Task { @MainActor in
-                if asset.localIdentifier == self.currentAsset?.localIdentifier {
-                    if let image = image {
-                        self.fullImage = image
-                    }
+                guard self.assetContentGeneration == contentGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                if let image {
+                    self.fullImage = image
                 }
             }
         }
     }
     
     private func loadVideo(for asset: PHAsset) {
+        let contentGeneration = assetContentGeneration
         isVideoLoading = true
         
         let options = PHVideoRequestOptions()
@@ -1502,7 +1598,8 @@ struct PhotoDetailView: View {
         
         PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
             Task { @MainActor in
-                guard asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
+                guard self.assetContentGeneration == contentGeneration,
+                      asset.localIdentifier == self.currentAsset?.localIdentifier else { return }
                 self.isVideoLoading = false
                 
                 if let playerItem = playerItem {
@@ -1523,6 +1620,7 @@ struct PhotoDetailView: View {
     }
     
     private func loadMetadata(for asset: PHAsset) {
+        let contentGeneration = assetContentGeneration
         location = asset.location
         
         Task.detached(priority: .userInitiated) {
@@ -1532,6 +1630,7 @@ struct PhotoDetailView: View {
             let resourceFilename = primaryResource.resolvedFilename(using: asset)
             
             await MainActor.run {
+                guard self.assetContentGeneration == contentGeneration else { return }
                 self.fileName = resourceFilename
             }
             
@@ -1539,6 +1638,7 @@ struct PhotoDetailView: View {
             // size badge; requestData streaming here retained the whole file.
             let fileSizeValue = (primaryResource.value(forKey: "fileSize") as? CLong).map(Int64.init)
             await MainActor.run {
+                guard self.assetContentGeneration == contentGeneration else { return }
                 self.fileSize = fileSizeValue
             }
         }
@@ -1561,6 +1661,7 @@ struct PhotoDetailView: View {
                         }
                         let locationString = parts.joined(separator: ", ")
                         await MainActor.run {
+                            guard self.assetContentGeneration == contentGeneration else { return }
                             self.locationName = locationString
                         }
                     }
@@ -1616,6 +1717,7 @@ struct PhotoDetailView: View {
                 let lensModel = exif[kCGImagePropertyExifLensModel as String] as? String
                 
                 await MainActor.run {
+                    guard self.assetContentGeneration == contentGeneration else { return }
                     self.exposureInfo = finalExposureInfo
                     self.lensInfo = lensModel
                 }
@@ -1632,6 +1734,7 @@ struct PhotoDetailView: View {
                     }
                     
                     await MainActor.run {
+                        guard self.assetContentGeneration == contentGeneration else { return }
                         self.cameraInfo = cameraName
                     }
                 }

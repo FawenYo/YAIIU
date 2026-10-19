@@ -218,7 +218,11 @@ struct UploadItemRow: View {
         .padding(.vertical, 4)
         .onAppear {
             isVisible = true
-            ThumbnailCache.shared.getThumbnail(for: item.asset) { image in
+            // This row renders at 50pt; 150px covers even a 3x display.
+            // Do not decode the gallery's much larger preview during uploads.
+            ThumbnailCache.shared.getThumbnail(
+                for: item.asset, targetSize: CGSize(width: 150, height: 150)
+            ) { image in
                 Task { @MainActor in
                     // Old cache cancellation is keyed by asset, not consumer.
                     // Preserve shared requests and ignore results for hidden rows.
