@@ -911,16 +911,36 @@ struct PhotoDetailView: View {
             loadAssetAtCurrentIndex()
         }
         .onReceive(photoLibraryManager.$orderedIdentifiersGeneration.receive(on: RunLoop.main)) { generation in
-            guard displayIndices == nil,
-                  let generation,
+            guard let generation,
                   generation == photoLibraryManager.assetFetchGeneration,
                   photoLibraryManager.orderedIdentifiersGeneration == generation,
                   let previousAsset = currentAsset else { return }
 
-            // Once this fetch's identifier list is ready, reconcile by identity
-            // rather than by the stale numeric position.
-            guard let updatedIndex = photoLibraryManager.orderedLocalIdentifiers.firstIndex(of: previousAsset.localIdentifier),
-                  let updatedAsset = photoLibraryManager.asset(at: updatedIndex),
+            let updatedIndex: Int
+            let actualIndex: Int
+            if let indices = displayIndices {
+                // Filtered positions remain valid across content-only fetch
+                // replacements. Resolve the current photo directly at its
+                // original position, without scanning the entire identifier list.
+                guard displayIndexGeneration == photoLibraryManager.assetIndexGeneration,
+                      indices.indices.contains(currentIndex) else { return }
+                updatedIndex = currentIndex
+                actualIndex = indices[currentIndex]
+            } else {
+                // Structural edits can shift unfiltered positions. Reconcile by
+                // identity before loading any image from the replacement fetch.
+                guard let index = photoLibraryManager.orderedLocalIdentifiers.firstIndex(
+                    of: previousAsset.localIdentifier
+                ) else {
+                    isPresented = false
+                    return
+                }
+                updatedIndex = index
+                actualIndex = index
+            }
+
+            // Do not silently show a different photo at a reused filter index.
+            guard let updatedAsset = photoLibraryManager.asset(at: actualIndex),
                   updatedAsset.localIdentifier == previousAsset.localIdentifier else {
                 isPresented = false
                 return
