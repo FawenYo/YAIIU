@@ -160,16 +160,27 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let removedCount = changes.removedIndexes?.count ?? 0
         let hasMoves = changes.hasMoves
 
-        // Skip only for incremental notifications that carry no actual edits.
-        // Registering the observer (and some foreground transitions) can deliver
-        // such a change; republishing then rebuilds the grid and blanks all
-        // thumbnails. Non-incremental changes (e.g. permission or full-library
-        // updates) must still be applied, otherwise the grid goes stale.
+        // Most edits provide changedIndexes; avoid eagerly materializing
+        // changedObjects on that path. Some in-place edits provide only
+        // changedObjects, however, and must still invalidate their thumbnails.
+        let changedIndexes = changes.changedIndexes
+        var fallbackChangedIdentifiers: Set<String> = []
+        if hasIncrementalChanges && (changedIndexes?.isEmpty ?? true) {
+            autoreleasepool {
+                for asset in changes.changedObjects {
+                    fallbackChangedIdentifiers.insert(asset.localIdentifier)
+                }
+            }
+        }
+
+        // Skip only truly empty incremental notifications. A changedObjects-only
+        // update must be published even when changedIndexes is empty.
         if hasIncrementalChanges {
             let insertedEmpty = changes.insertedIndexes?.isEmpty ?? true
             let removedEmpty = changes.removedIndexes?.isEmpty ?? true
-            let changedEmpty = changes.changedIndexes?.isEmpty ?? true
-            if insertedEmpty && removedEmpty && changedEmpty && !changes.hasMoves {
+            let changedEmpty = changedIndexes?.isEmpty ?? true
+            if insertedEmpty && removedEmpty && changedEmpty &&
+               !hasMoves && fallbackChangedIdentifiers.isEmpty {
                 return
             }
         }
@@ -177,11 +188,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let updatedResult = changes.fetchResultAfterChanges
         let count = updatedResult.count
 
-        // changedIndexes is relative to the after state, including in-place edits.
-        // changedObjects eagerly materializes an array of every changed PHAsset;
-        // avoid that array and drain each PhotoKit lookup's temporary buffers.
-        var changedIdentifiers: Set<String> = []
-        if hasIncrementalChanges, let changedIndexes = changes.changedIndexes {
+        // changedIndexes uses after-state positions, including in-place edits.
+        // Prefer a pooled indexed lookup; fallback identifiers were gathered
+        // above only when PhotoKit did not provide any changed positions.
+        var changedIdentifiers = fallbackChangedIdentifiers
+        if hasIncrementalChanges, let changedIndexes, !changedIndexes.isEmpty {
             PhotoLibraryEnumeration.forEach(
                 indices: changedIndexes, objectAt: { updatedResult.object(at: $0) }
             ) { asset, _ in
