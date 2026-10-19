@@ -6,6 +6,7 @@ final class PhotoGridFetchStorage<Fetch: AnyObject> {
     var filteredIndexGeneration: Int?
     var cachedNotUploaded: Fetch?
     var cachedNotUploadedIndexGeneration: Int?
+    var cachedNotUploadedStatusGeneration: Int?
 
     var filteredSnapshot: Snapshot { Snapshot(filtered) }
 
@@ -14,6 +15,11 @@ final class PhotoGridFetchStorage<Fetch: AnyObject> {
     func canOpenFilteredDetail(at index: Int, displayCount: Int, indexGeneration: Int) -> Bool {
         filtered != nil && filteredIndexGeneration == indexGeneration &&
             index >= 0 && index < displayCount
+    }
+
+    func canReuseNotUploadedIndices(indexGeneration: Int, statusGeneration: Int) -> Bool {
+        cachedNotUploaded != nil && cachedNotUploadedIndexGeneration == indexGeneration &&
+            cachedNotUploadedStatusGeneration == statusGeneration
     }
 
     /// A cell may outlive its indexed fetch in LazyVGrid. Expire that binding

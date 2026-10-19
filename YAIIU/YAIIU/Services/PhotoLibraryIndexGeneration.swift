@@ -14,4 +14,10 @@ struct PhotoLibraryIndexGeneration {
             recordReload()
         }
     }
+
+    func canReuseIdentifiers(
+        from previousGeneration: Int, snapshotIsReady: Bool, snapshotCount: Int, assetCount: Int
+    ) -> Bool {
+        value == previousGeneration && snapshotIsReady && snapshotCount == assetCount
+    }
 }

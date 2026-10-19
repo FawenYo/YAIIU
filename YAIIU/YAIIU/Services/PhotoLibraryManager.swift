@@ -190,9 +190,8 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
         let identifiersToInvalidate = changedIdentifiers
 
-        // Swap the fetch and invalidate its previous index snapshot on the main
-        // actor. Do not publish index-based filters until enumeration of this
-        // exact fetch generation finishes.
+        // Content-only replacements retain the identifier order. Reuse a ready
+        // snapshot; structural changes and unfinished snapshots need a scan.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             // For nonincremental changes PhotoKit cannot identify which assets
@@ -221,21 +220,35 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             let awaitingFullReload = self.fullReloadGeneration > 0 &&
                 self.fullReloadGeneration == self.assetFetchGeneration &&
                 self.orderedIdentifiersGeneration != self.assetFetchGeneration
+            let previousIndexGeneration = self.assetIndexGeneration
+            let snapshotIsReady = self.orderedIdentifiersGeneration == self.assetFetchGeneration
             self.indexGeneration.recordChange(
                 isIncremental: hasIncrementalChanges,
                 insertedCount: insertedCount, removedCount: removedCount, hasMoves: hasMoves
+            )
+            let canReuseIdentifiers = self.indexGeneration.canReuseIdentifiers(
+                from: previousIndexGeneration, snapshotIsReady: snapshotIsReady,
+                snapshotCount: self.orderedLocalIdentifiers.count, assetCount: count
             )
             self.assetFetchGeneration &+= 1
             let generation = self.assetFetchGeneration
             if !hasIncrementalChanges || awaitingFullReload {
                 self.fullReloadGeneration = generation
             }
-            self.orderedIdentifiersGeneration = nil
-            self.orderedLocalIdentifiers = []
+            if !canReuseIdentifiers {
+                self.orderedIdentifiersGeneration = nil
+                self.orderedLocalIdentifiers = []
+            }
             self.fetchResultLock.lock()
             self._fetchResult = updatedResult
             self.fetchResultLock.unlock()
             self.assetCount = count
+
+            if canReuseIdentifiers {
+                self.orderedIdentifiersGeneration = generation
+                self.libraryRevision &+= 1
+                return
+            }
 
             let scanTask = self.startIdentifierScan(for: updatedResult)
             Task { [weak self] in

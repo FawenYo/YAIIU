@@ -317,6 +317,7 @@ struct PhotoGridView: View {
     @State private var countRefreshTask: Task<Void, Never>?
     @State private var recomputeTask: Task<Void, Never>?
     @State private var countComputeVersion: Int = 0
+    @State private var syncStatusGeneration = 0
     @State private var isSelectingAll = false
     @State private var selectionTask: Task<Void, Never>?
     
@@ -572,6 +573,7 @@ struct PhotoGridView: View {
         // value during body re-eval, which can be skipped; onReceive fires on
         // every publish, so the count tracks the icons exactly.
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { _ in
+            syncStatusGeneration &+= 1
             scheduleCountRefresh()
         }
         .onReceive(photoLibraryManager.$assetFetchGeneration.receive(on: RunLoop.main)) { _ in
@@ -593,11 +595,18 @@ struct PhotoGridView: View {
                photoDetailIndexGeneration != photoLibraryManager.assetIndexGeneration {
                 showingPhotoDetail = false
             }
-            // Invalidate the new-fetch mapping, but preserve the previous
-            // filteredIndices + owning PHFetchResult until recomputation finishes.
-            // Otherwise every upload/library edit briefly reports 0 photos.
-            filteredIndicesGeneration = nil
-            if currentFilter != .all { isFilterLoading = true }
+            // Rebind valid positions to the latest assets without rebuilding
+            // the visible list after each iCloud/content update.
+            if fetchStorage.filteredIndexGeneration == photoLibraryManager.assetIndexGeneration,
+               photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration {
+                filteredFetchResult = photoLibraryManager.fetchResult
+                filteredIndicesGeneration = photoLibraryManager.assetFetchGeneration
+                isFilterLoading = false
+            } else {
+                // Retain the previous snapshot while new positions are built.
+                filteredIndicesGeneration = nil
+                if currentFilter != .all { isFilterLoading = true }
+            }
             // Old full-library ranges refer to the previous fetch. Avoid
             // interpreting them against the newly swapped result.
             lastPrefetchedRange = nil
@@ -1234,12 +1243,31 @@ struct PhotoGridView: View {
         countComputeVersion += 1
         let version = countComputeVersion
 
+        // PhotoKit content changes do not change upload membership. Rebind the
+        // cached positions when both their order and status map are unchanged.
+        if manager.orderedIdentifiersGeneration == manager.assetFetchGeneration,
+           fetchStorage.canReuseNotUploadedIndices(
+               indexGeneration: manager.assetIndexGeneration, statusGeneration: syncStatusGeneration
+           ), let result = manager.fetchResult {
+            cachedNotUploadedFetchResult = result
+            cachedNotUploadedGeneration = manager.assetFetchGeneration
+            if currentFilter == .notUploaded {
+                filteredIndices = cachedNotUploadedIndices
+                filteredFetchResult = result
+                fetchStorage.filteredIndexGeneration = manager.assetIndexGeneration
+                filteredIndicesGeneration = manager.assetFetchGeneration
+                isFilterLoading = false
+            }
+            return
+        }
+
         // Task { } inherits the caller's @MainActor isolation, regardless
         // of priority. Keep the full-library status scan off the UI thread.
         recomputeTask = Task.detached(priority: .utility) { [self] in
-            let (statusCache, identifiers, generation, snapshotGeneration) = await MainActor.run {
+            let (statusCache, identifiers, generation, snapshotGeneration, indexGeneration, statusGeneration) = await MainActor.run {
                 (hash.syncStatusCache, manager.orderedLocalIdentifiers,
-                 manager.assetFetchGeneration, manager.orderedIdentifiersGeneration)
+                 manager.assetFetchGeneration, manager.orderedIdentifiersGeneration,
+                 manager.assetIndexGeneration, self.syncStatusGeneration)
             }
             guard snapshotGeneration == generation, !Task.isCancelled else { return }
 
@@ -1256,6 +1284,7 @@ struct PhotoGridView: View {
             }
 
             var statusEntryCount = statusCache.count
+            var appliedStatusGeneration = statusGeneration
             // A transient status-cache replacement must not turn a populated
             // gallery into a false empty result. When a previously populated
             // list first reaches zero, confirm against the latest status map
@@ -1266,10 +1295,12 @@ struct PhotoGridView: View {
                     try await Task.sleep(nanoseconds: 400_000_000)
                 } catch { return }
                 guard !Task.isCancelled else { return }
-                let (latestStatuses, latestGeneration, latestSnapshot) = await MainActor.run {
-                    (hash.syncStatusCache, manager.assetFetchGeneration, manager.orderedIdentifiersGeneration)
+                let (latestStatuses, latestGeneration, latestSnapshot, latestIndexGeneration, latestStatusGeneration) = await MainActor.run {
+                    (hash.syncStatusCache, manager.assetFetchGeneration, manager.orderedIdentifiersGeneration,
+                     manager.assetIndexGeneration, self.syncStatusGeneration)
                 }
-                guard latestGeneration == generation, latestSnapshot == generation else { return }
+                guard latestIndexGeneration == indexGeneration, latestSnapshot == latestGeneration else { return }
+                appliedStatusGeneration = latestStatusGeneration
                 notUploadedIndices.removeAll(keepingCapacity: true)
                 uploadedCount = 0
                 statusEntryCount = latestStatuses.count
@@ -1288,8 +1319,9 @@ struct PhotoGridView: View {
                 // or this particular status-cache scan.
                 guard !Task.isCancelled,
                       version == self.countComputeVersion,
-                      manager.assetFetchGeneration == generation,
-                      manager.orderedIdentifiersGeneration == generation,
+                      manager.assetIndexGeneration == indexGeneration,
+                      manager.orderedIdentifiersGeneration == manager.assetFetchGeneration,
+                      self.syncStatusGeneration == appliedStatusGeneration,
                       let result = manager.fetchResult else { return }
 
                 let previousCount = self.cachedNotUploadedCount
@@ -1316,7 +1348,8 @@ struct PhotoGridView: View {
                 self.cachedNotUploadedIndices = notUploadedIndices
                 self.cachedNotUploadedFetchResult = result
                 self.fetchStorage.cachedNotUploadedIndexGeneration = manager.assetIndexGeneration
-                self.cachedNotUploadedGeneration = generation
+                self.fetchStorage.cachedNotUploadedStatusGeneration = appliedStatusGeneration
+                self.cachedNotUploadedGeneration = manager.assetFetchGeneration
 
                 if self.currentFilter == .notUploaded {
                     if self.showingPhotoDetail && self.filteredIndices != notUploadedIndices {
@@ -1325,7 +1358,7 @@ struct PhotoGridView: View {
                     self.filteredIndices = notUploadedIndices
                     self.filteredFetchResult = result
                     self.fetchStorage.filteredIndexGeneration = manager.assetIndexGeneration
-                    self.filteredIndicesGeneration = generation
+                    self.filteredIndicesGeneration = manager.assetFetchGeneration
                     self.isFilterLoading = false
                     self.refreshToken = UUID()
                 }

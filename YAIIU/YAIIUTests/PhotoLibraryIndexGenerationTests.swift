@@ -70,4 +70,37 @@ final class PhotoLibraryIndexGenerationTests: XCTestCase {
         generation.recordReload()
         XCTAssertNotEqual(generation.value, openedDetailGeneration)
     }
+
+    func testContentUpdatesReuseCompletedIdentifierSnapshot() {
+        var generation = PhotoLibraryIndexGeneration()
+        generation.recordReload()
+        let snapshotGeneration = generation.value
+        generation.recordChange(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false
+        )
+        XCTAssertTrue(generation.canReuseIdentifiers(
+            from: snapshotGeneration, snapshotIsReady: true, snapshotCount: 100, assetCount: 100
+        ))
+    }
+
+    func testPendingOrIncompleteIdentifierSnapshotRequiresScan() {
+        let generation = PhotoLibraryIndexGeneration()
+        XCTAssertFalse(generation.canReuseIdentifiers(
+            from: generation.value, snapshotIsReady: false, snapshotCount: 100, assetCount: 100
+        ))
+        XCTAssertFalse(generation.canReuseIdentifiers(
+            from: generation.value, snapshotIsReady: true, snapshotCount: 99, assetCount: 100
+        ))
+    }
+
+    func testStructuralChangeCannotReuseSnapshotEvenWithEqualCounts() {
+        var generation = PhotoLibraryIndexGeneration()
+        let snapshotGeneration = generation.value
+        generation.recordChange(
+            isIncremental: true, insertedCount: 1, removedCount: 1, hasMoves: false
+        )
+        XCTAssertFalse(generation.canReuseIdentifiers(
+            from: snapshotGeneration, snapshotIsReady: true, snapshotCount: 100, assetCount: 100
+        ))
+    }
 }

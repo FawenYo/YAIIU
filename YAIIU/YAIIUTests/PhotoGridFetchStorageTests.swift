@@ -109,4 +109,31 @@ final class PhotoGridFetchStorageTests: XCTestCase {
             ))
         }
     }
+
+    func testNotUploadedFilterReusesPositionsAcrossContentUpdates() {
+        let storage = PhotoGridFetchStorage<Fetch>()
+        storage.cachedNotUploaded = Fetch()
+        storage.cachedNotUploadedIndexGeneration = 2
+        storage.cachedNotUploadedStatusGeneration = 4
+        XCTAssertTrue(storage.canReuseNotUploadedIndices(indexGeneration: 2, statusGeneration: 4))
+    }
+
+    func testNotUploadedFilterRebuildsWhenStatusOrPositionsChange() {
+        let storage = PhotoGridFetchStorage<Fetch>()
+        storage.cachedNotUploaded = Fetch()
+        storage.cachedNotUploadedIndexGeneration = 2
+        storage.cachedNotUploadedStatusGeneration = 4
+        XCTAssertFalse(storage.canReuseNotUploadedIndices(indexGeneration: 2, statusGeneration: 5))
+        XCTAssertFalse(storage.canReuseNotUploadedIndices(indexGeneration: 3, statusGeneration: 4))
+    }
+
+    func testNotUploadedFilterRequiresCompletedCachedSnapshot() {
+        let storage = PhotoGridFetchStorage<Fetch>()
+        storage.cachedNotUploaded = Fetch()
+        XCTAssertFalse(storage.canReuseNotUploadedIndices(indexGeneration: 2, statusGeneration: 4))
+        storage.cachedNotUploadedIndexGeneration = 2
+        storage.cachedNotUploadedStatusGeneration = 4
+        storage.cachedNotUploaded = nil
+        XCTAssertFalse(storage.canReuseNotUploadedIndices(indexGeneration: 2, statusGeneration: 4))
+    }
 }
