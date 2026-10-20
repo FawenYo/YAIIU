@@ -73,6 +73,7 @@
 		TS0000010000000000000001 /* SyncStreamParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000030000000000000001 /* SyncStreamParserTests.swift */; };
 		TS0000100000000000000001 /* ServerAssetRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000110000000000000001 /* ServerAssetRepositoryTests.swift */; };
 		TS0000120000000000000001 /* ServerAssetSyncPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */; };
+		AU0000010000000000000001 /* AuthenticationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */; };
 		TS0000020000000000000001 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = TS0000050000000000000001 /* XCTest.framework */; };
 		UQ0000010000000000000001 /* UploadQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UQ0000020000000000000001 /* UploadQueueTests.swift */; };
 		SR0000010000000000000001 /* CoalescingRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = SR0000020000000000000001 /* CoalescingRefresh.swift */; };
@@ -193,6 +194,7 @@
 		TS0000030000000000000001 /* SyncStreamParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStreamParserTests.swift; sourceTree = "<group>"; };
 		TS0000110000000000000001 /* ServerAssetRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetRepositoryTests.swift; sourceTree = "<group>"; };
 		TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetSyncPersistenceTests.swift; sourceTree = "<group>"; };
+		AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationPersistenceTests.swift; sourceTree = "<group>"; };
 		TS0000040000000000000001 /* YAIIUTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YAIIUTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		TS0000050000000000000001 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		UQ0000020000000000000001 /* UploadQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadQueueTests.swift; sourceTree = "<group>"; };
@@ -429,6 +431,7 @@
 				TS0000030000000000000001 /* SyncStreamParserTests.swift */,
 				TS0000110000000000000001 /* ServerAssetRepositoryTests.swift */,
 				TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */,
+				AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */,
                 TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */,
 				UQ0000020000000000000001 /* UploadQueueTests.swift */,
 				TS0000170000000000000001 /* HashPipelinePolicyTests.swift */,
@@ -652,6 +655,7 @@
 				TS0000010000000000000001 /* SyncStreamParserTests.swift in Sources */,
 				TS0000100000000000000001 /* ServerAssetRepositoryTests.swift in Sources */,
 				TS0000120000000000000001 /* ServerAssetSyncPersistenceTests.swift in Sources */,
+				AU0000010000000000000001 /* AuthenticationPersistenceTests.swift in Sources */,
                 TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */,
 				UQ0000010000000000000001 /* UploadQueueTests.swift in Sources */,
 				TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */,
