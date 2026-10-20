@@ -71,7 +71,12 @@ class SharedSettings {
             return loadAPIKeyFromKeychain() ?? ""
         }
         set {
-            saveAPIKeyToKeychain(newValue)
+            let status = newValue.isEmpty
+                ? deleteAPIKeyFromKeychain()
+                : saveAPIKeyToKeychain(newValue)
+            if status != errSecSuccess && status != errSecItemNotFound {
+                print("[SharedSettings] Failed to update API key in Keychain: \(status)")
+            }
         }
     }
     
@@ -198,27 +203,28 @@ class SharedSettings {
     
     // MARK: - Keychain Operations
     
-    private func saveAPIKeyToKeychain(_ apiKey: String) {
-        guard let data = apiKey.data(using: .utf8) else { return }
-        
-        deleteAPIKeyFromKeychain()
-        
+    private func saveAPIKeyToKeychain(_ apiKey: String) -> OSStatus {
+        guard let data = apiKey.data(using: .utf8) else { return errSecParam }
+
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keychainAccount,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessGroup as String: keychainAccessGroup
         ]
-        
-        query[kSecAttrAccessGroup as String] = keychainAccessGroup
-        
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status != errSecSuccess {
-            print("[SharedSettings] Failed to save API key to keychain: \(status)")
+
+        let status = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if status == errSecItemNotFound {
+            query[kSecValueData as String] = data
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            return SecItemAdd(query as CFDictionary, nil)
         }
+        return status
     }
-    
+
     private func loadAPIKeyFromKeychain() -> String? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -240,7 +246,8 @@ class SharedSettings {
         return nil
     }
     
-    private func deleteAPIKeyFromKeychain() {
+    @discardableResult
+    private func deleteAPIKeyFromKeychain() -> OSStatus {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -249,6 +256,6 @@ class SharedSettings {
         
         query[kSecAttrAccessGroup as String] = keychainAccessGroup
         
-        SecItemDelete(query as CFDictionary)
+        return SecItemDelete(query as CFDictionary)
     }
 }
