@@ -289,10 +289,12 @@ final class ServerAssetRepositoryTests: XCTestCase {
                    ('third', 'h3', 0, 12);
             """)
         XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers(["first", "third", "first"]))
-        XCTAssertEqual(Set(await uncheckedHashIds()), ["first", "third"])
+        let dirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(dirty), ["first", "third"])
         XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='second' AND checked_at=11;"), 1)
         XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers([]))
-        XCTAssertEqual(Set(await uncheckedHashIds()), ["first", "third"])
+        let stillDirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(stillDirty), ["first", "third"])
     }
 
     func testMetadataRetrySpansSqliteParameterBatches() {
