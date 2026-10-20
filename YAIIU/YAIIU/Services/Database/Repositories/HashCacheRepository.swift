@@ -2,6 +2,14 @@ import Foundation
 import Photos
 import SQLite3
 
+
+struct CloudMetadataCandidate {
+    let assetId: String
+    let immichId: String
+    let serverICloudId: String?
+    let sourceChecksum: String?
+}
+
 final class HashCacheRepository {
     private let connection: SQLiteConnection
     
@@ -465,6 +473,167 @@ final class HashCacheRepository {
         enqueueIfMissingOnServerInternal(localIdentifier: localIdentifier)
     }
     
+
+    /// Verify a bounded set of currently accessible PhotoKit IDs using indexed
+    /// SQLite membership checks. One transaction and two set-based writes
+    /// replace one transaction and several queries per individual asset.
+    ///
+    /// The caller holds ServerAssetVerificationGate, preventing a server delta
+    /// from changing the cached checksum set during this verification.
+    /// A failed transaction leaves checked_at NULL so a later run can retry.
+    func verifyHashCacheBatch(
+        identifiers: [String],
+        ownerId: String?
+    ) -> [CloudMetadataCandidate]? {
+        guard !identifiers.isEmpty else { return [] }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return nil }
+            guard self.connection.beginTransaction() else { return nil }
+            let placeholders = Array(repeating: "?", count: identifiers.count).joined(separator: ",")
+            let now = Date().timeIntervalSince1970
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+            func bindIds(_ statement: OpaquePointer?, startingAt first: Int32) -> Bool {
+                for (offset, identifier) in identifiers.enumerated() {
+                    let status = sqlite3_bind_text(
+                        statement, first + Int32(offset),
+                        (identifier as NSString).utf8String, -1, transient
+                    )
+                    if status != SQLITE_OK { return false }
+                }
+                return true
+            }
+
+            func execute(_ sql: String) -> Bool {
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    return false
+                }
+                defer { sqlite3_finalize(statement) }
+                return sqlite3_bind_double(statement, 1, now) == SQLITE_OK
+                    && bindIds(statement, startingAt: 2)
+                    && sqlite3_step(statement) == SQLITE_DONE
+            }
+
+            // A verified upload receipt takes priority; otherwise match the
+            // original SHA1 against source_checksum or checksum for assets
+            // without a source_checksum. The same predicate applies to RAW.
+            let verifySQL = """
+                UPDATE hash_cache AS h SET
+                  is_on_server = CASE WHEN
+                    EXISTS (SELECT 1 FROM uploaded_assets u
+                            WHERE u.asset_id = h.asset_id
+                              AND u.resource_type IN ('primary', 'photo'))
+                    OR (h.has_raw = 0 AND EXISTS (
+                          SELECT 1 FROM uploaded_assets u WHERE u.asset_id = h.asset_id
+                            AND u.resource_type = 'raw'))
+                    OR EXISTS (SELECT 1 FROM server_assets_cache s
+                               WHERE s.source_checksum = h.sha1_hash)
+                    OR EXISTS (SELECT 1 FROM server_assets_cache s
+                               WHERE s.checksum = h.sha1_hash AND s.source_checksum IS NULL)
+                    THEN 1 ELSE 0 END,
+                  raw_on_server = CASE WHEN h.has_raw = 1 AND (
+                    EXISTS (SELECT 1 FROM uploaded_assets u
+                            WHERE u.asset_id = h.asset_id AND u.resource_type = 'raw')
+                    OR EXISTS (SELECT 1 FROM server_assets_cache s
+                               WHERE s.source_checksum = h.raw_hash)
+                    OR EXISTS (SELECT 1 FROM server_assets_cache s
+                               WHERE s.checksum = h.raw_hash AND s.source_checksum IS NULL)
+                    ) THEN 1 ELSE 0 END,
+                  checked_at = ?
+                WHERE h.checked_at IS NULL AND h.asset_id IN (\(placeholders));
+                """
+            let queueSQL = """
+                INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
+                SELECT h.asset_id, ? FROM hash_cache h
+                WHERE h.asset_id IN (\(placeholders))
+                  AND h.checked_at IS NOT NULL
+                  AND (h.is_on_server = 0 OR (h.has_raw = 1 AND h.raw_on_server = 0));
+                """
+            guard execute(verifySQL), execute(queueSQL) else {
+                self.connection.rollbackTransaction()
+                logError("Batch checksum verification failed: \(self.connection.lastErrorMessage)", category: .database)
+                return nil
+            }
+
+            // Resolve remote asset metadata with indexed joins rather than
+            // looking it up individually for every checked asset. Receipt
+            // matches override checksum matches, preserving upload ownership.
+            var matches: [String: CloudMetadataCandidate] = [:]
+            if let ownerId {
+                func collect(_ sql: String) -> Bool {
+                    var statement: OpaquePointer?
+                    guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                        sqlite3_finalize(statement)
+                        return false
+                    }
+                    defer { sqlite3_finalize(statement) }
+                    guard bindIds(statement, startingAt: 1),
+                          sqlite3_bind_text(
+                              statement, Int32(identifiers.count + 1),
+                              (ownerId as NSString).utf8String, -1, transient
+                          ) == SQLITE_OK else { return false }
+                    while true {
+                        let status = sqlite3_step(statement)
+                        if status == SQLITE_DONE { return true }
+                        guard status == SQLITE_ROW,
+                              let id = sqlite3_column_text(statement, 0),
+                              let remoteId = sqlite3_column_text(statement, 1)
+                        else { return false }
+                        let assetId = String(cString: id)
+                        matches[assetId] = CloudMetadataCandidate(
+                            assetId: assetId,
+                            immichId: String(cString: remoteId),
+                            serverICloudId: sqlite3_column_text(statement, 2).map { String(cString: $0) },
+                            sourceChecksum: sqlite3_column_text(statement, 3).map { String(cString: $0) }
+                        )
+                    }
+                }
+
+                // Split source-checksum and fallback-checksum branches to
+                // keep their respective SQLite indexes usable. CROSS JOIN
+                // preserves the bounded identifier lookup as the outer loop.
+                let sourceMatches = """
+                    SELECT h.asset_id, s.immich_id, s.icloud_id, s.source_checksum
+                    FROM hash_cache h
+                    CROSS JOIN server_assets_cache s INDEXED BY idx_server_cache_source_checksum
+                    WHERE h.asset_id IN (\(placeholders))
+                      AND s.source_checksum = h.sha1_hash AND s.owner_id = ?;
+                    """
+                let checksumMatches = """
+                    SELECT h.asset_id, s.immich_id, s.icloud_id, s.source_checksum
+                    FROM hash_cache h
+                    CROSS JOIN server_assets_cache s INDEXED BY idx_server_cache_checksum
+                    WHERE h.asset_id IN (\(placeholders))
+                      AND s.checksum = h.sha1_hash AND s.source_checksum IS NULL
+                      AND s.owner_id = ?;
+                    """
+                let receiptMatches = """
+                    SELECT h.asset_id, s.immich_id, s.icloud_id, s.source_checksum
+                    FROM hash_cache h
+                    JOIN uploaded_assets u ON u.asset_id = h.asset_id
+                      AND u.resource_type IN ('primary', 'photo', 'jpeg', 'video', 'raw')
+                    JOIN server_assets_cache s ON s.immich_id = u.immich_id
+                    WHERE h.asset_id IN (\(placeholders))
+                      AND h.is_on_server = 1 AND s.owner_id = ?
+                    ORDER BY CASE WHEN u.resource_type = 'raw' THEN 0 ELSE 1 END;
+                    """
+                guard collect(sourceMatches), collect(checksumMatches), collect(receiptMatches) else {
+                    self.connection.rollbackTransaction()
+                    logError("Batch metadata lookup failed: \(self.connection.lastErrorMessage)", category: .database)
+                    return nil
+                }
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return nil
+            }
+            return Array(matches.values)
+        }
+    }
+
     func batchUpdateHashCacheServerStatus(results: [(String, Bool)]) {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }

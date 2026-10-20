@@ -142,6 +142,13 @@ final class DatabaseManager {
         )
     }
     
+    func verifyHashCacheBatch(
+        identifiers: [String],
+        ownerId: String?
+    ) -> [CloudMetadataCandidate]? {
+        hashRepo.verifyHashCacheBatch(identifiers: identifiers, ownerId: ownerId)
+    }
+
     func batchUpdateHashCacheServerStatus(results: [(String, Bool)]) {
         hashRepo.batchUpdateHashCacheServerStatus(results: results)
     }

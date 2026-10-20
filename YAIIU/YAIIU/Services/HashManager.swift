@@ -945,176 +945,92 @@ class HashManager: ObservableObject {
     }
 
     private func checkMultiResourceHashesAgainstCache(records: [MultiResourceHashRecord], runID: UUID) async {
-        guard isCurrentRun(runID), !shouldStop else {
-            finishProcessing(runID: runID)
-            return
-        }
-        
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
         guard !records.isEmpty else {
-            finishProcessing(runID: runID)
+            await MainActor.run { self.finishProcessing(runID: runID) }
             return
         }
-        
-        guard self.isCurrentRun(runID), !Task.isCancelled else { return }
-            
-            // First, filter out deleted photos and collect orphan identifiers
-            let allIdentifiers = records.map { $0.assetId }
-            let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: allIdentifiers, options: nil)
-            
-            var existingIdentifiers = Set<String>()
-            fetchResult.enumerateObjects { (asset, _, _) in
-                existingIdentifiers.insert(asset.localIdentifier)
-            }
-            
-            // A missing PhotoKit fetch result is NOT proof of deletion. It
-            // could be hidden, iCloud-restoring, or inaccessible under Limited
-            // Photos authorization. Never delete cached hashes here. The full
-            // hidden-inclusive snapshot independently reconciles true orphans.
-            let validRecords = records.filter { existingIdentifiers.contains($0.assetId) }
-            guard self.isCurrentRun(runID), !Task.isCancelled else { return }
 
-            // Update count to only include valid records
-            if validRecords.isEmpty {
-                await MainActor.run {
-                    self.finishProcessing(runID: runID)
-                }
+        // Only visible, accessible PhotoKit assets can be verified. Missing
+        // fetch results are NOT deletions (iCloud/hidden/Limited Photos).
+        let allIdentifiers = records.map(\.assetId)
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: allIdentifiers, options: nil)
+        var accessible = Set<String>()
+        fetched.enumerateObjects { asset, _, _ in
+            accessible.insert(asset.localIdentifier)
+        }
+        let validRecords = records.filter { accessible.contains($0.assetId) }
+        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+        guard !validRecords.isEmpty else {
+            await MainActor.run { self.finishProcessing(runID: runID) }
+            return
+        }
+
+        let currentUserId = DatabaseManager.shared.getSyncMetadata()?.userId
+        await MainActor.run {
+            guard self.isCurrentRun(runID) else { return }
+            self.totalAssetsToProcess = validRecords.count
+            self.processedAssetsCount = 0
+            self.processingProgress = 0
+            self.statusMessage = "Checking cloud status (0/\(validRecords.count))..."
+        }
+        let startedAt = Date()
+        let batchSize = 400
+        var queuedMetadata = Set<String>()
+        var queuedCount = 0
+
+        // Read and update only bounded batches; do not allocate a 100k-entry
+        // cloud-ID mapping or send 100k individual MainActor notifications.
+        for start in stride(from: 0, to: validRecords.count, by: batchSize) {
+            guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
+            let batch = validRecords[start..<min(start + batchSize, validRecords.count)]
+            let ids = batch.map(\.assetId)
+
+            guard let candidates = DatabaseManager.shared.verifyHashCacheBatch(
+                identifiers: ids, ownerId: currentUserId
+            ) else {
+                logError("Cloud verification batch failed at offset \(start); remaining checks retained", category: .database)
+                await MainActor.run { self.finishProcessing(runID: runID) }
                 return
             }
-            
-            await MainActor.run {
-                guard self.isCurrentRun(runID) else { return }
-                self.totalAssetsToProcess = validRecords.count
-                self.processedAssetsCount = 0
-                self.statusMessage = "Checking cloud status (0/\(validRecords.count))..."
-            }
-            
-            // Check if server assets cache has been synced
-            // An authoritative server baseline may contain zero assets.
-            let hasServerCache = DatabaseManager.shared.getSyncMetadata()?.lastSyncTime != nil
+            guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
 
-            // Preload localIdentifier → immichId map from upload records for iCloudId backfill
-            let uploadedMappings = DatabaseManager.shared.getAllUploadedAssetMappings()
-            let localToImmichId: [String: String] = Dictionary(uploadedMappings.map { ($0.localIdentifier, $0.immichId) }, uniquingKeysWith: { first, _ in first })
-
-            // Preload current user ID from sync metadata to filter out partner assets
-            let currentUserId = DatabaseManager.shared.getSyncMetadata()?.userId
-
-            // Preload iCloudIds for all valid record identifiers
-            var localToCloudId: [String: String] = [:]
-            if #available(iOS 16, *) {
-                let allIds = validRecords.map { $0.assetId }
-                let cloudMappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: allIds)
-                for (localId, result) in cloudMappings {
-                    if let cloudId = try? result.get(), !cloudId.stringValue.hasSuffix(":") {
-                        localToCloudId[localId] = cloudId.stringValue
-                    }
-                }
-                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
-            }
-            
-            for record in validRecords {
-                guard self.isCurrentRun(runID), !self.shouldStop else { break }
-                
-                let localIdentifier = record.assetId
-                
-                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    self.syncStatusCache[localIdentifier] = .checking
-                    self.objectWillChange.send()
-                }
-                
-                // A server deletion can invalidate a previous true result.
-                var primaryOnServer = false
-                var rawOnServer = false
-                
-                // Check primary hash against server
-                if !primaryOnServer {
-                    if DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "primary") ||
-                       DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "photo") {
-                        primaryOnServer = true
-                    } else if !record.hasRAW &&
-                              DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "raw") {
-                        primaryOnServer = true
-                    } else if hasServerCache {
-                        primaryOnServer = DatabaseManager.shared.isAssetOnServer(checksum: record.primaryHash)
-                    }
-                }
-
-                // Queue iCloudId update if asset is on server but server cache has no iCloudId
-                if primaryOnServer {
-                    if let iCloudId = localToCloudId[localIdentifier] {
-                        if let immichId = localToImmichId[localIdentifier] {
-                            // An upload receipt alone is not proof metadata
-                            // needs rewriting. Compare the server's cached
-                            // iCloud ID and never write to another user's asset.
-                            if let serverAsset = DatabaseManager.shared.getServerAssetByImmichId(immichId),
-                               serverAsset.iCloudId != iCloudId,
-                               currentUserId == nil || serverAsset.ownerId == currentUserId {
-                                await MainActor.run {
-                                    guard self.isCurrentRun(runID) else { return }
-                                    self.pendingICloudIdUpdates.append((immichId: immichId, iCloudId: iCloudId, sourceChecksum: serverAsset.sourceChecksum))
-                                }
-                            }
-                        } else if let serverAsset = DatabaseManager.shared.getServerAssetByChecksum(record.primaryHash),
-                                  serverAsset.iCloudId != iCloudId,
-                                  currentUserId == nil || serverAsset.ownerId == currentUserId {
-                            await MainActor.run {
-                                guard self.isCurrentRun(runID) else { return }
-                                self.pendingICloudIdUpdates.append((immichId: serverAsset.immichId, iCloudId: iCloudId, sourceChecksum: serverAsset.sourceChecksum))
-                            }
-                        }
-                    } else {
-                        logInfo("Asset \(localIdentifier) on server but no valid iCloud ID (iCloud sync incomplete?)", category: .hash)
-                    }
-                }
-                
-                // Check RAW hash against server if asset has RAW
-                if record.hasRAW && !rawOnServer {
-                    if DatabaseManager.shared.isAssetUploaded(localIdentifier: localIdentifier, resourceType: "raw") {
-                        rawOnServer = true
-                    } else if hasServerCache, let rawHash = record.rawHash {
-                        rawOnServer = DatabaseManager.shared.isAssetOnServer(checksum: rawHash)
-                    }
-                }
-                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
-                
-                // Update database with multi-resource status
-                DatabaseManager.shared.updateMultiResourceHashCacheServerStatus(
-                    localIdentifier: localIdentifier,
-                    primaryOnServer: primaryOnServer,
-                    rawOnServer: rawOnServer
+            var metadataUpdates: [(immichId: String, iCloudId: String, sourceChecksum: String?)] = []
+            if #available(iOS 16, *), !candidates.isEmpty {
+                let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(
+                    forLocalIdentifiers: candidates.map(\.assetId)
                 )
-                
-                // Determine final upload status
-                // For JPEG+RAW: both must be on server
-                // For non-RAW: only primary needs to be on server
-                let isFullyUploaded: Bool
-                if record.hasRAW {
-                    isFullyUploaded = primaryOnServer && rawOnServer
-                } else {
-                    isFullyUploaded = primaryOnServer
+                for candidate in candidates {
+                    guard let result = mappings[candidate.assetId],
+                          let cloudId = try? result.get(),
+                          !cloudId.stringValue.hasSuffix(":"),
+                          candidate.serverICloudId != cloudId.stringValue,
+                          queuedMetadata.insert(candidate.immichId).inserted else { continue }
+                    metadataUpdates.append((
+                        immichId: candidate.immichId,
+                        iCloudId: cloudId.stringValue,
+                        sourceChecksum: candidate.sourceChecksum
+                    ))
                 }
-                guard self.isCurrentRun(runID), !Task.isCancelled else { return }
-                
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    self.processedAssetsCount += 1
-                    self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
-                    self.statusMessage = "Checking cloud status (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+            }
+            queuedCount += metadataUpdates.count
 
-                    if isFullyUploaded {
-                        self.syncStatusCache[localIdentifier] = .uploaded
-                    } else {
-                        self.syncStatusCache[localIdentifier] = .notUploaded
-                    }
-                    self.objectWillChange.send()
-                }
-            }
-            
+            // Progress and published state change once per 400 assets rather
+            // than once per asset; final status icons reload from SQLite.
             await MainActor.run {
-                self.finishProcessing(runID: runID, shouldSyncAlbums: true)
+                guard self.isCurrentRun(runID), !self.shouldStop else { return }
+                self.pendingICloudIdUpdates.append(contentsOf: metadataUpdates)
+                self.processedAssetsCount = start + batch.count
+                self.processingProgress = Double(self.processedAssetsCount) / Double(validRecords.count)
+                self.statusMessage = "Checking cloud status (\(self.processedAssetsCount)/\(validRecords.count))..."
             }
+        }
+        logInfo(
+            "Cloud verification completed: checked=\(validRecords.count), metadataQueued=\(queuedCount), "
+                + "elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startedAt)))s",
+            category: .hash
+        )
+        await MainActor.run { self.finishProcessing(runID: runID, shouldSyncAlbums: true) }
     }
 
     private func finishProcessing(runID: UUID, shouldSyncAlbums: Bool = false) {
