@@ -1045,10 +1045,16 @@ class HashManager: ObservableObject {
                 if primaryOnServer {
                     if let iCloudId = localToCloudId[localIdentifier] {
                         if let immichId = localToImmichId[localIdentifier] {
-                            let sourceChecksum = DatabaseManager.shared.getServerAssetByImmichId(immichId)?.sourceChecksum
-                            await MainActor.run {
-                                guard self.isCurrentRun(runID) else { return }
-                                self.pendingICloudIdUpdates.append((immichId: immichId, iCloudId: iCloudId, sourceChecksum: sourceChecksum))
+                            // An upload receipt alone is not proof metadata
+                            // needs rewriting. Compare the server's cached
+                            // iCloud ID and never write to another user's asset.
+                            if let serverAsset = DatabaseManager.shared.getServerAssetByImmichId(immichId),
+                               serverAsset.iCloudId != iCloudId,
+                               currentUserId == nil || serverAsset.ownerId == currentUserId {
+                                await MainActor.run {
+                                    guard self.isCurrentRun(runID) else { return }
+                                    self.pendingICloudIdUpdates.append((immichId: immichId, iCloudId: iCloudId, sourceChecksum: serverAsset.sourceChecksum))
+                                }
                             }
                         } else if let serverAsset = DatabaseManager.shared.getServerAssetByChecksum(record.primaryHash),
                                   serverAsset.iCloudId != iCloudId,

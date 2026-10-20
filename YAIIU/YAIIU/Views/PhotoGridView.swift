@@ -1190,12 +1190,14 @@ struct PhotoGridView: View {
     }
 
     private func syncPendingICloudIds() {
-        let updates = hashManager.pendingICloudIdUpdates
-        guard !updates.isEmpty else { return }
-
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
         guard !serverURL.isEmpty && !apiKey.isEmpty else { return }
+        // Drain once: repeated view refreshes must not submit the same
+        // metadata updates while an earlier request is still in flight.
+        let updates = hashManager.pendingICloudIdUpdates
+        guard !updates.isEmpty else { return }
+        hashManager.pendingICloudIdUpdates = []
 
         logInfo("Syncing \(updates.count) pending iCloud ID updates to server", category: .api)
 
