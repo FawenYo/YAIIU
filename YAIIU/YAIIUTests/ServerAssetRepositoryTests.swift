@@ -488,6 +488,54 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(batch.changeCount, 0)
     }
 
+    func testForegroundJournalDeletionAndReinsertionCannotReuseOldReceipt() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "same-local-id", primaryHash: "old-hash",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "same-local-id", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "old-remote"
+        )
+        var window = ForegroundPhotoChangeBatch()
+        window.append(affected: ["same-local-id"], deleted: [], tokenData: Data([10]))
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: "same-local-id", modificationDate: Date(timeIntervalSince1970: 100)
+            )],
+            pendingIdentifiers: window.affectedIdentifiers,
+            deletedIdentifiers: window.deletedIdentifiers,
+            tokenData: window.tokenData!, bootstrap: false
+        ))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "same-local-id"))
+        XCTAssertTrue(window.requiresFlushBefore(deleting: ["same-local-id"]))
+
+        window.reset()
+        window.append(affected: [], deleted: ["same-local-id"], tokenData: Data([11]))
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [], pendingIdentifiers: window.affectedIdentifiers,
+            deletedIdentifiers: window.deletedIdentifiers,
+            tokenData: window.tokenData!, bootstrap: false
+        ))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "same-local-id"))
+
+        window.reset()
+        window.append(affected: ["same-local-id"], deleted: [], tokenData: Data([12]))
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: "same-local-id", modificationDate: Date(timeIntervalSince1970: 100)
+            )],
+            pendingIdentifiers: window.affectedIdentifiers,
+            deletedIdentifiers: window.deletedIdentifiers,
+            tokenData: window.tokenData!, bootstrap: false
+        ))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "same-local-id"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "same-local-id"))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["same-local-id"])
+        XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([12]))
+    }
+
     func testForegroundJournalBatchBoundsUniqueAssetCountAndKeepsDeletionBarrier() {
         var batch = ForegroundPhotoChangeBatch()
         for i in 0..<ForegroundPhotoChangeBatch.maxChangedIdentifiers {
