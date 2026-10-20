@@ -1,7 +1,22 @@
 import Foundation
+import Security
 import SwiftUI
 
 class SettingsManager: ObservableObject {
+    enum CredentialPersistenceError: LocalizedError {
+        case saveFailed(OSStatus)
+
+        var errorDescription: String? {
+            switch self {
+            case .saveFailed(let status):
+                return "Unable to securely save login credentials (Keychain OSStatus \(status)). Please try again."
+            }
+        }
+    }
+
+    private let preferences: UserDefaults
+    private let credentialStore: CredentialStorage
+
     @Published var serverURL: String = ""
     @Published var internalServerURL: String = ""
     @Published var internalNetworkSSID: String = ""
@@ -23,25 +38,44 @@ class SettingsManager: ObservableObject {
     private let hasCompletedPhotoPermissionKey = "immich_has_completed_photo_permission"
     private let allowCellularBackgroundUploadKey = "immich_allow_cellular_background_upload"
     static let syncApplePhotosAlbumsKey = "immich_sync_apple_photos_albums"
-    init() {
+    init(preferences: UserDefaults = .standard, credentialStore: CredentialStorage = SystemKeychainCredentialStore()) {
+        self.preferences = preferences
+        self.credentialStore = credentialStore
         loadSettings()
     }
     
     private func loadSettings() {
-        serverURL = UserDefaults.standard.string(forKey: serverURLKey) ?? ""
-        internalServerURL = UserDefaults.standard.string(forKey: internalServerURLKey) ?? ""
-        internalNetworkSSID = UserDefaults.standard.string(forKey: internalNetworkSSIDKey) ?? ""
-        apiKey = loadAPIKeyFromKeychain() ?? ""
-        isLoggedIn = UserDefaults.standard.bool(forKey: Self.isLoggedInKey)
-        hasCompletedOnboarding = UserDefaults.standard.bool(forKey: hasCompletedOnboardingKey)
-        hasCompletedInitialSetup = UserDefaults.standard.bool(forKey: hasCompletedInitialSetupKey)
-        hasCompletedPhotoPermission = UserDefaults.standard.bool(forKey: hasCompletedPhotoPermissionKey)
-        allowCellularBackgroundUpload = UserDefaults.standard.object(forKey: allowCellularBackgroundUploadKey) as? Bool ?? true
-        syncApplePhotosAlbums = UserDefaults.standard.bool(forKey: Self.syncApplePhotosAlbumsKey)
+        serverURL = preferences.string(forKey: serverURLKey) ?? ""
+        internalServerURL = preferences.string(forKey: internalServerURLKey) ?? ""
+        internalNetworkSSID = preferences.string(forKey: internalNetworkSSIDKey) ?? ""
+        let credential = credentialStore.load()
+        apiKey = credential.value ?? ""
+        let savedLoginFlag = preferences.bool(forKey: Self.isLoggedInKey)
+        isLoggedIn = savedLoginFlag
+        hasCompletedOnboarding = preferences.bool(forKey: hasCompletedOnboardingKey)
+        hasCompletedInitialSetup = preferences.bool(forKey: hasCompletedInitialSetupKey)
+        hasCompletedPhotoPermission = preferences.bool(forKey: hasCompletedPhotoPermissionKey)
+        allowCellularBackgroundUpload = preferences.object(forKey: allowCellularBackgroundUploadKey) as? Bool ?? true
+        syncApplePhotosAlbums = preferences.bool(forKey: Self.syncApplePhotosAlbumsKey)
 
-        if isLoggedIn && (serverURL.isEmpty || apiKey.isEmpty) {
-            isLoggedIn = false
-            UserDefaults.standard.set(false, forKey: Self.isLoggedInKey)
+        // A transient Keychain read failure must not permanently erase the saved
+        // login flag. A future app launch can retry accessing the credential.
+        if savedLoginFlag {
+            logInfo(
+                "Auth restore: savedLogin=true, serverConfigured=\(!serverURL.isEmpty), credentialPresent=\(!apiKey.isEmpty), keychainStatus=\(credential.status)",
+                category: .app
+            )
+            if serverURL.isEmpty || apiKey.isEmpty {
+                isLoggedIn = false
+                let reason = serverURL.isEmpty ? "missing_server_url"
+                    : credential.status == errSecItemNotFound ? "credential_not_found" : "credential_unavailable"
+                logWarning(
+                    "Auth restore unavailable: reason=\(reason), keychainStatus=\(credential.status), savedLoginPreserved=true",
+                    category: .app
+                )
+            }
+        } else {
+            logDebug("Auth restore: savedLogin=false, keychainStatus=\(credential.status)", category: .app)
         }
         
         if !internalNetworkSSID.isEmpty {
@@ -50,16 +84,15 @@ class SettingsManager: ObservableObject {
     }
     
     private func saveSettings() {
-        UserDefaults.standard.set(serverURL, forKey: serverURLKey)
-        UserDefaults.standard.set(internalServerURL, forKey: internalServerURLKey)
-        UserDefaults.standard.set(internalNetworkSSID, forKey: internalNetworkSSIDKey)
-        UserDefaults.standard.set(isLoggedIn, forKey: Self.isLoggedInKey)
-        UserDefaults.standard.set(hasCompletedOnboarding, forKey: hasCompletedOnboardingKey)
-        UserDefaults.standard.set(hasCompletedInitialSetup, forKey: hasCompletedInitialSetupKey)
-        UserDefaults.standard.set(hasCompletedPhotoPermission, forKey: hasCompletedPhotoPermissionKey)
-        saveAPIKeyToKeychain(apiKey)
-        UserDefaults.standard.set(allowCellularBackgroundUpload, forKey: allowCellularBackgroundUploadKey)
-        UserDefaults.standard.set(syncApplePhotosAlbums, forKey: Self.syncApplePhotosAlbumsKey)
+        preferences.set(serverURL, forKey: serverURLKey)
+        preferences.set(internalServerURL, forKey: internalServerURLKey)
+        preferences.set(internalNetworkSSID, forKey: internalNetworkSSIDKey)
+        preferences.set(isLoggedIn, forKey: Self.isLoggedInKey)
+        preferences.set(hasCompletedOnboarding, forKey: hasCompletedOnboardingKey)
+        preferences.set(hasCompletedInitialSetup, forKey: hasCompletedInitialSetupKey)
+        preferences.set(hasCompletedPhotoPermission, forKey: hasCompletedPhotoPermissionKey)
+        preferences.set(allowCellularBackgroundUpload, forKey: allowCellularBackgroundUploadKey)
+        preferences.set(syncApplePhotosAlbums, forKey: Self.syncApplePhotosAlbumsKey)
     }
     
     var activeServerURL: String {
@@ -70,7 +103,13 @@ class SettingsManager: ObservableObject {
         )
     }
     
-    func login(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) {
+    func login(serverURL: String, apiKey: String, internalServerURL: String? = nil, ssid: String? = nil) throws {
+        let keychainStatus = credentialStore.save(apiKey)
+        guard keychainStatus == errSecSuccess else {
+            logError("Auth login: credential save failed, keychainStatus=\(keychainStatus)", category: .app)
+            throw CredentialPersistenceError.saveFailed(keychainStatus)
+        }
+        logInfo("Auth login: credential saved, keychainStatus=\(keychainStatus)", category: .app)
         AlbumSyncService.invalidateInFlightSync()
         self.serverURL = serverURL
         self.internalServerURL = internalServerURL ?? ""
@@ -94,7 +133,7 @@ class SettingsManager: ObservableObject {
         guard url != self.serverURL else { return }
         AlbumSyncService.invalidateInFlightSync()
         self.serverURL = url
-        UserDefaults.standard.set(url, forKey: serverURLKey)
+        preferences.set(url, forKey: serverURLKey)
         syncToSharedSettings()
         scheduleAlbumSyncIfEnabled()
     }
@@ -105,8 +144,8 @@ class SettingsManager: ObservableObject {
         self.internalServerURL = url
         self.internalNetworkSSID = ssid
 
-        UserDefaults.standard.set(url, forKey: internalServerURLKey)
-        UserDefaults.standard.set(ssid, forKey: internalNetworkSSIDKey)
+        preferences.set(url, forKey: internalServerURLKey)
+        preferences.set(ssid, forKey: internalNetworkSSIDKey)
 
         NetworkReachability.shared.configure(ssid: ssid.isEmpty ? nil : ssid)
 
@@ -116,7 +155,7 @@ class SettingsManager: ObservableObject {
 
     func updateAllowCellularBackgroundUpload(_ allowed: Bool) {
         allowCellularBackgroundUpload = allowed
-        UserDefaults.standard.set(allowed, forKey: allowCellularBackgroundUploadKey)
+        preferences.set(allowed, forKey: allowCellularBackgroundUploadKey)
         syncToSharedSettings()
     }
 
@@ -129,7 +168,7 @@ class SettingsManager: ObservableObject {
         guard syncApplePhotosAlbums != enabled else { return }
         AlbumSyncService.invalidateInFlightSync()
         syncApplePhotosAlbums = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.syncApplePhotosAlbumsKey)
+        preferences.set(enabled, forKey: Self.syncApplePhotosAlbumsKey)
         if enabled {
             scheduleAlbumSyncIfEnabled()
         }
@@ -173,6 +212,7 @@ class SettingsManager: ObservableObject {
     }
 
     func logout() {
+        logInfo("Auth logout: explicitly invoked", category: .app)
         AlbumSyncService.invalidateInFlightSync()
         self.serverURL = ""
         self.internalServerURL = ""
@@ -182,14 +222,17 @@ class SettingsManager: ObservableObject {
         self.allowCellularBackgroundUpload = true
         self.syncApplePhotosAlbums = false
         
-        UserDefaults.standard.removeObject(forKey: serverURLKey)
-        UserDefaults.standard.removeObject(forKey: internalServerURLKey)
-        UserDefaults.standard.removeObject(forKey: internalNetworkSSIDKey)
-        UserDefaults.standard.removeObject(forKey: Self.isLoggedInKey)
-        UserDefaults.standard.removeObject(forKey: allowCellularBackgroundUploadKey)
-        UserDefaults.standard.removeObject(forKey: Self.syncApplePhotosAlbumsKey)
-        deleteAPIKeyFromKeychain()
-        
+        preferences.removeObject(forKey: serverURLKey)
+        preferences.removeObject(forKey: internalServerURLKey)
+        preferences.removeObject(forKey: internalNetworkSSIDKey)
+        preferences.removeObject(forKey: Self.isLoggedInKey)
+        preferences.removeObject(forKey: allowCellularBackgroundUploadKey)
+        preferences.removeObject(forKey: Self.syncApplePhotosAlbumsKey)
+        let keychainStatus = credentialStore.delete()
+        if keychainStatus != errSecSuccess && keychainStatus != errSecItemNotFound {
+            logWarning("Auth logout: credential delete failed, keychainStatus=\(keychainStatus)", category: .app)
+        }
+
         // Clear SharedSettings and disable background upload
         if #available(iOS 26.1, *) {
             Task {
@@ -200,52 +243,65 @@ class SettingsManager: ObservableObject {
         }
     }
     
-    // MARK: - Keychain Operations
-    
-    private let keychainService = "com.fawenyo.yaiiu"
-    private let keychainAccount = "api_key"
-    
-    private func saveAPIKeyToKeychain(_ apiKey: String) {
-        let data = apiKey.data(using: .utf8)!
-        
-        deleteAPIKeyFromKeychain()
-        
-        let query: [String: Any] = [
+}
+
+// Isolated for deterministic restore and persistence-error tests.
+struct StoredCredential {
+    let value: String?
+    let status: OSStatus
+}
+
+protocol CredentialStorage {
+    func load() -> StoredCredential
+    func save(_ value: String) -> OSStatus
+    func delete() -> OSStatus
+}
+
+struct SystemKeychainCredentialStore: CredentialStorage {
+    private let service = "com.fawenyo.yaiiu"
+    private let account = "api_key"
+
+    private var query: [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
-            kSecValueData as String: data
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
         ]
-        
-        SecItemAdd(query as CFDictionary, nil)
     }
-    
-    private func loadAPIKeyFromKeychain() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        
+
+    func load() -> StoredCredential {
+        var lookup = query
+        lookup[kSecReturnData as String] = true
+        lookup[kSecMatchLimit as String] = kSecMatchLimitOne
+
         var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        
-        if status == errSecSuccess, let data = result as? Data {
-            return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+        guard status == errSecSuccess else {
+            return StoredCredential(value: nil, status: status)
         }
-        
-        return nil
+        guard let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return StoredCredential(value: nil, status: errSecDecode)
+        }
+        return StoredCredential(value: value, status: status)
     }
-    
-    private func deleteAPIKeyFromKeychain() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount
-        ]
-        
+
+    func save(_ value: String) -> OSStatus {
+        let data = Data(value.utf8)
+        let status = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if status == errSecItemNotFound {
+            var item = query
+            item[kSecValueData as String] = data
+            return SecItemAdd(item as CFDictionary, nil)
+        }
+        // Never delete the previous credential before a successful replacement.
+        return status
+    }
+
+    func delete() -> OSStatus {
         SecItemDelete(query as CFDictionary)
     }
 }

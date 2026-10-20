@@ -559,19 +559,21 @@ struct LoginView: View {
                     serverURL: formattedURL
                 )
 
-                await MainActor.run {
-                    isLoading = false
-                    settingsManager.login(
+                try await MainActor.run {
+                    try settingsManager.login(
                         serverURL: formattedURL,
                         apiKey: accessToken,
                         internalServerURL: formattedInternalURL,
                         ssid: ssidToUse
                     )
+                    isLoading = false
                 }
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    errorMessage = L10n.Login.errorConnectionFailed(error.localizedDescription)
+                    errorMessage = error is SettingsManager.CredentialPersistenceError
+                        ? error.localizedDescription
+                        : L10n.Login.errorConnectionFailed(error.localizedDescription)
                     showError = true
                 }
             }
