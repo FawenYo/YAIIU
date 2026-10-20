@@ -28,6 +28,46 @@ struct PhotoAssetSnapshot: Sendable {
 
 
 
+/// Bounded PhotoKit journal window. Coalescing repeated asset notifications
+/// avoids thousands of identical SQLite commits, while each flush persists its
+/// latest change token atomically with the work it represents.
+struct ForegroundPhotoChangeBatch {
+    static let maxChangeBatches = 128
+    static let maxChangedIdentifiers = 512
+
+    private(set) var affectedIdentifiers = Set<String>()
+    private(set) var deletedIdentifiers = Set<String>()
+    private(set) var tokenData: Data?
+    private(set) var changeCount = 0
+
+    var hasPending: Bool { tokenData != nil }
+
+    /// Flush before a deletion to preserve delete-then-reinsert semantics.
+    func requiresFlushBefore(deleting identifiers: Set<String>) -> Bool {
+        hasPending && !identifiers.isEmpty
+    }
+
+    var shouldFlush: Bool {
+        changeCount >= Self.maxChangeBatches ||
+            affectedIdentifiers.count + deletedIdentifiers.count >= Self.maxChangedIdentifiers
+    }
+
+    mutating func append(
+        affected: Set<String>,
+        deleted: Set<String>,
+        tokenData: Data
+    ) {
+        affectedIdentifiers.formUnion(affected)
+        deletedIdentifiers.formUnion(deleted)
+        self.tokenData = tokenData
+        changeCount += 1
+    }
+
+    mutating func reset() {
+        self = Self()
+    }
+}
+
 /// Foreground startup may avoid library-wide enumeration after the initial
 /// checkpoint, but Limited Photos and transient PhotoKit failures fall back to
 /// the legacy snapshot (without authoritative orphan deletion).
@@ -615,54 +655,83 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 var insertedCount = 0
                 var updatedCount = 0
                 var deletedCount = 0
+                var emptyAssetBatches = 0
+                var uniqueUpdatedIdentifiers = Set<String>()
                 var sampleIdentifiersLogged = 0
                 var replayedIdentifiers = Set<String>()
+                var window = ForegroundPhotoChangeBatch()
+                var committedWindows = 0
+                var unresolvedLookups = 0
+                let replayStartedAt = Date()
+
+                // Apply a bounded window using PhotoKit's latest PHAsset state.
+                // Keeping the cursor in the same SQLite transaction as pending
+                // identifiers prevents crashes from skipping unprocessed assets.
+                func flushWindow() -> Bool {
+                    guard let tokenData = window.tokenData else { return true }
+                    let options = PHFetchOptions()
+                    options.includeHiddenAssets = true
+                    let identifiers = Array(window.affectedIdentifiers)
+                    var snapshots: [PhotoAssetSnapshot] = []
+                    if !identifiers.isEmpty {
+                        let fetched = PHAsset.fetchAssets(
+                            withLocalIdentifiers: identifiers, options: options
+                        )
+                        snapshots.reserveCapacity(fetched.count)
+                        PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
+                            snapshots.append(PhotoAssetSnapshot(
+                                localIdentifier: asset.localIdentifier,
+                                modificationDate: asset.modificationDate,
+                                isHidden: asset.isHidden
+                            ))
+                        }
+                    }
+                    unresolvedLookups += max(0, identifiers.count - snapshots.count)
+                    guard db.applyForegroundPhotoChanges(
+                        snapshots: snapshots,
+                        pendingIdentifiers: window.affectedIdentifiers,
+                        deletedIdentifiers: window.deletedIdentifiers,
+                        tokenData: tokenData,
+                        bootstrap: false
+                    ) else {
+                        logError("Failed to atomically persist foreground PhotoKit delta", category: .database)
+                        return false
+                    }
+                    committedWindows += 1
+                    window.reset()
+                    return true
+                }
+
                 for change in changes {
                     let details = try change.changeDetails(for: .asset)
                     let deleted = details.deletedLocalIdentifiers
                     let affected = details.insertedLocalIdentifiers
                         .union(details.updatedLocalIdentifiers)
                         .subtracting(deleted)
-                    replayedIdentifiers.formUnion(affected)
-                    replayedIdentifiers.formUnion(deleted)
 
-                    // Fetch only changed identifiers, including hidden assets to
-                    // distinguish legitimate hidden updates from removals.
-                    let options = PHFetchOptions()
-                    options.includeHiddenAssets = true
-                    let fetched = PHAsset.fetchAssets(
-                        withLocalIdentifiers: Array(affected), options: options
-                    )
-                    var snapshots: [PhotoAssetSnapshot] = []
-                    snapshots.reserveCapacity(fetched.count)
-                    PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
-                        snapshots.append(PhotoAssetSnapshot(
-                            localIdentifier: asset.localIdentifier,
-                            modificationDate: asset.modificationDate,
-                            isHidden: asset.isHidden
-                        ))
+                    // A deletion is a barrier: never merge an earlier update
+                    // with a later deletion/reinsertion of the same identifier.
+                    if window.requiresFlushBefore(deleting: deleted) && !flushWindow() {
+                        return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
                     }
 
                     let nextTokenData = try NSKeyedArchiver.archivedData(
                         withRootObject: change.changeToken, requiringSecureCoding: true
                     )
-                    guard db.applyForegroundPhotoChanges(
-                        snapshots: snapshots,
-                        pendingIdentifiers: affected,
-                        deletedIdentifiers: deleted,
-                        tokenData: nextTokenData,
-                        bootstrap: false
-                    ) else {
-                        logError("Failed to atomically persist foreground PhotoKit delta", category: .database)
-                        return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
-                    }
+                    window.append(affected: affected, deleted: deleted, tokenData: nextTokenData)
+                    replayedIdentifiers.formUnion(affected)
+                    replayedIdentifiers.formUnion(deleted)
+                    uniqueUpdatedIdentifiers.formUnion(details.updatedLocalIdentifiers)
+
                     processedBatches += 1
                     touchedAssets += affected.count + deleted.count
                     insertedCount += details.insertedLocalIdentifiers.count
                     updatedCount += details.updatedLocalIdentifiers.count
                     deletedCount += deleted.count
-                    // Keep aggregate counts exact but bound disk log volume
-                    // when PhotoKit delivers a very large persistent change set.
+                    if affected.isEmpty && deleted.isEmpty {
+                        emptyAssetBatches += 1
+                    }
+
                     for identifier in details.insertedLocalIdentifiers {
                         guard sampleIdentifiersLogged < 10 else { break }
                         logDebug("Foreground PhotoKit inserted: asset=\(identifier)", category: .hash)
@@ -673,10 +742,21 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         logDebug("Foreground PhotoKit updated: asset=\(identifier)", category: .hash)
                         sampleIdentifiersLogged += 1
                     }
+
+                    // Empty-asset batches still advance the checkpoint, but no
+                    // longer trigger a separate SQLite transaction each time.
+                    if !deleted.isEmpty || window.shouldFlush {
+                        guard flushWindow() else {
+                            return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+                        }
+                    }
+                }
+                guard flushWindow() else {
+                    return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
                 }
                 if processedBatches > 0 {
                     logInfo(
-                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount))",
+                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)); emptyAssetBatches=\(emptyAssetBatches), uniqueUpdated=\(uniqueUpdatedIdentifiers.count), repeatedUpdateEvents=\(updatedCount - uniqueUpdatedIdentifiers.count), unresolvedLookups=\(unresolvedLookups), sqliteWindows=\(committedWindows), elapsed=\(String(format: "%.1f", Date().timeIntervalSince(replayStartedAt)))s",
                         category: .hash
                     )
                 }
