@@ -1232,6 +1232,11 @@ struct PhotoGridView: View {
                     skipCount += batch.count
                 } catch {
                     logWarning("Failed to update iCloud ID batch: \(error.localizedDescription)", category: .api)
+                    // Keep transient failures retryable without letting a
+                    // view refresh send the same request concurrently.
+                    await MainActor.run {
+                        hashManager.pendingICloudIdUpdates.append(contentsOf: updates[batchStart..<min(batchStart + batchSize, updates.count)])
+                    }
                 }
             }
 

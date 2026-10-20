@@ -22,6 +22,48 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
         super.tearDown()
     }
 
+
+    func testMetadataOnlyDeltaDoesNotInvalidateChecksums() async {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations, metadataOnly: true)
+        let store = StoreStub(operations: operations)
+        store.syncMetadata = SyncMetadata(
+            lastSyncTime: Date(), lastSyncType: "delta", userId: "owner-1",
+            serverURL: "https://immich.example", totalAssets: 1,
+            lastAck: "AssetV2|previous"
+        )
+        store.existingAsset = ServerAssetRecord(
+            immichId: "asset-1", checksum: "stable-checksum",
+            sourceChecksum: "original-checksum", iCloudId: "old-cloud",
+            ownerId: "owner-1"
+        )
+        let result = await sync(ServerAssetSyncService(apiService: api, dbManager: store))
+        guard case .success = result else { return XCTFail("Expected successful delta") }
+        XCTAssertFalse(store.invalidatedFullReset ?? true)
+        XCTAssertTrue(store.invalidatedChecksums.isEmpty)
+        XCTAssertTrue(operations.values.contains("update-icloud-ids"))
+    }
+
+    func testChangedSourceChecksumInvalidatesOldAndNewValues() async {
+        let operations = OperationRecorder()
+        let api = APIStub(operations: operations, sourceChecksum: "new-source", metadataOnly: true)
+        let store = StoreStub(operations: operations)
+        store.syncMetadata = SyncMetadata(
+            lastSyncTime: Date(), lastSyncType: "delta", userId: "owner-1",
+            serverURL: "https://immich.example", totalAssets: 1,
+            lastAck: "AssetV2|previous"
+        )
+        store.existingAsset = ServerAssetRecord(
+            immichId: "asset-1", checksum: "server-checksum",
+            sourceChecksum: "old-source", ownerId: "owner-1"
+        )
+        let result = await sync(ServerAssetSyncService(apiService: api, dbManager: store))
+        guard case .success = result else { return XCTFail("Expected successful delta") }
+        XCTAssertEqual(store.invalidatedChecksums, [
+            "old-source", "new-source", "server-checksum"
+        ])
+    }
+
     func testSyncAcknowledgesOnlyAfterPersistence() async throws {
         let operations = OperationRecorder()
         let api = APIStub(operations: operations)
@@ -197,12 +239,14 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
     private let operations: OperationRecorder
     private let resetAck: String?
     private let sourceChecksum: String?
+    private let metadataOnly: Bool
     private(set) var sentAcks: [String] = []
 
-    init(operations: OperationRecorder, resetAck: String? = nil, sourceChecksum: String? = nil) {
+    init(operations: OperationRecorder, resetAck: String? = nil, sourceChecksum: String? = nil, metadataOnly: Bool = false) {
         self.operations = operations
         self.resetAck = resetAck
         self.sourceChecksum = sourceChecksum
+        self.metadataOnly = metadataOnly
     }
 
     func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo {
@@ -220,7 +264,10 @@ private final class APIStub: ServerAssetSyncAPI, @unchecked Sendable {
     }
 
     func fetchAssetStream(serverURL: String, apiKey: String) async throws -> AssetStreamResult {
-        AssetStreamResult(
+        if metadataOnly {
+            return AssetStreamResult(assets: [], acksByType: [:], state: .data)
+        }
+        return AssetStreamResult(
             assets: [
                 StreamAsset(
                     id: "asset-1",

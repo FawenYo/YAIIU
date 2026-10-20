@@ -215,6 +215,72 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(Set(ids), [videoId, rawId])
     }
 
+
+    func testBatchVerificationMatchesPrimaryAndRAWAndQueuesMissingResources() {
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "remote-primary", checksum: "converted",
+                              sourceChecksum: "source-primary", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "remote-raw", checksum: "raw-present", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "foreign", checksum: "foreign-sha", ownerId: "owner-2")
+        ]))
+        execute("""
+            INSERT INTO hash_cache
+              (asset_id, sha1_hash, raw_hash, has_raw, calculated_at)
+            VALUES ('source', 'source-primary', NULL, 0, 0),
+                   ('raw-missing', 'source-primary', 'raw-absent', 1, 0),
+                   ('raw-present', 'source-primary', 'raw-present', 1, 0),
+                   ('absent', 'not-on-server', NULL, 0, 0),
+                   ('foreign', 'foreign-sha', NULL, 0, 0);
+            """)
+        let ids = ["source", "raw-missing", "raw-present", "absent", "foreign"]
+        let candidates = hashRepository.verifyHashCacheBatch(identifiers: ids, ownerId: "owner-1")
+        XCTAssertNotNil(candidates)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NOT NULL;"), 5)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE is_on_server = 1;"), 4)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE has_raw = 1 AND raw_on_server = 1;"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM background_upload_queue;"), 2)
+        XCTAssertEqual(Set(candidates?.map(\.assetId) ?? []), ["source", "raw-missing", "raw-present"])
+        XCTAssertFalse(candidates?.contains(where: { $0.assetId == "foreign" }) ?? true)
+    }
+
+    func testBatchVerificationKeepsCheckedAndOutsideRowsAndUsesUploadReceipt() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at, is_on_server)
+            VALUES ('pending', 'no-match', 0, NULL, 0),
+                   ('already-checked', 'no-match', 0, 123, 1),
+                   ('outside-batch', 'no-match', 0, NULL, 0);
+            INSERT INTO uploaded_assets (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('pending', 'primary', 'image.jpg', 'uploaded', 10);
+            """)
+        let candidates = hashRepository.verifyHashCacheBatch(
+            identifiers: ["pending", "already-checked"], ownerId: "owner-1"
+        )
+        XCTAssertNotNil(candidates)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='pending' AND is_on_server=1 AND checked_at IS NOT NULL;"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='already-checked' AND is_on_server=1 AND checked_at=123;"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='outside-batch' AND checked_at IS NULL;"), 1)
+    }
+
+    func testBatchMetadataCandidatePrefersReceiptAndFiltersForeignOwner() {
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "by-hash", checksum: "checksum", iCloudId: "cloud-old", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "receipt-remote", checksum: "elsewhere", iCloudId: "cloud-new", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "other-owner", checksum: "other-checksum", iCloudId: nil, ownerId: "owner-2")
+        ]))
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at)
+            VALUES ('receipt-asset', 'checksum', 0), ('other-asset', 'other-checksum', 0);
+            INSERT INTO uploaded_assets (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('receipt-asset', 'primary', 'photo.jpg', 'receipt-remote', 100);
+            """)
+        let candidates = hashRepository.verifyHashCacheBatch(
+            identifiers: ["receipt-asset", "other-asset"], ownerId: "owner-1"
+        )
+        XCTAssertEqual(candidates?.count, 1)
+        XCTAssertEqual(candidates?.first?.immichId, "receipt-remote")
+        XCTAssertEqual(candidates?.first?.serverICloudId, "cloud-new")
+    }
+
     func testCompletedNegativeMatchesAreNotRecheckedWithoutServerDelta() async {
         execute("""
             INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
