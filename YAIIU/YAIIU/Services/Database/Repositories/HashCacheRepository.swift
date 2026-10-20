@@ -864,6 +864,7 @@ final class HashCacheRepository {
             let unique = Array(Set(checksums))
             guard fullReset || !unique.isEmpty else { return true }
             guard self.connection.beginTransaction() else { return false }
+            var invalidatedCount = 0
 
             let batches: [[String]] = fullReset ? [[]] : stride(from: 0, to: unique.count, by: 200).map {
                 Array(unique[$0..<min($0 + 200, unique.count)])
@@ -893,6 +894,7 @@ final class HashCacheRepository {
                     }
                 }
                 let success = sqlite3_step(statement) == SQLITE_DONE
+                if success { invalidatedCount += Int(sqlite3_changes(self.connection.db)) }
                 sqlite3_finalize(statement)
                 guard success else {
                     self.connection.rollbackTransaction()
@@ -903,6 +905,10 @@ final class HashCacheRepository {
                 self.connection.rollbackTransaction()
                 return false
             }
+            logInfo(
+                "Hash verification invalidation: fullReset=\(fullReset), checksums=\(unique.count), invalidated=\(invalidatedCount)",
+                category: .hash
+            )
             return true
         }
     }
