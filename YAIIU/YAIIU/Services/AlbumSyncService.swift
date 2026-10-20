@@ -190,7 +190,7 @@ actor AlbumSyncService {
         let mappingKey = Self.mappingKey(serverURL: snapshot.externalURL, userId: user.id)
         let membershipsKey = Self.membershipKey(serverURL: snapshot.externalURL, userId: user.id)
 
-        let localAlbums = fetchLocalAlbums()
+        let localAlbums = autoreleasepool { fetchLocalAlbums() }
         guard !localAlbums.isEmpty else { return }
 
         let remoteAlbums = try await ImmichAPIService.shared.fetchOwnedAlbums(
@@ -254,7 +254,7 @@ actor AlbumSyncService {
                 }
 
                 guard let remoteAlbum else { continue }
-                let assets = PHAsset.fetchAssets(in: localAlbum, options: nil)
+                let assets = autoreleasepool { PHAsset.fetchAssets(in: localAlbum, options: nil) }
                 for start in stride(from: 0, to: assets.count, by: batchSize) {
                     try checkSession()
                     let localIdentifiers = autoreleasepool {

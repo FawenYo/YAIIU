@@ -3,7 +3,8 @@ import Photos
 
 /// Service responsible for synchronizing favorite status between the Photos library and Immich server.
 /// Detects changes in local favorite status and updates the server accordingly.
-class FavoriteSyncService {
+@MainActor
+final class FavoriteSyncService {
     static let shared = FavoriteSyncService()
     
     private let settingsManager = SettingsManager()
@@ -30,7 +31,7 @@ class FavoriteSyncService {
         logInfo("Starting favorite status sync", category: .sync)
         
         do {
-            let changes = try await detectFavoriteChanges()
+            let changes = await detectFavoriteChanges()
             
             if changes.isEmpty {
                 logDebug("No favorite status changes detected", category: .sync)
@@ -46,12 +47,12 @@ class FavoriteSyncService {
             // Update server and local database
             if !toFavorite.isEmpty {
                 try await updateServerFavorites(assetIds: toFavorite, isFavorite: true)
-                updateLocalFavoriteStatus(changes: changes.filter { $0.newFavorite })
+                await updateLocalFavoriteStatus(changes: changes.filter { $0.newFavorite })
             }
             
             if !toUnfavorite.isEmpty {
                 try await updateServerFavorites(assetIds: toUnfavorite, isFavorite: false)
-                updateLocalFavoriteStatus(changes: changes.filter { !$0.newFavorite })
+                await updateLocalFavoriteStatus(changes: changes.filter { !$0.newFavorite })
             }
             
             logInfo("Favorite sync completed: \(toFavorite.count) favorited, \(toUnfavorite.count) unfavorited", category: .sync)
@@ -62,50 +63,22 @@ class FavoriteSyncService {
     }
     
     /// Represents a detected change in favorite status.
-    struct FavoriteChange {
-        let localIdentifier: String
-        let immichId: String
-        let newFavorite: Bool
-    }
-    
-    /// Detects assets whose favorite status has changed since last sync.
-    private func detectFavoriteChanges() async throws -> [FavoriteChange] {
-        let uploadedAssets = DatabaseManager.shared.getUploadedAssetsFavoriteStatus()
-        
-        guard !uploadedAssets.isEmpty else {
-            return []
-        }
-        
-        // Fetch current favorite status from Photos library
-        let localIdentifiers = uploadedAssets.map { $0.localIdentifier }
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: localIdentifiers, options: nil)
-        
-        // Build a map of current favorite status
-        var currentFavorites: [String: Bool] = [:]
-        fetchResult.enumerateObjects { asset, _, _ in
-            currentFavorites[asset.localIdentifier] = asset.isFavorite
-        }
-        
-        // Find changes
-        var changes: [FavoriteChange] = []
-        for asset in uploadedAssets {
-            guard let currentFavorite = currentFavorites[asset.localIdentifier] else {
-                // Asset no longer exists in Photos library
-                continue
+    typealias FavoriteChange = FavoriteChangeDetector.Change
+
+    private func detectFavoriteChanges() async -> [FavoriteChange] {
+        await Task.detached(priority: .utility) {
+            let uploadedAssets = DatabaseManager.shared.getUploadedAssetsFavoriteStatus()
+            return FavoriteChangeDetector.detectChanges(in: uploadedAssets) { identifiers in
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+                var favorites: [String: Bool] = [:]
+                PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
+                    favorites[asset.localIdentifier] = asset.isFavorite
+                }
+                return favorites
             }
-            
-            if currentFavorite != asset.storedFavorite {
-                changes.append(FavoriteChange(
-                    localIdentifier: asset.localIdentifier,
-                    immichId: asset.immichId,
-                    newFavorite: currentFavorite
-                ))
-            }
-        }
-        
-        return changes
+        }.value
     }
-    
+
     /// Updates favorite status on the Immich server.
     private func updateServerFavorites(assetIds: [String], isFavorite: Bool) async throws {
         try await ImmichAPIService.shared.updateAssetsFavorite(
@@ -117,8 +90,10 @@ class FavoriteSyncService {
     }
     
     /// Updates local database with new favorite status.
-    private func updateLocalFavoriteStatus(changes: [FavoriteChange]) {
+    private func updateLocalFavoriteStatus(changes: [FavoriteChange]) async {
         let updates = changes.map { ($0.localIdentifier, $0.newFavorite) }
-        DatabaseManager.shared.batchUpdateAssetFavoriteStatus(updates: updates)
+        await Task.detached(priority: .utility) {
+            DatabaseManager.shared.batchUpdateAssetFavoriteStatus(updates: updates)
+        }.value
     }
 }

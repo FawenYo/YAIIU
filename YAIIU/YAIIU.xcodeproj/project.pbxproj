@@ -75,6 +75,12 @@
 		TS0000120000000000000001 /* ServerAssetSyncPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */; };
 		TS0000020000000000000001 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = TS0000050000000000000001 /* XCTest.framework */; };
 		UQ0000010000000000000001 /* UploadQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UQ0000020000000000000001 /* UploadQueueTests.swift */; };
+		SR0000010000000000000001 /* CoalescingRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = SR0000020000000000000001 /* CoalescingRefresh.swift */; };
+		FC0000010000000000000001 /* FavoriteChangeDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC0000020000000000000001 /* FavoriteChangeDetector.swift */; };
+		ST0000010000000000000001 /* CoalescingRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ST0000020000000000000001 /* CoalescingRefreshTests.swift */; };
+		FT0000010000000000000001 /* FavoriteChangeDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FT0000020000000000000001 /* FavoriteChangeDetectorTests.swift */; };
+		SC0000010000000000000001 /* PhotoLibraryStatusCount.swift in Sources */ = {isa = PBXBuildFile; fileRef = SC0000020000000000000001 /* PhotoLibraryStatusCount.swift */; };
+		CT0000010000000000000001 /* PhotoLibraryStatusCountTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CT0000020000000000000001 /* PhotoLibraryStatusCountTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -190,6 +196,12 @@
 		TS0000040000000000000001 /* YAIIUTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YAIIUTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		TS0000050000000000000001 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		UQ0000020000000000000001 /* UploadQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadQueueTests.swift; sourceTree = "<group>"; };
+		SR0000020000000000000001 /* CoalescingRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoalescingRefresh.swift; sourceTree = "<group>"; };
+		FC0000020000000000000001 /* FavoriteChangeDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteChangeDetector.swift; sourceTree = "<group>"; };
+		ST0000020000000000000001 /* CoalescingRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoalescingRefreshTests.swift; sourceTree = "<group>"; };
+		FT0000020000000000000001 /* FavoriteChangeDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteChangeDetectorTests.swift; sourceTree = "<group>"; };
+		SC0000020000000000000001 /* PhotoLibraryStatusCount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryStatusCount.swift; sourceTree = "<group>"; };
+		CT0000020000000000000001 /* PhotoLibraryStatusCountTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryStatusCountTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -302,6 +314,9 @@
 				NR0000020000000000000001 /* NetworkReachability.swift */,
 				2A0000100000000000000001 /* PhotoLibraryManager.swift */,
 				PE0000020000000000000001 /* PhotoLibraryEnumeration.swift */,
+				SC0000020000000000000001 /* PhotoLibraryStatusCount.swift */,
+				FC0000020000000000000001 /* FavoriteChangeDetector.swift */,
+				SR0000020000000000000001 /* CoalescingRefresh.swift */,
 				PF0000020000000000000001 /* PhotoGridFetchStorage.swift */,
 				PG0000020000000000000001 /* PhotoLibraryIndexGeneration.swift */,
 				2A0000140000000000000001 /* SettingsManager.swift */,
@@ -418,6 +433,9 @@
 				UQ0000020000000000000001 /* UploadQueueTests.swift */,
 				TS0000170000000000000001 /* HashPipelinePolicyTests.swift */,
 				PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */,
+				CT0000020000000000000001 /* PhotoLibraryStatusCountTests.swift */,
+				FT0000020000000000000001 /* FavoriteChangeDetectorTests.swift */,
+				ST0000020000000000000001 /* CoalescingRefreshTests.swift */,
 				PU0000020000000000000001 /* PhotoGridFetchStorageTests.swift */,
 				PV0000020000000000000001 /* PhotoLibraryIndexGenerationTests.swift */,
 				TZ0000040000000000000001 /* ImageTimezoneMetadataTests.swift */,
@@ -569,6 +587,9 @@
 				2A00000D0000000000000001 /* ImmichAPIService.swift in Sources */,
 				2A00000F0000000000000001 /* PhotoLibraryManager.swift in Sources */,
 				PE0000010000000000000001 /* PhotoLibraryEnumeration.swift in Sources */,
+				SC0000010000000000000001 /* PhotoLibraryStatusCount.swift in Sources */,
+				FC0000010000000000000001 /* FavoriteChangeDetector.swift in Sources */,
+				SR0000010000000000000001 /* CoalescingRefresh.swift in Sources */,
 				PF0000010000000000000001 /* PhotoGridFetchStorage.swift in Sources */,
 				PG0000010000000000000001 /* PhotoLibraryIndexGeneration.swift in Sources */,
 				2A0000110000000000000001 /* DatabaseManager.swift in Sources */,
@@ -635,6 +656,9 @@
 				UQ0000010000000000000001 /* UploadQueueTests.swift in Sources */,
 				TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */,
 				PT0000010000000000000001 /* PhotoLibraryEnumerationTests.swift in Sources */,
+				CT0000010000000000000001 /* PhotoLibraryStatusCountTests.swift in Sources */,
+				FT0000010000000000000001 /* FavoriteChangeDetectorTests.swift in Sources */,
+				ST0000010000000000000001 /* CoalescingRefreshTests.swift in Sources */,
 				PU0000010000000000000001 /* PhotoGridFetchStorageTests.swift in Sources */,
 				PV0000010000000000000001 /* PhotoLibraryIndexGenerationTests.swift in Sources */,
 				TZ0000030000000000000001 /* ImageTimezoneMetadataTests.swift in Sources */,

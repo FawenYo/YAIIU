@@ -115,13 +115,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// A pending full reload also carries through superseding notifications.
     private(set) var fullReloadGeneration: Int = 0
 
-    /// Local identifiers in fetch order, materialized once per library load so
-    /// callers can derive counts/filters without re-enumerating the lazy
-    /// PHFetchResult (which loads each PHAsset on demand and is very slow for
-    /// large libraries).
+    /// Local identifiers in fetch order, built on demand for indexed filters
+    /// and identity reconciliation. The default grid counts with bounded queries.
     @Published private(set) var orderedLocalIdentifiers: [String] = []
     
     private var identifierScanTask: Task<[String]?, Never>?
+    @MainActor private var identifierScanGeneration: Int?
+    @MainActor private var wantsIdentifierSnapshot = false
+    private var isFetchScheduled = false
     private var _fetchResult: PHFetchResult<PHAsset>?
     private let fetchResultLock = NSLock()
     private var albumFetchResult: PHFetchResult<PHAssetCollection>?
@@ -290,18 +291,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 return
             }
 
-            let scanTask = self.startIdentifierScan(for: updatedResult)
-            Task { [weak self] in
-                guard let identifiers = await scanTask.value else { return }
-                await MainActor.run { [weak self] in
-                    guard let self,
-                          self.assetFetchGeneration == generation,
-                          self.fetchResult === updatedResult else { return }
-                    self.orderedLocalIdentifiers = identifiers
-                    self.orderedIdentifiersGeneration = generation
-                    self.libraryRevision &+= 1
-                }
+            if self.wantsIdentifierSnapshot {
+                self.requestIdentifierSnapshot()
             }
+            self.libraryRevision &+= 1
         }
     }
 
@@ -411,9 +404,23 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Fetches assets lazily - only creates PHFetchResult without materializing PHAsset objects.
     /// PHFetchResult is a lazy collection that loads assets on-demand.
     func fetchAssets() {
+        fetchResultLock.lock()
+        guard !isFetchScheduled else {
+            fetchResultLock.unlock()
+            return
+        }
+        isFetchScheduled = true
+        fetchResultLock.unlock()
         Task {
+            defer { finishScheduledFetch() }
             await fetchAssetsAsync()
         }
+    }
+
+    private func finishScheduledFetch() {
+        fetchResultLock.lock()
+        isFetchScheduled = false
+        fetchResultLock.unlock()
     }
     
     /// Async version of fetchAssets for proper await support in pull-to-refresh.
@@ -433,7 +440,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
         indexGeneration.recordReload()
         assetFetchGeneration &+= 1
-        let generation = assetFetchGeneration
         orderedIdentifiersGeneration = nil
         orderedLocalIdentifiers = []
         fetchResultLock.lock()
@@ -443,27 +449,65 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         assetCount = result.count
         isLoading = false
 
-        // Build the full identifier list off the critical path. It is only needed for
-        // the "not uploaded" filter/count, not for the default grid, so publishing it
-        // after first paint keeps launch responsive.
-        let scanTask = startIdentifierScan(for: result)
-        let identifiers = await withTaskCancellationHandler {
-            await scanTask.value
-        } onCancel: {
-            scanTask.cancel()
+        // The default grid needs only the lazy fetch. Build full positions only
+        // after an indexed filter or detail reconciliation requests them.
+        if wantsIdentifierSnapshot {
+            requestIdentifierSnapshot()
         }
-        // A PhotoKit change may have replaced the fetch during enumeration.
-        // Never let a delayed snapshot overwrite a newer fetch generation.
-        guard !Task.isCancelled, let identifiers,
-              assetFetchGeneration == generation, fetchResult === result else { return }
-        orderedLocalIdentifiers = identifiers
-        orderedIdentifiersGeneration = generation
         libraryRevision &+= 1
 
         await triggerFavoriteSync()
         await AlbumSyncService.shared.syncIfEnabled()
     }
     
+    /// Detail can use its original valid positions immediately. Later library
+    /// changes must build an identity snapshot before reconciling moved assets.
+    @MainActor
+    func requireIdentifierSnapshotsForChanges() {
+        wantsIdentifierSnapshot = true
+    }
+
+    @MainActor
+    func requestIdentifierSnapshot() {
+        wantsIdentifierSnapshot = true
+        guard !isLoading, let result = fetchResult,
+              orderedIdentifiersGeneration != assetFetchGeneration,
+              identifierScanGeneration != assetFetchGeneration else { return }
+        let generation = assetFetchGeneration
+        identifierScanGeneration = generation
+        let scanTask = startIdentifierScan(for: result)
+        Task { [weak self] in
+            let identifiers = await scanTask.value
+            guard let self, self.assetFetchGeneration == generation,
+                  self.fetchResult === result else { return }
+            self.identifierScanGeneration = nil
+            guard let identifiers else { return }
+            self.orderedLocalIdentifiers = identifiers
+            self.orderedIdentifiersGeneration = generation
+            self.libraryRevision &+= 1
+        }
+    }
+
+    /// Count with short-lived fetches instead of filling the main grid fetch's
+    /// native object cache by visiting every asset just to render a badge.
+    static func notUploadedCount(
+        totalCount: Int, statuses: [String: PhotoSyncStatus], shouldStop: () -> Bool
+    ) -> Int? {
+        return PhotoLibraryStatusCount.notUploadedCount(
+            totalCount: totalCount, statuses: statuses, shouldStop: shouldStop
+        ) { identifiers in
+            let options = PHFetchOptions()
+            options.includeAssetSourceTypes = .typeUserLibrary
+            options.includeHiddenAssets = false
+            options.includeAllBurstAssets = false
+            options.wantsIncrementalChangeDetails = false
+            options.predicate = NSPredicate(format: "localIdentifier IN %@", identifiers)
+            // Use the same visibility rules as the main all-assets query.
+            // Reading count never materializes the matching PHAsset objects.
+            return PHAsset.fetchAssets(with: options).count
+        }
+    }
+
     @MainActor
     private func startIdentifierScan(for result: PHFetchResult<PHAsset>) -> Task<[String]?, Never> {
         identifierScanTask?.cancel()
