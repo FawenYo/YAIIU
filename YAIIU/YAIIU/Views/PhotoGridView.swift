@@ -1232,10 +1232,16 @@ struct PhotoGridView: View {
                     skipCount += batch.count
                 } catch {
                     logWarning("Failed to update iCloud ID batch: \(error.localizedDescription)", category: .api)
-                    // Keep transient failures retryable without letting a
-                    // view refresh send the same request concurrently.
-                    await MainActor.run {
-                        hashManager.pendingICloudIdUpdates.append(contentsOf: updates[batchStart..<min(batchStart + batchSize, updates.count)])
+                    // The hash check was committed before metadata upload.
+                    // A transient failure must persistently make these assets
+                    // discoverable by the next run, not just requeue in memory
+                    // (which the next processing start can otherwise clear).
+                    let identifiers = batch.map(\.localIdentifier)
+                    let restored = await Task.detached(priority: .utility) {
+                        DatabaseManager.shared.invalidateHashChecksForLocalIdentifiers(identifiers)
+                    }.value
+                    if !restored {
+                        logError("Could not persist metadata retry for \(batch.count) assets", category: .database)
                     }
                 }
             }

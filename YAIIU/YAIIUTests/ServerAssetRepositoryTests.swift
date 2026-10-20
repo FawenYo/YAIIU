@@ -281,6 +281,43 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(candidates?.first?.serverICloudId, "cloud-new")
     }
 
+    func testMetadataRetryInvalidatesOnlyRequestedLocalHashes() async {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('first', 'h1', 0, 10),
+                   ('second', 'h2', 0, 11),
+                   ('third', 'h3', 0, 12);
+            """)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers(["first", "third", "first"]))
+        XCTAssertEqual(Set(await uncheckedHashIds()), ["first", "third"])
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='second' AND checked_at=11;"), 1)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers([]))
+        XCTAssertEqual(Set(await uncheckedHashIds()), ["first", "third"])
+    }
+
+    func testMetadataRetrySpansSqliteParameterBatches() {
+        let identifiers = (0..<625).map { "retry-\($0)" }
+        connection.dbQueue.sync {
+            var statement: OpaquePointer?
+            XCTAssertEqual(sqlite3_prepare_v2(
+                connection.db,
+                "INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at) VALUES (?, ?, 0, 10);",
+                -1, &statement, nil
+            ), SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for id in identifiers {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_text(statement, 1, id, -1, transient)
+                sqlite3_bind_text(statement, 2, id, -1, transient)
+                XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+            }
+        }
+        XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers(identifiers))
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NULL;"), 625)
+    }
+
     func testCompletedNegativeMatchesAreNotRecheckedWithoutServerDelta() async {
         execute("""
             INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)

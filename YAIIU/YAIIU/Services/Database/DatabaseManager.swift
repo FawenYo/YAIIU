@@ -211,6 +211,11 @@ final class DatabaseManager {
         hashRepo.invalidateHashChecksForServerChanges(checksums: checksums, fullReset: fullReset)
     }
 
+    @discardableResult
+    func invalidateHashChecksForLocalIdentifiers(_ identifiers: [String]) -> Bool {
+        hashRepo.invalidateHashChecksForLocalIdentifiers(identifiers)
+    }
+
     func getMultiResourceHashesNotFullyOnServerAsync(completion: @escaping ([MultiResourceHashRecord]) -> Void) {
         hashRepo.getMultiResourceHashesNotFullyOnServerAsync(completion: completion)
     }

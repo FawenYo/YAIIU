@@ -400,7 +400,7 @@ class HashManager: ObservableObject {
     /// Consumers should read this after isProcessing becomes false and push updates to the server.
     /// The source checksum is carried so metadata PUTs (which replace the whole
     /// mobile-app value server-side) never drop it.
-    @Published var pendingICloudIdUpdates: [(immichId: String, iCloudId: String, sourceChecksum: String?)] = []
+    @Published var pendingICloudIdUpdates: [(localIdentifier: String, immichId: String, iCloudId: String, sourceChecksum: String?)] = []
     
     private var processingQueue: [String] = []
     private var isHashingActive = false
@@ -538,7 +538,17 @@ class HashManager: ObservableObject {
         shouldStop = false
         isProcessing = true
         iCloudIdMatchCount = 0
-        pendingICloudIdUpdates = []
+        // A stopped run can leave candidates published but not yet handed
+        // off to metadata sync. Do not silently discard their last chance
+        // to be discovered again when the next run starts.
+        if !pendingICloudIdUpdates.isEmpty {
+            let undelivered = pendingICloudIdUpdates.map(\.localIdentifier)
+            if DatabaseManager.shared.invalidateHashChecksForLocalIdentifiers(undelivered) {
+                pendingICloudIdUpdates = []
+            } else {
+                logWarning("Could not requeue pending metadata; preserving candidates for retry", category: .hash)
+            }
+        }
         statusMessage = "Preparing..."
         logInfo("Hash pipeline started: identifiers=\(identifiers.count)", category: .hash)
 
@@ -993,9 +1003,21 @@ class HashManager: ObservableObject {
                 await MainActor.run { self.finishProcessing(runID: runID) }
                 return
             }
+            // verifyHashCacheBatch has already committed checked_at.
+            // Cancellation or a superseding run must restore the full batch
+            // to unchecked unless metadata candidates are safely published.
+            var published = false
+            defer {
+                if !published {
+                    let restored = DatabaseManager.shared.invalidateHashChecksForLocalIdentifiers(ids)
+                    if !restored {
+                        logError("Could not restore abandoned cloud verification batch at offset \(start)", category: .database)
+                    }
+                }
+            }
             guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
 
-            var metadataUpdates: [(immichId: String, iCloudId: String, sourceChecksum: String?)] = []
+            var metadataUpdates: [(localIdentifier: String, immichId: String, iCloudId: String, sourceChecksum: String?)] = []
             if #available(iOS 16, *), !candidates.isEmpty {
                 let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(
                     forLocalIdentifiers: candidates.map(\.assetId)
@@ -1007,6 +1029,7 @@ class HashManager: ObservableObject {
                           candidate.serverICloudId != cloudId.stringValue,
                           queuedMetadata.insert(candidate.immichId).inserted else { continue }
                     metadataUpdates.append((
+                        localIdentifier: candidate.assetId,
                         immichId: candidate.immichId,
                         iCloudId: cloudId.stringValue,
                         sourceChecksum: candidate.sourceChecksum
@@ -1017,13 +1040,16 @@ class HashManager: ObservableObject {
 
             // Progress and published state change once per 400 assets rather
             // than once per asset; final status icons reload from SQLite.
-            await MainActor.run {
-                guard self.isCurrentRun(runID), !self.shouldStop else { return }
+            let didPublish = await MainActor.run { () -> Bool in
+                guard self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled else { return false }
                 self.pendingICloudIdUpdates.append(contentsOf: metadataUpdates)
                 self.processedAssetsCount = start + batch.count
                 self.processingProgress = Double(self.processedAssetsCount) / Double(validRecords.count)
                 self.statusMessage = "Checking cloud status (\(self.processedAssetsCount)/\(validRecords.count))..."
+                return true
             }
+            guard didPublish else { return }
+            published = true
         }
         logInfo(
             "Cloud verification completed: checked=\(validRecords.count), metadataQueued=\(queuedCount), "

@@ -913,6 +913,57 @@ final class HashCacheRepository {
         }
     }
 
+    /// Restore unchecked verification for metadata work that could not be
+    /// delivered. Batched updates keep one transaction and leave unrelated
+    /// asset statuses intact; the next normal pipeline can rediscover these IDs.
+    @discardableResult
+    func invalidateHashChecksForLocalIdentifiers(_ identifiers: [String]) -> Bool {
+        guard !identifiers.isEmpty else { return true }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self, self.connection.beginTransaction() else { return false }
+            let unique = Array(Set(identifiers))
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for start in stride(from: 0, to: unique.count, by: 300) {
+                let batch = unique[start..<min(start + 300, unique.count)]
+                let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                let sql = """
+                    UPDATE hash_cache SET checked_at = NULL
+                    WHERE checked_at IS NOT NULL AND asset_id IN (\(placeholders));
+                    """
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+                var didBind = true
+                for (index, identifier) in batch.enumerated() {
+                    if sqlite3_bind_text(
+                        statement, Int32(index + 1),
+                        (identifier as NSString).utf8String, -1, transient
+                    ) != SQLITE_OK {
+                        didBind = false
+                        break
+                    }
+                }
+                let success = didBind && sqlite3_step(statement) == SQLITE_DONE
+                sqlite3_finalize(statement)
+                guard success else {
+                    logError("Failed to invalidate metadata retry IDs: \(self.connection.lastErrorMessage)", category: .database)
+                    self.connection.rollbackTransaction()
+                    return false
+                }
+            }
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return false
+            }
+            logInfo("Hash checks requeued for undelivered metadata: assets=\(unique.count)", category: .hash)
+            return true
+        }
+    }
+
     func getMultiResourceHashesNotFullyOnServerAsync(completion: @escaping ([MultiResourceHashRecord]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
