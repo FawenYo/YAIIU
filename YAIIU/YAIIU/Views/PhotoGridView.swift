@@ -624,10 +624,13 @@ struct PhotoGridView: View {
             // A fresh PhotoKit index snapshot is now usable for this generation.
             // Hash status may not change at the same time, so don't depend on
             // syncStatusCache notifications to republish the filtered gallery.
-            guard currentFilter == .notUploaded,
-                  let generation,
+            guard let generation,
                   generation == photoLibraryManager.assetFetchGeneration else { return }
-            recomputeCounts()
+            if currentFilter == .notUploaded {
+                recomputeCounts()
+            } else if currentFilter == .favorites || currentFilter == .album {
+                refreshPhotoKitFilter()
+            }
         }
         .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
             // Coalesce PhotoKit notifications (including album membership edits).
@@ -640,9 +643,14 @@ struct PhotoGridView: View {
                 // should not remain selected. Only reconcile a finished
                 // identifier snapshot, never the transient empty one.
                 if isSelectionMode && !selectedAssets.isEmpty &&
-                   (currentFilter == .all || currentFilter == .notUploaded) &&
-                   photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration {
-                    selectedAssets.formIntersection(Set(photoLibraryManager.orderedLocalIdentifiers))
+                   (currentFilter == .all || currentFilter == .notUploaded) {
+                    if photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration {
+                        selectedAssets.formIntersection(Set(photoLibraryManager.orderedLocalIdentifiers))
+                    } else {
+                        // Selection identity must also survive deletions and
+                        // Limited Photos access changes while using the All grid.
+                        photoLibraryManager.requestIdentifierSnapshot()
+                    }
                 }
                 recomputeCounts()
                 if currentFilter == .favorites || currentFilter == .album {
@@ -1124,6 +1132,7 @@ struct PhotoGridView: View {
         guard photoLibraryManager.orderedIdentifiersGeneration == generation else {
             filteredIndicesGeneration = nil
             isFilterLoading = photoLibraryManager.assetCount > 0
+            photoLibraryManager.requestIdentifierSnapshot()
             return
         }
 
@@ -1243,6 +1252,12 @@ struct PhotoGridView: View {
         countComputeVersion += 1
         let version = countComputeVersion
 
+        if currentFilter != .all,
+           manager.orderedIdentifiersGeneration != manager.assetFetchGeneration {
+            manager.requestIdentifierSnapshot()
+            return
+        }
+
         // PhotoKit content changes do not change upload membership. Rebind the
         // cached positions when both their order and status map are unchanged.
         if manager.orderedIdentifiersGeneration == manager.assetFetchGeneration,
@@ -1264,12 +1279,27 @@ struct PhotoGridView: View {
         // Task { } inherits the caller's @MainActor isolation, regardless
         // of priority. Keep the full-library status scan off the UI thread.
         recomputeTask = Task.detached(priority: .utility) { [self] in
-            let (statusCache, identifiers, generation, snapshotGeneration, indexGeneration, statusGeneration) = await MainActor.run {
+            let (statusCache, identifiers, generation, snapshotGeneration, indexGeneration, statusGeneration, totalCount) = await MainActor.run {
                 (hash.syncStatusCache, manager.orderedLocalIdentifiers,
                  manager.assetFetchGeneration, manager.orderedIdentifiersGeneration,
-                 manager.assetIndexGeneration, self.syncStatusGeneration)
+                 manager.assetIndexGeneration, self.syncStatusGeneration, manager.assetCount)
             }
-            guard snapshotGeneration == generation, !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return }
+            if snapshotGeneration != generation {
+                guard let count = PhotoLibraryManager.notUploadedCount(
+                    totalCount: totalCount, statuses: statusCache, shouldStop: { Task.isCancelled }
+                ) else { return }
+                await MainActor.run {
+                    guard !Task.isCancelled, version == self.countComputeVersion,
+                          manager.assetFetchGeneration == generation,
+                          self.syncStatusGeneration == statusGeneration,
+                          manager.orderedIdentifiersGeneration != generation else { return }
+                    // A count does not certify cached positions. Indexed filters
+                    // wait for their own complete, matching-generation snapshot.
+                    self.cachedNotUploadedCount = count
+                }
+                return
+            }
 
             var notUploadedIndices: [Int] = []
             notUploadedIndices.reserveCapacity(identifiers.count / 4)

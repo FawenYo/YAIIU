@@ -822,12 +822,13 @@ struct PhotoDetailView: View {
 
     /// Filtered positions survive content-only updates, but stop navigation as
     /// soon as structural changes invalidate them. Unfiltered detail waits for
-    /// its identifier snapshot before navigating through a replacement fetch.
+    /// its identifier snapshot when structural changes move those positions.
     private var isNavigationIndexReady: Bool {
         if displayIndices != nil {
             return displayIndexGeneration == photoLibraryManager.assetIndexGeneration
         }
-        return photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration
+        return displayIndexGeneration == photoLibraryManager.assetIndexGeneration ||
+            photoLibraryManager.orderedIdentifiersGeneration == photoLibraryManager.assetFetchGeneration
     }
     
     private func resolveActualIndex(_ displayIndex: Int) -> Int {
@@ -895,6 +896,7 @@ struct PhotoDetailView: View {
         }
         .statusBar(hidden: true)
         .onAppear {
+            photoLibraryManager.requireIdentifierSnapshotsForChanges()
             loadAssetAtCurrentIndex()
         }
         .onDisappear {

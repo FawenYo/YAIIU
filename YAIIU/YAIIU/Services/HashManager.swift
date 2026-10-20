@@ -430,6 +430,17 @@ class HashManager: ObservableObject {
     )
     private let memoryPressureThrottle = HashMemoryPressureThrottle()
     private var memoryWarningObserver: NSObjectProtocol?
+
+    @MainActor
+    private lazy var statusRefresh = CoalescingRefresh<[String: PhotoSyncStatus]>(
+        load: { completion in
+            DatabaseManager.shared.getAllSyncStatusAsync(completion: completion)
+        },
+        publish: { [weak self] statusMap in
+            guard let self, !self.isProcessing else { return }
+            self.applyStatusSnapshot(statusMap)
+        }
+    )
     
     private init() {
         loadCachedStatus()
@@ -481,12 +492,15 @@ class HashManager: ObservableObject {
     }
     
     private func loadCachedStatus() {
-        DatabaseManager.shared.getAllSyncStatusAsync { [weak self] statusMap in
-            DispatchQueue.main.async {
-                guard let self, !self.isProcessing else { return }
-                self.syncStatusCache = statusMap
-            }
+        Task { @MainActor [weak self] in
+            self?.statusRefresh.refresh()
         }
+    }
+
+    @MainActor
+    private func applyStatusSnapshot(_ statusMap: [String: PhotoSyncStatus]) {
+        guard statusMap != syncStatusCache else { return }
+        syncStatusCache = statusMap
     }
     
     @MainActor
@@ -1147,15 +1161,13 @@ class HashManager: ObservableObject {
     
     @MainActor
     func refreshStatusCacheAsync() async {
-        let statusMap = await withCheckedContinuation { continuation in
-            DatabaseManager.shared.getAllSyncStatusAsync { statusMap in
-                continuation.resume(returning: statusMap)
+        await withCheckedContinuation { continuation in
+            statusRefresh.refresh { [self] statusMap in
+                // Explicit pull-to-refresh also applies the snapshot while a
+                // pipeline is active, preserving its existing await contract.
+                applyStatusSnapshot(statusMap)
+                continuation.resume()
             }
-        }
-        
-        // Batch update to reduce view invalidation overhead
-        if statusMap != self.syncStatusCache {
-            self.syncStatusCache = statusMap
         }
     }
     
