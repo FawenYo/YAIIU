@@ -31,6 +31,36 @@ final class ServerAssetRepositoryTests: XCTestCase {
         super.tearDown()
     }
 
+    func testUploadReceiptQueriesMatchIdentifierAndResourceType() {
+        execute("""
+            INSERT INTO uploaded_assets
+              (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('receipt-identifier-with-a-long-lived-value/L0/001', 'jpeg',
+                    'image.jpg', 'remote-receipt', 100);
+            """)
+        let identifier = "receipt-identifier-with-a-long-lived-value/L0/001"
+
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: identifier))
+        XCTAssertTrue(uploadRepository.isAssetUploaded(localIdentifier: identifier, resourceType: "jpeg"))
+        XCTAssertFalse(uploadRepository.isAssetUploaded(localIdentifier: identifier, resourceType: "raw"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "missing-receipt"))
+        XCTAssertEqual(uploadRepository.getUploadRecords(for: identifier).map(\.filename), ["image.jpg"])
+    }
+
+    func testDeletingUploadReceiptRemovesOnlyMatchingIdentifier() {
+        execute("""
+            INSERT INTO uploaded_assets
+              (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('receipt-to-delete-with-a-long-identifier/L0/001', 'jpeg', 'image.jpg', 'remote', 100),
+                   ('keep-this-receipt', 'jpeg', 'other.jpg', 'other-remote', 100);
+            """)
+
+        uploadRepository.deleteUploadRecord(for: "receipt-to-delete-with-a-long-identifier/L0/001")
+
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM uploaded_assets;"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM uploaded_assets WHERE asset_id = 'keep-this-receipt';"), 1)
+    }
+
     func testAssetUpsertWithoutICloudIdPreservesExistingValue() {
         XCTAssertTrue(repository.saveServerAssets([record(checksum: "old", iCloudId: "cloud-1")]))
 
@@ -237,15 +267,17 @@ final class ServerAssetRepositoryTests: XCTestCase {
 
     func testFullLibrarySnapshotPrunesEvenAlreadyCheckedOrphans() {
         execute("""
-            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
-            VALUES ('still-local', 'sha-a', 0, 100), ('photo-deleted', 'sha-b', 0, 100);
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at, asset_modification_date)
+            VALUES ('still-local', 'sha-a', 0, 100, 100), ('photo-deleted', 'sha-b', 0, 100, 100);
         """)
         uploadRepository.recordUploadedAsset(
             localIdentifier: "photo-deleted", resourceType: "primary",
             filename: "deleted.jpg", immichId: "remote-asset"
         )
         hashRepository.resetCacheForModifiedAssets(
-            snapshots: [PhotoAssetSnapshot(localIdentifier: "still-local", modificationDate: nil)],
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: "still-local", modificationDate: Date(timeIntervalSince1970: 100)
+            )],
             pruneOrphans: true
         )
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "photo-deleted"))
@@ -276,10 +308,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
 
     func testFullSnapshotPrunesMissingBackgroundQueueAndPreservesHiddenPhotos() {
         execute("""
-            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
-            VALUES ('visible', 'sha-visible', 0, 100),
-                   ('hidden', 'sha-hidden', 0, 100),
-                   ('deleted', 'sha-deleted', 0, 100);
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at, asset_modification_date)
+            VALUES ('visible', 'sha-visible', 0, 100, 100),
+                   ('hidden', 'sha-hidden', 0, 100, NULL),
+                   ('deleted', 'sha-deleted', 0, 100, NULL);
             INSERT INTO background_upload_queue (asset_id, enqueued_at)
             VALUES ('visible', 1), ('hidden', 1), ('deleted', 1), ('queue-only-deleted', 1);
             INSERT INTO upload_jobs (asset_id, resource_type, filename, status, created_at, updated_at)
@@ -288,7 +320,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
                    ('hidden', 'primary', 'hidden.jpg', 'pending', 0, 0);
         """)
         let fullSnapshots = [
-            PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: nil),
+            PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: Date(timeIntervalSince1970: 100)),
             PhotoAssetSnapshot(localIdentifier: "hidden", modificationDate: nil, isHidden: true)
         ]
         XCTAssertEqual(PhotoAssetSnapshot.visibleIdentifiers(in: fullSnapshots), ["visible"])

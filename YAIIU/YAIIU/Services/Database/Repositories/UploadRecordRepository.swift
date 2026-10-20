@@ -3,6 +3,8 @@ import SQLite3
 
 final class UploadRecordRepository {
     private let connection: SQLiteConnection
+    // Swift C-string bridges are valid only during the bind call.
+    private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     
     init(connection: SQLiteConnection = .shared) {
         self.connection = connection
@@ -28,8 +30,8 @@ final class UploadRecordRepository {
         var isUploaded = false
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, nil)
-            sqlite3_bind_text(statement, 2, resourceType, -1, nil)
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, Self.transient)
+            sqlite3_bind_text(statement, 2, resourceType, -1, Self.transient)
             
             if sqlite3_step(statement) == SQLITE_ROW {
                 isUploaded = sqlite3_column_int(statement, 0) > 0
@@ -58,7 +60,7 @@ final class UploadRecordRepository {
         var isUploaded = false
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, nil)
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, Self.transient)
             
             if sqlite3_step(statement) == SQLITE_ROW {
                 isUploaded = sqlite3_column_int(statement, 0) > 0
@@ -115,10 +117,10 @@ final class UploadRecordRepository {
         var statement: OpaquePointer?
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, (localIdentifier as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(statement, 2, (resourceType as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(statement, 3, (filename as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(statement, 4, (immichId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, Self.transient)
+            sqlite3_bind_text(statement, 2, resourceType, -1, Self.transient)
+            sqlite3_bind_text(statement, 3, filename, -1, Self.transient)
+            sqlite3_bind_text(statement, 4, immichId, -1, Self.transient)
             sqlite3_bind_int64(statement, 5, fileSize)
             sqlite3_bind_int(statement, 6, isDuplicate ? 1 : 0)
             sqlite3_bind_int(statement, 7, isFavorite ? 1 : 0)
@@ -224,7 +226,7 @@ final class UploadRecordRepository {
         var records: [UploadRecord] = []
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, nil)
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, Self.transient)
             
             while sqlite3_step(statement) == SQLITE_ROW {
                 let uploadedAt = sqlite3_column_double(statement, 7)
@@ -262,7 +264,7 @@ final class UploadRecordRepository {
         var statement: OpaquePointer?
         
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
-            sqlite3_bind_text(statement, 1, localIdentifier, -1, nil)
+            sqlite3_bind_text(statement, 1, localIdentifier, -1, Self.transient)
             sqlite3_step(statement)
         }
         
@@ -519,8 +521,8 @@ final class UploadRecordRepository {
                 defer { sqlite3_finalize(statement) }
 
                 for (assetId, immichId) in mappings {
-                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
-                    sqlite3_bind_text(statement, 2, (assetId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 1, immichId, -1, Self.transient)
+                    sqlite3_bind_text(statement, 2, assetId, -1, Self.transient)
                     if sqlite3_step(statement) != SQLITE_DONE {
                         logError("Failed to update immich_id for asset \(assetId): \(self.connection.lastErrorMessage)", category: .database)
                     }

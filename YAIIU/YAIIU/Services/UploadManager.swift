@@ -89,7 +89,7 @@ private struct UploadPreparation: @unchecked Sendable {
     let latitude: Double?
     let longitude: Double?
 }
-private struct PreparedUploadQueue: @unchecked Sendable {
+struct PreparedUploadQueue: @unchecked Sendable {
     let entries: [(asset: PHAsset, filename: String, hasRAW: Bool, resourceCount: Int)]
     let skippedCount: Int
 }
@@ -211,17 +211,20 @@ class UploadManager: ObservableObject {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             var entries = [(asset: PHAsset, filename: String, hasRAW: Bool, resourceCount: Int)]()
+            entries.reserveCapacity(assets.count)
             var skippedCount = 0
 
             for asset in assets {
-                guard !queuedIdentifiers.contains(asset.localIdentifier) else {
-                    skippedCount += 1
-                    continue
+                autoreleasepool {
+                    guard !queuedIdentifiers.contains(asset.localIdentifier) else {
+                        skippedCount += 1
+                        return
+                    }
+                    let resources = PhotoLibraryManager.shared.getUploadableResources(for: asset)
+                    let hasRAW = resources.contains { PhotoLibraryManager.shared.isRAWResource($0) }
+                    let filename = resources.first.map { $0.resolvedFilename() } ?? "unknown"
+                    entries.append((asset, filename, hasRAW, resources.count))
                 }
-                let resources = PhotoLibraryManager.shared.getUploadableResources(for: asset)
-                let hasRAW = resources.contains { PhotoLibraryManager.shared.isRAWResource($0) }
-                let filename = resources.first.map { $0.resolvedFilename() } ?? "unknown"
-                entries.append((asset, filename, hasRAW, resources.count))
             }
             // Diagnostic only: batch database reads and cap per-asset disk logs
             // so Select All does not delay queue creation for thousands of assets.
@@ -249,29 +252,47 @@ class UploadManager: ObservableObject {
             let prepared = PreparedUploadQueue(entries: entries, skippedCount: skippedCount)
 
             await MainActor.run {
-                var duplicateCount = 0
-                for entry in prepared.entries {
-                    guard !self.uploadQueue.contains(where: {
-                        $0.localIdentifier == entry.asset.localIdentifier && $0.status != .completed
-                    }) else {
-                        duplicateCount += 1
-                        continue
-                    }
-
-                    let item = UploadItem(asset: entry.asset, filename: entry.filename, hasRAW: entry.hasRAW)
-                    item.totalResources = entry.resourceCount
-                    self.uploadQueue.append(item)
-                }
+                let addedCount = self.appendPreparedUploads(prepared)
 
                 logInfo(
-                    "Upload queue updated: added \(prepared.entries.count - duplicateCount), skipped \(prepared.skippedCount + duplicateCount), total \(self.uploadQueue.count)",
+                    "Upload queue updated: added \(addedCount), skipped \(prepared.skippedCount + prepared.entries.count - addedCount), total \(self.uploadQueue.count)",
                     category: .upload
                 )
-                if !self.isUploading, prepared.entries.count > duplicateCount {
+                if !self.isUploading, addedCount > 0 {
                     self.startUpload()
                 }
             }
         }
+    }
+
+    /// Recheck the current queue after background preparation, including items
+    /// committed by another preparation task in the meantime.
+    @discardableResult
+    func appendPreparedUploads(_ prepared: PreparedUploadQueue) -> Int {
+        var queuedIdentifiers = Set(
+            uploadQueue.lazy.filter { $0.status != .completed }.map(\.localIdentifier)
+        )
+        var newItems: [UploadItem] = []
+        newItems.reserveCapacity(prepared.entries.count)
+
+        for entry in prepared.entries {
+            autoreleasepool {
+                // PHAsset synthesizes an Objective-C string for this property.
+                // Read it once per entry, never inside a scan of the queue.
+                let identifier = entry.asset.localIdentifier
+                guard queuedIdentifiers.insert(identifier).inserted else { return }
+                let item = UploadItem(asset: entry.asset, filename: entry.filename, hasRAW: entry.hasRAW)
+                item.totalResources = entry.resourceCount
+                newItems.append(item)
+            }
+        }
+
+        // Publish only the final array; per-item mutations repeatedly copy and
+        // notify observers of an increasingly large @Published collection.
+        if !newItems.isEmpty {
+            uploadQueue.append(contentsOf: newItems)
+        }
+        return newItems.count
     }
     
     func startUpload() {
