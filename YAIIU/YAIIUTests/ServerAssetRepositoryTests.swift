@@ -281,6 +281,35 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(candidates?.first?.serverICloudId, "cloud-new")
     }
 
+    func testBatchMetadataCandidatePrefersLivePhotoImageOverVideoReceipt() {
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "live-image", checksum: "image-hash",
+                              iCloudId: "image-cloud", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "live-video", checksum: "video-hash",
+                              iCloudId: "video-cloud", ownerId: "owner-1")
+        ]))
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at)
+            VALUES ('live-photo', 'image-hash', 0),
+                   ('video-only', 'video-hash', 0);
+            INSERT INTO uploaded_assets
+                (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('live-photo', 'jpeg', 'image.heic', 'live-image', 100),
+                   ('live-photo', 'video', 'image.mov', 'live-video', 101),
+                   ('video-only', 'video', 'standalone.mov', 'live-video', 102);
+            """)
+        let candidates = hashRepository.verifyHashCacheBatch(
+            identifiers: ["live-photo", "video-only"], ownerId: "owner-1"
+        )
+        XCTAssertEqual(candidates?.count, 2)
+        let live = candidates?.first(where: { $0.assetId == "live-photo" })
+        XCTAssertEqual(live?.immichId, "live-image")
+        XCTAssertEqual(live?.serverICloudId, "image-cloud")
+        let video = candidates?.first(where: { $0.assetId == "video-only" })
+        XCTAssertEqual(video?.immichId, "live-video")
+        XCTAssertEqual(video?.serverICloudId, "video-cloud")
+    }
+
     func testMetadataRetryInvalidatesOnlyRequestedLocalHashes() async {
         execute("""
             INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)

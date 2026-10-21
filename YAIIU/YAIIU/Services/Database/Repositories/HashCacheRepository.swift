@@ -618,7 +618,11 @@ final class HashCacheRepository {
                     JOIN server_assets_cache s ON s.immich_id = u.immich_id
                     WHERE h.asset_id IN (\(placeholders))
                       AND h.is_on_server = 1 AND s.owner_id = ?
-                    ORDER BY CASE WHEN u.resource_type = 'raw' THEN 0 ELSE 1 END;
+                    -- collect() keeps the last match per asset. Companion RAW
+                    -- and Live Photo video receipts must come before the main
+                    -- image receipt, so the primary image wins deterministically.
+                    ORDER BY CASE WHEN u.resource_type IN ('raw', 'video') THEN 0 ELSE 1 END,
+                             u.id ASC;
                     """
                 guard collect(sourceMatches), collect(checksumMatches), collect(receiptMatches) else {
                     self.connection.rollbackTransaction()
