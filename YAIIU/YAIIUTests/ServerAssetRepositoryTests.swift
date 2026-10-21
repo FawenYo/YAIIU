@@ -1451,15 +1451,15 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: Data([2])
         )
 
-        XCTAssertEqual(summary?.retainedVersions, 1)
-        XCTAssertEqual(summary?.invalidatedVersions, 3)
+        XCTAssertEqual(summary?.retainedVersions, 0)
+        XCTAssertEqual(summary?.invalidatedVersions, 4)
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "edited"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "edited"))
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "legacy"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "legacy"))
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "missing-date"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "missing-date"))
-        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
         for id in ids {
             XCTAssertTrue(queuedIds().contains(id))
         }
@@ -1545,6 +1545,57 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'legacy';"), 1)
         XCTAssertNil(background.loadChangeToken())
         XCTAssertFalse(queuedIds().contains("legacy"))
+    }
+
+    func testBackgroundAdvancesTokenWhenUpdatedAssetIsAlreadyGone() {
+        let id = "updated-then-deleted"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-old",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100),
+            resourceFingerprint: "resource-v1"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg",
+            filename: "image.jpg", immichId: "remote"
+        )
+        execute("INSERT INTO background_upload_queue(asset_id, enqueued_at) VALUES ('updated-then-deleted', 1);")
+
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
+            updatedAssetModificationDates: [:],
+            updatedAssetResourceFingerprints: [:],
+            tokenData: Data([7])
+        )
+
+        XCTAssertNotNil(summary)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertFalse(queuedIds().contains(id))
+        XCTAssertEqual(background.loadChangeToken(), Data([7]))
+    }
+
+    func testForegroundPendingAssetWithRecoveredFingerprintClearsPending() {
+        let id = "pending-resource-recovered"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-old",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100),
+            resourceFingerprint: "resource-v1"
+        )
+        execute("INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('pending-resource-recovered');")
+
+        hashRepository.reconcileForegroundPendingAssets(snapshots: [
+            PhotoAssetSnapshot(
+                localIdentifier: id,
+                modificationDate: Date(timeIntervalSince1970: 120),
+                resourceFingerprint: "resource-v1"
+            )
+        ])
+
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
     }
 
     private func sqlCount(_ sql: String) -> Int {

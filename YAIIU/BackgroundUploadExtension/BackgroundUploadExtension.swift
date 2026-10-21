@@ -667,6 +667,7 @@ final class BackgroundUploadExtensionCore {
                 // Fetch current versions without downloading original resources.
                 var modificationDates: [String: Date] = [:]
                 var resourceFingerprints: [String: String] = [:]
+                var resolvedUpdatedAssetIds = Set<String>()
                 if !updated.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
@@ -674,6 +675,7 @@ final class BackgroundUploadExtensionCore {
                         withLocalIdentifiers: Array(updated), options: options
                     )
                     assets.enumerateObjects { asset, _, _ in
+                        resolvedUpdatedAssetIds.insert(asset.localIdentifier)
                         if let date = asset.modificationDate {
                             modificationDates[asset.localIdentifier] = date
                         }
@@ -690,6 +692,7 @@ final class BackgroundUploadExtensionCore {
                     deletedAssetIds: deleted,
                     updatedAssetModificationDates: modificationDates,
                     updatedAssetResourceFingerprints: resourceFingerprints,
+                    resolvedUpdatedAssetIds: resolvedUpdatedAssetIds,
                     tokenData: nextTokenData
                 ) else {
                     throw NSError(
@@ -759,6 +762,7 @@ final class BackgroundUploadExtensionCore {
         var foundIds = Set<String>()
         var pending = [PHAssetResource]()
         var stoppedEarly = false
+        var hasResourceAvailabilityUnknown = false
         let deadline = Date().addingTimeInterval(discoveryTimeBudget)
 
         fetchResult.enumerateObjects { asset, _, stop in
@@ -780,8 +784,9 @@ final class BackgroundUploadExtensionCore {
                 return
             }
 
-            let resources = PHAssetResource.assetResources(for: asset).filter(self.shouldUpload)
-            let resourceAvailabilityUnknown = resources.isEmpty
+            let allResources = PHAssetResource.assetResources(for: asset)
+            let resources = allResources.filter(self.shouldUpload)
+            let resourceAvailabilityUnknown = allResources.isEmpty
             var assetHasOutstandingWork = false
 
             for resource in resources {
@@ -815,6 +820,7 @@ final class BackgroundUploadExtensionCore {
                 self.database.removeQueuedAsset(asset.localIdentifier)
             }
             if resourceAvailabilityUnknown {
+                hasResourceAvailabilityUnknown = true
                 self.logDebug(
                     "Delta discovery retained queued asset without uploadable resources: asset=\(asset.localIdentifier)"
                 )
@@ -844,6 +850,7 @@ final class BackgroundUploadExtensionCore {
             // Unresolved rows remain pending until Photos can resolve them or emits an
             // explicit deletion change.
             complete: !stoppedEarly && !hasMoreQueuedAssets && !hasUnresolvedAssets
+                && !hasResourceAvailabilityUnknown
         )
     }
 

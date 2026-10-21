@@ -792,12 +792,20 @@ final class BackgroundUploadDatabase {
         deletedAssetIds: Set<String>,
         updatedAssetModificationDates: [String: Date],
         updatedAssetResourceFingerprints: [String: String] = [:],
+        resolvedUpdatedAssetIds: Set<String> = [],
         tokenData: Data
     ) -> PhotoAssetChangeCommitSummary? {
         queue.sync {
             guard let db else { return nil }
+            let inferredResolvedUpdatedAssetIds = resolvedUpdatedAssetIds.isEmpty
+                ? Set(updatedAssetModificationDates.keys).union(updatedAssetResourceFingerprints.keys)
+                : resolvedUpdatedAssetIds
+            let permanentlyUnresolvableUpdatedAssetIds = updatedAssetIds
+                .subtracting(deletedAssetIds)
+                .subtracting(inferredResolvedUpdatedAssetIds)
             let unresolvedUpdatedAssetIds = updatedAssetIds
                 .subtracting(deletedAssetIds)
+                .subtracting(permanentlyUnresolvableUpdatedAssetIds)
                 .subtracting(Set(updatedAssetResourceFingerprints.keys))
             // Do not advance the PhotoKit cursor until every updated asset has
             // resource evidence. A missing fingerprint usually means an iCloud
@@ -825,7 +833,8 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(insertStmt) }
-            for assetId in insertedAssetIds.union(updatedAssetIds) {
+            let effectiveDeletedAssetIds = deletedAssetIds.union(permanentlyUnresolvableUpdatedAssetIds)
+            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(effectiveDeletedAssetIds) {
                 sqlite3_reset(insertStmt)
                 sqlite3_clear_bindings(insertStmt)
                 guard sqlite3_bind_text(insertStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -839,7 +848,7 @@ final class BackgroundUploadDatabase {
             // Compare resource metadata inside same transaction as cache
             // invalidation and cursor advancement. Missing resource evidence
             // rejects this checkpoint; legacy rows invalidate when evidence exists.
-            var invalidatedUpdatedIds = Set<String>()
+            var invalidatedUpdatedIds = permanentlyUnresolvableUpdatedAssetIds
             if !updatedAssetIds.isEmpty {
                 let sql = "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1"
                 var versionStmt: OpaquePointer?
@@ -847,7 +856,6 @@ final class BackgroundUploadDatabase {
                     defer { sqlite3_finalize(versionStmt) }
 
                     for assetId in updatedAssetIds {
-                        let currentFingerprint = updatedAssetResourceFingerprints[assetId]
                         sqlite3_reset(versionStmt)
                         sqlite3_clear_bindings(versionStmt)
                         guard sqlite3_bind_text(versionStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
@@ -875,7 +883,11 @@ final class BackgroundUploadDatabase {
                                     ) else { return nil }
                                 }
                             }
-                        } else if result != SQLITE_DONE {
+                        } else if result == SQLITE_DONE {
+                            // A background-only receipt can exist without a
+                            // hash_cache row. Any update invalidates that receipt.
+                            invalidatedUpdatedIds.insert(assetId)
+                        } else {
                             return nil
                         }
                     }
@@ -955,7 +967,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(foregroundStmt) }
-            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(deletedAssetIds) {
+            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(effectiveDeletedAssetIds) {
                 sqlite3_reset(foregroundStmt)
                 sqlite3_clear_bindings(foregroundStmt)
                 guard sqlite3_bind_text(foregroundStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -969,7 +981,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(foregroundDeleteStmt) }
-            for assetId in deletedAssetIds {
+            for assetId in effectiveDeletedAssetIds {
                 sqlite3_reset(foregroundDeleteStmt)
                 sqlite3_clear_bindings(foregroundDeleteStmt)
                 guard sqlite3_bind_text(foregroundDeleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -983,7 +995,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(deleteStmt) }
-            for assetId in deletedAssetIds {
+            for assetId in effectiveDeletedAssetIds {
                 sqlite3_reset(deleteStmt)
                 sqlite3_clear_bindings(deleteStmt)
                 guard sqlite3_bind_text(deleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
