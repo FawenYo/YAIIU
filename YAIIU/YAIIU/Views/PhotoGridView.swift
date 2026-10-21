@@ -726,12 +726,10 @@ struct PhotoGridView: View {
                     .scaleEffect(0.7)
                     .padding(.vertical, 2)
 
-                if let compactStatus = getCompactProcessingStatusText() {
-                    Text(compactStatus)
-                        .font(.system(size: 12).monospacedDigit())
-                        .foregroundColor(.primary)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
+                Text(getCompactProcessingStatusText())
+                    .font(.system(size: 12).monospacedDigit())
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .fixedSize(horizontal: true, vertical: false)
             .accessibilityLabel(getProcessingStatusText())
@@ -740,46 +738,41 @@ struct PhotoGridView: View {
         }
     }
 
-    private func getCompactProcessingStatusText() -> String? {
+    private func getCompactProcessingStatusText() -> String {
         switch processingStage {
         case let .analyzing(current, total):
-            return current > 0 && total > 0 ? "\(current)/\(total)" : nil
+            return current > 0 && total > 0
+                ? "\(current)/\(total)"
+                : L10n.PhotoGrid.processingPreparing
         case let .checking(current, total):
-            return current > 0 && total > 0 ? "\(current)/\(total)" : nil
+            return current > 0 && total > 0
+                ? "\(current)/\(total)"
+                : L10n.PhotoGrid.processingPreparing
         default:
-            return nil
+            return L10n.PhotoGrid.processingPreparing
         }
     }
     
     private func getProcessingStatusText() -> String {
-        let stage = PhotoGridProcessingStage.resolve(
-            statusMessage: hashManager.statusMessage,
-            processed: hashManager.processedAssetsCount,
-            total: hashManager.totalAssetsToProcess,
-            isSyncing: isSyncing,
-            foregroundWorkPreparing: foregroundWorkPreparing
-        )
-        switch stage {
-        case .syncingServer:
-            return L10n.PhotoGrid.processingSyncingServer
-        case .readingPhotoLibrary:
-            if let progress = photoLibraryManager.foregroundBaselineProgress {
-                return L10n.PhotoGrid.processingBaseline(progress.completed, progress.total)
-            }
-            return L10n.PhotoGrid.processingReadingPhotoLibrary
-        case .preparingComparison:
-            return L10n.PhotoGrid.processingPreparingComparison
+        switch processingStage {
         case let .analyzing(current, total):
             return total > 0 && current > 0
                 ? "\(current)/\(total)"
-                : L10n.PhotoGrid.processingPreparingComparison
+                : L10n.PhotoGrid.processingPreparing
         case let .checking(current, total):
             return total > 0 && current > 0
                 ? L10n.PhotoGrid.processingComparing(current, total)
-                : L10n.PhotoGrid.processingChecking
-        case .defaultStatus:
-            return L10n.PhotoGrid.processingWorking
+                : L10n.PhotoGrid.processingPreparing
+        default:
+            return L10n.PhotoGrid.processingPreparing
         }
+    }
+
+    private func getProcessingDetailText() -> String {
+        if let progress = photoLibraryManager.foregroundBaselineProgress {
+            return L10n.PhotoGrid.processingBaseline(progress.completed, progress.total)
+        }
+        return L10n.PhotoGrid.processingReadingPhotoLibrary
     }
 
     private var processingStage: PhotoGridProcessingStage {
@@ -794,7 +787,8 @@ struct PhotoGridView: View {
 
     @ViewBuilder
     private var processingScreen: some View {
-        if hashManager.isProcessing && processingStage.showsDedicatedScreen {
+        if hashManager.isProcessing,
+           photoLibraryManager.foregroundBaselineProgress != nil {
             VStack(spacing: 20) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 44))
@@ -803,7 +797,7 @@ struct PhotoGridView: View {
                 Text(L10n.PhotoGrid.processingTitle)
                     .font(.title3.weight(.semibold))
 
-                Text(getProcessingStatusText())
+                Text(getProcessingDetailText())
                     .font(.headline)
                     .foregroundStyle(.secondary)
 
@@ -827,7 +821,7 @@ struct PhotoGridView: View {
             .background(Color(.systemBackground).ignoresSafeArea())
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
-                "\(L10n.PhotoGrid.processingTitle), \(getProcessingStatusText()), \(L10n.PhotoGrid.processingWaitingDetail)"
+                "\(L10n.PhotoGrid.processingTitle), \(getProcessingDetailText()), \(L10n.PhotoGrid.processingWaitingDetail)"
             )
             .transition(.opacity)
             .zIndex(2)
