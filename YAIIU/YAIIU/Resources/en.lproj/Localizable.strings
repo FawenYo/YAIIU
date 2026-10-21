@@ -116,6 +116,13 @@
 "photoGrid.confirm.cancel" = "Cancel";
 "photoGrid.confirm.upload" = "Upload";
 "photoGrid.processing.preparing" = "Preparing";
+"photoGrid.processing.syncingServer" = "Syncing server data…";
+"photoGrid.processing.readingPhotoLibrary" = "Reading photo library changes…";
+"photoGrid.processing.preparingComparison" = "Preparing photo comparison…";
+"photoGrid.processing.title" = "Preparing photos";
+"photoGrid.processing.waitingDetail" = "Photo data is being processed. The app will continue automatically.";
+"photoGrid.processing.working" = "Processing photos…";
+"photoGrid.processing.baseline" = "Building photo metadata index %d/%d";
 "photoGrid.processing.comparing" = "Comparing %d/%d";
 "photoGrid.processing.checking" = "Checking";
 "photoGrid.processing.default" = "...";

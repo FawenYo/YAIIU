@@ -352,15 +352,16 @@ final class BackgroundUploadExtensionCore {
                 logWarning("Could not resolve identity for completed job \(job.localIdentifier); acknowledging without recording")
             }
 
-            let currentVersionSucceeded: Bool
+            let currentAsset: PHAsset?
             if succeeded, let identity {
-                currentVersionSucceeded = jobMatchesCurrentAssetState(job, identity: identity)
-                if !currentVersionSucceeded {
+                currentAsset = currentAssetIfJobMatches(job, identity: identity)
+                if currentAsset == nil {
                     logWarning("Completed job \(job.localIdentifier) targets an older asset version; acknowledging without recording")
                 }
             } else {
-                currentVersionSucceeded = false
+                currentAsset = nil
             }
+            let currentVersionSucceeded = currentAsset != nil
 
             // Capture response data before acknowledging; acknowledgement removes the
             // job from PhotoKit tracking and its fields may become unavailable after.
@@ -376,9 +377,8 @@ final class BackgroundUploadExtensionCore {
             // Persist a successful upload before releasing the PhotoKit job; the write
             // is idempotent, while a termination between commit and record would lose
             // the upload's durable record.
-            if currentVersionSucceeded, let identity {
-                let resourceFingerprint = fetchAsset(identifier: identity.assetLocalIdentifier)
-                    .flatMap(PhotoAssetResourceFingerprint.make)
+            if currentVersionSucceeded, let identity, let currentAsset {
+                let resourceFingerprint = PhotoAssetResourceFingerprint.make(for: currentAsset)
                 database.recordUploadedAsset(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
@@ -1190,13 +1190,13 @@ final class BackgroundUploadExtensionCore {
         return exists
     }
 
-    private func jobMatchesCurrentAssetState(
+    private func currentAssetIfJobMatches(
         _ job: PHAssetResourceUploadJob,
         identity: JobIdentity
-    ) -> Bool {
+    ) -> PHAsset? {
         guard jobTargetsCurrentDestination(job),
               let asset = fetchAsset(identifier: identity.assetLocalIdentifier) else {
-            return false
+            return nil
         }
 
         // Reject unversioned legacy jobs conservatively: their existing
@@ -1206,12 +1206,12 @@ final class BackgroundUploadExtensionCore {
             job.destination.value(forHTTPHeaderField: "X-YAIIU-Asset-Version"),
             currentDate: asset.modificationDate
         ) else {
-            return false
+            return nil
         }
 
         if let value = job.destination.value(forHTTPHeaderField: "X-Is-Favorite"),
            value != (asset.isFavorite ? "true" : "false") {
-            return false
+            return nil
         }
 
         if let latitude = job.destination.value(forHTTPHeaderField: "X-Latitude"),
@@ -1221,14 +1221,14 @@ final class BackgroundUploadExtensionCore {
                   let location = asset.location,
                   abs(oldLat - location.coordinate.latitude) < 0.0000001,
                   abs(oldLong - location.coordinate.longitude) < 0.0000001 else {
-                return false
+                return nil
             }
         } else if asset.location != nil {
             // The current asset gained location metadata after this job was created.
-            return false
+            return nil
         }
 
-        return true
+        return asset
     }
 
     private func uploadableResource(for job: PHAssetResourceUploadJob) -> PHAssetResource? {

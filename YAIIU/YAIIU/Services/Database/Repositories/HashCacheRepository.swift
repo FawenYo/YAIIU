@@ -328,6 +328,60 @@ final class HashCacheRepository {
             defer { sqlite3_finalize(statement) }
             var written = 0
             for update in updates {
+                var existingStatement: OpaquePointer?
+                guard sqlite3_prepare_v2(
+                    self.connection.db,
+                    "SELECT asset_modification_date, asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? AND sha1_hash = ? LIMIT 1;",
+                    -1,
+                    &existingStatement,
+                    nil
+                ) == SQLITE_OK else {
+                    sqlite3_finalize(existingStatement)
+                    logError("Could not inspect PhotoKit baseline row", category: .database)
+                    return 0
+                }
+                sqlite3_bind_text(existingStatement, 1, (update.localIdentifier as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(existingStatement, 2, (update.sha1Hash as NSString).utf8String, -1, nil)
+                let existingResult = sqlite3_step(existingStatement)
+                let storedDate: Date? = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 0) != SQLITE_NULL
+                    ? Date(timeIntervalSince1970: sqlite3_column_double(existingStatement, 0))
+                    : nil
+                let fingerprintMissing = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 1) == SQLITE_NULL
+                sqlite3_finalize(existingStatement)
+
+                // A legacy row with a previous PhotoKit date has version evidence,
+                // but no resource fingerprint. Do not stamp current metadata onto
+                // an edited asset; invalidate and let the normal hash pipeline
+                // rebuild a trusted row when dates disagree or current date is absent.
+                if fingerprintMissing,
+                   storedDate != nil,
+                   storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970 {
+                    for sql in [
+                        "DELETE FROM hash_cache WHERE asset_id = ? AND sha1_hash = ?;",
+                        "DELETE FROM uploaded_assets WHERE asset_id = ?;",
+                        "DELETE FROM upload_jobs WHERE asset_id = ? AND status = 'completed';"
+                    ] {
+                        var invalidationStatement: OpaquePointer?
+                        guard sqlite3_prepare_v2(self.connection.db, sql, -1, &invalidationStatement, nil) == SQLITE_OK else {
+                            sqlite3_finalize(invalidationStatement)
+                            logError("Could not prepare PhotoKit baseline invalidation", category: .database)
+                            return 0
+                        }
+                        sqlite3_bind_text(invalidationStatement, 1, (update.localIdentifier as NSString).utf8String, -1, nil)
+                        if sql.contains("sha1_hash") {
+                            sqlite3_bind_text(invalidationStatement, 2, (update.sha1Hash as NSString).utf8String, -1, nil)
+                        }
+                        guard sqlite3_step(invalidationStatement) == SQLITE_DONE else {
+                            sqlite3_finalize(invalidationStatement)
+                            logError("PhotoKit baseline invalidation failed", category: .database)
+                            return 0
+                        }
+                        sqlite3_finalize(invalidationStatement)
+                    }
+                    written += 1
+                    continue
+                }
+
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
                 if let modificationDate = update.modificationDate {
@@ -1662,7 +1716,8 @@ final class HashCacheRepository {
                 guard result == SQLITE_ROW || result == SQLITE_DONE else {
                     return Set(snapshots.map(\.localIdentifier))
                 }
-                let storedFingerprint: String? = result == SQLITE_ROW
+                let hasHashCacheRow = result == SQLITE_ROW
+                let storedFingerprint: String? = hasHashCacheRow
                     ? sqlite3_column_text(lookup, 0).map { String(cString: $0) }
                     : nil
 
@@ -1685,11 +1740,22 @@ final class HashCacheRepository {
                     }
                 } else {
                     retained.insert(snapshot.localIdentifier)
-                    if storedFingerprint == nil,
-                       hasCurrentReceipt(
-                           assetId: snapshot.localIdentifier,
-                           fingerprint: currentFingerprint
-                       ) {
+                    let hasCurrentReceipt = hasCurrentReceipt(
+                        assetId: snapshot.localIdentifier,
+                        fingerprint: currentFingerprint
+                    )
+                    if hasCurrentReceipt {
+                        // A current background receipt is trusted even when
+                        // foreground hash cache is absent. A legacy hash row
+                        // without a fingerprint is different: remove that
+                        // unverified hash while preserving the receipt.
+                        if hasHashCacheRow,
+                           !execute(
+                               "DELETE FROM hash_cache WHERE asset_id = ?;",
+                               snapshot.localIdentifier
+                           ) {
+                            return Set(snapshots.map(\.localIdentifier))
+                        }
                         continue
                     }
                     guard execute(

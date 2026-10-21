@@ -264,6 +264,15 @@ enum L10n {
         static var confirmCancel: String { "photoGrid.confirm.cancel".localized }
         static var confirmUpload: String { "photoGrid.confirm.upload".localized }
         static var processingPreparing: String { "photoGrid.processing.preparing".localized }
+        static var processingSyncingServer: String { "photoGrid.processing.syncingServer".localized }
+        static var processingReadingPhotoLibrary: String { "photoGrid.processing.readingPhotoLibrary".localized }
+        static var processingPreparingComparison: String { "photoGrid.processing.preparingComparison".localized }
+        static var processingTitle: String { "photoGrid.processing.title".localized }
+        static var processingWaitingDetail: String { "photoGrid.processing.waitingDetail".localized }
+        static var processingWorking: String { "photoGrid.processing.working".localized }
+        static func processingBaseline(_ current: Int, _ total: Int) -> String {
+            return "photoGrid.processing.baseline".localized(with: current, total)
+        }
         static func processingComparing(_ current: Int, _ total: Int) -> String {
             return "photoGrid.processing.comparing".localized(with: current, total)
         }

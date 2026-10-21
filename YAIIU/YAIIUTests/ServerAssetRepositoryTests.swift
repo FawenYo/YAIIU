@@ -1044,11 +1044,22 @@ final class ServerAssetRepositoryTests: XCTestCase {
             rawHash: nil, hasRAW: false,
             modificationDate: Date(timeIntervalSince1970: 200)
         )
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "stale-fingerprint", primaryHash: "primary-c",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 200)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "stale-fingerprint",
+            resourceType: "jpeg",
+            filename: "stale.jpg",
+            immichId: "stale-remote"
+        )
 
         let rows = hashRepository.hashCacheRowsNeedingPhotoKitBaseline()
         XCTAssertEqual(
             Set(rows.map(\.localIdentifier)),
-            Set(["missing-date-and-fingerprint", "missing-fingerprint"])
+            Set(["missing-date-and-fingerprint", "missing-fingerprint", "stale-fingerprint"])
         )
 
         XCTAssertEqual(hashRepository.backfillPhotoKitVersionMetadata([
@@ -1063,8 +1074,14 @@ final class ServerAssetRepositoryTests: XCTestCase {
                 sha1Hash: "primary-b",
                 modificationDate: Date(timeIntervalSince1970: 200),
                 resourceFingerprint: "resource-b"
+            ),
+            (
+                localIdentifier: "stale-fingerprint",
+                sha1Hash: "primary-c",
+                modificationDate: Date(timeIntervalSince1970: 300),
+                resourceFingerprint: "resource-c"
             )
-        ]), 2)
+        ]), 3)
 
         XCTAssertEqual(sqlCount("""
             SELECT COUNT(*) FROM hash_cache
@@ -1079,6 +1096,8 @@ final class ServerAssetRepositoryTests: XCTestCase {
               AND asset_modification_date = 200
               AND asset_resource_fingerprint = 'resource-b';
             """), 1)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "stale-fingerprint"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "stale-fingerprint"))
         XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline().isEmpty)
     }
 
@@ -1695,6 +1714,37 @@ final class ServerAssetRepositoryTests: XCTestCase {
         ])
 
         XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
+    }
+
+    func testForegroundPendingAssetInvalidatesLegacyHashButRetainsCurrentBackgroundReceipt() {
+        let id = "pending-legacy-hash-current-receipt"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id,
+            primaryHash: "legacy-hash",
+            rawHash: nil,
+            hasRAW: false,
+            modificationDate: nil,
+            resourceFingerprint: nil
+        )
+        execute("""
+            INSERT INTO uploaded_assets
+              (asset_id, resource_type, filename, immich_id, uploaded_at, asset_resource_fingerprint)
+            VALUES ('pending-legacy-hash-current-receipt', 'jpeg', 'image.jpg', 'remote', 100, 'resource-v1');
+            INSERT INTO foreground_photo_pending_assets(asset_id)
+            VALUES ('pending-legacy-hash-current-receipt');
+        """)
+
+        hashRepository.reconcileForegroundPendingAssets(snapshots: [
+            PhotoAssetSnapshot(
+                localIdentifier: id,
+                modificationDate: Date(timeIntervalSince1970: 120),
+                resourceFingerprint: "resource-v1"
+            )
+        ])
+
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().contains(id))
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
     }

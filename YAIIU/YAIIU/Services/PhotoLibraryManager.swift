@@ -158,6 +158,20 @@ struct PhotoAssetSnapshot: Sendable {
     }
 }
 
+struct PhotoKitBaselineProgress: Equatable, Sendable {
+    let completed: Int
+    let total: Int
+
+    var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, Double(completed) / Double(total)))
+    }
+
+    var isComplete: Bool {
+        completed >= total && total > 0
+    }
+}
+
 
 
 /// Bounded PhotoKit journal window. Coalescing repeated asset notifications
@@ -233,6 +247,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var assetCount: Int = 0
+    @Published private(set) var foregroundBaselineProgress: PhotoKitBaselineProgress?
     /// Invalidates PhotoKit-based grid filters when favorites or album membership changes.
     @Published private(set) var libraryRevision: Int = 0
     /// The grid may only interpret index-based filters against this fetch generation.
@@ -756,6 +771,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let db = DatabaseManager.shared
         let rows = db.hashCacheRowsNeedingPhotoKitBaseline()
         guard !rows.isEmpty else { return }
+        publishForegroundBaselineProgress(
+            PhotoKitBaselineProgress(completed: 0, total: rows.count)
+        )
+        defer { publishForegroundBaselineProgress(nil) }
 
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
@@ -764,9 +783,15 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // Fetch only identifiers missing PhotoKit metadata, never resource bytes.
         // Chunking caps temporary allocations for large Immich imports.
         for start in stride(from: 0, to: rows.count, by: 300) {
-            let batch = rows[start..<min(start + 300, rows.count)]
+            let end = min(start + 300, rows.count)
+            let batch = rows[start..<end]
                 .filter { !excludingIdentifiers.contains($0.localIdentifier) }
-            guard !batch.isEmpty else { continue }
+            if batch.isEmpty {
+                publishForegroundBaselineProgress(
+                    PhotoKitBaselineProgress(completed: end, total: rows.count)
+                )
+                continue
+            }
             let checksums = Dictionary(uniqueKeysWithValues: batch.map {
                 ($0.localIdentifier, $0.sha1Hash)
             })
@@ -792,11 +817,23 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
             matched += updates.count
             filled += db.backfillPhotoKitVersionMetadata(updates)
+            publishForegroundBaselineProgress(
+                PhotoKitBaselineProgress(
+                    completed: end,
+                    total: rows.count
+                )
+            )
         }
         logInfo(
             "PhotoKit hash-version baseline: needingMetadata=\(rows.count), foundFingerprint=\(matched), filled=\(filled), unresolved=\(rows.count - filled)",
             category: .hash
         )
+    }
+
+    private func publishForegroundBaselineProgress(_ progress: PhotoKitBaselineProgress?) {
+        DispatchQueue.main.async { [weak self] in
+            self?.foregroundBaselineProgress = progress
+        }
     }
 
     /// Call on a background queue, never on the first-paint UI path.

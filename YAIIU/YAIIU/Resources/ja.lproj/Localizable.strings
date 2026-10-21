@@ -115,6 +115,13 @@
 "photoGrid.confirm.cancel" = "キャンセル";
 "photoGrid.confirm.upload" = "アップロード";
 "photoGrid.processing.preparing" = "準備中";
+"photoGrid.processing.syncingServer" = "サーバーデータを同期中…";
+"photoGrid.processing.readingPhotoLibrary" = "写真ライブラリの変更を読み込み中…";
+"photoGrid.processing.preparingComparison" = "写真の比較を準備中…";
+"photoGrid.processing.title" = "写真を準備中";
+"photoGrid.processing.waitingDetail" = "写真データを処理しています。完了すると自動的に続行します。";
+"photoGrid.processing.working" = "写真を処理中…";
+"photoGrid.processing.baseline" = "写真メタデータのインデックスを作成中 %d/%d";
 "photoGrid.processing.comparing" = "比較中 %d/%d";
 "photoGrid.processing.checking" = "確認中";
 "photoGrid.processing.default" = "...";

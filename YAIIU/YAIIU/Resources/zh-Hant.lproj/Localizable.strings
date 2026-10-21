@@ -116,6 +116,13 @@
 "photoGrid.confirm.cancel" = "取消";
 "photoGrid.confirm.upload" = "上傳";
 "photoGrid.processing.preparing" = "準備中";
+"photoGrid.processing.syncingServer" = "正在同步伺服器資料…";
+"photoGrid.processing.readingPhotoLibrary" = "正在讀取照片庫變更…";
+"photoGrid.processing.preparingComparison" = "正在準備照片比對…";
+"photoGrid.processing.title" = "正在準備照片";
+"photoGrid.processing.waitingDetail" = "正在處理照片資料，完成後會自動繼續。";
+"photoGrid.processing.working" = "正在處理照片…";
+"photoGrid.processing.baseline" = "正在建立照片資料索引 %d/%d";
 "photoGrid.processing.comparing" = "比對 %d/%d";
 "photoGrid.processing.checking" = "比對中";
 "photoGrid.processing.default" = "...";
