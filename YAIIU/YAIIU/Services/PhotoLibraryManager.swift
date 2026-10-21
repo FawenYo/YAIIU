@@ -80,7 +80,11 @@ struct PhotoAssetSnapshot: Sendable {
         self.resources = resources
     }
 
-    init(asset: PHAsset, includeResourceFingerprint: Bool = false) {
+    init(
+        asset: PHAsset,
+        includeResourceFingerprint: Bool = false,
+        includeResourceDiagnostics: Bool = true
+    ) {
         let resourceSnapshots = includeResourceFingerprint
             ? PHAssetResource.assetResources(for: asset).map { resource in
                 PhotoAssetResourceSnapshot(
@@ -108,7 +112,7 @@ struct PhotoAssetSnapshot: Sendable {
                 mediaType: asset.mediaType.rawValue,
                 mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue)
             ),
-            resources: resourceSnapshots
+            resources: includeResourceDiagnostics ? resourceSnapshots : []
         )
     }
 
@@ -713,7 +717,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         var snapshots: [PhotoAssetSnapshot] = []
         snapshots.reserveCapacity(result.count)
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
-            snapshots.append(PhotoAssetSnapshot(asset: asset, includeResourceFingerprint: true))
+            snapshots.append(PhotoAssetSnapshot(
+                asset: asset,
+                includeResourceFingerprint: true,
+                includeResourceDiagnostics: false
+            ))
         }
         return snapshots
     }
@@ -958,17 +966,24 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let result = PHAsset.fetchAssets(withLocalIdentifiers: pending, options: options)
         var visible = Set<String>()
         var hidden = Set<String>()
+        var visibleSnapshots = [PhotoAssetSnapshot]()
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             if asset.isHidden {
                 hidden.insert(asset.localIdentifier)
             } else {
                 visible.insert(asset.localIdentifier)
+                visibleSnapshots.append(PhotoAssetSnapshot(
+                    asset: asset,
+                    includeResourceFingerprint: true,
+                    includeResourceDiagnostics: false
+                ))
             }
         }
         if !hidden.isEmpty {
             DatabaseManager.shared.discardForegroundPendingIdentifiers(hidden)
         }
-        return pending.filter { visible.contains($0) }
+        let retained = DatabaseManager.shared.reconcileForegroundPendingAssets(snapshots: visibleSnapshots)
+        return pending.filter { visible.contains($0) && retained.contains($0) }
     }
 
     private func bootstrapForegroundPhotoWork() -> ForegroundPhotoWork {

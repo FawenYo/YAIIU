@@ -733,7 +733,8 @@ final class ServerAssetRepositoryTests: XCTestCase {
     func testForegroundBootstrapQueuesOnlyUnhashedVisiblePhotos() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "cached", primaryHash: "sha-cached",
-            rawHash: nil, hasRAW: false, modificationDate: nil
+            rawHash: nil, hasRAW: false, modificationDate: nil,
+            resourceFingerprint: "resource-cached"
         )
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "hidden", primaryHash: "sha-hidden",
@@ -741,7 +742,11 @@ final class ServerAssetRepositoryTests: XCTestCase {
         )
         execute("INSERT INTO change_tokens(id, token_data, updated_at) VALUES (1, X'ABCD', 0);")
         let snapshots = [
-            PhotoAssetSnapshot(localIdentifier: "cached", modificationDate: nil),
+            PhotoAssetSnapshot(
+                localIdentifier: "cached",
+                modificationDate: nil,
+                resourceFingerprint: "resource-cached"
+            ),
             PhotoAssetSnapshot(localIdentifier: "new-photo", modificationDate: nil),
             PhotoAssetSnapshot(localIdentifier: "hidden", modificationDate: nil, isHidden: true)
         ]
@@ -1161,7 +1166,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             WHERE asset_id = 'legacy' AND asset_modification_date IS NULL;
             """), 1)
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
-        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
 
         XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
             snapshots: [PhotoAssetSnapshot(
@@ -1219,6 +1224,30 @@ final class ServerAssetRepositoryTests: XCTestCase {
         ))
         XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "legacy"))
         XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["legacy"])
+    }
+
+    func testBootstrapKeepsPendingAssetWhenResourceFingerprintIsUnavailable() {
+        let id = "bootstrap-resource-unavailable"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-legacy",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100),
+            resourceFingerprint: "resource-v1"
+        )
+        execute("INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('bootstrap-resource-unavailable');")
+
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: id,
+                modificationDate: Date(timeIntervalSince1970: 120),
+                resourceFingerprint: nil
+            )],
+            pendingIdentifiers: [id], deletedIdentifiers: [],
+            tokenData: Data([8]), bootstrap: true
+        ))
+
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
     }
 
     func testForegroundDeltaFailureRollsBackCheckpointAndHashInvalidation() {

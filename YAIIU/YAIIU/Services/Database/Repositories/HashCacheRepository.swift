@@ -1294,10 +1294,8 @@ final class HashCacheRepository {
                             FROM foreground_snapshot AS s
                             JOIN hash_cache AS h ON h.asset_id = s.asset_id
                             WHERE s.is_hidden = 0
-                              AND (
-                                s.resource_fingerprint IS NULL
-                                OR s.resource_fingerprint = h.asset_resource_fingerprint
-                              )
+                              AND s.resource_fingerprint IS NOT NULL
+                              AND s.resource_fingerprint = h.asset_resource_fingerprint
                         );
                         """) else { return false }
 
@@ -1484,6 +1482,109 @@ final class HashCacheRepository {
                 }
             }
             return identifiers
+        }
+    }
+
+    /// Reconciles pending foreground IDs after PhotoKit resources become available
+    /// again without requiring another persistent-change notification.
+    @discardableResult
+    func reconcileForegroundPendingAssets(snapshots: [PhotoAssetSnapshot]) -> Set<String> {
+        guard !snapshots.isEmpty else { return [] }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self, self.connection.beginTransaction() else {
+                return Set(snapshots.map(\.localIdentifier))
+            }
+            var committed = false
+            defer { if !committed { self.connection.rollbackTransaction() } }
+
+            var lookup: OpaquePointer?
+            var update: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                self.connection.db,
+                "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1;",
+                -1, &lookup, nil
+            ) == SQLITE_OK,
+            sqlite3_prepare_v2(
+                self.connection.db,
+                "UPDATE hash_cache SET asset_modification_date = ?, asset_resource_fingerprint = ? WHERE asset_id = ?;",
+                -1, &update, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(lookup)
+                sqlite3_finalize(update)
+                return Set(snapshots.map(\.localIdentifier))
+            }
+            defer {
+                sqlite3_finalize(lookup)
+                sqlite3_finalize(update)
+            }
+
+            func execute(_ sql: String, _ assetId: String) -> Bool {
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    sqlite3_finalize(statement)
+                    return false
+                }
+                defer { sqlite3_finalize(statement) }
+                sqlite3_bind_text(statement, 1, (assetId as NSString).utf8String, -1, nil)
+                return sqlite3_step(statement) == SQLITE_DONE
+            }
+
+            var retained = Set<String>()
+            for snapshot in snapshots where !snapshot.isHidden {
+                guard let currentFingerprint = snapshot.resourceFingerprint else {
+                    retained.insert(snapshot.localIdentifier)
+                    continue
+                }
+
+                sqlite3_reset(lookup)
+                sqlite3_clear_bindings(lookup)
+                sqlite3_bind_text(lookup, 1, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
+                let result = sqlite3_step(lookup)
+                guard result == SQLITE_ROW || result == SQLITE_DONE else {
+                    return Set(snapshots.map(\.localIdentifier))
+                }
+                let storedFingerprint: String? = result == SQLITE_ROW
+                    ? sqlite3_column_text(lookup, 0).map { String(cString: $0) }
+                    : nil
+
+                if storedFingerprint == currentFingerprint {
+                    sqlite3_reset(update)
+                    sqlite3_clear_bindings(update)
+                    if let date = snapshot.modificationDate {
+                        sqlite3_bind_double(update, 1, date.timeIntervalSince1970)
+                    } else {
+                        sqlite3_bind_null(update, 1)
+                    }
+                    sqlite3_bind_text(update, 2, (currentFingerprint as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(update, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
+                    guard sqlite3_step(update) == SQLITE_DONE,
+                          execute(
+                              "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
+                              snapshot.localIdentifier
+                          ) else {
+                        return Set(snapshots.map(\.localIdentifier))
+                    }
+                } else {
+                    retained.insert(snapshot.localIdentifier)
+                    guard execute(
+                        "DELETE FROM hash_cache WHERE asset_id = ?;",
+                        snapshot.localIdentifier
+                    ), execute(
+                        "DELETE FROM uploaded_assets WHERE asset_id = ?;",
+                        snapshot.localIdentifier
+                    ) else {
+                        return Set(snapshots.map(\.localIdentifier))
+                    }
+                }
+            }
+
+            guard self.connection.commitTransaction() else {
+                self.connection.rollbackTransaction()
+                return Set(snapshots.map(\.localIdentifier))
+            }
+            committed = true
+            return retained
         }
     }
 

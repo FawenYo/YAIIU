@@ -265,6 +265,11 @@ final class DatabaseManager {
         hashRepo.getPendingForegroundPhotoIdentifiers()
     }
 
+    @discardableResult
+    func reconcileForegroundPendingAssets(snapshots: [PhotoAssetSnapshot]) -> Set<String> {
+        hashRepo.reconcileForegroundPendingAssets(snapshots: snapshots)
+    }
+
     func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {
         hashRepo.discardForegroundPendingIdentifiers(identifiers)
     }

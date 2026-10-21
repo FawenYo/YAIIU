@@ -870,6 +870,36 @@ class HashManager: ObservableObject {
                 category: .hash
             )
 
+            // Resource files may change while PhotoKit data is being prepared.
+            // Never persist a hash or clear pending work when selected resources
+            // no longer match current PhotoKit metadata.
+            if files.plan.resourceFingerprint != nil {
+                let options = PHFetchOptions()
+                options.includeHiddenAssets = true
+                let currentAsset = PHAsset.fetchAssets(
+                    withLocalIdentifiers: [identifier], options: options
+                ).firstObject
+                let currentSnapshot = currentAsset.map {
+                    PhotoAssetSnapshot(
+                        asset: $0,
+                        includeResourceFingerprint: true,
+                        includeResourceDiagnostics: false
+                    )
+                }
+                guard currentSnapshot?.resourceFingerprint == files.plan.resourceFingerprint else {
+                    if let currentSnapshot {
+                        DatabaseManager.shared.resetCacheForModifiedAssets(
+                            snapshots: [currentSnapshot]
+                        )
+                    }
+                    logWarning(
+                        "Hash result discarded because PhotoKit resources changed during hashing: asset=\(identifier)",
+                        category: .hash
+                    )
+                    return
+                }
+            }
+
             // Only associate a hash with the version observed while selecting its
             // source resources. A date read after hashing could describe an edit
             // made after the temporary files were captured.
