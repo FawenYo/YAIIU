@@ -113,6 +113,22 @@ final class DatabaseManager {
         hashRepo.unversionedHashCacheRows()
     }
 
+    func hashCacheRowsNeedingPhotoKitBaseline() -> [(localIdentifier: String, sha1Hash: String)] {
+        hashRepo.hashCacheRowsNeedingPhotoKitBaseline()
+    }
+
+    @discardableResult
+    func backfillPhotoKitVersionMetadata(
+        _ updates: [(
+            localIdentifier: String,
+            sha1Hash: String,
+            modificationDate: Date?,
+            resourceFingerprint: String
+        )]
+    ) -> Int {
+        hashRepo.backfillPhotoKitVersionMetadata(updates)
+    }
+
     @discardableResult
     func backfillUnversionedHashDates(
         _ updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)]

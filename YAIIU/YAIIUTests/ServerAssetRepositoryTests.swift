@@ -1034,6 +1034,54 @@ final class ServerAssetRepositoryTests: XCTestCase {
             """), 1)
     }
 
+    func testPhotoKitBaselineBackfillIncludesMissingFingerprintAndPreservesHashState() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "missing-date-and-fingerprint", primaryHash: "primary-a",
+            rawHash: "raw-a", hasRAW: true, modificationDate: nil
+        )
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "missing-fingerprint", primaryHash: "primary-b",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 200)
+        )
+
+        let rows = hashRepository.hashCacheRowsNeedingPhotoKitBaseline()
+        XCTAssertEqual(
+            Set(rows.map(\.localIdentifier)),
+            Set(["missing-date-and-fingerprint", "missing-fingerprint"])
+        )
+
+        XCTAssertEqual(hashRepository.backfillPhotoKitVersionMetadata([
+            (
+                localIdentifier: "missing-date-and-fingerprint",
+                sha1Hash: "primary-a",
+                modificationDate: Date(timeIntervalSince1970: 100),
+                resourceFingerprint: "resource-a"
+            ),
+            (
+                localIdentifier: "missing-fingerprint",
+                sha1Hash: "primary-b",
+                modificationDate: Date(timeIntervalSince1970: 200),
+                resourceFingerprint: "resource-b"
+            )
+        ]), 2)
+
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'missing-date-and-fingerprint'
+              AND asset_modification_date = 100
+              AND asset_resource_fingerprint = 'resource-a'
+              AND raw_hash = 'raw-a' AND has_raw = 1;
+            """), 1)
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'missing-fingerprint'
+              AND asset_modification_date = 200
+              AND asset_resource_fingerprint = 'resource-b';
+            """), 1)
+        XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline().isEmpty)
+    }
+
     func testImmichImportDoesNotOverwriteVersionedRAWCacheOrReceipts() {
         let id = "existing-pair"
         hashRepository.saveMultiResourceHashCache(

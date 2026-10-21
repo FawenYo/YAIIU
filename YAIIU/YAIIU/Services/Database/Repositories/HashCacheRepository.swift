@@ -258,6 +258,105 @@ final class HashCacheRepository {
         }
     }
 
+    /// Return hashes missing either part of the PhotoKit metadata baseline.
+    /// Immich imports provide a checksum but no PhotoKit resource fingerprint.
+    func hashCacheRowsNeedingPhotoKitBaseline() -> [(localIdentifier: String, sha1Hash: String)] {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return [] }
+            var statement: OpaquePointer?
+            let sql = """
+                SELECT asset_id, sha1_hash
+                FROM hash_cache
+                WHERE asset_modification_date IS NULL
+                   OR asset_resource_fingerprint IS NULL;
+                """
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                logError("Could not prepare PhotoKit baseline lookup", category: .database)
+                return []
+            }
+            defer { sqlite3_finalize(statement) }
+            var rows: [(localIdentifier: String, sha1Hash: String)] = []
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let identifier = sqlite3_column_text(statement, 0),
+                      let checksum = sqlite3_column_text(statement, 1) else { continue }
+                rows.append((
+                    localIdentifier: String(cString: identifier),
+                    sha1Hash: String(cString: checksum)
+                ))
+            }
+            return rows
+        }
+    }
+
+    /// Store current PhotoKit metadata without reading or hashing media bytes.
+    /// Only rows with the same checksum captured by the caller are updated,
+    /// so concurrent hashing cannot be overwritten by a stale baseline.
+    @discardableResult
+    func backfillPhotoKitVersionMetadata(
+        _ updates: [(
+            localIdentifier: String,
+            sha1Hash: String,
+            modificationDate: Date?,
+            resourceFingerprint: String
+        )]
+    ) -> Int {
+        guard !updates.isEmpty else { return 0 }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return 0 }
+            guard self.connection.beginTransaction() else {
+                logError("Could not begin PhotoKit baseline backfill", category: .database)
+                return 0
+            }
+            var committed = false
+            defer { if !committed { self.connection.rollbackTransaction() } }
+            var statement: OpaquePointer?
+            let sql = """
+                UPDATE hash_cache
+                SET asset_modification_date = COALESCE(?, asset_modification_date),
+                    asset_resource_fingerprint = ?
+                WHERE asset_id = ? AND sha1_hash = ?
+                  AND (asset_modification_date IS NULL OR asset_resource_fingerprint IS NULL);
+                """
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                logError("Could not prepare PhotoKit baseline backfill", category: .database)
+                return 0
+            }
+            defer { sqlite3_finalize(statement) }
+            var written = 0
+            for update in updates {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                if let modificationDate = update.modificationDate {
+                    guard sqlite3_bind_double(statement, 1, modificationDate.timeIntervalSince1970) == SQLITE_OK else {
+                        logError("PhotoKit baseline date bind failed", category: .database)
+                        return 0
+                    }
+                } else if sqlite3_bind_null(statement, 1) != SQLITE_OK {
+                    logError("PhotoKit baseline date bind failed", category: .database)
+                    return 0
+                }
+                guard sqlite3_bind_text(statement, 2, (update.resourceFingerprint as NSString).utf8String, -1, nil) == SQLITE_OK,
+                      sqlite3_bind_text(statement, 3, (update.localIdentifier as NSString).utf8String, -1, nil) == SQLITE_OK,
+                      sqlite3_bind_text(statement, 4, (update.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
+                      sqlite3_step(statement) == SQLITE_DONE else {
+                    logError("PhotoKit baseline backfill failed", category: .database)
+                    return 0
+                }
+                written += Int(sqlite3_changes(self.connection.db))
+            }
+            guard self.connection.commitTransaction() else {
+                logError("Could not commit PhotoKit baseline backfill", category: .database)
+                return 0
+            }
+            committed = true
+            return written
+        }
+    }
+
     /// One-time baseline for pre-versioned hashes. This records PhotoKit's
     /// current modification date, NOT proof that imported bytes equal current
     /// media. The caller must knowingly accept that historical limitation.

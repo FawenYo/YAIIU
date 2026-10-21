@@ -754,14 +754,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         hasBackfilledUnknownHashVersions = true
 
         let db = DatabaseManager.shared
-        let rows = db.unversionedHashCacheRows()
+        let rows = db.hashCacheRowsNeedingPhotoKitBaseline()
         guard !rows.isEmpty else { return }
 
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
         var matched = 0
         var filled = 0
-        // Fetch only identifiers with NULL cached dates, never resource bytes.
+        // Fetch only identifiers missing PhotoKit metadata, never resource bytes.
         // Chunking caps temporary allocations for large Immich imports.
         for start in stride(from: 0, to: rows.count, by: 300) {
             let batch = rows[start..<min(start + 300, rows.count)]
@@ -774,21 +774,27 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 withLocalIdentifiers: batch.map(\.localIdentifier),
                 options: options
             )
-            var updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)] = []
+            var updates: [(
+                localIdentifier: String,
+                sha1Hash: String,
+                modificationDate: Date?,
+                resourceFingerprint: String
+            )] = []
             PhotoLibraryEnumeration.forEach(in: assets) { asset, _ in
-                guard let date = asset.modificationDate,
-                      let checksum = checksums[asset.localIdentifier] else { return }
+                guard let checksum = checksums[asset.localIdentifier],
+                      let resourceFingerprint = PhotoAssetResourceFingerprint.make(for: asset) else { return }
                 updates.append((
                     localIdentifier: asset.localIdentifier,
                     sha1Hash: checksum,
-                    modificationDate: date
+                    modificationDate: asset.modificationDate,
+                    resourceFingerprint: resourceFingerprint
                 ))
             }
             matched += updates.count
-            filled += db.backfillUnversionedHashDates(updates)
+            filled += db.backfillPhotoKitVersionMetadata(updates)
         }
         logInfo(
-            "PhotoKit hash-version baseline: unversioned=\(rows.count), foundDate=\(matched), filled=\(filled), unresolved=\(rows.count - filled)",
+            "PhotoKit hash-version baseline: needingMetadata=\(rows.count), foundFingerprint=\(matched), filled=\(filled), unresolved=\(rows.count - filled)",
             category: .hash
         )
     }
