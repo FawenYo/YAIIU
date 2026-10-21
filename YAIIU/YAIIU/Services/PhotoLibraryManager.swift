@@ -8,15 +8,143 @@ struct PhotoAlbumOption: Identifiable, Hashable, Sendable {
     let title: String
 }
 
+struct PhotoAssetResourceSnapshot: Sendable, Equatable {
+    let typeDescription: String
+    let uniformTypeIdentifier: String
+    let originalFilename: String
+    let fileSize: Int64?
+
+    static func makeFingerprint(
+        resources: [PhotoAssetResourceSnapshot],
+        hasAdjustments: Bool,
+        adjustmentFormatIdentifier: String?,
+        mediaType: Int,
+        mediaSubtypes: UInt64
+    ) -> String? {
+        guard !resources.isEmpty else { return nil }
+        let resourceValues = resources
+            .sorted {
+                ($0.typeDescription, $0.uniformTypeIdentifier, $0.originalFilename, $0.fileSize ?? -1)
+                    < ($1.typeDescription, $1.uniformTypeIdentifier, $1.originalFilename, $1.fileSize ?? -1)
+            }
+            .map { resource in
+                let size = resource.fileSize.map(String.init) ?? "nil"
+                return "\(resource.typeDescription)/\(resource.uniformTypeIdentifier)/\(resource.originalFilename)/\(size)"
+            }
+            .joined(separator: ";")
+        return "v1|adjustments=\(hasAdjustments)|format=\(adjustmentFormatIdentifier ?? "nil")|mediaType=\(mediaType)|mediaSubtypes=\(mediaSubtypes)|resources=\(resourceValues)"
+    }
+}
+
+// PhotoKit exposes resource metadata but no public byte-version identifier.
+// This signature intentionally suppresses metadata/iCloud-only update storms;
+// a same-metadata byte replacement cannot be distinguished without reading and
+// hashing resource bytes, which would recreate the startup cost this policy avoids.
+
 struct PhotoAssetSnapshot: Sendable {
     let localIdentifier: String
     let modificationDate: Date?
     let isHidden: Bool
+    let creationDate: Date?
+    let isFavorite: Bool
+    let hasAdjustments: Bool
+    let adjustmentFormatIdentifier: String?
+    let mediaType: Int
+    let mediaSubtypes: UInt64
+    let resourceFingerprint: String?
+    let resources: [PhotoAssetResourceSnapshot]
 
-    init(localIdentifier: String, modificationDate: Date?, isHidden: Bool = false) {
+    init(
+        localIdentifier: String,
+        modificationDate: Date?,
+        isHidden: Bool = false,
+        creationDate: Date? = nil,
+        isFavorite: Bool = false,
+        hasAdjustments: Bool = false,
+        adjustmentFormatIdentifier: String? = nil,
+        mediaType: Int = 0,
+        mediaSubtypes: UInt64 = 0,
+        resourceFingerprint: String? = nil,
+        resources: [PhotoAssetResourceSnapshot] = []
+    ) {
         self.localIdentifier = localIdentifier
         self.modificationDate = modificationDate
         self.isHidden = isHidden
+        self.creationDate = creationDate
+        self.isFavorite = isFavorite
+        self.hasAdjustments = hasAdjustments
+        self.adjustmentFormatIdentifier = adjustmentFormatIdentifier
+        self.mediaType = mediaType
+        self.mediaSubtypes = mediaSubtypes
+        self.resourceFingerprint = resourceFingerprint
+        self.resources = resources
+    }
+
+    init(asset: PHAsset, includeResourceFingerprint: Bool = false) {
+        let resourceSnapshots = includeResourceFingerprint
+            ? PHAssetResource.assetResources(for: asset).map { resource in
+                PhotoAssetResourceSnapshot(
+                    typeDescription: String(describing: resource.type),
+                    uniformTypeIdentifier: resource.uniformTypeIdentifier,
+                    originalFilename: resource.originalFilename,
+                    fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+                )
+            }
+            : []
+        self.init(
+            localIdentifier: asset.localIdentifier,
+            modificationDate: asset.modificationDate,
+            isHidden: asset.isHidden,
+            creationDate: asset.creationDate,
+            isFavorite: asset.isFavorite,
+            hasAdjustments: asset.hasAdjustments,
+            adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
+            mediaType: asset.mediaType.rawValue,
+            mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue),
+            resourceFingerprint: PhotoAssetResourceSnapshot.makeFingerprint(
+                resources: resourceSnapshots,
+                hasAdjustments: asset.hasAdjustments,
+                adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
+                mediaType: asset.mediaType.rawValue,
+                mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue)
+            ),
+            resources: resourceSnapshots
+        )
+    }
+
+    static func resourceFingerprint(for asset: PHAsset) -> String? {
+        resourceFingerprint(for: asset, resources: PHAssetResource.assetResources(for: asset))
+    }
+
+    static func resourceFingerprint(for asset: PHAsset, resources: [PHAssetResource]) -> String? {
+        let resourceSnapshots = resources.map { resource in
+            PhotoAssetResourceSnapshot(
+                typeDescription: String(describing: resource.type),
+                uniformTypeIdentifier: resource.uniformTypeIdentifier,
+                originalFilename: resource.originalFilename,
+                fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            )
+        }
+        return PhotoAssetResourceSnapshot.makeFingerprint(
+            resources: resourceSnapshots,
+            hasAdjustments: asset.hasAdjustments,
+            adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
+            mediaType: asset.mediaType.rawValue,
+            mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue)
+        )
+    }
+
+    func diagnosticSummary(storedModificationDate: Date?) -> String {
+        func timestamp(_ date: Date?) -> String {
+            guard let date else { return "nil" }
+            return String(format: "%.1f", date.timeIntervalSince1970)
+        }
+
+        let resourceSummary = resources.map { resource in
+            let size = resource.fileSize.map(String.init) ?? "nil"
+            return "\(resource.typeDescription)/\(resource.uniformTypeIdentifier)/\(resource.originalFilename)/\(size)"
+        }.joined(separator: ",")
+        return "Foreground PhotoKit asset metadata: asset=\(localIdentifier), storedModificationDate=\(timestamp(storedModificationDate)), currentModificationDate=\(timestamp(modificationDate)), creationDate=\(timestamp(creationDate)), favorite=\(isFavorite), hidden=\(isHidden), hasAdjustments=\(hasAdjustments), adjustmentFormatIdentifier=\(adjustmentFormatIdentifier ?? "nil"), mediaType=\(mediaType), mediaSubtypes=\(mediaSubtypes), resources=[\(resourceSummary)]"
     }
 
     /// Do not start hashing hidden photos merely because orphan cleanup includes
@@ -585,11 +713,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         var snapshots: [PhotoAssetSnapshot] = []
         snapshots.reserveCapacity(result.count)
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
-            snapshots.append(PhotoAssetSnapshot(
-                localIdentifier: asset.localIdentifier,
-                modificationDate: asset.modificationDate,
-                isHidden: asset.isHidden
-            ))
+            snapshots.append(PhotoAssetSnapshot(asset: asset, includeResourceFingerprint: true))
         }
         return snapshots
     }
@@ -724,9 +848,8 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         snapshots.reserveCapacity(fetched.count)
                         PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
                             snapshots.append(PhotoAssetSnapshot(
-                                localIdentifier: asset.localIdentifier,
-                                modificationDate: asset.modificationDate,
-                                isHidden: asset.isHidden
+                                asset: asset,
+                                includeResourceFingerprint: true
                             ))
                         }
                     }

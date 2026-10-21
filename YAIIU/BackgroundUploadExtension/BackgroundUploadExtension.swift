@@ -666,6 +666,7 @@ final class BackgroundUploadExtensionCore {
                 // PhotoKit can report metadata or iCloud storage state as updates.
                 // Fetch current versions without downloading original resources.
                 var modificationDates: [String: Date] = [:]
+                var resourceFingerprints: [String: String] = [:]
                 if !updated.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
@@ -676,6 +677,9 @@ final class BackgroundUploadExtensionCore {
                         if let date = asset.modificationDate {
                             modificationDates[asset.localIdentifier] = date
                         }
+                        if let fingerprint = PhotoAssetResourceFingerprint.make(for: asset) {
+                            resourceFingerprints[asset.localIdentifier] = fingerprint
+                        }
                     }
                 }
                 let nextTokenData = try archiveChangeToken(change.changeToken)
@@ -685,6 +689,7 @@ final class BackgroundUploadExtensionCore {
                     updatedAssetIds: updated,
                     deletedAssetIds: deleted,
                     updatedAssetModificationDates: modificationDates,
+                    updatedAssetResourceFingerprints: resourceFingerprints,
                     tokenData: nextTokenData
                 ) else {
                     throw NSError(
@@ -776,6 +781,7 @@ final class BackgroundUploadExtensionCore {
             }
 
             let resources = PHAssetResource.assetResources(for: asset).filter(self.shouldUpload)
+            let resourceAvailabilityUnknown = resources.isEmpty
             var assetHasOutstandingWork = false
 
             for resource in resources {
@@ -805,8 +811,13 @@ final class BackgroundUploadExtensionCore {
                 pending.append(resource)
             }
 
-            if !assetHasOutstandingWork {
+            if !assetHasOutstandingWork && !resourceAvailabilityUnknown {
                 self.database.removeQueuedAsset(asset.localIdentifier)
+            }
+            if resourceAvailabilityUnknown {
+                self.logDebug(
+                    "Delta discovery retained queued asset without uploadable resources: asset=\(asset.localIdentifier)"
+                )
             }
 
             // Finish the current asset so JPEG/RAW siblings stay together, then stop

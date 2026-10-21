@@ -884,7 +884,8 @@ class HashManager: ObservableObject {
                 primaryHash: result.primaryHash,
                 rawHash: result.rawHash,
                 hasRAW: result.hasRAW,
-                modificationDate: files.plan.modificationDate
+                modificationDate: files.plan.modificationDate,
+                resourceFingerprint: files.plan.resourceFingerprint
             )
             guard isCurrentRun(runID) else { return }
 
@@ -1121,9 +1122,7 @@ class HashManager: ObservableObject {
     
     @MainActor
     func forceReprocess(assets: [PHAsset]) {
-        let snapshots = assets.map {
-            PhotoAssetSnapshot(localIdentifier: $0.localIdentifier, modificationDate: $0.modificationDate)
-        }
+        let snapshots = assets.map { PhotoAssetSnapshot(asset: $0) }
         startBackgroundProcessing(
             identifiers: snapshots.map { $0.localIdentifier },
             snapshotsToInvalidate: snapshots,

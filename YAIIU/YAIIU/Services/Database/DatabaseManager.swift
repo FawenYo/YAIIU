@@ -91,14 +91,16 @@ final class DatabaseManager {
         primaryHash: String,
         rawHash: String?,
         hasRAW: Bool,
-        modificationDate: Date? = nil
+        modificationDate: Date? = nil,
+        resourceFingerprint: String? = nil
     ) {
         hashRepo.saveMultiResourceHashCache(
             localIdentifier: localIdentifier,
             primaryHash: primaryHash,
             rawHash: rawHash,
             hasRAW: hasRAW,
-            modificationDate: modificationDate
+            modificationDate: modificationDate,
+            resourceFingerprint: resourceFingerprint
         )
     }
     
