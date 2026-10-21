@@ -215,6 +215,140 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(Set(ids), [videoId, rawId])
     }
 
+
+    func testBatchVerificationMatchesPrimaryAndRAWAndQueuesMissingResources() {
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "remote-primary", checksum: "converted",
+                              sourceChecksum: "source-primary", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "remote-raw", checksum: "raw-present", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "foreign", checksum: "foreign-sha", ownerId: "owner-2")
+        ]))
+        execute("""
+            INSERT INTO hash_cache
+              (asset_id, sha1_hash, raw_hash, has_raw, calculated_at)
+            VALUES ('source', 'source-primary', NULL, 0, 0),
+                   ('raw-missing', 'source-primary', 'raw-absent', 1, 0),
+                   ('raw-present', 'source-primary', 'raw-present', 1, 0),
+                   ('absent', 'not-on-server', NULL, 0, 0),
+                   ('foreign', 'foreign-sha', NULL, 0, 0);
+            """)
+        let ids = ["source", "raw-missing", "raw-present", "absent", "foreign"]
+        let candidates = hashRepository.verifyHashCacheBatch(identifiers: ids, ownerId: "owner-1")
+        XCTAssertNotNil(candidates)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NOT NULL;"), 5)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE is_on_server = 1;"), 4)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE has_raw = 1 AND raw_on_server = 1;"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM background_upload_queue;"), 2)
+        XCTAssertEqual(Set(candidates?.map(\.assetId) ?? []), ["source", "raw-missing", "raw-present"])
+        XCTAssertFalse(candidates?.contains(where: { $0.assetId == "foreign" }) ?? true)
+    }
+
+    func testBatchVerificationKeepsCheckedAndOutsideRowsAndUsesUploadReceipt() {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at, is_on_server)
+            VALUES ('pending', 'no-match', 0, NULL, 0),
+                   ('already-checked', 'no-match', 0, 123, 1),
+                   ('outside-batch', 'no-match', 0, NULL, 0);
+            INSERT INTO uploaded_assets (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('pending', 'primary', 'image.jpg', 'uploaded', 10);
+            """)
+        let candidates = hashRepository.verifyHashCacheBatch(
+            identifiers: ["pending", "already-checked"], ownerId: "owner-1"
+        )
+        XCTAssertNotNil(candidates)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='pending' AND is_on_server=1 AND checked_at IS NOT NULL;"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='already-checked' AND is_on_server=1 AND checked_at=123;"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='outside-batch' AND checked_at IS NULL;"), 1)
+    }
+
+    func testBatchMetadataCandidatePrefersReceiptAndFiltersForeignOwner() {
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "by-hash", checksum: "checksum", iCloudId: "cloud-old", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "receipt-remote", checksum: "elsewhere", iCloudId: "cloud-new", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "other-owner", checksum: "other-checksum", iCloudId: nil, ownerId: "owner-2")
+        ]))
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at)
+            VALUES ('receipt-asset', 'checksum', 0), ('other-asset', 'other-checksum', 0);
+            INSERT INTO uploaded_assets (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('receipt-asset', 'primary', 'photo.jpg', 'receipt-remote', 100);
+            """)
+        let candidates = hashRepository.verifyHashCacheBatch(
+            identifiers: ["receipt-asset", "other-asset"], ownerId: "owner-1"
+        )
+        XCTAssertEqual(candidates?.count, 1)
+        XCTAssertEqual(candidates?.first?.immichId, "receipt-remote")
+        XCTAssertEqual(candidates?.first?.serverICloudId, "cloud-new")
+    }
+
+    func testBatchMetadataCandidatePrefersLivePhotoImageOverVideoReceipt() {
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "live-image", checksum: "image-hash",
+                              iCloudId: "image-cloud", ownerId: "owner-1"),
+            ServerAssetRecord(immichId: "live-video", checksum: "video-hash",
+                              iCloudId: "video-cloud", ownerId: "owner-1")
+        ]))
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at)
+            VALUES ('live-photo', 'image-hash', 0),
+                   ('video-only', 'video-hash', 0);
+            INSERT INTO uploaded_assets
+                (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES ('live-photo', 'jpeg', 'image.heic', 'live-image', 100),
+                   ('live-photo', 'video', 'image.mov', 'live-video', 101),
+                   ('video-only', 'video', 'standalone.mov', 'live-video', 102);
+            """)
+        let candidates = hashRepository.verifyHashCacheBatch(
+            identifiers: ["live-photo", "video-only"], ownerId: "owner-1"
+        )
+        XCTAssertEqual(candidates?.count, 2)
+        let live = candidates?.first(where: { $0.assetId == "live-photo" })
+        XCTAssertEqual(live?.immichId, "live-image")
+        XCTAssertEqual(live?.serverICloudId, "image-cloud")
+        let video = candidates?.first(where: { $0.assetId == "video-only" })
+        XCTAssertEqual(video?.immichId, "live-video")
+        XCTAssertEqual(video?.serverICloudId, "video-cloud")
+    }
+
+    func testMetadataRetryInvalidatesOnlyRequestedLocalHashes() async {
+        execute("""
+            INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)
+            VALUES ('first', 'h1', 0, 10),
+                   ('second', 'h2', 0, 11),
+                   ('third', 'h3', 0, 12);
+            """)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers(["first", "third", "first"]))
+        let dirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(dirty), ["first", "third"])
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE asset_id='second' AND checked_at=11;"), 1)
+        XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers([]))
+        let stillDirty = await uncheckedHashIds()
+        XCTAssertEqual(Set(stillDirty), ["first", "third"])
+    }
+
+    func testMetadataRetrySpansSqliteParameterBatches() {
+        let identifiers = (0..<625).map { "retry-\($0)" }
+        connection.dbQueue.sync {
+            var statement: OpaquePointer?
+            XCTAssertEqual(sqlite3_prepare_v2(
+                connection.db,
+                "INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at) VALUES (?, ?, 0, 10);",
+                -1, &statement, nil
+            ), SQLITE_OK)
+            defer { sqlite3_finalize(statement) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for id in identifiers {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_text(statement, 1, id, -1, transient)
+                sqlite3_bind_text(statement, 2, id, -1, transient)
+                XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+            }
+        }
+        XCTAssertTrue(hashRepository.invalidateHashChecksForLocalIdentifiers(identifiers))
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache WHERE checked_at IS NULL;"), 625)
+    }
+
     func testCompletedNegativeMatchesAreNotRecheckedWithoutServerDelta() async {
         execute("""
             INSERT INTO hash_cache (asset_id, sha1_hash, calculated_at, checked_at)

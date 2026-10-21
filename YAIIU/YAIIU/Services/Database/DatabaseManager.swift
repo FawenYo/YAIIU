@@ -142,6 +142,13 @@ final class DatabaseManager {
         )
     }
     
+    func verifyHashCacheBatch(
+        identifiers: [String],
+        ownerId: String?
+    ) -> [CloudMetadataCandidate]? {
+        hashRepo.verifyHashCacheBatch(identifiers: identifiers, ownerId: ownerId)
+    }
+
     func batchUpdateHashCacheServerStatus(results: [(String, Bool)]) {
         hashRepo.batchUpdateHashCacheServerStatus(results: results)
     }
@@ -202,6 +209,11 @@ final class DatabaseManager {
     @discardableResult
     func invalidateHashChecksForServerChanges(checksums: [String], fullReset: Bool) -> Bool {
         hashRepo.invalidateHashChecksForServerChanges(checksums: checksums, fullReset: fullReset)
+    }
+
+    @discardableResult
+    func invalidateHashChecksForLocalIdentifiers(_ identifiers: [String]) -> Bool {
+        hashRepo.invalidateHashChecksForLocalIdentifiers(identifiers)
     }
 
     func getMultiResourceHashesNotFullyOnServerAsync(completion: @escaping ([MultiResourceHashRecord]) -> Void) {

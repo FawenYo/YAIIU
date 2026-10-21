@@ -1190,12 +1190,14 @@ struct PhotoGridView: View {
     }
 
     private func syncPendingICloudIds() {
-        let updates = hashManager.pendingICloudIdUpdates
-        guard !updates.isEmpty else { return }
-
         let serverURL = settingsManager.activeServerURL
         let apiKey = settingsManager.apiKey
         guard !serverURL.isEmpty && !apiKey.isEmpty else { return }
+        // Drain once: repeated view refreshes must not submit the same
+        // metadata updates while an earlier request is still in flight.
+        let updates = hashManager.pendingICloudIdUpdates
+        guard !updates.isEmpty else { return }
+        hashManager.pendingICloudIdUpdates = []
 
         logInfo("Syncing \(updates.count) pending iCloud ID updates to server", category: .api)
 
@@ -1230,6 +1232,17 @@ struct PhotoGridView: View {
                     skipCount += batch.count
                 } catch {
                     logWarning("Failed to update iCloud ID batch: \(error.localizedDescription)", category: .api)
+                    // The hash check was committed before metadata upload.
+                    // A transient failure must persistently make these assets
+                    // discoverable by the next run, not just requeue in memory
+                    // (which the next processing start can otherwise clear).
+                    let identifiers = batch.map(\.localIdentifier)
+                    let restored = await Task.detached(priority: .utility) {
+                        DatabaseManager.shared.invalidateHashChecksForLocalIdentifiers(identifiers)
+                    }.value
+                    if !restored {
+                        logError("Could not persist metadata retry for \(batch.count) assets", category: .database)
+                    }
                 }
             }
 

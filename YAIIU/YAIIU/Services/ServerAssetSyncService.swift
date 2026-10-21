@@ -309,16 +309,33 @@ class ServerAssetSyncService {
                     affectedChecksums.insert(sourceChecksum)
                 }
             }
-            for asset in serverAssetRecords { addChecksums(asset) }
-            var changedIds = Set(serverAssetRecords.map(\.immichId))
-            changedIds.formUnion(deletedIds)
-            changedIds.formUnion(metadataResult.iCloudIdUpserts.keys)
-            changedIds.formUnion(metadataResult.iCloudIdDeletes)
-            changedIds.formUnion(metadataResult.sourceChecksumUpserts.keys)
-            for id in changedIds {
+            // A metadata-only iCloud ID update does not change resource bytes.
+            // Invalidate checksums only when an AssetV2 record or source
+            // checksum actually changes, or when an asset is deleted.
+            for asset in serverAssetRecords {
+                let existing = dbManager.getServerAssetByImmichId(asset.immichId)
+                if existing?.checksum != asset.checksum ||
+                    existing?.sourceChecksum != asset.sourceChecksum {
+                    addChecksums(existing)
+                    addChecksums(asset)
+                }
+            }
+            for id in deletedIds {
                 addChecksums(dbManager.getServerAssetByImmichId(id))
             }
-            affectedChecksums.formUnion(metadataResult.sourceChecksumUpserts.values)
+            for (id, newChecksum) in metadataResult.sourceChecksumUpserts {
+                let existing = dbManager.getServerAssetByImmichId(id)
+                if existing?.sourceChecksum != newChecksum {
+                    addChecksums(existing)
+                    affectedChecksums.insert(newChecksum)
+                }
+            }
+            logInfo(
+                "Server delta checksum invalidation: resourceEvents=\(serverAssetRecords.count), "
+                    + "metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
+                    + "affectedChecksums=\(affectedChecksums.count)",
+                category: .sync
+            )
         }
         guard dbManager.invalidateHashChecksForServerChanges(
             checksums: Array(affectedChecksums),
