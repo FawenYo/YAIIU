@@ -168,6 +168,7 @@ final class BackgroundUploadDatabase {
             )
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
+        ensureUploadedAssetFingerprintColumn()
 
         // Older extension builds created RAW jobs without updating has_raw. Repair
         // that durable resource-presence fact so a confirmed primary never hides a
@@ -200,6 +201,49 @@ final class BackgroundUploadDatabase {
                 print("[BackgroundUploadDatabase] Failed SQL: \(sql)")
             }
         }
+    }
+
+    private func ensureUploadedAssetFingerprintColumn() {
+        var statement: OpaquePointer?
+        var hasColumn = false
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(uploaded_assets);", -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1),
+                   String(cString: columnName) == "asset_resource_fingerprint" {
+                    hasColumn = true
+                    break
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        if !hasColumn {
+            exec("ALTER TABLE uploaded_assets ADD COLUMN asset_resource_fingerprint TEXT;")
+        }
+    }
+
+    private func uploadedReceiptMatchesCurrentFingerprint(
+        db: OpaquePointer?,
+        assetId: String,
+        fingerprint: String
+    ) -> Bool {
+        let sql = """
+            SELECT COUNT(*),
+                   SUM(CASE WHEN asset_resource_fingerprint = ? THEN 1 ELSE 0 END)
+            FROM uploaded_assets
+            WHERE asset_id = ?
+        """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        sqlite3_bind_text(statement, 1, fingerprint, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 2, assetId, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return false }
+        let receiptCount = Int(sqlite3_column_int(statement, 0))
+        let matchingCount = Int(sqlite3_column_int(statement, 1))
+        return receiptCount > 0 && matchingCount == receiptCount
     }
     
     // MARK: - Upload Jobs
@@ -427,12 +471,20 @@ final class BackgroundUploadDatabase {
     
     // MARK: - Uploaded Assets
     
-    func recordUploadedAsset(assetId: String, resourceType: String, filename: String, immichId: String, fileSize: Int64, isDuplicate: Bool) {
+    func recordUploadedAsset(
+        assetId: String,
+        resourceType: String,
+        filename: String,
+        immichId: String,
+        fileSize: Int64,
+        isDuplicate: Bool,
+        resourceFingerprint: String? = nil
+    ) {
         queue.sync {
             let sql = """
                 INSERT OR REPLACE INTO uploaded_assets
-                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at, asset_resource_fingerprint)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """
             
             var stmt: OpaquePointer?
@@ -447,6 +499,11 @@ final class BackgroundUploadDatabase {
             sqlite3_bind_int64(stmt, 5, fileSize)
             sqlite3_bind_int(stmt, 6, isDuplicate ? 1 : 0)
             sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
+            if let resourceFingerprint {
+                sqlite3_bind_text(stmt, 8, resourceFingerprint, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 8)
+            }
             
             sqlite3_step(stmt)
             
@@ -792,20 +849,12 @@ final class BackgroundUploadDatabase {
         deletedAssetIds: Set<String>,
         updatedAssetModificationDates: [String: Date],
         updatedAssetResourceFingerprints: [String: String] = [:],
-        resolvedUpdatedAssetIds: Set<String> = [],
         tokenData: Data
     ) -> PhotoAssetChangeCommitSummary? {
         queue.sync {
             guard let db else { return nil }
-            let inferredResolvedUpdatedAssetIds = resolvedUpdatedAssetIds.isEmpty
-                ? Set(updatedAssetModificationDates.keys).union(updatedAssetResourceFingerprints.keys)
-                : resolvedUpdatedAssetIds
-            let permanentlyUnresolvableUpdatedAssetIds = updatedAssetIds
-                .subtracting(deletedAssetIds)
-                .subtracting(inferredResolvedUpdatedAssetIds)
             let unresolvedUpdatedAssetIds = updatedAssetIds
                 .subtracting(deletedAssetIds)
-                .subtracting(permanentlyUnresolvableUpdatedAssetIds)
                 .subtracting(Set(updatedAssetResourceFingerprints.keys))
             // Do not advance the PhotoKit cursor until every updated asset has
             // resource evidence. A missing fingerprint usually means an iCloud
@@ -833,7 +882,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(insertStmt) }
-            let effectiveDeletedAssetIds = deletedAssetIds.union(permanentlyUnresolvableUpdatedAssetIds)
+            let effectiveDeletedAssetIds = deletedAssetIds
             for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(effectiveDeletedAssetIds) {
                 sqlite3_reset(insertStmt)
                 sqlite3_clear_bindings(insertStmt)
@@ -848,7 +897,7 @@ final class BackgroundUploadDatabase {
             // Compare resource metadata inside same transaction as cache
             // invalidation and cursor advancement. Missing resource evidence
             // rejects this checkpoint; legacy rows invalidate when evidence exists.
-            var invalidatedUpdatedIds = permanentlyUnresolvableUpdatedAssetIds
+            var invalidatedUpdatedIds = deletedAssetIds
             if !updatedAssetIds.isEmpty {
                 let sql = "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1"
                 var versionStmt: OpaquePointer?
@@ -884,9 +933,18 @@ final class BackgroundUploadDatabase {
                                 }
                             }
                         } else if result == SQLITE_DONE {
-                            // A background-only receipt can exist without a
-                            // hash_cache row. Any update invalidates that receipt.
-                            invalidatedUpdatedIds.insert(assetId)
+                            // A background upload can finish after foreground
+                            // invalidation and create a current receipt before
+                            // the hash cache is rebuilt. Preserve only receipts
+                            // carrying the current resource fingerprint.
+                            if let currentFingerprint = updatedAssetResourceFingerprints[assetId],
+                               !uploadedReceiptMatchesCurrentFingerprint(
+                                   db: db,
+                                   assetId: assetId,
+                                   fingerprint: currentFingerprint
+                               ) {
+                                invalidatedUpdatedIds.insert(assetId)
+                            }
                         } else {
                             return nil
                         }

@@ -377,13 +377,16 @@ final class BackgroundUploadExtensionCore {
             // is idempotent, while a termination between commit and record would lose
             // the upload's durable record.
             if currentVersionSucceeded, let identity {
+                let resourceFingerprint = fetchAsset(identifier: identity.assetLocalIdentifier)
+                    .flatMap(PhotoAssetResourceFingerprint.make)
                 database.recordUploadedAsset(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
                     filename: identity.filename,
                     immichId: immichId ?? "unknown",
                     fileSize: 0,
-                    isDuplicate: false
+                    isDuplicate: false,
+                    resourceFingerprint: resourceFingerprint
                 )
                 SharedSettings.shared.lastBackgroundUploadAt = Date()
             }
@@ -667,7 +670,6 @@ final class BackgroundUploadExtensionCore {
                 // Fetch current versions without downloading original resources.
                 var modificationDates: [String: Date] = [:]
                 var resourceFingerprints: [String: String] = [:]
-                var resolvedUpdatedAssetIds = Set<String>()
                 if !updated.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
@@ -675,7 +677,6 @@ final class BackgroundUploadExtensionCore {
                         withLocalIdentifiers: Array(updated), options: options
                     )
                     assets.enumerateObjects { asset, _, _ in
-                        resolvedUpdatedAssetIds.insert(asset.localIdentifier)
                         if let date = asset.modificationDate {
                             modificationDates[asset.localIdentifier] = date
                         }
@@ -692,7 +693,6 @@ final class BackgroundUploadExtensionCore {
                     deletedAssetIds: deleted,
                     updatedAssetModificationDates: modificationDates,
                     updatedAssetResourceFingerprints: resourceFingerprints,
-                    resolvedUpdatedAssetIds: resolvedUpdatedAssetIds,
                     tokenData: nextTokenData
                 ) else {
                     throw NSError(

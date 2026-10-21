@@ -1428,6 +1428,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
                 localIdentifier: id, resourceType: "jpeg", filename: "image.jpg", immichId: "remote"
             )
         }
+        execute("UPDATE uploaded_assets SET asset_resource_fingerprint = 'resource-v1' WHERE asset_id = 'receipt-only';")
         execute("""
             INSERT INTO upload_jobs (asset_id, resource_type, filename, status, created_at, updated_at)
             VALUES ('edited', 'jpeg', 'image.jpg', 'completed', 0, 0),
@@ -1451,15 +1452,15 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: Data([2])
         )
 
-        XCTAssertEqual(summary?.retainedVersions, 0)
-        XCTAssertEqual(summary?.invalidatedVersions, 4)
+        XCTAssertEqual(summary?.retainedVersions, 1)
+        XCTAssertEqual(summary?.invalidatedVersions, 3)
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "edited"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "edited"))
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "legacy"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "legacy"))
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "missing-date"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "missing-date"))
-        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
         for id in ids {
             XCTAssertTrue(queuedIds().contains(id))
         }
@@ -1547,7 +1548,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertFalse(queuedIds().contains("legacy"))
     }
 
-    func testBackgroundAdvancesTokenWhenUpdatedAssetIsAlreadyGone() {
+    func testBackgroundRetainsUnresolvedUpdatedAssetUntilPhotoKitResolvesIt() {
         let id = "updated-then-deleted"
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: id, primaryHash: "sha-old",
@@ -1569,11 +1570,40 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: Data([7])
         )
 
+        XCTAssertNil(summary)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertTrue(queuedIds().contains(id))
+        XCTAssertNil(background.loadChangeToken())
+    }
+
+    func testBackgroundDeletesAssetWhenPhotoKitReportsExplicitDeletion() {
+        let id = "explicitly-deleted"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-old",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100),
+            resourceFingerprint: "resource-v1"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: id, resourceType: "jpeg",
+            filename: "image.jpg", immichId: "remote"
+        )
+        execute("INSERT INTO background_upload_queue(asset_id, enqueued_at) VALUES ('explicitly-deleted', 1);")
+
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [id],
+            updatedAssetModificationDates: [:],
+            updatedAssetResourceFingerprints: [:],
+            tokenData: Data([8])
+        )
+
         XCTAssertNotNil(summary)
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
         XCTAssertFalse(queuedIds().contains(id))
-        XCTAssertEqual(background.loadChangeToken(), Data([7]))
+        XCTAssertEqual(background.loadChangeToken(), Data([8]))
     }
 
     func testForegroundPendingAssetWithRecoveredFingerprintClearsPending() {
@@ -1596,6 +1626,29 @@ final class ServerAssetRepositoryTests: XCTestCase {
 
         XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
         XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
+    }
+
+    func testForegroundPendingAssetRetainsCurrentBackgroundReceiptWithoutHashCache() {
+        let id = "pending-current-background-receipt"
+        execute("""
+            INSERT INTO uploaded_assets
+              (asset_id, resource_type, filename, immich_id, uploaded_at, asset_resource_fingerprint)
+            VALUES ('pending-current-background-receipt', 'jpeg', 'image.jpg', 'remote', 100, 'resource-v1');
+            INSERT INTO foreground_photo_pending_assets(asset_id)
+            VALUES ('pending-current-background-receipt');
+        """)
+
+        hashRepository.reconcileForegroundPendingAssets(snapshots: [
+            PhotoAssetSnapshot(
+                localIdentifier: id,
+                modificationDate: Date(timeIntervalSince1970: 120),
+                resourceFingerprint: "resource-v1"
+            )
+        ])
+
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
     }
 
     private func sqlCount(_ sql: String) -> Int {

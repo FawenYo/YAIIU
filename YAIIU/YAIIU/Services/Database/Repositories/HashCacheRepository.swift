@@ -1500,6 +1500,7 @@ final class HashCacheRepository {
 
             var lookup: OpaquePointer?
             var update: OpaquePointer?
+            var receiptLookup: OpaquePointer?
             guard sqlite3_prepare_v2(
                 self.connection.db,
                 "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1;",
@@ -1509,14 +1510,21 @@ final class HashCacheRepository {
                 self.connection.db,
                 "UPDATE hash_cache SET asset_modification_date = ?, asset_resource_fingerprint = ? WHERE asset_id = ?;",
                 -1, &update, nil
+            ) == SQLITE_OK,
+            sqlite3_prepare_v2(
+                self.connection.db,
+                "SELECT COUNT(*), SUM(CASE WHEN asset_resource_fingerprint = ? THEN 1 ELSE 0 END) FROM uploaded_assets WHERE asset_id = ?;",
+                -1, &receiptLookup, nil
             ) == SQLITE_OK else {
                 sqlite3_finalize(lookup)
                 sqlite3_finalize(update)
+                sqlite3_finalize(receiptLookup)
                 return Set(snapshots.map(\.localIdentifier))
             }
             defer {
                 sqlite3_finalize(lookup)
                 sqlite3_finalize(update)
+                sqlite3_finalize(receiptLookup)
             }
 
             func execute(_ sql: String, _ assetId: String) -> Bool {
@@ -1528,6 +1536,17 @@ final class HashCacheRepository {
                 defer { sqlite3_finalize(statement) }
                 sqlite3_bind_text(statement, 1, (assetId as NSString).utf8String, -1, nil)
                 return sqlite3_step(statement) == SQLITE_DONE
+            }
+
+            func hasCurrentReceipt(assetId: String, fingerprint: String) -> Bool {
+                sqlite3_reset(receiptLookup)
+                sqlite3_clear_bindings(receiptLookup)
+                sqlite3_bind_text(receiptLookup, 1, (fingerprint as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(receiptLookup, 2, (assetId as NSString).utf8String, -1, nil)
+                guard sqlite3_step(receiptLookup) == SQLITE_ROW else { return false }
+                let receiptCount = Int(sqlite3_column_int(receiptLookup, 0))
+                let matchingCount = Int(sqlite3_column_int(receiptLookup, 1))
+                return receiptCount > 0 && matchingCount == receiptCount
             }
 
             var retained = Set<String>()
@@ -1567,6 +1586,13 @@ final class HashCacheRepository {
                     }
                 } else {
                     retained.insert(snapshot.localIdentifier)
+                    if storedFingerprint == nil,
+                       hasCurrentReceipt(
+                           assetId: snapshot.localIdentifier,
+                           fingerprint: currentFingerprint
+                       ) {
+                        continue
+                    }
                     guard execute(
                         "DELETE FROM hash_cache WHERE asset_id = ?;",
                         snapshot.localIdentifier
