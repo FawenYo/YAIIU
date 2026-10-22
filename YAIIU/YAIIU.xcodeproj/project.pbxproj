@@ -14,6 +14,8 @@
 		2A0000070000000000000001 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000080000000000000001 /* LoginView.swift */; };
 		2A0000090000000000000001 /* PhotoGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00000A0000000000000001 /* PhotoGridView.swift */; };
 		2A00000B0000000000000001 /* PhotoThumbnailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00000C0000000000000001 /* PhotoThumbnailView.swift */; };
+		A15000010000000000000001 /* CompositeInputStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15000020000000000000001 /* CompositeInputStream.swift */; };
+		A15000030000000000000001 /* CompositeInputStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15000040000000000000001 /* CompositeInputStreamTests.swift */; };
 		2A00000D0000000000000001 /* ImmichAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A00000E0000000000000001 /* ImmichAPIService.swift */; };
 		2A00000F0000000000000001 /* PhotoLibraryManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000100000000000000001 /* PhotoLibraryManager.swift */; };
 		PE0000010000000000000001 /* PhotoLibraryEnumeration.swift in Sources */ = {isa = PBXBuildFile; fileRef = PE0000020000000000000001 /* PhotoLibraryEnumeration.swift */; };
@@ -122,6 +124,8 @@
 		2A0000080000000000000001 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		2A00000A0000000000000001 /* PhotoGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoGridView.swift; sourceTree = "<group>"; };
 		2A00000C0000000000000001 /* PhotoThumbnailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoThumbnailView.swift; sourceTree = "<group>"; };
+		A15000020000000000000001 /* CompositeInputStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositeInputStream.swift; sourceTree = "<group>"; };
+		A15000040000000000000001 /* CompositeInputStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositeInputStreamTests.swift; sourceTree = "<group>"; };
 		2A00000E0000000000000001 /* ImmichAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImmichAPIService.swift; sourceTree = "<group>"; };
 		2A0000100000000000000001 /* PhotoLibraryManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryManager.swift; sourceTree = "<group>"; };
 		PE0000020000000000000001 /* PhotoLibraryEnumeration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryEnumeration.swift; sourceTree = "<group>"; };
@@ -312,6 +316,7 @@
 				BC4F08F32F04C75D009E5C3E /* FavoriteSyncService.swift */,
 				AS0000020000000000000001 /* AlbumSyncService.swift */,
 				CI0000020000000000000001 /* CloudIdSyncService.swift */,
+				A15000020000000000000001 /* CompositeInputStream.swift */,
 				2A00000E0000000000000001 /* ImmichAPIService.swift */,
 				NR0000020000000000000001 /* NetworkReachability.swift */,
 				2A0000100000000000000001 /* PhotoLibraryManager.swift */,
@@ -433,6 +438,7 @@
 				TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */,
 				AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */,
                 TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */,
+				A15000040000000000000001 /* CompositeInputStreamTests.swift */,
 				UQ0000020000000000000001 /* UploadQueueTests.swift */,
 				TS0000170000000000000001 /* HashPipelinePolicyTests.swift */,
 				PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */,
@@ -587,6 +593,7 @@
 				2A0000070000000000000001 /* LoginView.swift in Sources */,
 				2A0000090000000000000001 /* PhotoGridView.swift in Sources */,
 				2A00000B0000000000000001 /* PhotoThumbnailView.swift in Sources */,
+				A15000010000000000000001 /* CompositeInputStream.swift in Sources */,
 				2A00000D0000000000000001 /* ImmichAPIService.swift in Sources */,
 				2A00000F0000000000000001 /* PhotoLibraryManager.swift in Sources */,
 				PE0000010000000000000001 /* PhotoLibraryEnumeration.swift in Sources */,
@@ -657,6 +664,7 @@
 				TS0000120000000000000001 /* ServerAssetSyncPersistenceTests.swift in Sources */,
 				AU0000010000000000000001 /* AuthenticationPersistenceTests.swift in Sources */,
                 TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */,
+				A15000030000000000000001 /* CompositeInputStreamTests.swift in Sources */,
 				UQ0000010000000000000001 /* UploadQueueTests.swift in Sources */,
 				TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */,
 				PT0000010000000000000001 /* PhotoLibraryEnumerationTests.swift in Sources */,
