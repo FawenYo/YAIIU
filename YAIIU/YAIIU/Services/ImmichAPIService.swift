@@ -177,14 +177,8 @@ class ImmichAPIService: NSObject {
         let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
         logInfo("Starting streaming upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
 
-        let streamBufferSize = 16 * 1024 * 1024
-        var readStream: InputStream?
-        var writeStream: OutputStream?
-        Stream.getBoundStreams(withBufferSize: streamBufferSize, inputStream: &readStream, outputStream: &writeStream)
-
-        guard let inputStream = readStream, let outputStream = writeStream else {
-            throw ImmichAPIError.uploadFailed(reason: "Failed to create bound streams for \(filename)")
-        }
+        // A fresh CompositeInputStream is built whenever URLSession requests
+        // the body, including authentication challenges and request replay.
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -231,29 +225,28 @@ class ImmichAPIService: NSObject {
             let task = uploadSession.uploadTask(withStreamedRequest: request)
             let taskId = task.taskIdentifier
 
-            taskDelegate.bodyStream = inputStream
+            taskDelegate.makeBodyStream = {
+                CompositeInputStream(
+                    preamble: preambleData,
+                    fileURL: fileURL,
+                    epilogue: epilogueData
+                )
+            }
+            taskDelegate.cleanup = {
+                try? FileManager.default.removeItem(at: originalFileURL)
+                if fileURL != originalFileURL {
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
+            }
 
             delegateQueue.sync(flags: .barrier) {
                 self.uploadDelegates[taskId] = taskDelegate
             }
 
-            // The pump now owns both temporary files until it finishes;
-            // preparation of the next asset can proceed while these bytes
-            // are being streamed by URLSession.
+            // Once a URLSession task owns the resource, keep both temporary
+            // files alive until didCompleteWithError (not merely bytes sent).
+            // A body-stream replay can happen after the first stream is exhausted.
             ownsPreparedFile = false
-            self.pumpAssetData(
-                fileURL: fileURL,
-                preamble: preambleData,
-                epilogue: epilogueData,
-                into: outputStream,
-                filename: filename,
-                completion: {
-                    try? FileManager.default.removeItem(at: originalFileURL)
-                    if fileURL != originalFileURL {
-                        try? FileManager.default.removeItem(at: fileURL)
-                    }
-                }
-            )
             holdsPreparationSlot = false
             Self.uploadPreparationGate.release(1)
             onTransferStarted?()
@@ -261,81 +254,6 @@ class ImmichAPIService: NSObject {
         }
 
         return assetFileSize
-    }
-
-    private func pumpAssetData(
-        fileURL: URL,
-        preamble: Data,
-        epilogue: Data,
-        into outputStream: OutputStream,
-        filename: String,
-        completion: @escaping @Sendable () -> Void
-    ) {
-        let pumpQueue = DispatchQueue(label: "com.yaiiu.upload.pump.\(filename)", qos: .userInitiated)
-        pumpQueue.async {
-            outputStream.open()
-            defer {
-                outputStream.close()
-                completion()
-            }
-
-            func writeAll(_ data: Data) -> Bool {
-                var offset = 0
-                while offset < data.count {
-                    let written = data.withUnsafeBytes { rawBuffer -> Int in
-                        guard let base = rawBuffer.baseAddress else { return -1 }
-                        let ptr = base.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
-                        return outputStream.write(ptr, maxLength: data.count - offset)
-                    }
-                    if written <= 0 {
-                        logError("OutputStream write failed for \(filename): \(outputStream.streamError?.localizedDescription ?? "unknown")", category: .api)
-                        return false
-                    }
-                    offset += written
-                }
-                return true
-            }
-
-            guard writeAll(preamble) else { return }
-            guard self.writeAllFile(fileURL, to: outputStream) else { return }
-            _ = writeAll(epilogue)
-        }
-    }
-
-
-    private func writeAllFile(_ fileURL: URL, to outputStream: OutputStream) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
-            logError("Failed to open temp resource file \(fileURL.lastPathComponent)", category: .api)
-            return false
-        }
-        defer { try? handle.close() }
-
-        while true {
-            let chunk: Data
-            do {
-                guard let data = try autoreleasepool(invoking: {
-                    try handle.read(upToCount: 512 * 1024)
-                }), !data.isEmpty else { break }
-                chunk = data
-            } catch {
-                logError("Failed to read temp resource \(fileURL.lastPathComponent): \(error.localizedDescription)", category: .api)
-                return false
-            }
-            var offset = 0
-            while offset < chunk.count {
-                let written = chunk.withUnsafeBytes { rawBuffer -> Int in
-                    guard let base = rawBuffer.baseAddress else { return -1 }
-                    let ptr = base.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
-                    return outputStream.write(ptr, maxLength: chunk.count - offset)
-                }
-                if written <= 0 {
-                    logError("OutputStream write failed: \(outputStream.streamError?.localizedDescription ?? "unknown")", category: .api)
-                    return false
-                }
-                offset += written
-            }
-        }
-        return true
     }
 
     private static func buildMultipartPreamble(
@@ -1446,7 +1364,8 @@ class UploadTaskDelegate {
     var responseData = Data()
     var onBytesSent: (() -> Void)?
     var bytesSentCallbackFired = false
-    var bodyStream: InputStream?
+    var makeBodyStream: (() -> InputStream?)?
+    var cleanup: (() -> Void)?
 
     init(
         filename: String,
@@ -1474,7 +1393,11 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
             completionHandler(nil)
             return
         }
-        completionHandler(delegate.bodyStream)
+        let stream = delegate.makeBodyStream?()
+        if stream == nil {
+            logError("Unable to recreate upload body stream for \(delegate.filename)", category: .api)
+        }
+        completionHandler(stream)
     }
 
     // MARK: Upload progress
@@ -1521,11 +1444,17 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
         guard let delegate = getUploadDelegate(for: taskId) else { return }
         
         defer {
+            delegate.cleanup?()
             removeUploadDelegate(for: taskId)
         }
         
         if let error = error {
-            logError("Upload failed for \(delegate.filename): \(error.localizedDescription)", category: .api)
+            let nsError = error as NSError
+            logError(
+                "Upload failed for \(delegate.filename): \(error.localizedDescription) " +
+                "(domain=\(nsError.domain), code=\(nsError.code))",
+                category: .api
+            )
             delegate.completion(.failure(error))
             return
         }
