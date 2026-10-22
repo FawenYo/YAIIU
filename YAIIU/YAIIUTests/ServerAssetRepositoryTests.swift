@@ -614,6 +614,20 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
     }
 
+    func testLegacyNullableHashFlagsCountAsNotUploaded() {
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "legacy", isHidden: false)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        execute("""
+            INSERT INTO hash_cache(asset_id, sha1_hash, calculated_at,
+                                   checked_at, is_on_server, has_raw)
+            VALUES ('legacy', 'old-hash', 0, 1, NULL, NULL);
+            """)
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+    }
+
     func testLocalInventoryAndPhotoKitDeltaCommitTogether() {
         let initial = [
             PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: nil),

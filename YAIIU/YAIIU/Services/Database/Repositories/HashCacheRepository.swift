@@ -1335,17 +1335,17 @@ final class HashCacheRepository {
                     OR (h.checked_at IS NULL AND EXISTS (
                         SELECT 1 FROM server_assets_cache LIMIT 1
                     ))
-                    OR (h.has_raw = 1 AND (
-                        (h.is_on_server != 1 AND NOT EXISTS (
+                    OR (COALESCE(h.has_raw, 0) = 1 AND (
+                        (COALESCE(h.is_on_server, 0) != 1 AND NOT EXISTS (
                             SELECT 1 FROM uploaded_assets u
                             WHERE u.asset_id = a.asset_id AND u.resource_type != 'raw'
                         ))
-                        OR (h.raw_on_server != 1 AND NOT EXISTS (
+                        OR (COALESCE(h.raw_on_server, 0) != 1 AND NOT EXISTS (
                             SELECT 1 FROM uploaded_assets u
                             WHERE u.asset_id = a.asset_id AND u.resource_type = 'raw'
                         ))
                     ))
-                    OR (h.has_raw != 1 AND h.is_on_server != 1 AND NOT EXISTS (
+                    OR (COALESCE(h.has_raw, 0) != 1 AND COALESCE(h.is_on_server, 0) != 1 AND NOT EXISTS (
                         SELECT 1 FROM uploaded_assets u WHERE u.asset_id = a.asset_id
                     ))
                 );
