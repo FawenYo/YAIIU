@@ -866,6 +866,16 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 return bootstrapForegroundPhotoWork()
             }
 
+            // Existing installations have a cursor but no complete local ID
+            // inventory. Seed the lightweight membership once, then replay
+            // the OLD cursor: changes during the scan cannot be missed.
+            if !db.isLocalPhotoInventoryReady() {
+                guard bootstrapLocalPhotoInventory() else {
+                    logWarning("Local PhotoKit inventory bootstrap incomplete; retry on next run", category: .hash)
+                    return .unavailable
+                }
+            }
+
             do {
                 let changes = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
                 var processedBatches = 0
@@ -1026,6 +1036,37 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
         let retained = DatabaseManager.shared.reconcileForegroundPendingAssets(snapshots: visibleSnapshots)
         return pending.filter { visible.contains($0) && retained.contains($0) }
+    }
+
+    /// One-time upgrade: only stream PhotoKit IDs + hidden flags in 300-item
+    /// windows. Never enumerate full PHAssetSnapshot contents or advance the
+    /// existing foreground change token here.
+    private func bootstrapLocalPhotoInventory() -> Bool {
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        let assets = PHAsset.fetchAssets(with: options)
+        let db = DatabaseManager.shared
+        guard db.beginLocalPhotoInventoryBootstrap() else { return false }
+
+        var batch: [(identifier: String, isHidden: Bool)] = []
+        batch.reserveCapacity(300)
+        var succeeded = true
+        let completed = PhotoLibraryEnumeration.forEach(
+            in: assets, shouldStop: { !succeeded }
+        ) { asset, _ in
+            batch.append((asset.localIdentifier, asset.isHidden))
+            if batch.count == 300 {
+                if !db.appendLocalPhotoInventoryBatch(batch) { succeeded = false }
+                batch.removeAll(keepingCapacity: true)
+            }
+        }
+        guard completed, succeeded,
+              PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              db.appendLocalPhotoInventoryBatch(batch),
+              db.finishLocalPhotoInventoryBootstrap() else { return false }
+
+        logInfo("Local PhotoKit inventory baseline complete: assets=\(assets.count)", category: .hash)
+        return true
     }
 
     private func bootstrapForegroundPhotoWork() -> ForegroundPhotoWork {

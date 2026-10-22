@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 11
+    private static let schemaVersion = 12
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -105,6 +105,7 @@ final class SQLiteConnection {
         createForegroundPhotoStateTables()
         createBackgroundUploadQueueTable()
         createBackgroundUploadStateTable()
+        createLocalPhotoInventoryTables()
         createIndexes()
     }
     
@@ -245,6 +246,22 @@ final class SQLiteConnection {
         executeStatement(sql)
     }
     
+    /// A persistent PhotoKit membership snapshot, independent of hash cache.
+    private func createLocalPhotoInventoryTables() {
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS local_photo_assets (
+                asset_id TEXT PRIMARY KEY NOT NULL,
+                is_hidden INTEGER NOT NULL DEFAULT 0
+            );
+            """)
+        executeStatement("""
+            CREATE TABLE IF NOT EXISTS local_photo_inventory_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                is_ready INTEGER NOT NULL DEFAULT 0
+            );
+            """)
+    }
+
     private func createIndexes() {
         executeStatement("CREATE INDEX IF NOT EXISTS idx_jobs_status ON upload_jobs(status)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
@@ -301,6 +318,7 @@ final class SQLiteConnection {
             if currentVersion < 9 { migrateToV9() }
             if currentVersion < 10 { migrateToV10() }
             if currentVersion < 11 { migrateToV11() }
+            if currentVersion < 12 { createLocalPhotoInventoryTables() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -525,10 +543,14 @@ final class SQLiteConnection {
         let backgroundUploadStateColumns = tableColumns("background_upload_state")
         let hashCacheColumns = tableColumns("hash_cache")
         let uploadedAssetColumns = tableColumns("uploaded_assets")
+        let inventoryColumns = tableColumns("local_photo_assets")
+        let inventoryStateColumns = tableColumns("local_photo_inventory_state")
         return ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
             && serverAssetColumns.contains("source_checksum")
             && hashCacheColumns.contains("asset_resource_fingerprint")
             && uploadedAssetColumns.contains("asset_resource_fingerprint")
+            && ["asset_id", "is_hidden"].allSatisfy(inventoryColumns.contains)
+            && ["id", "is_ready"].allSatisfy(inventoryStateColumns.contains)
             && ["asset_id", "enqueued_at"].allSatisfy(backgroundUploadQueueColumns.contains)
             && ["bootstrap_token_data", "destination_identity", "updated_at"].allSatisfy(backgroundUploadStateColumns.contains)
     }

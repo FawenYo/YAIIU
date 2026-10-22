@@ -1217,6 +1217,150 @@ final class HashCacheRepository {
         }
     }
     
+
+    // MARK: - Durable Local Photo Inventory
+
+    /// The completion marker distinguishes a reliable inventory from a
+    /// migration interrupted between batches (or an older database).
+    func isLocalPhotoInventoryReady() -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            return sqlite3_prepare_v2(
+                connection.db,
+                "SELECT is_ready FROM local_photo_inventory_state WHERE id = 1;",
+                -1, &stmt, nil
+            ) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW &&
+                sqlite3_column_int(stmt, 0) == 1
+        }
+    }
+
+    func beginLocalPhotoInventoryBootstrap() -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            guard connection.beginTransaction() else { return false }
+            guard sqlite3_exec(
+                connection.db,
+                "INSERT OR REPLACE INTO local_photo_inventory_state(id, is_ready) VALUES (1, 0);"
+                    + "DELETE FROM local_photo_assets;",
+                nil, nil, nil
+            ) == SQLITE_OK, connection.commitTransaction() else {
+                connection.rollbackTransaction()
+                return false
+            }
+            return true
+        }
+    }
+
+    /// Small committed windows, bounded native PhotoKit allocations and
+    /// no massive in-memory PHAsset array during the one-time upgrade.
+    func appendLocalPhotoInventoryBatch(_ entries: [(identifier: String, isHidden: Bool)]) -> Bool {
+        guard !entries.isEmpty else { return true }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            guard connection.beginTransaction() else { return false }
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                connection.db,
+                "INSERT OR REPLACE INTO local_photo_assets(asset_id, is_hidden) VALUES (?, ?);",
+                -1, &stmt, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(stmt)
+                connection.rollbackTransaction()
+                return false
+            }
+            defer { sqlite3_finalize(stmt) }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for entry in entries {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard sqlite3_bind_text(
+                    stmt, 1, (entry.identifier as NSString).utf8String, -1, transient
+                ) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 2, entry.isHidden ? 1 : 0) == SQLITE_OK,
+                    sqlite3_step(stmt) == SQLITE_DONE else {
+                    connection.rollbackTransaction()
+                    return false
+                }
+            }
+            guard connection.commitTransaction() else {
+                connection.rollbackTransaction()
+                return false
+            }
+            return true
+        }
+    }
+
+    func finishLocalPhotoInventoryBootstrap() -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            guard connection.beginTransaction() else { return false }
+            guard sqlite3_exec(
+                connection.db,
+                "UPDATE local_photo_inventory_state SET is_ready = 1 WHERE id = 1;",
+                nil, nil, nil
+            ) == SQLITE_OK, connection.commitTransaction() else {
+                connection.rollbackTransaction()
+                return false
+            }
+            return true
+        }
+    }
+
+    /// Mirror getAllSyncStatusAsync: an unchecked hash with a server cache is
+    /// pending; RAW pairs require both primary and RAW resources. Receipts count
+    /// as uploaded even when the hash cache has an older is_on_server value.
+    func countNotUploadedVisibleAssets() -> Int? {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            var ready: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                connection.db, "SELECT is_ready FROM local_photo_inventory_state WHERE id = 1;",
+                -1, &ready, nil
+            ) == SQLITE_OK else {
+                sqlite3_finalize(ready)
+                return nil
+            }
+            let isReady = sqlite3_step(ready) == SQLITE_ROW && sqlite3_column_int(ready, 0) == 1
+            sqlite3_finalize(ready)
+            guard isReady else { return nil }
+
+            let sql = """
+                SELECT COUNT(*)
+                FROM local_photo_assets a
+                LEFT JOIN hash_cache h ON h.asset_id = a.asset_id
+                WHERE a.is_hidden = 0 AND (
+                    h.asset_id IS NULL
+                    OR (h.checked_at IS NULL AND EXISTS (
+                        SELECT 1 FROM server_assets_cache LIMIT 1
+                    ))
+                    OR (h.has_raw = 1 AND (
+                        (h.is_on_server != 1 AND NOT EXISTS (
+                            SELECT 1 FROM uploaded_assets u
+                            WHERE u.asset_id = a.asset_id AND u.resource_type != 'raw'
+                        ))
+                        OR (h.raw_on_server != 1 AND NOT EXISTS (
+                            SELECT 1 FROM uploaded_assets u
+                            WHERE u.asset_id = a.asset_id AND u.resource_type = 'raw'
+                        ))
+                    ))
+                    OR (h.has_raw != 1 AND h.is_on_server != 1 AND NOT EXISTS (
+                        SELECT 1 FROM uploaded_assets u WHERE u.asset_id = a.asset_id
+                    ))
+                );
+                """
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(connection.db, sql, -1, &stmt, nil) == SQLITE_OK,
+                  sqlite3_step(stmt) == SQLITE_ROW else {
+                logWarning("Local PhotoKit inventory count query failed", category: .database)
+                return nil
+            }
+            return Int(sqlite3_column_int64(stmt, 0))
+        }
+    }
+
     // MARK: - Statistics
     
     func getHashCacheStatsAsync(completion: @escaping (Int, Int, Int) -> Void) {
@@ -1451,6 +1595,16 @@ final class HashCacheRepository {
                               AND s.resource_fingerprint IS NOT NULL
                               AND s.resource_fingerprint = h.asset_resource_fingerprint
                         );
+                        """),
+                      // Inventory and foreground PhotoKit cursor commit atomically.
+                      execute("DELETE FROM local_photo_assets;"),
+                      execute("""
+                        INSERT INTO local_photo_assets(asset_id, is_hidden)
+                        SELECT asset_id, is_hidden FROM foreground_snapshot;
+                        """),
+                      execute("""
+                        INSERT OR REPLACE INTO local_photo_inventory_state(id, is_ready)
+                        VALUES (1, 1);
                         """) else { return false }
 
             } else {
@@ -1580,6 +1734,37 @@ final class HashCacheRepository {
                         DELETE FROM upload_jobs WHERE asset_id = ?
                         AND status IN ('pending', 'failed');
                         """, deletedIdentifiers) else { return false }
+
+                // Keep inaccessible assets until an explicit deletion event.
+                // Hidden changes and additions update the persistent inventory.
+                var inventoryUpsert: OpaquePointer?
+                guard sqlite3_prepare_v2(
+                    db,
+                    "INSERT OR REPLACE INTO local_photo_assets(asset_id, is_hidden) VALUES (?, ?);",
+                    -1, &inventoryUpsert, nil
+                ) == SQLITE_OK else {
+                    sqlite3_finalize(inventoryUpsert)
+                    return false
+                }
+                let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                var inventoryOK = true
+                for snapshot in snapshots where !deletedIdentifiers.contains(snapshot.localIdentifier) {
+                    sqlite3_reset(inventoryUpsert)
+                    sqlite3_clear_bindings(inventoryUpsert)
+                    if sqlite3_bind_text(
+                        inventoryUpsert, 1, (snapshot.localIdentifier as NSString).utf8String,
+                        -1, transient
+                    ) != SQLITE_OK
+                        || sqlite3_bind_int(inventoryUpsert, 2, snapshot.isHidden ? 1 : 0) != SQLITE_OK
+                        || sqlite3_step(inventoryUpsert) != SQLITE_DONE {
+                        inventoryOK = false
+                        break
+                    }
+                }
+                sqlite3_finalize(inventoryUpsert)
+                guard inventoryOK,
+                      runIDs("DELETE FROM local_photo_assets WHERE asset_id = ?;", deletedIdentifiers)
+                else { return false }
             }
 
             // The extension's cursor is untouched, even though the SQLite
