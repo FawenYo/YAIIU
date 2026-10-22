@@ -69,9 +69,11 @@ final class CompositeInputStreamTests: XCTestCase {
 
     func testDeletedSourceFailsInsteadOfSilentlyTruncatingMultipartBody() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data([0x55]).write(to: url)
         let stream = try XCTUnwrap(CompositeInputStream(
             preamble: Data("before".utf8), fileURL: url, epilogue: Data("after".utf8)
         ))
+        try FileManager.default.removeItem(at: url)
         stream.open()
         var buffer = [UInt8](repeating: 0, count: 64)
         XCTAssertEqual(stream.read(&buffer, maxLength: buffer.count), 6)
@@ -79,5 +81,51 @@ final class CompositeInputStreamTests: XCTestCase {
         XCTAssertEqual(stream.streamStatus, .error)
         XCTAssertNotNil(stream.streamError)
         stream.close()
+    }
+    private final class RecordingDelegate: NSObject, StreamDelegate {
+        func stream(_ aStream: Stream, handle eventCode: Stream.Event) {}
+    }
+
+    func testStreamSupportsObjectiveCDelegateAndRunLoopLifecycle() throws {
+        try withTempFile(Data("abc".utf8)) { url in
+            let stream = try XCTUnwrap(CompositeInputStream(
+                preamble: Data("PRE".utf8), fileURL: url, epilogue: Data("POST".utf8)
+            ))
+            let listener = RecordingDelegate()
+            #if canImport(ObjectiveC)
+            // Regression: URLSession previously raised NSInvalidArgumentException
+            // when calling the abstract -setDelegate: implementation.
+            _ = stream.perform(NSSelectorFromString("setDelegate:"), with: listener)
+            #else
+            stream.delegate = listener
+            #endif
+            XCTAssertTrue((stream.delegate as AnyObject) === listener)
+
+            stream.schedule(in: RunLoop.current, forMode: .default)
+            let unsupportedKey = Stream.PropertyKey(rawValue: "com.yaiiu.unknownStreamProperty")
+            XCTAssertNil(stream.property(forKey: unsupportedKey))
+            XCTAssertFalse(stream.setProperty(NSNumber(value: 1), forKey: unsupportedKey))
+
+            XCTAssertEqual(try readAll(stream, chunkSize: 2), Data("PREabcPOST".utf8))
+            var tail = [UInt8](repeating: 0, count: 8)
+            XCTAssertEqual(stream.read(&tail, maxLength: tail.count), -1, "Closed streams are not readable")
+            stream.remove(from: RunLoop.current, forMode: .default)
+            stream.delegate = nil
+            XCTAssertTrue((stream.delegate as AnyObject) === stream)
+        }
+    }
+
+    func testReadingAgainAtEndReturnsZero() throws {
+        try withTempFile(Data([0x10])) { url in
+            let stream = try XCTUnwrap(CompositeInputStream(
+                preamble: Data([0x01]), fileURL: url, epilogue: Data([0x02])
+            ))
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 8)
+            while stream.read(&buffer, maxLength: buffer.count) > 0 {}
+            XCTAssertEqual(stream.streamStatus, .atEnd)
+            XCTAssertEqual(stream.read(&buffer, maxLength: buffer.count), 0)
+        }
     }
 }
