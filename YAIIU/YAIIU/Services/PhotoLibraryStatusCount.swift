@@ -1,6 +1,19 @@
 import Foundation
 
 struct PhotoLibraryStatusCount {
+    /// A badge is informative only after both stores have been loaded and
+    /// there is no concurrent sync/hash job changing its membership.
+    static func canPresentCount(
+        statusCacheReady: Bool,
+        isServerSyncing: Bool,
+        isHashProcessing: Bool,
+        hasPhotoLibraryFetch: Bool,
+        isPhotoLibraryLoading: Bool
+    ) -> Bool {
+        statusCacheReady && !isServerSyncing && !isHashProcessing &&
+            hasPhotoLibraryFetch && !isPhotoLibraryLoading
+    }
+
     static func notUploadedCount(
         totalCount: Int,
         statuses: [String: PhotoSyncStatus],

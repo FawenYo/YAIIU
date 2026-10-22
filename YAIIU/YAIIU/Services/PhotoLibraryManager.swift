@@ -644,7 +644,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             totalCount: totalCount, statuses: statuses, shouldStop: shouldStop
         ) { identifiers in
             let options = PHFetchOptions()
-            options.includeAssetSourceTypes = .typeUserLibrary
             options.includeHiddenAssets = false
             options.includeAllBurstAssets = false
             options.wantsIncrementalChangeDetails = false

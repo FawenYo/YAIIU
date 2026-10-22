@@ -360,7 +360,8 @@ struct PhotoGridView: View {
         nonmutating set { fetchStorage.cachedNotUploaded = newValue }
     }
     @State private var cachedNotUploadedGeneration: Int?
-    @State private var cachedNotUploadedCount: Int = 0
+    /// nil means the full, matching-generation count is not yet trustworthy.
+    @State private var cachedNotUploadedCount: Int?
     @State private var countRefreshTask: Task<Void, Never>?
     @State private var recomputeTask: Task<Void, Never>?
     @State private var countComputeVersion: Int = 0
@@ -414,6 +415,16 @@ struct PhotoGridView: View {
 
     /// A background PhotoKit refresh does not invalidate the old, retained
     /// filtered fetch. Users can still select its visible assets by identifier.
+    private var canPresentNotUploadedCount: Bool {
+        PhotoLibraryStatusCount.canPresentCount(
+            statusCacheReady: hashManager.isSyncStatusCacheReady,
+            isServerSyncing: isSyncing,
+            isHashProcessing: hashManager.isProcessing,
+            hasPhotoLibraryFetch: photoLibraryManager.fetchResult != nil,
+            isPhotoLibraryLoading: photoLibraryManager.isLoading
+        )
+    }
+
     private var canSelectDisplayedPhotos: Bool {
         displayCount > 0 && (currentFilter == .all || filteredFetchResult != nil)
     }
@@ -528,6 +539,7 @@ struct PhotoGridView: View {
                 }
             }
             performAutoSync()
+            scheduleCountRefresh()
             if currentFilter == .favorites || currentFilter == .album {
                 refreshPhotoKitFilter()
             }
@@ -598,12 +610,25 @@ struct PhotoGridView: View {
                 }
             }
         }
+        .onChange(of: isSyncing) { _, syncing in
+            if syncing {
+                cachedNotUploadedCount = nil
+                recomputeTask?.cancel()
+                countComputeVersion &+= 1
+            } else {
+                scheduleCountRefresh()
+            }
+        }
         .onChange(of: hashManager.isProcessing) { oldValue, newValue in
             if newValue {
+                cachedNotUploadedCount = nil
+                recomputeTask?.cancel()
+                countComputeVersion &+= 1
                 // Pause only PhotoKit preheating. Do not clear visible cache or
                 // cancel existing image requests (the PR #90 spinner regression).
                 stopPrefetching()
             } else if oldValue {
+                scheduleCountRefresh()
                 syncPendingICloudIds()
                 if foregroundRefreshPending {
                     foregroundRefreshPending = false
@@ -622,10 +647,15 @@ struct PhotoGridView: View {
         // value during body re-eval, which can be skipped; onReceive fires on
         // every publish, so the count tracks the icons exactly.
         .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { _ in
+            cachedNotUploadedCount = nil
             syncStatusGeneration &+= 1
             scheduleCountRefresh()
         }
+        .onReceive(hashManager.$isSyncStatusCacheReady.receive(on: RunLoop.main)) { _ in
+            scheduleCountRefresh()
+        }
         .onReceive(photoLibraryManager.$assetFetchGeneration.receive(on: RunLoop.main)) { _ in
+            cachedNotUploadedCount = nil
             // A filtered index is a position within one particular PHFetchResult.
             // Invalidate it immediately when that fetch is replaced, before a
             // delayed identifier enumeration can publish its replacement.
@@ -682,6 +712,7 @@ struct PhotoGridView: View {
             }
         }
         .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
+            cachedNotUploadedCount = nil
             // Coalesce PhotoKit notifications (including album membership edits).
             libraryRefreshTask?.cancel()
             libraryRefreshTask = Task { @MainActor in
@@ -1111,8 +1142,10 @@ struct PhotoGridView: View {
                         }
                     } label: {
                         Label {
-                            if option == .notUploaded {
-                                Text("\(option.localizedTitle) (\(cachedNotUploadedCount))")
+                            if option == .notUploaded,
+                               canPresentNotUploadedCount,
+                               let count = cachedNotUploadedCount {
+                                Text("\(option.localizedTitle) (\(count))")
                             } else {
                                 Text(option.localizedTitle)
                             }
@@ -1388,6 +1421,13 @@ struct PhotoGridView: View {
         countComputeVersion += 1
         let version = countComputeVersion
 
+        // Never treat an empty/not-yet-loaded status map as evidence that all
+        // photos still need uploading. Defer low-priority counting during work.
+        guard canPresentNotUploadedCount else {
+            cachedNotUploadedCount = nil
+            return
+        }
+
         if currentFilter != .all,
            manager.orderedIdentifiersGeneration != manager.assetFetchGeneration {
             manager.requestIdentifierSnapshot()
@@ -1402,6 +1442,7 @@ struct PhotoGridView: View {
            ), let result = manager.fetchResult {
             cachedNotUploadedFetchResult = result
             cachedNotUploadedGeneration = manager.assetFetchGeneration
+            cachedNotUploadedCount = cachedNotUploadedIndices.count
             if currentFilter == .notUploaded {
                 filteredIndices = cachedNotUploadedIndices
                 filteredFetchResult = result
@@ -1429,6 +1470,7 @@ struct PhotoGridView: View {
                     guard !Task.isCancelled, version == self.countComputeVersion,
                           manager.assetFetchGeneration == generation,
                           self.syncStatusGeneration == statusGeneration,
+                          self.canPresentNotUploadedCount,
                           manager.orderedIdentifiersGeneration != generation else { return }
                     // A count does not certify cached positions. Indexed filters
                     // wait for their own complete, matching-generation snapshot.
@@ -1455,7 +1497,7 @@ struct PhotoGridView: View {
             // gallery into a false empty result. When a previously populated
             // list first reaches zero, confirm against the latest status map
             // after a short quiet interval before publishing it.
-            let hadItems = await MainActor.run { self.cachedNotUploadedCount > 0 }
+            let hadItems = await MainActor.run { (self.cachedNotUploadedCount ?? 0) > 0 }
             if notUploadedIndices.isEmpty && hadItems {
                 do {
                     try await Task.sleep(nanoseconds: 400_000_000)
@@ -1488,9 +1530,10 @@ struct PhotoGridView: View {
                       manager.assetIndexGeneration == indexGeneration,
                       manager.orderedIdentifiersGeneration == manager.assetFetchGeneration,
                       self.syncStatusGeneration == appliedStatusGeneration,
+                      self.canPresentNotUploadedCount,
                       let result = manager.fetchResult else { return }
 
-                let previousCount = self.cachedNotUploadedCount
+                let previousCount = self.cachedNotUploadedCount ?? 0
                 let newCount = notUploadedIndices.count
                 if newCount == 0 && previousCount > 0 {
                     logWarning(

@@ -2,6 +2,25 @@ import XCTest
 @testable import YAIIU
 
 final class PhotoLibraryStatusCountTests: XCTestCase {
+    func testBadgeRequiresBothStoresAndNoActiveSyncWork() {
+        func canShow(
+            ready: Bool = true, syncing: Bool = false, processing: Bool = false,
+            hasFetch: Bool = true, loading: Bool = false
+        ) -> Bool {
+            PhotoLibraryStatusCount.canPresentCount(
+                statusCacheReady: ready, isServerSyncing: syncing,
+                isHashProcessing: processing, hasPhotoLibraryFetch: hasFetch,
+                isPhotoLibraryLoading: loading
+            )
+        }
+        XCTAssertTrue(canShow())
+        XCTAssertFalse(canShow(ready: false))
+        XCTAssertFalse(canShow(syncing: true))
+        XCTAssertFalse(canShow(processing: true))
+        XCTAssertFalse(canShow(hasFetch: false))
+        XCTAssertFalse(canShow(loading: true))
+    }
+
     func testCountUsesOnlyVisibleUploadedAssetsAndIncludesUnknownPhotos() {
         let statuses: [String: PhotoSyncStatus] = [
             "visible": .uploaded, "hidden": .uploaded, "deleted": .uploaded,

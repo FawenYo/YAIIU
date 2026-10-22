@@ -393,6 +393,8 @@ class HashManager: ObservableObject {
     @Published var statusMessage: String = ""
     
     @Published var syncStatusCache: [String: PhotoSyncStatus] = [:]
+    /// An empty dictionary before the initial SQLite read is not a valid count source.
+    @Published private(set) var isSyncStatusCacheReady = false
     
     @Published var iCloudIdMatchCount: Int = 0
 
@@ -499,6 +501,7 @@ class HashManager: ObservableObject {
 
     @MainActor
     private func applyStatusSnapshot(_ statusMap: [String: PhotoSyncStatus]) {
+        isSyncStatusCacheReady = true
         guard statusMap != syncStatusCache else { return }
         syncStatusCache = statusMap
     }
