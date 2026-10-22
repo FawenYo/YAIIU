@@ -554,6 +554,95 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(queuedIds(), ["deleted"])
     }
 
+
+    // MARK: - Persistent Local PhotoKit Inventory
+
+    func testLocalPhotoCountRequiresCompletedBaseline() {
+        XCTAssertFalse(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertNil(hashRepository.countNotUploadedVisibleAssets())
+
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "visible", isHidden: false),
+            (identifier: "hidden", isHidden: true)
+        ]))
+        // An interrupted baseline must NEVER expose its partial count.
+        XCTAssertNil(hashRepository.countNotUploadedVisibleAssets())
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertNil(hashRepository.countNotUploadedVisibleAssets())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "new-only", isHidden: false)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+        XCTAssertEqual(ids(for: "SELECT asset_id FROM local_photo_assets;"), ["new-only"])
+    }
+
+    func testSQLiteLocalCountMatchesPendingReceiptsAndRAWPairSemantics() {
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        let ids = ["primary-done", "raw-partial", "raw-receipt", "receipt", "pending", "new", "hidden"]
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch(
+            ids.map { (identifier: $0, isHidden: $0 == "hidden") }
+        ))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        execute("""
+            INSERT INTO hash_cache
+                (asset_id, sha1_hash, calculated_at, checked_at, is_on_server, has_raw, raw_on_server)
+            VALUES
+                ('primary-done', 'sha-1', 0, 100, 1, 0, 0),
+                ('raw-partial', 'sha-2', 0, 100, 1, 1, 0),
+                ('raw-receipt', 'sha-3', 0, 100, 1, 1, 0),
+                ('receipt', 'sha-4', 0, 100, 0, 0, 0),
+                ('pending', 'sha-5', 0, NULL, 1, 0, 0);
+            INSERT INTO uploaded_assets
+                (asset_id, resource_type, filename, immich_id, uploaded_at)
+            VALUES
+                ('raw-receipt', 'raw', 'a.dng', 'immich-raw', 10),
+                ('receipt', 'jpeg', 'a.jpeg', 'immich-primary', 10);
+            INSERT INTO server_assets_cache(immich_id, checksum, synced_at)
+            VALUES ('remote', 'remote-sha', 10);
+            """)
+        // raw-partial, pending (unchecked with a server cache), new (no hash).
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 3)
+        execute("DELETE FROM server_assets_cache;")
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 2)
+        execute("UPDATE hash_cache SET raw_on_server = 1 WHERE asset_id = 'raw-partial';")
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+    }
+
+    func testLocalInventoryAndPhotoKitDeltaCommitTogether() {
+        let initial = [
+            PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: nil),
+            PhotoAssetSnapshot(localIdentifier: "deleted", modificationDate: nil),
+            PhotoAssetSnapshot(localIdentifier: "hidden", modificationDate: nil, isHidden: true)
+        ]
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: initial,
+            pendingIdentifiers: ["visible", "deleted"],
+            deletedIdentifiers: [], tokenData: Data([1]), bootstrap: true
+        ))
+        XCTAssertTrue(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 2)
+
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [
+                PhotoAssetSnapshot(localIdentifier: "visible", modificationDate: nil, isHidden: true),
+                PhotoAssetSnapshot(localIdentifier: "new", modificationDate: nil)
+            ],
+            pendingIdentifiers: ["visible", "new"],
+            deletedIdentifiers: ["deleted"], tokenData: Data([2]), bootstrap: false
+        ))
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+        XCTAssertEqual(ids(for: "SELECT asset_id FROM local_photo_assets ORDER BY asset_id;"),
+                       ["hidden", "new", "visible"])
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM local_photo_assets WHERE is_hidden = 1;"), 2)
+        XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([2]))
+    }
+
     private func queuedIds() -> [String] {
         ids(for: "SELECT asset_id FROM background_upload_queue ORDER BY asset_id;")
     }

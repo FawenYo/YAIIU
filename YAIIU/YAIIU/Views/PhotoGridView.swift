@@ -421,6 +421,7 @@ struct PhotoGridView: View {
             isServerSyncing: isSyncing,
             isHashProcessing: hashManager.isProcessing,
             isUploading: uploadManager.isUploading,
+            hasFullPhotoAccess: photoLibraryManager.authorizationStatus == .authorized,
             hasPhotoLibraryFetch: photoLibraryManager.fetchResult != nil,
             isPhotoLibraryLoading: photoLibraryManager.isLoading
         )
@@ -1410,11 +1411,10 @@ struct PhotoGridView: View {
         }
     }
 
-    /// Single off-main pass that derives both the not-uploaded count and the
-    /// filtered index set from the current syncStatusCache. Iterates the cached
-    /// orderedLocalIdentifiers array (in-memory) rather than re-enumerating the
-    /// lazy PHFetchResult, which is orders of magnitude faster on large
-    /// libraries and lets the badge stay in sync with the per-photo icons.
+    /// The badge comes from the durable PhotoKit-ID inventory joined to SQLite
+    /// upload state. Only the actual Not Uploaded gallery needs an ordered
+    /// identifier scan to build its display positions; never enumerate Photos
+    /// merely to display a menu badge.
     @MainActor
     private func recomputeCounts() {
         let manager = photoLibraryManager
@@ -1432,7 +1432,7 @@ struct PhotoGridView: View {
             return
         }
 
-        if currentFilter != .all,
+        if currentFilter == .notUploaded,
            manager.orderedIdentifiersGeneration != manager.assetFetchGeneration {
             manager.requestIdentifierSnapshot()
             return
@@ -1460,24 +1460,25 @@ struct PhotoGridView: View {
         // Task { } inherits the caller's @MainActor isolation, regardless
         // of priority. Keep the full-library status scan off the UI thread.
         recomputeTask = Task.detached(priority: .utility) { [self] in
-            let (statusCache, identifiers, generation, snapshotGeneration, indexGeneration, statusGeneration, totalCount) = await MainActor.run {
+            let (statusCache, identifiers, generation, snapshotGeneration, indexGeneration, statusGeneration, requiresIndices) = await MainActor.run {
                 (hash.syncStatusCache, manager.orderedLocalIdentifiers,
                  manager.assetFetchGeneration, manager.orderedIdentifiersGeneration,
-                 manager.assetIndexGeneration, self.syncStatusGeneration, manager.assetCount)
+                 manager.assetIndexGeneration, self.syncStatusGeneration,
+                 self.currentFilter == .notUploaded)
             }
             guard !Task.isCancelled else { return }
-            if snapshotGeneration != generation {
-                guard let count = PhotoLibraryManager.notUploadedCount(
-                    totalCount: totalCount, statuses: statusCache, shouldStop: { Task.isCancelled }
-                ) else { return }
+
+            // Constant-memory SQLite COUNT over persistent local identifiers.
+            // Avoid 300-ID PhotoKit fetches for each of ~120k uploaded photos.
+            if !requiresIndices || snapshotGeneration != generation {
+                guard let count = DatabaseManager.shared.countNotUploadedVisibleAssets(),
+                      !Task.isCancelled else { return }
                 await MainActor.run {
                     guard !Task.isCancelled, version == self.countComputeVersion,
                           manager.assetFetchGeneration == generation,
                           self.syncStatusGeneration == statusGeneration,
-                          self.canPresentNotUploadedCount,
-                          manager.orderedIdentifiersGeneration != generation else { return }
-                    // A count does not certify cached positions. Indexed filters
-                    // wait for their own complete, matching-generation snapshot.
+                          self.canPresentNotUploadedCount else { return }
+                    // This count cannot be used as a PhotoKit display index.
                     self.cachedNotUploadedCount = count
                 }
                 return

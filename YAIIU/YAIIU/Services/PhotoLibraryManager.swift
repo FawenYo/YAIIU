@@ -635,25 +635,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
     }
 
-    /// Count with short-lived fetches instead of filling the main grid fetch's
-    /// native object cache by visiting every asset just to render a badge.
-    static func notUploadedCount(
-        totalCount: Int, statuses: [String: PhotoSyncStatus], shouldStop: () -> Bool
-    ) -> Int? {
-        return PhotoLibraryStatusCount.notUploadedCount(
-            totalCount: totalCount, statuses: statuses, shouldStop: shouldStop
-        ) { identifiers in
-            let options = PHFetchOptions()
-            options.includeHiddenAssets = false
-            options.includeAllBurstAssets = false
-            options.wantsIncrementalChangeDetails = false
-            options.predicate = NSPredicate(format: "localIdentifier IN %@", identifiers)
-            // Use the same visibility rules as the main all-assets query.
-            // Reading count never materializes the matching PHAsset objects.
-            return PHAsset.fetchAssets(with: options).count
-        }
-    }
-
     @MainActor
     private func startIdentifierScan(for result: PHFetchResult<PHAsset>) -> Task<[String]?, Never> {
         identifierScanTask?.cancel()
