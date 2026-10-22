@@ -1098,6 +1098,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
             """), 1)
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "stale-fingerprint"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "stale-fingerprint"))
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM foreground_photo_pending_assets
+            WHERE asset_id = 'stale-fingerprint';
+            """), 1)
         XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline().isEmpty)
     }
 

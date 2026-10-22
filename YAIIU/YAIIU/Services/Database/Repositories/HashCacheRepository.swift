@@ -359,7 +359,8 @@ final class HashCacheRepository {
                     for sql in [
                         "DELETE FROM hash_cache WHERE asset_id = ? AND sha1_hash = ?;",
                         "DELETE FROM uploaded_assets WHERE asset_id = ?;",
-                        "DELETE FROM upload_jobs WHERE asset_id = ? AND status = 'completed';"
+                        "DELETE FROM upload_jobs WHERE asset_id = ? AND status = 'completed';",
+                        "INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id) VALUES (?);"
                     ] {
                         var invalidationStatement: OpaquePointer?
                         guard sqlite3_prepare_v2(self.connection.db, sql, -1, &invalidationStatement, nil) == SQLITE_OK else {
