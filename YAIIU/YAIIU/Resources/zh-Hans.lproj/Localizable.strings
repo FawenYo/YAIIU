@@ -115,6 +115,13 @@
 "photoGrid.confirm.cancel" = "取消";
 "photoGrid.confirm.upload" = "上传";
 "photoGrid.processing.preparing" = "准备中";
+"photoGrid.processing.syncingServer" = "正在同步服务器数据…";
+"photoGrid.processing.readingPhotoLibrary" = "正在读取照片库变更…";
+"photoGrid.processing.preparingComparison" = "正在准备照片比对…";
+"photoGrid.processing.title" = "正在准备照片";
+"photoGrid.processing.waitingDetail" = "正在处理照片资料，完成后会自动继续。";
+"photoGrid.processing.working" = "正在处理照片…";
+"photoGrid.processing.baseline" = "正在建立照片资料索引 %d/%d";
 "photoGrid.processing.comparing" = "对比 %d/%d";
 "photoGrid.processing.checking" = "对比中";
 "photoGrid.processing.default" = "...";

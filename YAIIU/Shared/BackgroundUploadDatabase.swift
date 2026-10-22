@@ -1,7 +1,50 @@
 import Foundation
+import Photos
 import SQLite3
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+// PhotoKit exposes resource metadata but no public byte-version identifier.
+// This signature intentionally suppresses metadata/iCloud-only update storms;
+// a same-metadata byte replacement cannot be distinguished without reading and
+// hashing resource bytes, which would recreate the startup cost this policy avoids.
+enum PhotoAssetResourceFingerprint {
+    private struct ResourceMetadata {
+        let type: String
+        let uti: String
+        let filename: String
+        let fileSize: Int64?
+        let value: String
+    }
+
+    static func make(for asset: PHAsset) -> String? {
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard !resources.isEmpty else { return nil }
+        let values = resources
+            .map { resource in
+                let fileSize = (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+                let type = String(describing: resource.type)
+                let size = fileSize.map { String($0) } ?? "nil"
+                return ResourceMetadata(
+                    type: type,
+                    uti: resource.uniformTypeIdentifier,
+                    filename: resource.originalFilename,
+                    fileSize: fileSize,
+                    value: type + "/" + resource.uniformTypeIdentifier + "/"
+                        + resource.originalFilename + "/" + size
+                )
+            }
+            .sorted {
+                if $0.type != $1.type { return $0.type < $1.type }
+                if $0.uti != $1.uti { return $0.uti < $1.uti }
+                if $0.filename != $1.filename { return $0.filename < $1.filename }
+                return ($0.fileSize ?? -1) < ($1.fileSize ?? -1)
+            }
+            .map(\.value)
+            .joined(separator: ";")
+        return "v1|adjustments=\(asset.hasAdjustments)|format=\(asset.adjustmentFormatIdentifier ?? "nil")|mediaType=\(asset.mediaType.rawValue)|mediaSubtypes=\(UInt64(asset.mediaSubtypes.rawValue))|resources=\(values)"
+    }
+}
 
 /// PhotoKit updated identifiers also include changes that do not modify media.
 /// Reuse a cache entry only when both the stored and current versions are known.
@@ -125,6 +168,7 @@ final class BackgroundUploadDatabase {
             )
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
+        ensureUploadedAssetFingerprintColumn()
 
         // Older extension builds created RAW jobs without updating has_raw. Repair
         // that durable resource-presence fact so a confirmed primary never hides a
@@ -157,6 +201,49 @@ final class BackgroundUploadDatabase {
                 print("[BackgroundUploadDatabase] Failed SQL: \(sql)")
             }
         }
+    }
+
+    private func ensureUploadedAssetFingerprintColumn() {
+        var statement: OpaquePointer?
+        var hasColumn = false
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(uploaded_assets);", -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let columnName = sqlite3_column_text(statement, 1),
+                   String(cString: columnName) == "asset_resource_fingerprint" {
+                    hasColumn = true
+                    break
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+
+        if !hasColumn {
+            exec("ALTER TABLE uploaded_assets ADD COLUMN asset_resource_fingerprint TEXT;")
+        }
+    }
+
+    private func uploadedReceiptMatchesCurrentFingerprint(
+        db: OpaquePointer?,
+        assetId: String,
+        fingerprint: String
+    ) -> Bool {
+        let sql = """
+            SELECT COUNT(*),
+                   SUM(CASE WHEN asset_resource_fingerprint = ? THEN 1 ELSE 0 END)
+            FROM uploaded_assets
+            WHERE asset_id = ?
+        """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        sqlite3_bind_text(statement, 1, fingerprint, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 2, assetId, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return false }
+        let receiptCount = Int(sqlite3_column_int(statement, 0))
+        let matchingCount = Int(sqlite3_column_int(statement, 1))
+        return receiptCount > 0 && matchingCount == receiptCount
     }
     
     // MARK: - Upload Jobs
@@ -384,12 +471,20 @@ final class BackgroundUploadDatabase {
     
     // MARK: - Uploaded Assets
     
-    func recordUploadedAsset(assetId: String, resourceType: String, filename: String, immichId: String, fileSize: Int64, isDuplicate: Bool) {
+    func recordUploadedAsset(
+        assetId: String,
+        resourceType: String,
+        filename: String,
+        immichId: String,
+        fileSize: Int64,
+        isDuplicate: Bool,
+        resourceFingerprint: String? = nil
+    ) {
         queue.sync {
             let sql = """
                 INSERT OR REPLACE INTO uploaded_assets
-                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at, asset_resource_fingerprint)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """
             
             var stmt: OpaquePointer?
@@ -404,6 +499,11 @@ final class BackgroundUploadDatabase {
             sqlite3_bind_int64(stmt, 5, fileSize)
             sqlite3_bind_int(stmt, 6, isDuplicate ? 1 : 0)
             sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
+            if let resourceFingerprint {
+                sqlite3_bind_text(stmt, 8, resourceFingerprint, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 8)
+            }
             
             sqlite3_step(stmt)
             
@@ -748,10 +848,18 @@ final class BackgroundUploadDatabase {
         updatedAssetIds: Set<String>,
         deletedAssetIds: Set<String>,
         updatedAssetModificationDates: [String: Date],
+        updatedAssetResourceFingerprints: [String: String] = [:],
         tokenData: Data
     ) -> PhotoAssetChangeCommitSummary? {
         queue.sync {
             guard let db else { return nil }
+            let unresolvedUpdatedAssetIds = updatedAssetIds
+                .subtracting(deletedAssetIds)
+                .subtracting(Set(updatedAssetResourceFingerprints.keys))
+            // Do not advance the PhotoKit cursor until every updated asset has
+            // resource evidence. A missing fingerprint usually means an iCloud
+            // restore or an unresolved PHAsset; replay it on the next run.
+            guard unresolvedUpdatedAssetIds.isEmpty else { return nil }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
                 return nil
             }
@@ -774,7 +882,8 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(insertStmt) }
-            for assetId in insertedAssetIds.union(updatedAssetIds) {
+            let effectiveDeletedAssetIds = deletedAssetIds
+            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(effectiveDeletedAssetIds) {
                 sqlite3_reset(insertStmt)
                 sqlite3_clear_bindings(insertStmt)
                 guard sqlite3_bind_text(insertStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -785,17 +894,17 @@ final class BackgroundUploadDatabase {
             }
 
             // PhotoKit marks metadata/iCloud availability updates as "updated" too.
-            // Compare versions inside the same transaction as cache invalidation and
-            // cursor advancement; missing assets/dates/cache rows remain conservative.
-            var invalidatedUpdatedIds = updatedAssetIds
-            if !updatedAssetModificationDates.isEmpty && !updatedAssetIds.isEmpty {
-                let sql = "SELECT asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1"
+            // Compare resource metadata inside same transaction as cache
+            // invalidation and cursor advancement. Missing resource evidence
+            // rejects this checkpoint; legacy rows invalidate when evidence exists.
+            var invalidatedUpdatedIds = deletedAssetIds
+            if !updatedAssetIds.isEmpty {
+                let sql = "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1"
                 var versionStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, sql, -1, &versionStmt, nil) == SQLITE_OK {
                     defer { sqlite3_finalize(versionStmt) }
 
                     for assetId in updatedAssetIds {
-                        guard let currentDate = updatedAssetModificationDates[assetId] else { continue }
                         sqlite3_reset(versionStmt)
                         sqlite3_clear_bindings(versionStmt)
                         guard sqlite3_bind_text(versionStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
@@ -803,27 +912,48 @@ final class BackgroundUploadDatabase {
                         }
                         let result = sqlite3_step(versionStmt)
                         if result == SQLITE_ROW {
-                            let storedDate: TimeInterval? = sqlite3_column_type(versionStmt, 0) == SQLITE_NULL
-                                ? nil : sqlite3_column_double(versionStmt, 0)
-                            if PhotoAssetVersionPolicy.canReuseCachedHash(
-                                storedModificationTime: storedDate,
-                                currentModificationDate: currentDate
-                            ) {
-                                invalidatedUpdatedIds.remove(assetId)
+                            let storedFingerprint: String? = {
+                                guard let pointer = sqlite3_column_text(versionStmt, 0) else { return nil }
+                                return String(cString: pointer)
+                            }()
+                            if let currentFingerprint = updatedAssetResourceFingerprints[assetId] {
+                                if let storedFingerprint, storedFingerprint != currentFingerprint {
+                                    invalidatedUpdatedIds.insert(assetId)
+                                } else if storedFingerprint == nil {
+                                    // Legacy/imported hashes have no trusted
+                                    // resource evidence. Rehash before reuse.
+                                    invalidatedUpdatedIds.insert(assetId)
+                                } else {
+                                    guard updateResourceFingerprint(
+                                        db: db,
+                                        assetId: assetId,
+                                        modificationDate: updatedAssetModificationDates[assetId],
+                                        fingerprint: currentFingerprint
+                                    ) else { return nil }
+                                }
                             }
-                        } else if result != SQLITE_DONE {
+                        } else if result == SQLITE_DONE {
+                            // A background upload can finish after foreground
+                            // invalidation and create a current receipt before
+                            // the hash cache is rebuilt. Preserve only receipts
+                            // carrying the current resource fingerprint.
+                            if let currentFingerprint = updatedAssetResourceFingerprints[assetId],
+                               !uploadedReceiptMatchesCurrentFingerprint(
+                                   db: db,
+                                   assetId: assetId,
+                                   fingerprint: currentFingerprint
+                               ) {
+                                invalidatedUpdatedIds.insert(assetId)
+                            }
+                        } else {
                             return nil
                         }
                     }
                 } else {
-                    let error = String(cString: sqlite3_errmsg(db))
                     sqlite3_finalize(versionStmt)
-                    // An older extension may launch before the host migrates the
-                    // version column. Fall back to the original conservative
-                    // invalidation rather than blocking the durable checkpoint.
-                    guard error.contains("no such column: asset_modification_date") else {
-                        return nil
-                    }
+                    // An older host database may not have the fingerprint
+                    // column yet. Do not advance token across that schema gap.
+                    return nil
                 }
             }
 
@@ -895,7 +1025,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(foregroundStmt) }
-            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(deletedAssetIds) {
+            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(effectiveDeletedAssetIds) {
                 sqlite3_reset(foregroundStmt)
                 sqlite3_clear_bindings(foregroundStmt)
                 guard sqlite3_bind_text(foregroundStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -909,7 +1039,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(foregroundDeleteStmt) }
-            for assetId in deletedAssetIds {
+            for assetId in effectiveDeletedAssetIds {
                 sqlite3_reset(foregroundDeleteStmt)
                 sqlite3_clear_bindings(foregroundDeleteStmt)
                 guard sqlite3_bind_text(foregroundDeleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -923,7 +1053,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(deleteStmt) }
-            for assetId in deletedAssetIds {
+            for assetId in effectiveDeletedAssetIds {
                 sqlite3_reset(deleteStmt)
                 sqlite3_clear_bindings(deleteStmt)
                 guard sqlite3_bind_text(deleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -960,6 +1090,30 @@ final class BackgroundUploadDatabase {
                 invalidatedVersions: invalidatedUpdatedIds.count
             )
         }
+    }
+
+    @discardableResult
+    private func updateResourceFingerprint(
+        db: OpaquePointer,
+        assetId: String,
+        modificationDate: Date?,
+        fingerprint: String
+    ) -> Bool {
+        let sql = "UPDATE hash_cache SET asset_modification_date = ?, asset_resource_fingerprint = ? WHERE asset_id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        if let modificationDate {
+            sqlite3_bind_double(statement, 1, modificationDate.timeIntervalSince1970)
+        } else {
+            sqlite3_bind_null(statement, 1)
+        }
+        sqlite3_bind_text(statement, 2, fingerprint, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 3, assetId, -1, SQLITE_TRANSIENT)
+        return sqlite3_step(statement) == SQLITE_DONE
     }
 
     func getQueuedAssetIds(limit: Int) throws -> [String] {

@@ -115,6 +115,13 @@
 "photoGrid.confirm.cancel" = "Abbrechen";
 "photoGrid.confirm.upload" = "Hochladen";
 "photoGrid.processing.preparing" = "Wird vorbereitet";
+"photoGrid.processing.syncingServer" = "Serverdaten werden synchronisiert…";
+"photoGrid.processing.readingPhotoLibrary" = "Änderungen der Fotomediathek werden gelesen…";
+"photoGrid.processing.preparingComparison" = "Fotovergleich wird vorbereitet…";
+"photoGrid.processing.title" = "Fotos werden vorbereitet";
+"photoGrid.processing.waitingDetail" = "Fotodaten werden verarbeitet. Danach wird automatisch fortgesetzt.";
+"photoGrid.processing.working" = "Fotos werden verarbeitet…";
+"photoGrid.processing.baseline" = "Foto-Metadatenindex wird erstellt %d/%d";
 "photoGrid.processing.comparing" = "Vergleiche %d/%d";
 "photoGrid.processing.checking" = "Wird überprüft";
 "photoGrid.processing.default" = "...";

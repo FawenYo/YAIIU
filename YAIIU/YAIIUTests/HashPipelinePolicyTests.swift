@@ -83,6 +83,58 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertFalse(state.isRunning)
     }
 
+    func testProcessingStageExplainsWhyPreparationIsTakingTime() {
+        XCTAssertEqual(
+            PhotoGridProcessingStage.resolve(
+                statusMessage: "Preparing...",
+                processed: 0,
+                total: 0,
+                isSyncing: true,
+                foregroundWorkPreparing: false
+            ),
+            .syncingServer
+        )
+        XCTAssertEqual(
+            PhotoGridProcessingStage.resolve(
+                statusMessage: "Preparing...",
+                processed: 0,
+                total: 0,
+                isSyncing: false,
+                foregroundWorkPreparing: true
+            ),
+            .readingPhotoLibrary
+        )
+        XCTAssertEqual(
+            PhotoGridProcessingStage.resolve(
+                statusMessage: "Preparing...",
+                processed: 0,
+                total: 0,
+                isSyncing: false,
+                foregroundWorkPreparing: false
+            ),
+            .preparingComparison
+        )
+    }
+
+    func testPreparationStagesUseDedicatedProcessingScreen() {
+        XCTAssertTrue(PhotoGridProcessingStage.syncingServer.showsDedicatedScreen)
+        XCTAssertTrue(PhotoGridProcessingStage.readingPhotoLibrary.showsDedicatedScreen)
+        XCTAssertTrue(PhotoGridProcessingStage.preparingComparison.showsDedicatedScreen)
+        XCTAssertTrue(PhotoGridProcessingStage.defaultStatus.showsDedicatedScreen)
+        XCTAssertFalse(PhotoGridProcessingStage.analyzing(current: 1, total: 111).showsDedicatedScreen)
+        XCTAssertFalse(PhotoGridProcessingStage.checking(current: 1, total: 111).showsDedicatedScreen)
+    }
+
+    func testPhotoKitBaselineProgressReportsBoundedFraction() {
+        let progress = PhotoKitBaselineProgress(completed: 17_700, total: 101_731)
+        XCTAssertEqual(progress.fraction, 17_700.0 / 101_731.0, accuracy: 0.000_001)
+        XCTAssertFalse(progress.isComplete)
+
+        let completed = PhotoKitBaselineProgress(completed: 200, total: 100)
+        XCTAssertEqual(completed.fraction, 1)
+        XCTAssertTrue(completed.isComplete)
+    }
+
     func testFinishedRunCannotOwnStateAfterRestart() {
         let state = HashPipelinePolicy.RunState()
         let oldRunID = state.beginIfIdle()

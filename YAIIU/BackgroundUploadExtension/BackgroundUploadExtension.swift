@@ -352,15 +352,16 @@ final class BackgroundUploadExtensionCore {
                 logWarning("Could not resolve identity for completed job \(job.localIdentifier); acknowledging without recording")
             }
 
-            let currentVersionSucceeded: Bool
+            let currentAsset: PHAsset?
             if succeeded, let identity {
-                currentVersionSucceeded = jobMatchesCurrentAssetState(job, identity: identity)
-                if !currentVersionSucceeded {
+                currentAsset = currentAssetIfJobMatches(job, identity: identity)
+                if currentAsset == nil {
                     logWarning("Completed job \(job.localIdentifier) targets an older asset version; acknowledging without recording")
                 }
             } else {
-                currentVersionSucceeded = false
+                currentAsset = nil
             }
+            let currentVersionSucceeded = currentAsset != nil
 
             // Capture response data before acknowledging; acknowledgement removes the
             // job from PhotoKit tracking and its fields may become unavailable after.
@@ -376,14 +377,16 @@ final class BackgroundUploadExtensionCore {
             // Persist a successful upload before releasing the PhotoKit job; the write
             // is idempotent, while a termination between commit and record would lose
             // the upload's durable record.
-            if currentVersionSucceeded, let identity {
+            if currentVersionSucceeded, let identity, let currentAsset {
+                let resourceFingerprint = PhotoAssetResourceFingerprint.make(for: currentAsset)
                 database.recordUploadedAsset(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
                     filename: identity.filename,
                     immichId: immichId ?? "unknown",
                     fileSize: 0,
-                    isDuplicate: false
+                    isDuplicate: false,
+                    resourceFingerprint: resourceFingerprint
                 )
                 SharedSettings.shared.lastBackgroundUploadAt = Date()
             }
@@ -666,6 +669,7 @@ final class BackgroundUploadExtensionCore {
                 // PhotoKit can report metadata or iCloud storage state as updates.
                 // Fetch current versions without downloading original resources.
                 var modificationDates: [String: Date] = [:]
+                var resourceFingerprints: [String: String] = [:]
                 if !updated.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
@@ -676,6 +680,9 @@ final class BackgroundUploadExtensionCore {
                         if let date = asset.modificationDate {
                             modificationDates[asset.localIdentifier] = date
                         }
+                        if let fingerprint = PhotoAssetResourceFingerprint.make(for: asset) {
+                            resourceFingerprints[asset.localIdentifier] = fingerprint
+                        }
                     }
                 }
                 let nextTokenData = try archiveChangeToken(change.changeToken)
@@ -685,6 +692,7 @@ final class BackgroundUploadExtensionCore {
                     updatedAssetIds: updated,
                     deletedAssetIds: deleted,
                     updatedAssetModificationDates: modificationDates,
+                    updatedAssetResourceFingerprints: resourceFingerprints,
                     tokenData: nextTokenData
                 ) else {
                     throw NSError(
@@ -754,6 +762,7 @@ final class BackgroundUploadExtensionCore {
         var foundIds = Set<String>()
         var pending = [PHAssetResource]()
         var stoppedEarly = false
+        var hasResourceAvailabilityUnknown = false
         let deadline = Date().addingTimeInterval(discoveryTimeBudget)
 
         fetchResult.enumerateObjects { asset, _, stop in
@@ -775,7 +784,9 @@ final class BackgroundUploadExtensionCore {
                 return
             }
 
-            let resources = PHAssetResource.assetResources(for: asset).filter(self.shouldUpload)
+            let allResources = PHAssetResource.assetResources(for: asset)
+            let resources = allResources.filter(self.shouldUpload)
+            let resourceAvailabilityUnknown = allResources.isEmpty
             var assetHasOutstandingWork = false
 
             for resource in resources {
@@ -805,8 +816,14 @@ final class BackgroundUploadExtensionCore {
                 pending.append(resource)
             }
 
-            if !assetHasOutstandingWork {
+            if !assetHasOutstandingWork && !resourceAvailabilityUnknown {
                 self.database.removeQueuedAsset(asset.localIdentifier)
+            }
+            if resourceAvailabilityUnknown {
+                hasResourceAvailabilityUnknown = true
+                self.logDebug(
+                    "Delta discovery retained queued asset without uploadable resources: asset=\(asset.localIdentifier)"
+                )
             }
 
             // Finish the current asset so JPEG/RAW siblings stay together, then stop
@@ -833,6 +850,7 @@ final class BackgroundUploadExtensionCore {
             // Unresolved rows remain pending until Photos can resolve them or emits an
             // explicit deletion change.
             complete: !stoppedEarly && !hasMoreQueuedAssets && !hasUnresolvedAssets
+                && !hasResourceAvailabilityUnknown
         )
     }
 
@@ -1172,13 +1190,13 @@ final class BackgroundUploadExtensionCore {
         return exists
     }
 
-    private func jobMatchesCurrentAssetState(
+    private func currentAssetIfJobMatches(
         _ job: PHAssetResourceUploadJob,
         identity: JobIdentity
-    ) -> Bool {
+    ) -> PHAsset? {
         guard jobTargetsCurrentDestination(job),
               let asset = fetchAsset(identifier: identity.assetLocalIdentifier) else {
-            return false
+            return nil
         }
 
         // Reject unversioned legacy jobs conservatively: their existing
@@ -1188,12 +1206,12 @@ final class BackgroundUploadExtensionCore {
             job.destination.value(forHTTPHeaderField: "X-YAIIU-Asset-Version"),
             currentDate: asset.modificationDate
         ) else {
-            return false
+            return nil
         }
 
         if let value = job.destination.value(forHTTPHeaderField: "X-Is-Favorite"),
            value != (asset.isFavorite ? "true" : "false") {
-            return false
+            return nil
         }
 
         if let latitude = job.destination.value(forHTTPHeaderField: "X-Latitude"),
@@ -1203,14 +1221,14 @@ final class BackgroundUploadExtensionCore {
                   let location = asset.location,
                   abs(oldLat - location.coordinate.latitude) < 0.0000001,
                   abs(oldLong - location.coordinate.longitude) < 0.0000001 else {
-                return false
+                return nil
             }
         } else if asset.location != nil {
             // The current asset gained location metadata after this job was created.
-            return false
+            return nil
         }
 
-        return true
+        return asset
     }
 
     private func uploadableResource(for job: PHAssetResourceUploadJob) -> PHAssetResource? {

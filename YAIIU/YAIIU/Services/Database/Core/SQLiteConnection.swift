@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 9
+    private static let schemaVersion = 11
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -120,6 +120,7 @@ final class SQLiteConnection {
             is_duplicate INTEGER DEFAULT 0,
             is_favorite INTEGER DEFAULT 0,
             uploaded_at REAL NOT NULL,
+            asset_resource_fingerprint TEXT,
             UNIQUE(asset_id, resource_type)
         );
         """
@@ -156,7 +157,9 @@ final class SQLiteConnection {
             checked_at REAL,
             raw_hash TEXT,
             raw_on_server INTEGER DEFAULT 0,
-            has_raw INTEGER DEFAULT 0
+            has_raw INTEGER DEFAULT 0,
+            asset_modification_date REAL,
+            asset_resource_fingerprint TEXT
         );
         """
         executeStatement(sql)
@@ -296,6 +299,8 @@ final class SQLiteConnection {
             if currentVersion < 7 { migrateToV7() }
             if currentVersion < 8 { migrateToV8() }
             if currentVersion < 9 { migrateToV9() }
+            if currentVersion < 10 { migrateToV10() }
+            if currentVersion < 11 { migrateToV11() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -489,14 +494,41 @@ final class SQLiteConnection {
         """)
     }
 
+    /// Migration to version 10: persist lightweight PhotoKit resource metadata
+    /// used to distinguish content changes from metadata-only change events.
+    private func migrateToV10() {
+        logInfo("Migrating database to version 10: adding asset_resource_fingerprint column", category: .database)
+        guard !tableColumns("hash_cache").contains("asset_resource_fingerprint") else {
+            logInfo("asset_resource_fingerprint column already exists, skipping", category: .database)
+            return
+        }
+        executeStatement("ALTER TABLE hash_cache ADD COLUMN asset_resource_fingerprint TEXT;")
+    }
+
+    /// Migration to version 11: persist the resource version alongside upload
+    /// receipts so a receipt created after hash-cache invalidation is not
+    /// mistaken for a stale receipt.
+    private func migrateToV11() {
+        logInfo("Migrating database to version 11: adding uploaded asset resource fingerprint", category: .database)
+        guard !tableColumns("uploaded_assets").contains("asset_resource_fingerprint") else {
+            logInfo("uploaded asset resource fingerprint column already exists, skipping", category: .database)
+            return
+        }
+        executeStatement("ALTER TABLE uploaded_assets ADD COLUMN asset_resource_fingerprint TEXT;")
+    }
+
 
     private func hasSchemaColumnsForCurrentVersion() -> Bool {
         let syncMetadataColumns = tableColumns("sync_metadata")
         let serverAssetColumns = tableColumns("server_assets_cache")
         let backgroundUploadQueueColumns = tableColumns("background_upload_queue")
         let backgroundUploadStateColumns = tableColumns("background_upload_state")
+        let hashCacheColumns = tableColumns("hash_cache")
+        let uploadedAssetColumns = tableColumns("uploaded_assets")
         return ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
             && serverAssetColumns.contains("source_checksum")
+            && hashCacheColumns.contains("asset_resource_fingerprint")
+            && uploadedAssetColumns.contains("asset_resource_fingerprint")
             && ["asset_id", "enqueued_at"].allSatisfy(backgroundUploadQueueColumns.contains)
             && ["bootstrap_token_data", "destination_identity", "updated_at"].allSatisfy(backgroundUploadStateColumns.contains)
     }

@@ -40,6 +40,53 @@ enum PhotoFilterOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum PhotoGridProcessingStage: Equatable {
+    case syncingServer
+    case readingPhotoLibrary
+    case preparingComparison
+    case analyzing(current: Int, total: Int)
+    case checking(current: Int, total: Int)
+    case defaultStatus
+
+    var showsDedicatedScreen: Bool {
+        switch self {
+        case .syncingServer, .readingPhotoLibrary, .preparingComparison, .defaultStatus:
+            return true
+        case .analyzing, .checking:
+            return false
+        }
+    }
+
+    static func resolve(
+        statusMessage: String,
+        processed: Int,
+        total: Int,
+        isSyncing: Bool,
+        foregroundWorkPreparing: Bool
+    ) -> Self {
+        if isSyncing {
+            return .syncingServer
+        }
+        if foregroundWorkPreparing {
+            return .readingPhotoLibrary
+        }
+        if statusMessage.contains("分析") || statusMessage.contains("Analyzing") {
+            return total > 0 && processed > 0
+                ? .analyzing(current: processed, total: total)
+                : .preparingComparison
+        }
+        if statusMessage.contains("確認") || statusMessage.contains("Checking") {
+            return total > 0 && processed > 0
+                ? .checking(current: processed, total: total)
+                : .checking(current: 0, total: 0)
+        }
+        if statusMessage.contains("準備") || statusMessage.contains("Preparing") {
+            return .preparingComparison
+        }
+        return .defaultStatus
+    }
+}
+
 // MARK: - Preference Keys
 
 private struct FirstRowOffsetKey: PreferenceKey {
@@ -468,6 +515,8 @@ struct PhotoGridView: View {
                 .zIndex(1)
                 .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
+
+            processingScreen
         }
         .onAppear {
             if !hasAppeared {
@@ -676,35 +725,106 @@ struct PhotoGridView: View {
                 ProgressView()
                     .scaleEffect(0.7)
                     .padding(.vertical, 2)
-                
-                Text(getProcessingStatusText())
-                    .font(.system(size: 12))
+
+                Text(getCompactProcessingStatusText())
+                    .font(.system(size: 12).monospacedDigit())
                     .foregroundColor(.primary)
                     .fixedSize(horizontal: true, vertical: false)
             }
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(getProcessingStatusText())
         } else {
             EmptyView()
         }
     }
+
+    private func getCompactProcessingStatusText() -> String {
+        switch processingStage {
+        case let .analyzing(current, total):
+            return current > 0 && total > 0
+                ? "\(current)/\(total)"
+                : L10n.PhotoGrid.processingPreparing
+        case let .checking(current, total):
+            return current > 0 && total > 0
+                ? "\(current)/\(total)"
+                : L10n.PhotoGrid.processingPreparing
+        default:
+            return L10n.PhotoGrid.processingPreparing
+        }
+    }
     
     private func getProcessingStatusText() -> String {
-        let progress = hashManager.processedAssetsCount
-        let total = hashManager.totalAssetsToProcess
-        
-        if hashManager.statusMessage.contains("分析") || hashManager.statusMessage.contains("Analyzing") {
-            if total > 0 && progress > 0 {
-                return "\(progress)/\(total)"
-            }
+        switch processingStage {
+        case let .analyzing(current, total):
+            return total > 0 && current > 0
+                ? "\(current)/\(total)"
+                : L10n.PhotoGrid.processingPreparing
+        case let .checking(current, total):
+            return total > 0 && current > 0
+                ? L10n.PhotoGrid.processingComparing(current, total)
+                : L10n.PhotoGrid.processingPreparing
+        default:
             return L10n.PhotoGrid.processingPreparing
-        } else if hashManager.statusMessage.contains("確認") || hashManager.statusMessage.contains("Checking") {
-            if total > 0 && progress > 0 {
-                return L10n.PhotoGrid.processingComparing(progress, total)
+        }
+    }
+
+    private func getProcessingDetailText() -> String {
+        if let progress = photoLibraryManager.foregroundBaselineProgress {
+            return L10n.PhotoGrid.processingBaseline(progress.completed, progress.total)
+        }
+        return L10n.PhotoGrid.processingReadingPhotoLibrary
+    }
+
+    private var processingStage: PhotoGridProcessingStage {
+        PhotoGridProcessingStage.resolve(
+            statusMessage: hashManager.statusMessage,
+            processed: hashManager.processedAssetsCount,
+            total: hashManager.totalAssetsToProcess,
+            isSyncing: isSyncing,
+            foregroundWorkPreparing: foregroundWorkPreparing
+        )
+    }
+
+    @ViewBuilder
+    private var processingScreen: some View {
+        if hashManager.isProcessing,
+           photoLibraryManager.foregroundBaselineProgress != nil {
+            VStack(spacing: 20) {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.tint)
+
+                Text(L10n.PhotoGrid.processingTitle)
+                    .font(.title3.weight(.semibold))
+
+                Text(getProcessingDetailText())
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                if let progress = photoLibraryManager.foregroundBaselineProgress,
+                   progress.total > 0 {
+                    ProgressView(value: progress.fraction)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 280)
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                }
+
+                Text(L10n.PhotoGrid.processingWaitingDetail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
             }
-            return L10n.PhotoGrid.processingChecking
-        } else if hashManager.statusMessage.contains("準備") || hashManager.statusMessage.contains("Preparing") {
-            return L10n.PhotoGrid.processingPreparing
-        } else {
-            return L10n.PhotoGrid.processingDefault
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground).ignoresSafeArea())
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "\(L10n.PhotoGrid.processingTitle), \(getProcessingDetailText()), \(L10n.PhotoGrid.processingWaitingDetail)"
+            )
+            .transition(.opacity)
+            .zIndex(2)
         }
     }
     
@@ -728,9 +848,12 @@ struct PhotoGridView: View {
         Task.detached(priority: .utility) {
             // PhotoKit hash invalidation must not race with a server checksum
             // check that is about to write its verification result.
+            logInfo("Foreground PhotoKit work waiting for verification gate", category: .hash)
             await ServerAssetVerificationGate.shared.acquire()
+            logInfo("Foreground PhotoKit verification gate acquired", category: .hash)
             let work = manager.prepareForegroundPhotoWork()
             await ServerAssetVerificationGate.shared.release()
+            logInfo("Foreground PhotoKit verification gate released", category: .hash)
             await MainActor.run {
                 logInfo("Foreground PhotoKit preparation completed", category: .hash)
                 foregroundWorkPreparing = false

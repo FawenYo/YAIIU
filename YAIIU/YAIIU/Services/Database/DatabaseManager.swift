@@ -91,14 +91,16 @@ final class DatabaseManager {
         primaryHash: String,
         rawHash: String?,
         hasRAW: Bool,
-        modificationDate: Date? = nil
+        modificationDate: Date? = nil,
+        resourceFingerprint: String? = nil
     ) {
         hashRepo.saveMultiResourceHashCache(
             localIdentifier: localIdentifier,
             primaryHash: primaryHash,
             rawHash: rawHash,
             hasRAW: hasRAW,
-            modificationDate: modificationDate
+            modificationDate: modificationDate,
+            resourceFingerprint: resourceFingerprint
         )
     }
     
@@ -109,6 +111,22 @@ final class DatabaseManager {
     
     func unversionedHashCacheRows() -> [(localIdentifier: String, sha1Hash: String)] {
         hashRepo.unversionedHashCacheRows()
+    }
+
+    func hashCacheRowsNeedingPhotoKitBaseline() -> [(localIdentifier: String, sha1Hash: String)] {
+        hashRepo.hashCacheRowsNeedingPhotoKitBaseline()
+    }
+
+    @discardableResult
+    func backfillPhotoKitVersionMetadata(
+        _ updates: [(
+            localIdentifier: String,
+            sha1Hash: String,
+            modificationDate: Date?,
+            resourceFingerprint: String
+        )]
+    ) -> Int {
+        hashRepo.backfillPhotoKitVersionMetadata(updates)
     }
 
     @discardableResult
@@ -261,6 +279,11 @@ final class DatabaseManager {
 
     func getPendingForegroundPhotoIdentifiers() -> [String] {
         hashRepo.getPendingForegroundPhotoIdentifiers()
+    }
+
+    @discardableResult
+    func reconcileForegroundPendingAssets(snapshots: [PhotoAssetSnapshot]) -> Set<String> {
+        hashRepo.reconcileForegroundPendingAssets(snapshots: snapshots)
     }
 
     func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {

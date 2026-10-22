@@ -115,6 +115,13 @@
 "photoGrid.confirm.cancel" = "취소";
 "photoGrid.confirm.upload" = "업로드";
 "photoGrid.processing.preparing" = "준비 중";
+"photoGrid.processing.syncingServer" = "서버 데이터 동기화 중…";
+"photoGrid.processing.readingPhotoLibrary" = "사진 보관함 변경 사항을 읽는 중…";
+"photoGrid.processing.preparingComparison" = "사진 비교 준비 중…";
+"photoGrid.processing.title" = "사진 준비 중";
+"photoGrid.processing.waitingDetail" = "사진 데이터를 처리하고 있습니다. 완료되면 자동으로 계속됩니다.";
+"photoGrid.processing.working" = "사진 처리 중…";
+"photoGrid.processing.baseline" = "사진 메타데이터 색인 생성 중 %d/%d";
 "photoGrid.processing.comparing" = "비교 중 %d/%d";
 "photoGrid.processing.checking" = "확인 중";
 "photoGrid.processing.default" = "...";

@@ -8,21 +8,167 @@ struct PhotoAlbumOption: Identifiable, Hashable, Sendable {
     let title: String
 }
 
+struct PhotoAssetResourceSnapshot: Sendable, Equatable {
+    let typeDescription: String
+    let uniformTypeIdentifier: String
+    let originalFilename: String
+    let fileSize: Int64?
+
+    static func makeFingerprint(
+        resources: [PhotoAssetResourceSnapshot],
+        hasAdjustments: Bool,
+        adjustmentFormatIdentifier: String?,
+        mediaType: Int,
+        mediaSubtypes: UInt64
+    ) -> String? {
+        guard !resources.isEmpty else { return nil }
+        let resourceValues = resources
+            .sorted {
+                ($0.typeDescription, $0.uniformTypeIdentifier, $0.originalFilename, $0.fileSize ?? -1)
+                    < ($1.typeDescription, $1.uniformTypeIdentifier, $1.originalFilename, $1.fileSize ?? -1)
+            }
+            .map { resource in
+                let size = resource.fileSize.map(String.init) ?? "nil"
+                return "\(resource.typeDescription)/\(resource.uniformTypeIdentifier)/\(resource.originalFilename)/\(size)"
+            }
+            .joined(separator: ";")
+        return "v1|adjustments=\(hasAdjustments)|format=\(adjustmentFormatIdentifier ?? "nil")|mediaType=\(mediaType)|mediaSubtypes=\(mediaSubtypes)|resources=\(resourceValues)"
+    }
+}
+
+// PhotoKit exposes resource metadata but no public byte-version identifier.
+// This signature intentionally suppresses metadata/iCloud-only update storms;
+// a same-metadata byte replacement cannot be distinguished without reading and
+// hashing resource bytes, which would recreate the startup cost this policy avoids.
+
 struct PhotoAssetSnapshot: Sendable {
     let localIdentifier: String
     let modificationDate: Date?
     let isHidden: Bool
+    let creationDate: Date?
+    let isFavorite: Bool
+    let hasAdjustments: Bool
+    let adjustmentFormatIdentifier: String?
+    let mediaType: Int
+    let mediaSubtypes: UInt64
+    let resourceFingerprint: String?
+    let resources: [PhotoAssetResourceSnapshot]
 
-    init(localIdentifier: String, modificationDate: Date?, isHidden: Bool = false) {
+    init(
+        localIdentifier: String,
+        modificationDate: Date?,
+        isHidden: Bool = false,
+        creationDate: Date? = nil,
+        isFavorite: Bool = false,
+        hasAdjustments: Bool = false,
+        adjustmentFormatIdentifier: String? = nil,
+        mediaType: Int = 0,
+        mediaSubtypes: UInt64 = 0,
+        resourceFingerprint: String? = nil,
+        resources: [PhotoAssetResourceSnapshot] = []
+    ) {
         self.localIdentifier = localIdentifier
         self.modificationDate = modificationDate
         self.isHidden = isHidden
+        self.creationDate = creationDate
+        self.isFavorite = isFavorite
+        self.hasAdjustments = hasAdjustments
+        self.adjustmentFormatIdentifier = adjustmentFormatIdentifier
+        self.mediaType = mediaType
+        self.mediaSubtypes = mediaSubtypes
+        self.resourceFingerprint = resourceFingerprint
+        self.resources = resources
+    }
+
+    init(
+        asset: PHAsset,
+        includeResourceFingerprint: Bool = false,
+        includeResourceDiagnostics: Bool = true
+    ) {
+        let resourceSnapshots = includeResourceFingerprint
+            ? PHAssetResource.assetResources(for: asset).map { resource in
+                PhotoAssetResourceSnapshot(
+                    typeDescription: String(describing: resource.type),
+                    uniformTypeIdentifier: resource.uniformTypeIdentifier,
+                    originalFilename: resource.originalFilename,
+                    fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+                )
+            }
+            : []
+        self.init(
+            localIdentifier: asset.localIdentifier,
+            modificationDate: asset.modificationDate,
+            isHidden: asset.isHidden,
+            creationDate: asset.creationDate,
+            isFavorite: asset.isFavorite,
+            hasAdjustments: asset.hasAdjustments,
+            adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
+            mediaType: asset.mediaType.rawValue,
+            mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue),
+            resourceFingerprint: PhotoAssetResourceSnapshot.makeFingerprint(
+                resources: resourceSnapshots,
+                hasAdjustments: asset.hasAdjustments,
+                adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
+                mediaType: asset.mediaType.rawValue,
+                mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue)
+            ),
+            resources: includeResourceDiagnostics ? resourceSnapshots : []
+        )
+    }
+
+    static func resourceFingerprint(for asset: PHAsset) -> String? {
+        resourceFingerprint(for: asset, resources: PHAssetResource.assetResources(for: asset))
+    }
+
+    static func resourceFingerprint(for asset: PHAsset, resources: [PHAssetResource]) -> String? {
+        let resourceSnapshots = resources.map { resource in
+            PhotoAssetResourceSnapshot(
+                typeDescription: String(describing: resource.type),
+                uniformTypeIdentifier: resource.uniformTypeIdentifier,
+                originalFilename: resource.originalFilename,
+                fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            )
+        }
+        return PhotoAssetResourceSnapshot.makeFingerprint(
+            resources: resourceSnapshots,
+            hasAdjustments: asset.hasAdjustments,
+            adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
+            mediaType: asset.mediaType.rawValue,
+            mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue)
+        )
+    }
+
+    func diagnosticSummary(storedModificationDate: Date?) -> String {
+        func timestamp(_ date: Date?) -> String {
+            guard let date else { return "nil" }
+            return String(format: "%.1f", date.timeIntervalSince1970)
+        }
+
+        let resourceSummary = resources.map { resource in
+            let size = resource.fileSize.map(String.init) ?? "nil"
+            return "\(resource.typeDescription)/\(resource.uniformTypeIdentifier)/\(resource.originalFilename)/\(size)"
+        }.joined(separator: ",")
+        return "Foreground PhotoKit asset metadata: asset=\(localIdentifier), storedModificationDate=\(timestamp(storedModificationDate)), currentModificationDate=\(timestamp(modificationDate)), creationDate=\(timestamp(creationDate)), favorite=\(isFavorite), hidden=\(isHidden), hasAdjustments=\(hasAdjustments), adjustmentFormatIdentifier=\(adjustmentFormatIdentifier ?? "nil"), mediaType=\(mediaType), mediaSubtypes=\(mediaSubtypes), resources=[\(resourceSummary)]"
     }
 
     /// Do not start hashing hidden photos merely because orphan cleanup includes
     /// them in its authoritative PhotoKit snapshot.
     static func visibleIdentifiers(in snapshots: [PhotoAssetSnapshot]) -> [String] {
         snapshots.filter { !$0.isHidden }.map(\.localIdentifier)
+    }
+}
+
+struct PhotoKitBaselineProgress: Equatable, Sendable {
+    let completed: Int
+    let total: Int
+
+    var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(1, max(0, Double(completed) / Double(total)))
+    }
+
+    var isComplete: Bool {
+        completed >= total && total > 0
     }
 }
 
@@ -101,6 +247,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published private(set) var isLoading: Bool = false
     @Published private(set) var assetCount: Int = 0
+    @Published private(set) var foregroundBaselineProgress: PhotoKitBaselineProgress?
     /// Invalidates PhotoKit-based grid filters when favorites or album membership changes.
     @Published private(set) var libraryRevision: Int = 0
     /// The grid may only interpret index-based filters against this fetch generation.
@@ -586,9 +733,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         snapshots.reserveCapacity(result.count)
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             snapshots.append(PhotoAssetSnapshot(
-                localIdentifier: asset.localIdentifier,
-                modificationDate: asset.modificationDate,
-                isHidden: asset.isHidden
+                asset: asset,
+                includeResourceFingerprint: true,
+                includeResourceDiagnostics: false
             ))
         }
         return snapshots
@@ -622,19 +769,29 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         hasBackfilledUnknownHashVersions = true
 
         let db = DatabaseManager.shared
-        let rows = db.unversionedHashCacheRows()
+        let rows = db.hashCacheRowsNeedingPhotoKitBaseline()
         guard !rows.isEmpty else { return }
+        publishForegroundBaselineProgress(
+            PhotoKitBaselineProgress(completed: 0, total: rows.count)
+        )
+        defer { publishForegroundBaselineProgress(nil) }
 
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
         var matched = 0
         var filled = 0
-        // Fetch only identifiers with NULL cached dates, never resource bytes.
+        // Fetch only identifiers missing PhotoKit metadata, never resource bytes.
         // Chunking caps temporary allocations for large Immich imports.
         for start in stride(from: 0, to: rows.count, by: 300) {
-            let batch = rows[start..<min(start + 300, rows.count)]
+            let end = min(start + 300, rows.count)
+            let batch = rows[start..<end]
                 .filter { !excludingIdentifiers.contains($0.localIdentifier) }
-            guard !batch.isEmpty else { continue }
+            if batch.isEmpty {
+                publishForegroundBaselineProgress(
+                    PhotoKitBaselineProgress(completed: end, total: rows.count)
+                )
+                continue
+            }
             let checksums = Dictionary(uniqueKeysWithValues: batch.map {
                 ($0.localIdentifier, $0.sha1Hash)
             })
@@ -642,23 +799,41 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 withLocalIdentifiers: batch.map(\.localIdentifier),
                 options: options
             )
-            var updates: [(localIdentifier: String, sha1Hash: String, modificationDate: Date)] = []
+            var updates: [(
+                localIdentifier: String,
+                sha1Hash: String,
+                modificationDate: Date?,
+                resourceFingerprint: String
+            )] = []
             PhotoLibraryEnumeration.forEach(in: assets) { asset, _ in
-                guard let date = asset.modificationDate,
-                      let checksum = checksums[asset.localIdentifier] else { return }
+                guard let checksum = checksums[asset.localIdentifier],
+                      let resourceFingerprint = PhotoAssetResourceFingerprint.make(for: asset) else { return }
                 updates.append((
                     localIdentifier: asset.localIdentifier,
                     sha1Hash: checksum,
-                    modificationDate: date
+                    modificationDate: asset.modificationDate,
+                    resourceFingerprint: resourceFingerprint
                 ))
             }
             matched += updates.count
-            filled += db.backfillUnversionedHashDates(updates)
+            filled += db.backfillPhotoKitVersionMetadata(updates)
+            publishForegroundBaselineProgress(
+                PhotoKitBaselineProgress(
+                    completed: end,
+                    total: rows.count
+                )
+            )
         }
         logInfo(
-            "PhotoKit hash-version baseline: unversioned=\(rows.count), foundDate=\(matched), filled=\(filled), unresolved=\(rows.count - filled)",
+            "PhotoKit hash-version baseline: needingMetadata=\(rows.count), foundFingerprint=\(matched), filled=\(filled), unresolved=\(rows.count - filled)",
             category: .hash
         )
+    }
+
+    private func publishForegroundBaselineProgress(_ progress: PhotoKitBaselineProgress?) {
+        DispatchQueue.main.async { [weak self] in
+            self?.foregroundBaselineProgress = progress
+        }
     }
 
     /// Call on a background queue, never on the first-paint UI path.
@@ -724,9 +899,8 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         snapshots.reserveCapacity(fetched.count)
                         PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
                             snapshots.append(PhotoAssetSnapshot(
-                                localIdentifier: asset.localIdentifier,
-                                modificationDate: asset.modificationDate,
-                                isHidden: asset.isHidden
+                                asset: asset,
+                                includeResourceFingerprint: true
                             ))
                         }
                     }
@@ -835,17 +1009,24 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let result = PHAsset.fetchAssets(withLocalIdentifiers: pending, options: options)
         var visible = Set<String>()
         var hidden = Set<String>()
+        var visibleSnapshots = [PhotoAssetSnapshot]()
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             if asset.isHidden {
                 hidden.insert(asset.localIdentifier)
             } else {
                 visible.insert(asset.localIdentifier)
+                visibleSnapshots.append(PhotoAssetSnapshot(
+                    asset: asset,
+                    includeResourceFingerprint: true,
+                    includeResourceDiagnostics: false
+                ))
             }
         }
         if !hidden.isEmpty {
             DatabaseManager.shared.discardForegroundPendingIdentifiers(hidden)
         }
-        return pending.filter { visible.contains($0) }
+        let retained = DatabaseManager.shared.reconcileForegroundPendingAssets(snapshots: visibleSnapshots)
+        return pending.filter { visible.contains($0) && retained.contains($0) }
     }
 
     private func bootstrapForegroundPhotoWork() -> ForegroundPhotoWork {

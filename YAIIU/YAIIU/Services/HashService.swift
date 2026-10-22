@@ -53,6 +53,7 @@ struct AssetResourcePlan: Sendable {
     /// RAW-only libraries hash the RAW as the primary, with no separate RAW slot.
     let isRAWOnly: Bool
     let modificationDate: Date?
+    let resourceFingerprint: String?
     /// Sum of KVC size estimates for resources whose sizes are known.
     let estimatedBytes: Int64
     /// True when any selected resource has no usable PhotoKit size estimate.
@@ -105,6 +106,7 @@ enum AssetResourceSelector {
                 localIdentifier: asset.localIdentifier,
                 isRAWOnly: true,
                 modificationDate: asset.modificationDate,
+                resourceFingerprint: PhotoAssetSnapshot.resourceFingerprint(for: asset, resources: resources),
                 estimatedBytes: estimate.bytes,
                 hasUnknownResourceSize: estimate.hasUnknown
             )
@@ -121,6 +123,7 @@ enum AssetResourceSelector {
             localIdentifier: asset.localIdentifier,
             isRAWOnly: false,
             modificationDate: asset.modificationDate,
+            resourceFingerprint: PhotoAssetSnapshot.resourceFingerprint(for: asset, resources: resources),
             estimatedBytes: estimate.bytes,
             hasUnknownResourceSize: estimate.hasUnknown
         )
