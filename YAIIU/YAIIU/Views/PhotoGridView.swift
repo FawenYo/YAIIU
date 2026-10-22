@@ -420,6 +420,7 @@ struct PhotoGridView: View {
             statusCacheReady: hashManager.isSyncStatusCacheReady,
             isServerSyncing: isSyncing,
             isHashProcessing: hashManager.isProcessing,
+            isUploading: uploadManager.isUploading,
             hasPhotoLibraryFetch: photoLibraryManager.fetchResult != nil,
             isPhotoLibraryLoading: photoLibraryManager.isLoading
         )
@@ -598,6 +599,9 @@ struct PhotoGridView: View {
             }
         }
         .onChange(of: uploadManager.isUploading) { oldValue, newValue in
+            cachedNotUploadedCount = nil
+            recomputeTask?.cancel()
+            countComputeVersion &+= 1
             if oldValue == true && newValue == false {
                 Task {
                     try? await Task.sleep(nanoseconds: 500_000_000)

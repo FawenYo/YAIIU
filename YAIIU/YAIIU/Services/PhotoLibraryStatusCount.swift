@@ -7,10 +7,11 @@ struct PhotoLibraryStatusCount {
         statusCacheReady: Bool,
         isServerSyncing: Bool,
         isHashProcessing: Bool,
+        isUploading: Bool,
         hasPhotoLibraryFetch: Bool,
         isPhotoLibraryLoading: Bool
     ) -> Bool {
-        statusCacheReady && !isServerSyncing && !isHashProcessing &&
+        statusCacheReady && !isServerSyncing && !isHashProcessing && !isUploading &&
             hasPhotoLibraryFetch && !isPhotoLibraryLoading
     }
 

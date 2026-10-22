@@ -5,11 +5,12 @@ final class PhotoLibraryStatusCountTests: XCTestCase {
     func testBadgeRequiresBothStoresAndNoActiveSyncWork() {
         func canShow(
             ready: Bool = true, syncing: Bool = false, processing: Bool = false,
-            hasFetch: Bool = true, loading: Bool = false
+            uploading: Bool = false, hasFetch: Bool = true, loading: Bool = false
         ) -> Bool {
             PhotoLibraryStatusCount.canPresentCount(
                 statusCacheReady: ready, isServerSyncing: syncing,
-                isHashProcessing: processing, hasPhotoLibraryFetch: hasFetch,
+                isHashProcessing: processing, isUploading: uploading,
+                hasPhotoLibraryFetch: hasFetch,
                 isPhotoLibraryLoading: loading
             )
         }
@@ -17,6 +18,7 @@ final class PhotoLibraryStatusCountTests: XCTestCase {
         XCTAssertFalse(canShow(ready: false))
         XCTAssertFalse(canShow(syncing: true))
         XCTAssertFalse(canShow(processing: true))
+        XCTAssertFalse(canShow(uploading: true))
         XCTAssertFalse(canShow(hasFetch: false))
         XCTAssertFalse(canShow(loading: true))
     }
