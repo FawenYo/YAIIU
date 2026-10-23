@@ -1600,9 +1600,9 @@ final class ServerAssetRepositoryTests: XCTestCase {
             pendingIdentifiers: [id], deletedIdentifiers: [],
             tokenData: Data([2]), bootstrap: false
         ))
-        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
-        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
-        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
     }
 
     func testFallbackSnapshotRetainsUnknownVisibleVersion() {
@@ -1875,19 +1875,19 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: Data([2])
         )
 
-        XCTAssertEqual(summary?.retainedVersions, 2)
-        XCTAssertEqual(summary?.invalidatedVersions, 2)
+        XCTAssertEqual(summary?.retainedVersions, 1)
+        XCTAssertEqual(summary?.invalidatedVersions, 3)
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "edited"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "edited"))
-        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "legacy"))
-        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "legacy"))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "legacy"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "legacy"))
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "missing-date"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "missing-date"))
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
         for id in ids {
             XCTAssertTrue(queuedIds().contains(id))
         }
-        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE status = 'completed';"), 1)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE status = 'completed';"), 0)
         XCTAssertEqual(background.loadChangeToken(), Data([2]))
     }
 

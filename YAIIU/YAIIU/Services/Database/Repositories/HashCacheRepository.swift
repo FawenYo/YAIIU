@@ -354,7 +354,7 @@ final class HashCacheRepository {
                 // an edited asset; invalidate and let the normal hash pipeline
                 // rebuild a trusted row when dates disagree or current date is absent.
                 if fingerprintMissing,
-                   storedDate != nil,
+                   storedDate == nil ||
                    storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970 {
                     for sql in [
                         "DELETE FROM hash_cache WHERE asset_id = ? AND sha1_hash = ?;",
@@ -1746,12 +1746,9 @@ final class HashCacheRepository {
                                     checkOK = false
                                     break
                                 }
-                            } else if storedDate == nil {
-                                // Missing legacy date is not proof of a byte change.
-                                unchangedCachedCount += 1
-                                unknownResourceFingerprintCount += 1
-                                resolvedPendingIdentifiers.insert(snapshot.localIdentifier)
                             } else {
+                                // No historical date or a different date cannot
+                                // establish byte-equivalent legacy data.
                                 missingResourceFingerprintCount += 1
                                 modified.insert(snapshot.localIdentifier)
                             }
@@ -2086,11 +2083,6 @@ final class HashCacheRepository {
                     }
                 } else {
                     retained.insert(snapshot.localIdentifier)
-                    if hasHashCacheRow && storedFingerprint == nil && storedDate == nil {
-                        guard execute("DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
-                                      snapshot.localIdentifier) else { return Set(snapshots.map(\.localIdentifier)) }
-                        continue
-                    }
                     let hasCurrentReceipt = hasCurrentReceipt(
                         assetId: snapshot.localIdentifier,
                         fingerprint: currentFingerprint
@@ -2279,8 +2271,6 @@ final class HashCacheRepository {
             } else if let oldDate = storedDates[snapshot.localIdentifier],
                       let date = snapshot.modificationDate, oldDate == date {
                 baselineUpdates.append((snapshot.localIdentifier, date, currentFingerprint))
-            } else if storedDates[snapshot.localIdentifier] == nil {
-                continue
             } else {
                 modifiedIds.insert(snapshot.localIdentifier)
             }

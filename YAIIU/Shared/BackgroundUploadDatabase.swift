@@ -932,7 +932,9 @@ final class BackgroundUploadDatabase {
                                             modificationDate: updatedAssetModificationDates[assetId],
                                             fingerprint: currentFingerprint
                                         ) else { return nil }
-                                    } else if oldDate != nil {
+                                    } else {
+                                        // A PhotoKit update on a versionless
+                                        // legacy asset requires a fresh checksum.
                                         invalidatedUpdatedIds.insert(assetId)
                                     }
                                 } else {

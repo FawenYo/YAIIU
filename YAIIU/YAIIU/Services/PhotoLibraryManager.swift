@@ -1065,8 +1065,8 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 where error.domain == PHPhotosErrorDomain &&
                     (error.code == PHPhotosError.persistentChangeTokenExpired.rawValue ||
                      error.code == PHPhotosError.persistentChangeDetailsUnavailable.rawValue) {
-                logWarning("Foreground PhotoKit history expired; rebuilding checkpoint", category: .hash)
-                return bootstrapForegroundPhotoWork()
+                logWarning("Foreground PhotoKit history expired; rebuilding version evidence", category: .hash)
+                return rebuildExpiredForegroundPhotoHistory()
             } catch {
                 logWarning("Foreground PhotoKit delta unavailable: \(error.localizedDescription)", category: .hash)
                 _ = db.invalidateLocalPhotoInventory()
@@ -1188,6 +1188,35 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // arrived during this enumeration) before committing readiness.
         logInfo("Local PhotoKit inventory baseline staged: assets=\(assets.count)", category: .hash)
         return true
+    }
+
+    /// An expired token is different from a first-time upgrade: the unseen
+    /// edits must be checked against all stored resource fingerprints before
+    /// establishing a new checkpoint.
+    private func rebuildExpiredForegroundPhotoHistory() -> ForegroundPhotoWork {
+        do {
+            let tokenData = try NSKeyedArchiver.archivedData(
+                withRootObject: PHPhotoLibrary.shared().currentChangeToken,
+                requiringSecureCoding: true
+            )
+            let snapshots = allAssetSnapshots(includingHidden: true)
+            guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+                  DatabaseManager.shared.applyForegroundPhotoChanges(
+                    snapshots: snapshots,
+                    pendingIdentifiers: Set(PhotoAssetSnapshot.visibleIdentifiers(in: snapshots)),
+                    deletedIdentifiers: [],
+                    tokenData: tokenData,
+                    bootstrap: true
+                  ) else {
+                _ = DatabaseManager.shared.invalidateLocalPhotoInventory()
+                return .unavailable
+            }
+            return .incremental(visibleForegroundPendingIdentifiers())
+        } catch {
+            logWarning("Could not re-establish expired PhotoKit history: \(error.localizedDescription)", category: .hash)
+            _ = DatabaseManager.shared.invalidateLocalPhotoInventory()
+            return .unavailable
+        }
     }
 
     private func bootstrapForegroundPhotoWork() -> ForegroundPhotoWork {
