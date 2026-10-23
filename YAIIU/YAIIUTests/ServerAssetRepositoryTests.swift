@@ -943,6 +943,55 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
     }
 
+
+    func testFirstTimeBootstrapEnqueuesReceiptOnlyAssetsForVerification() {
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "receipt-only", resourceType: "jpeg",
+            filename: "existing.jpg", immichId: "remote-existing"
+        )
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "receipt-only", isHidden: false),
+            (identifier: "uncached", isHidden: false),
+            (identifier: "hidden-receipt", isHidden: true)
+        ]))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "hidden-receipt", resourceType: "jpeg",
+            filename: "hidden.jpg", immichId: "remote-hidden"
+        )
+        XCTAssertTrue(hashRepository.commitInitialForegroundPhotoBootstrap(tokenData: Data([13])))
+        XCTAssertEqual(Set(hashRepository.getPendingForegroundPhotoIdentifiers()),
+                       Set(["receipt-only", "uncached"]))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "hidden-receipt"))
+    }
+
+    func testLegacyHiddenAssetIsExcludedFromBackfillInvalidation() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "hidden-legacy", primaryHash: "original",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "hidden-legacy", resourceType: "jpeg",
+            filename: "hidden.jpg", immichId: "remote-hidden"
+        )
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "hidden-legacy", isHidden: true)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        XCTAssertFalse(hashRepository.hashCacheRowsNeedingPhotoKitBaseline()
+            .contains(where: { $0.localIdentifier == "hidden-legacy" }))
+        XCTAssertEqual(hashRepository.backfillPhotoKitVersionMetadata([
+            (localIdentifier: "hidden-legacy", sha1Hash: "original",
+             modificationDate: Date(timeIntervalSince1970: 200),
+             resourceFingerprint: "resource-now")
+        ]), 0)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "hidden-legacy"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "hidden-legacy"))
+        XCTAssertFalse(hashRepository.getPendingForegroundPhotoIdentifiers().contains("hidden-legacy"))
+    }
+
     func testFirstTimeBootstrapRollbackLeavesNoUsableCursor() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "old-uploaded", primaryHash: "existing-sha",

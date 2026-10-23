@@ -266,10 +266,12 @@ final class HashCacheRepository {
             guard let self else { return [] }
             var statement: OpaquePointer?
             let sql = """
-                SELECT asset_id, sha1_hash
-                FROM hash_cache
-                WHERE asset_modification_date IS NULL
-                   OR asset_resource_fingerprint IS NULL;
+                SELECT h.asset_id, h.sha1_hash
+                FROM hash_cache AS h
+                LEFT JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
+                WHERE (h.asset_modification_date IS NULL
+                   OR h.asset_resource_fingerprint IS NULL)
+                  AND COALESCE(a.is_hidden, 0) = 0;
                 """
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
                 sqlite3_finalize(statement)
@@ -331,7 +333,9 @@ final class HashCacheRepository {
                 var existingStatement: OpaquePointer?
                 guard sqlite3_prepare_v2(
                     self.connection.db,
-                    "SELECT asset_modification_date, asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? AND sha1_hash = ? LIMIT 1;",
+                    "SELECT h.asset_modification_date, h.asset_resource_fingerprint, "
+                  + "COALESCE((SELECT a.is_hidden FROM local_photo_assets a WHERE a.asset_id = h.asset_id), 0) "
+                  + "FROM hash_cache h WHERE h.asset_id = ? AND h.sha1_hash = ? LIMIT 1;",
                     -1,
                     &existingStatement,
                     nil
@@ -347,7 +351,11 @@ final class HashCacheRepository {
                     ? Date(timeIntervalSince1970: sqlite3_column_double(existingStatement, 0))
                     : nil
                 let fingerprintMissing = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 1) == SQLITE_NULL
+                let isHidden = existingResult == SQLITE_ROW && sqlite3_column_int(existingStatement, 2) != 0
                 sqlite3_finalize(existingStatement)
+                // Photos hidden from the foreground grid cannot be safely
+                // rebuilt by the visible hash pipeline. Keep prior evidence.
+                if isHidden { continue }
 
                 // A legacy row with a previous PhotoKit date has version evidence,
                 // but no resource fingerprint. Do not stamp current metadata onto
@@ -1318,8 +1326,7 @@ final class HashCacheRepository {
             let missing = """
                 INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
                 SELECT a.asset_id FROM local_photo_assets a WHERE a.is_hidden = 0
-                  AND NOT EXISTS (SELECT 1 FROM hash_cache h WHERE h.asset_id = a.asset_id)
-                  AND NOT EXISTS (SELECT 1 FROM uploaded_assets u WHERE u.asset_id = a.asset_id);
+                  AND NOT EXISTS (SELECT 1 FROM hash_cache h WHERE h.asset_id = a.asset_id);
                 """
             guard sqlite3_exec(connection.db, missing, nil, nil, nil) == SQLITE_OK else { return false }
             var token: OpaquePointer?

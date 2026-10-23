@@ -833,7 +833,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 resourceFingerprint: String
             )] = []
             PhotoLibraryEnumeration.forEach(in: assets) { asset, _ in
-                guard let checksum = checksums[asset.localIdentifier],
+                // Never erase a hidden photo's legacy upload receipt: hidden
+                // resources are not eligible for foreground re-hashing.
+                guard !asset.isHidden,
+                      let checksum = checksums[asset.localIdentifier],
                       let resourceFingerprint = PhotoAssetResourceFingerprint.make(for: asset) else { return }
                 updates.append((
                     localIdentifier: asset.localIdentifier,
