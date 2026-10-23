@@ -250,6 +250,22 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     @Published private(set) var foregroundBaselineProgress: PhotoKitBaselineProgress?
     /// Invalidates PhotoKit-based grid filters when favorites or album membership changes.
     @Published private(set) var libraryRevision: Int = 0
+    /// A live PhotoKit event makes the persisted inventory potentially stale
+    /// until the foreground journal has been replayed through that event.
+    @Published private(set) var inventoryChangeRevision: Int = 0
+    @Published private(set) var reconciledInventoryRevision: Int = 0
+
+    var isInventoryReconciled: Bool {
+        inventoryChangeRevision == reconciledInventoryRevision
+    }
+
+    @MainActor
+    func acknowledgeInventoryReconciliation(through revision: Int) {
+        guard revision <= inventoryChangeRevision else { return }
+        if revision > reconciledInventoryRevision {
+            reconciledInventoryRevision = revision
+        }
+    }
     /// The grid may only interpret index-based filters against this fetch generation.
     /// Both the fetch and the identifier snapshot get the same generation.
     @Published private(set) var assetFetchGeneration: Int = 0
@@ -410,6 +426,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 self.orderedIdentifiersGeneration != self.assetFetchGeneration
             let previousIndexGeneration = self.assetIndexGeneration
             let snapshotIsReady = self.orderedIdentifiersGeneration == self.assetFetchGeneration
+            // Publish invalidation before changing the grid fetch generation.
+            // Consumers must not display SQLite badge data from the old cursor.
+            self.inventoryChangeRevision &+= 1
             self.indexGeneration.recordChange(
                 isIncremental: hasIncrementalChanges,
                 insertedCount: insertedCount, removedCount: removedCount, hasMoves: hasMoves
@@ -514,6 +533,26 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         )
     }
     
+    /// Settings may change Photos permission while this singleton is alive.
+    /// Invalidate the inventory badge before reloading the visible fetch.
+    @MainActor
+    func refreshAuthorizationStatus() {
+        let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard current != authorizationStatus else { return }
+        authorizationStatus = current
+        inventoryChangeRevision &+= 1
+        if current == .authorized || current == .limited {
+            // A Settings grant can occur after initialization while Photos
+            // access was denied. Mirror requestAuthorization's setup: the
+            // initial fetch alone does not subscribe to future PHChange events.
+            fetchResultLock.lock()
+            albumFetchResult = Self.fetchUserAlbums()
+            fetchResultLock.unlock()
+            startObservingLibrary()
+            fetchAssets()
+        }
+    }
+
     func requestAuthorization(completion: ((PHAuthorizationStatus) -> Void)? = nil) {
         let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if currentStatus == .authorized || currentStatus == .limited {
@@ -632,26 +671,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             self.orderedLocalIdentifiers = identifiers
             self.orderedIdentifiersGeneration = generation
             self.libraryRevision &+= 1
-        }
-    }
-
-    /// Count with short-lived fetches instead of filling the main grid fetch's
-    /// native object cache by visiting every asset just to render a badge.
-    static func notUploadedCount(
-        totalCount: Int, statuses: [String: PhotoSyncStatus], shouldStop: () -> Bool
-    ) -> Int? {
-        return PhotoLibraryStatusCount.notUploadedCount(
-            totalCount: totalCount, statuses: statuses, shouldStop: shouldStop
-        ) { identifiers in
-            let options = PHFetchOptions()
-            options.includeAssetSourceTypes = .typeUserLibrary
-            options.includeHiddenAssets = false
-            options.includeAllBurstAssets = false
-            options.wantsIncrementalChangeDetails = false
-            options.predicate = NSPredicate(format: "localIdentifier IN %@", identifiers)
-            // Use the same visibility rules as the main all-assets query.
-            // Reading count never materializes the matching PHAsset objects.
-            return PHAsset.fetchAssets(with: options).count
         }
     }
 
@@ -867,6 +886,17 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 return bootstrapForegroundPhotoWork()
             }
 
+            // Existing installations have a cursor but no complete local ID
+            // inventory. Seed the lightweight membership once, then replay
+            // the OLD cursor: changes during the scan cannot be missed.
+            let needsInventoryBootstrap = !db.isLocalPhotoInventoryReady()
+            if needsInventoryBootstrap {
+                guard bootstrapLocalPhotoInventory() else {
+                    logWarning("Local PhotoKit inventory bootstrap incomplete; retry on next run", category: .hash)
+                    return .unavailable
+                }
+            }
+
             do {
                 let changes = try PHPhotoLibrary.shared().fetchPersistentChanges(since: token)
                 var processedBatches = 0
@@ -930,6 +960,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     // A deletion is a barrier: never merge an earlier update
                     // with a later deletion/reinsertion of the same identifier.
                     if window.requiresFlushBefore(deleting: deleted) && !flushWindow() {
+                        _ = db.invalidateLocalPhotoInventory()
                         return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
                     }
 
@@ -965,11 +996,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     // longer trigger a separate SQLite transaction each time.
                     if !deleted.isEmpty || window.shouldFlush {
                         guard flushWindow() else {
+                            _ = db.invalidateLocalPhotoInventory()
                             return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
                         }
                     }
                 }
                 guard flushWindow() else {
+                    _ = db.invalidateLocalPhotoInventory()
                     return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
                 }
                 if processedBatches > 0 {
@@ -984,7 +1017,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     force: forceVersionBaseline,
                     excludingIdentifiers: replayedIdentifiers
                 )
-                return .incremental(visibleForegroundPendingIdentifiers())
+                let pendingIdentifiers = visibleForegroundPendingIdentifiers()
+                // Existing installations seed IDs BEFORE replaying the old
+                // PhotoKit token. Do not advertise readiness until replay wins.
+                if needsInventoryBootstrap && !db.finishLocalPhotoInventoryBootstrap() {
+                    logError("Failed to finalize local PhotoKit inventory", category: .database)
+                    return .unavailable
+                }
+                return .incremental(pendingIdentifiers)
             } catch let error as NSError
                 where error.domain == PHPhotosErrorDomain &&
                     (error.code == PHPhotosError.persistentChangeTokenExpired.rawValue ||
@@ -993,6 +1033,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 return bootstrapForegroundPhotoWork()
             } catch {
                 logWarning("Foreground PhotoKit delta unavailable: \(error.localizedDescription)", category: .hash)
+                _ = db.invalidateLocalPhotoInventory()
                 return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
             }
         }
@@ -1023,10 +1064,45 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
         }
         if !hidden.isEmpty {
-            DatabaseManager.shared.discardForegroundPendingIdentifiers(hidden)
+            // Keep hidden inventory and pending acknowledgement atomic.
+            guard DatabaseManager.shared.discardForegroundPendingIdentifiers(hidden) else {
+                return []
+            }
         }
         let retained = DatabaseManager.shared.reconcileForegroundPendingAssets(snapshots: visibleSnapshots)
         return pending.filter { visible.contains($0) && retained.contains($0) }
+    }
+
+    /// One-time upgrade: only stream PhotoKit IDs + hidden flags in 300-item
+    /// windows. Never enumerate full PHAssetSnapshot contents or advance the
+    /// existing foreground change token here.
+    private func bootstrapLocalPhotoInventory() -> Bool {
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        let assets = PHAsset.fetchAssets(with: options)
+        let db = DatabaseManager.shared
+        guard db.beginLocalPhotoInventoryBootstrap() else { return false }
+
+        var batch: [(identifier: String, isHidden: Bool)] = []
+        batch.reserveCapacity(300)
+        var succeeded = true
+        let completed = PhotoLibraryEnumeration.forEach(
+            in: assets, shouldStop: { !succeeded }
+        ) { asset, _ in
+            batch.append((asset.localIdentifier, asset.isHidden))
+            if batch.count == 300 {
+                if !db.appendLocalPhotoInventoryBatch(batch) { succeeded = false }
+                batch.removeAll(keepingCapacity: true)
+            }
+        }
+        guard completed, succeeded,
+              PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              db.appendLocalPhotoInventoryBatch(batch) else { return false }
+
+        // The caller must first replay the old token (including events that
+        // arrived during this enumeration) before committing readiness.
+        logInfo("Local PhotoKit inventory baseline staged: assets=\(assets.count)", category: .hash)
+        return true
     }
 
     private func bootstrapForegroundPhotoWork() -> ForegroundPhotoWork {
@@ -1050,12 +1126,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 bootstrap: true
             ) else {
                 logError("Foreground PhotoKit bootstrap checkpoint persistence failed", category: .database)
+                _ = DatabaseManager.shared.invalidateLocalPhotoInventory()
                 return .fallbackSnapshot(snapshots)
             }
             logInfo("Foreground PhotoKit initial checkpoint built; assets=\(snapshots.count)", category: .hash)
             return .incremental(visibleForegroundPendingIdentifiers())
         } catch {
             logWarning("Could not capture foreground PhotoKit change token: \(error.localizedDescription)", category: .hash)
+            _ = DatabaseManager.shared.invalidateLocalPhotoInventory()
             return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
         }
     }

@@ -175,6 +175,33 @@ final class DatabaseManager {
         hashRepo.getAssetsOnServerAsync(completion: completion)
     }
     
+    func isLocalPhotoInventoryReady() -> Bool {
+        hashRepo.isLocalPhotoInventoryReady()
+    }
+
+    func beginLocalPhotoInventoryBootstrap() -> Bool {
+        hashRepo.beginLocalPhotoInventoryBootstrap()
+    }
+
+    func appendLocalPhotoInventoryBatch(
+        _ entries: [(identifier: String, isHidden: Bool)]
+    ) -> Bool {
+        hashRepo.appendLocalPhotoInventoryBatch(entries)
+    }
+
+    func finishLocalPhotoInventoryBootstrap() -> Bool {
+        hashRepo.finishLocalPhotoInventoryBootstrap()
+    }
+
+    @discardableResult
+    func invalidateLocalPhotoInventory() -> Bool {
+        hashRepo.invalidateLocalPhotoInventory()
+    }
+
+    func countNotUploadedVisibleAssets() -> Int? {
+        hashRepo.countNotUploadedVisibleAssets()
+    }
+
     func getAllSyncStatusAsync(completion: @escaping ([String: PhotoSyncStatus]) -> Void) {
         connection.dbQueue.async { [weak self] in
             guard let self = self else {
@@ -286,7 +313,8 @@ final class DatabaseManager {
         hashRepo.reconcileForegroundPendingAssets(snapshots: snapshots)
     }
 
-    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {
+    @discardableResult
+    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) -> Bool {
         hashRepo.discardForegroundPendingIdentifiers(identifiers)
     }
 

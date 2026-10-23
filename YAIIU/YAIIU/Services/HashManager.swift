@@ -393,6 +393,8 @@ class HashManager: ObservableObject {
     @Published var statusMessage: String = ""
     
     @Published var syncStatusCache: [String: PhotoSyncStatus] = [:]
+    /// An empty dictionary before the initial SQLite read is not a valid count source.
+    @Published private(set) var isSyncStatusCacheReady = false
     
     @Published var iCloudIdMatchCount: Int = 0
 
@@ -475,6 +477,7 @@ class HashManager: ObservableObject {
     @MainActor
     func setPreparingState() {
         guard !isProcessing else { return }
+        isSyncStatusCacheReady = false
         isProcessing = true
         statusMessage = "Preparing..."
         processingProgress = 0
@@ -485,6 +488,7 @@ class HashManager: ObservableObject {
     @MainActor
     func clearPreparingState() {
         isProcessing = false
+        if !isSyncStatusCacheReady { loadCachedStatus() }
         statusMessage = ""
         processingProgress = 0
         processedAssetsCount = 0
@@ -493,12 +497,17 @@ class HashManager: ObservableObject {
     
     private func loadCachedStatus() {
         Task { @MainActor [weak self] in
-            self?.statusRefresh.refresh()
+            guard let self else { return }
+            // Invalidate the badge while SQLite is being reloaded. The old
+            // in-memory map is still available for thumbnails, not for counts.
+            self.isSyncStatusCacheReady = false
+            self.statusRefresh.refresh()
         }
     }
 
     @MainActor
     private func applyStatusSnapshot(_ statusMap: [String: PhotoSyncStatus]) {
+        isSyncStatusCacheReady = true
         guard statusMap != syncStatusCache else { return }
         syncStatusCache = statusMap
     }
@@ -536,6 +545,7 @@ class HashManager: ObservableObject {
             }
         }) else { return }
         shouldStop = false
+        isSyncStatusCacheReady = false
         isProcessing = true
         iCloudIdMatchCount = 0
         // A stopped run can leave candidates published but not yet handed
@@ -1140,6 +1150,7 @@ class HashManager: ObservableObject {
     
     @MainActor
     func refreshStatusCacheAsync() async {
+        isSyncStatusCacheReady = false
         await withCheckedContinuation { continuation in
             statusRefresh.refresh { [self] statusMap in
                 // Explicit pull-to-refresh also applies the snapshot while a
