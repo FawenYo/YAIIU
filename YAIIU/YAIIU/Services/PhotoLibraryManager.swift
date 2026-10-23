@@ -918,15 +918,22 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 // identifiers prevents crashes from skipping unprocessed assets.
                 func flushWindow() -> Bool {
                     guard let tokenData = window.tokenData else { return true }
+                    let startedAt = Date()
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
                     let identifiers = Array(window.affectedIdentifiers)
                     var snapshots: [PhotoAssetSnapshot] = []
-                    if !identifiers.isEmpty {
+                    snapshots.reserveCapacity(identifiers.count)
+                    // A single persistent-change batch can contain thousands of
+                    // IDs even when the logical journal window is capped at 512.
+                    // Bound native PHFetchResult allocations without splitting
+                    // the atomic SQLite cursor+work transaction.
+                    for start in stride(from: 0, to: identifiers.count, by: 300) {
+                        let end = min(start + 300, identifiers.count)
                         let fetched = PHAsset.fetchAssets(
-                            withLocalIdentifiers: identifiers, options: options
+                            withLocalIdentifiers: Array(identifiers[start..<end]),
+                            options: options
                         )
-                        snapshots.reserveCapacity(fetched.count)
                         PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
                             snapshots.append(PhotoAssetSnapshot(
                                 asset: asset,
@@ -934,6 +941,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                             ))
                         }
                     }
+                    let photoKitElapsed = Date().timeIntervalSince(startedAt)
                     unresolvedLookups += max(0, identifiers.count - snapshots.count)
                     guard db.applyForegroundPhotoChanges(
                         snapshots: snapshots,
@@ -946,6 +954,16 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         return false
                     }
                     committedWindows += 1
+                    let totalElapsed = Date().timeIntervalSince(startedAt)
+                    if totalElapsed >= 1 || identifiers.count >= 300 {
+                        logInfo(
+                            "Foreground PhotoKit window: events=\(window.changeCount), " +
+                            "changedIDs=\(identifiers.count), fetched=\(snapshots.count), " +
+                            "photoKit=\(String(format: "%.1f", photoKitElapsed))s, " +
+                            "sqlite=\(String(format: "%.1f", totalElapsed - photoKitElapsed))s",
+                            category: .hash
+                        )
+                    }
                     window.reset()
                     return true
                 }
