@@ -41,6 +41,7 @@ struct ContentView: View {
 struct MainTabView: View {
     @State private var selectedTab = 0
     @ObservedObject private var languageManager = LanguageManager.shared
+    @ObservedObject private var photoLibraryManager = PhotoLibraryManager.shared
     
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -63,6 +64,34 @@ struct MainTabView: View {
                 .tag(2)
         }
         .id(languageManager.currentLanguage)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let progress = photoLibraryManager.foregroundBaselineProgress {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Image(systemName: "externaldrive.badge.timemachine")
+                        Text(L10n.PhotoGrid.processingBaseline(progress.completed, progress.total))
+                            .font(.caption)
+                            .monospacedDigit()
+                        Spacer(minLength: 8)
+                        if progress.total > 0 {
+                            Text("\(Int(progress.fraction * 100))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if progress.total > 0 {
+                        ProgressView(value: progress.fraction)
+                            .progressViewStyle(.linear)
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 9)
+                .background(.regularMaterial)
+                .accessibilityElement(children: .combine)
+            }
+        }
     }
 }
 
