@@ -467,6 +467,7 @@ struct PhotoGridView: View {
                 }
                 .navigationTitle(navigationTitle)
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar(.visible, for: .navigationBar)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         if isSelectionMode {
@@ -968,10 +969,9 @@ struct PhotoGridView: View {
     private var photoGridContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
-                // The hash/preparing status has its own full-width row beneath
-                // the navigation bar, never beside the filter menu. The global
-                // PhotoKit-baseline indicator already occupies a separate top
-                // row, so do not show two identical preparation indicators.
+                // Keep both progress stages below the NavigationView toolbar.
+                // Filter / Select controls always retain their full toolbar row.
+                PhotoKitBaselineBanner()
                 if hashManager.isProcessing && photoLibraryManager.foregroundBaselineProgress == nil {
                     processingStatusView
                 }
