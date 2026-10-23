@@ -1816,6 +1816,65 @@ final class HashCacheRepository {
         }
     }
 
+    /// Fast-path pending items already known to be visible and not backed by a
+    /// hash or upload receipt. These IDs still need hashing, but repeating a
+    /// PhotoKit resource lookup cannot invalidate any existing evidence.
+    ///
+    /// A cached hash/receipt (or unknown inventory membership) always requires
+    /// PhotoKit verification: iCloud may restore resource metadata without
+    /// producing a new persistent-change event.
+    /// Only call after the local inventory checkpoint is ready.
+    func classifyForegroundPendingIdentifiers() -> (
+        visibleWithoutEvidence: [String],
+        hidden: Set<String>,
+        needsPhotoKit: [String]
+    )? {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return nil }
+            let sql = """
+                SELECT p.asset_id, i.is_hidden,
+                       EXISTS(SELECT 1 FROM hash_cache h WHERE h.asset_id = p.asset_id),
+                       EXISTS(SELECT 1 FROM uploaded_assets u WHERE u.asset_id = p.asset_id)
+                FROM foreground_photo_pending_assets p
+                LEFT JOIN local_photo_assets i ON i.asset_id = p.asset_id
+                ORDER BY p.asset_id;
+                """
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                logWarning("Could not classify foreground pending assets; falling back to PhotoKit", category: .database)
+                return nil
+            }
+            defer { sqlite3_finalize(statement) }
+            var visibleWithoutEvidence = [String]()
+            var hidden = Set<String>()
+            var needsPhotoKit = [String]()
+            var status = sqlite3_step(statement)
+            while status == SQLITE_ROW {
+                if let pointer = sqlite3_column_text(statement, 0) {
+                    let identifier = String(cString: pointer)
+                    if sqlite3_column_type(statement, 1) == SQLITE_NULL {
+                        needsPhotoKit.append(identifier)
+                    } else if sqlite3_column_int(statement, 1) != 0 {
+                        hidden.insert(identifier)
+                    } else if sqlite3_column_int(statement, 2) != 0 ||
+                              sqlite3_column_int(statement, 3) != 0 {
+                        needsPhotoKit.append(identifier)
+                    } else {
+                        visibleWithoutEvidence.append(identifier)
+                    }
+                }
+                status = sqlite3_step(statement)
+            }
+            guard status == SQLITE_DONE else {
+                logWarning("Foreground pending classification failed; falling back to PhotoKit", category: .database)
+                return nil
+            }
+            return (visibleWithoutEvidence, hidden, needsPhotoKit)
+        }
+    }
+
     /// Drain completed work but keep unfinished identifiers durable across
     /// app termination, hash cancellations, network failures, and launch races.
     func getPendingForegroundPhotoIdentifiers() -> [String] {
