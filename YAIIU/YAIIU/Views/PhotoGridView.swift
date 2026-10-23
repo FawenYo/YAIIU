@@ -479,10 +479,10 @@ struct PhotoGridView: View {
                                 dragState.reset()
                             }
                         } else {
-                            HStack(spacing: 8) {
-                                processingStatusView
-                                filterMenuButton
-                            }
+                            // Keep this navigation item dedicated to filtering:
+                            // processing labels are drawn on a separate content
+                            // row so they can never compress or cover the menu.
+                            filterMenuButton
                         }
                     }
                     
@@ -797,10 +797,16 @@ struct PhotoGridView: View {
 
                 Text(getCompactProcessingStatusText())
                     .font(.system(size: 12).monospacedDigit())
-                    .foregroundColor(.primary)
-                    .fixedSize(horizontal: true, vertical: false)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
             }
-            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.systemGray6))
+            .allowsHitTesting(false)
             .accessibilityLabel(getProcessingStatusText())
         } else {
             EmptyView()
@@ -857,8 +863,8 @@ struct PhotoGridView: View {
     @ViewBuilder
     private var processingScreen: some View {
         // Keep an existing gallery browsable during a large metadata baseline.
-        // The compact toolbar status and upload/count readiness gates remain
-        // active; show this full-screen placeholder only before first paint.
+        // A dedicated content-row status and conservative upload/count readiness
+        // gates remain active; show this placeholder only before first paint.
         if hashManager.isProcessing,
            photoLibraryManager.fetchResult == nil,
            photoLibraryManager.foregroundBaselineProgress != nil {
@@ -962,10 +968,17 @@ struct PhotoGridView: View {
     private var photoGridContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
+                // The hash/preparing status has its own full-width row beneath
+                // the navigation bar, never beside the filter menu. The global
+                // PhotoKit-baseline indicator already occupies a separate top
+                // row, so do not show two identical preparation indicators.
+                if hashManager.isProcessing && photoLibraryManager.foregroundBaselineProgress == nil {
+                    processingStatusView
+                }
                 if currentFilter != .all {
                     filterIndicatorView
                 }
-                
+
                 simpleGridView
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
