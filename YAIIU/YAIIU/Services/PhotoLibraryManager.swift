@@ -793,7 +793,15 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         publishForegroundBaselineProgress(
             PhotoKitBaselineProgress(completed: 0, total: rows.count)
         )
-        defer { publishForegroundBaselineProgress(nil) }
+        defer {
+            publishForegroundBaselineProgress(nil)
+            // Background baseline may invalidate old-date hashes after the
+            // first hash run has started. Trigger another durable pending pass
+            // so those assets are not stranded until the next app launch.
+            DispatchQueue.main.async { [weak self] in
+                self?.inventoryChangeRevision &+= 1
+            }
+        }
 
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
