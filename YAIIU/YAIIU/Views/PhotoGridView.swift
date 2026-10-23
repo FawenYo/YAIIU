@@ -559,6 +559,9 @@ struct PhotoGridView: View {
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
+                // Photos permission can be changed in Settings while the
+                // existing grid stays alive. Update the published gate first.
+                photoLibraryManager.refreshAuthorizationStatus()
                 performAutoSync()
                 if currentFilter == .favorites || currentFilter == .album {
                     refreshPhotoKitFilter()
