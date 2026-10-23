@@ -542,6 +542,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         authorizationStatus = current
         inventoryChangeRevision &+= 1
         if current == .authorized || current == .limited {
+            // A Settings grant can occur after initialization while Photos
+            // access was denied. Mirror requestAuthorization's setup: the
+            // initial fetch alone does not subscribe to future PHChange events.
+            fetchResultLock.lock()
+            albumFetchResult = Self.fetchUserAlbums()
+            fetchResultLock.unlock()
+            startObservingLibrary()
             fetchAssets()
         }
     }
