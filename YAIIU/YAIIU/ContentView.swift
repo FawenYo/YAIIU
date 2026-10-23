@@ -89,6 +89,7 @@ struct MainTabView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 9)
                 .background(.regularMaterial)
+                .allowsHitTesting(false)
                 .accessibilityElement(children: .combine)
             }
         }

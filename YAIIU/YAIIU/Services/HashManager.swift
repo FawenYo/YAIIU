@@ -395,6 +395,9 @@ class HashManager: ObservableObject {
     @Published var syncStatusCache: [String: PhotoSyncStatus] = [:]
     /// An empty dictionary before the initial SQLite read is not a valid count source.
     @Published private(set) var isSyncStatusCacheReady = false
+    /// A first SQLite snapshot may be displayed as provisional filtering
+    /// evidence while the migration/hash pipeline is still running.
+    @Published private(set) var hasLoadedSyncStatusCache = false
     
     @Published var iCloudIdMatchCount: Int = 0
 
@@ -439,7 +442,14 @@ class HashManager: ObservableObject {
             DatabaseManager.shared.getAllSyncStatusAsync(completion: completion)
         },
         publish: { [weak self] statusMap in
-            guard let self, !self.isProcessing else { return }
+            guard let self else { return }
+            // Publish only the initial snapshot during active processing;
+            // later refreshes must not overwrite new hash/receipt updates.
+            if !self.hasLoadedSyncStatusCache {
+                self.syncStatusCache = statusMap
+                self.hasLoadedSyncStatusCache = true
+            }
+            guard !self.isProcessing else { return }
             self.applyStatusSnapshot(statusMap)
         }
     )
@@ -507,6 +517,7 @@ class HashManager: ObservableObject {
 
     @MainActor
     private func applyStatusSnapshot(_ statusMap: [String: PhotoSyncStatus]) {
+        hasLoadedSyncStatusCache = true
         isSyncStatusCacheReady = true
         guard statusMap != syncStatusCache else { return }
         syncStatusCache = statusMap
