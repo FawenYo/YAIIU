@@ -890,16 +890,22 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
 
             let db = DatabaseManager.shared
-            guard let tokenData = db.loadForegroundPhotoToken(),
-                  let token = try? NSKeyedUnarchiver.unarchivedObject(
-                      ofClass: PHPersistentChangeToken.self, from: tokenData
-                  ) else {
+            guard let tokenData = db.loadForegroundPhotoToken() else {
+                // Only a genuinely absent checkpoint is a first-time upgrade.
+                // Keep old evidence and build the cheap ID-only inventory.
                 let work = bootstrapForegroundPhotoWork()
                 if case .incremental = work {
-                    // Replay edits since the token sampled BEFORE the scan.
                     return prepareForegroundPhotoWorkLocked()
                 }
                 return work
+            }
+            guard let token = try? NSKeyedUnarchiver.unarchivedObject(
+                ofClass: PHPersistentChangeToken.self, from: tokenData
+            ) else {
+                // A corrupt existing cursor may hide offline content edits:
+                // rebuild resource evidence rather than silently trusting it.
+                logWarning("Foreground PhotoKit checkpoint unreadable; validating all versions", category: .hash)
+                return rebuildExpiredForegroundPhotoHistory()
             }
 
             // Existing installations have a cursor but no complete local ID
