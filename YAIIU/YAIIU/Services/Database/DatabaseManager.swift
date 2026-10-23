@@ -304,6 +304,14 @@ final class DatabaseManager {
         )
     }
 
+    func classifyForegroundPendingIdentifiers() -> (
+        visibleWithoutEvidence: [String],
+        hidden: Set<String>,
+        needsPhotoKit: [String]
+    )? {
+        hashRepo.classifyForegroundPendingIdentifiers()
+    }
+
     func getPendingForegroundPhotoIdentifiers() -> [String] {
         hashRepo.getPendingForegroundPhotoIdentifiers()
     }

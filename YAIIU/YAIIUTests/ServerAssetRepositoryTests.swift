@@ -1089,6 +1089,40 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
     }
 
+    func testPendingFastPathOnlySkipsPhotoKitWhenNoHashOrReceiptExists() {
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "plain-visible", isHidden: false),
+            (identifier: "hidden", isHidden: true),
+            (identifier: "hashed", isHidden: false),
+            (identifier: "receipted", isHidden: false)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "hashed", primaryHash: "sha-1",
+            rawHash: nil, hasRAW: false, modificationDate: nil,
+            resourceFingerprint: "fp-1"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "receipted", resourceType: "jpeg",
+            filename: "original.jpg", immichId: "server-1"
+        )
+        execute("""
+            INSERT INTO foreground_photo_pending_assets(asset_id) VALUES
+            ('plain-visible'), ('hidden'), ('hashed'), ('receipted'), ('unknown');
+        """)
+
+        guard let result = hashRepository.classifyForegroundPendingIdentifiers() else {
+            return XCTFail("The indexed pending classification must succeed")
+        }
+        XCTAssertEqual(result.visibleWithoutEvidence, ["plain-visible"])
+        XCTAssertEqual(result.hidden, Set(["hidden"]))
+        XCTAssertEqual(result.needsPhotoKit, ["hashed", "receipted", "unknown"])
+        // Classification must not advance the PhotoKit cursor or remove work.
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers().count, 5)
+    }
+
     func testForegroundPendingWorkSurvivesUntilHashIsPersisted() {
         XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
             snapshots: [PhotoAssetSnapshot(localIdentifier: "pending", modificationDate: nil)],
