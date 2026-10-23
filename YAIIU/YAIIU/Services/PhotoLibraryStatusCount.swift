@@ -5,6 +5,7 @@ struct PhotoLibraryStatusCount {
     /// there is no concurrent sync/hash job changing its membership.
     static func canPresentCount(
         statusCacheReady: Bool,
+        inventoryUpToDate: Bool,
         isServerSyncing: Bool,
         isHashProcessing: Bool,
         isUploading: Bool,
@@ -12,7 +13,7 @@ struct PhotoLibraryStatusCount {
         hasPhotoLibraryFetch: Bool,
         isPhotoLibraryLoading: Bool
     ) -> Bool {
-        statusCacheReady && !isServerSyncing && !isHashProcessing && !isUploading &&
+        statusCacheReady && inventoryUpToDate && !isServerSyncing && !isHashProcessing && !isUploading &&
             hasFullPhotoAccess && hasPhotoLibraryFetch && !isPhotoLibraryLoading
     }
 

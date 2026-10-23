@@ -250,6 +250,22 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     @Published private(set) var foregroundBaselineProgress: PhotoKitBaselineProgress?
     /// Invalidates PhotoKit-based grid filters when favorites or album membership changes.
     @Published private(set) var libraryRevision: Int = 0
+    /// A live PhotoKit event makes the persisted inventory potentially stale
+    /// until the foreground journal has been replayed through that event.
+    @Published private(set) var inventoryChangeRevision: Int = 0
+    @Published private(set) var reconciledInventoryRevision: Int = 0
+
+    var isInventoryReconciled: Bool {
+        inventoryChangeRevision == reconciledInventoryRevision
+    }
+
+    @MainActor
+    func acknowledgeInventoryReconciliation(through revision: Int) {
+        guard revision <= inventoryChangeRevision else { return }
+        if revision > reconciledInventoryRevision {
+            reconciledInventoryRevision = revision
+        }
+    }
     /// The grid may only interpret index-based filters against this fetch generation.
     /// Both the fetch and the identifier snapshot get the same generation.
     @Published private(set) var assetFetchGeneration: Int = 0
@@ -410,6 +426,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 self.orderedIdentifiersGeneration != self.assetFetchGeneration
             let previousIndexGeneration = self.assetIndexGeneration
             let snapshotIsReady = self.orderedIdentifiersGeneration == self.assetFetchGeneration
+            // Publish invalidation before changing the grid fetch generation.
+            // Consumers must not display SQLite badge data from the old cursor.
+            self.inventoryChangeRevision &+= 1
             self.indexGeneration.recordChange(
                 isIncremental: hasIncrementalChanges,
                 insertedCount: insertedCount, removedCount: removedCount, hasMoves: hasMoves
