@@ -193,6 +193,11 @@ final class DatabaseManager {
         hashRepo.finishLocalPhotoInventoryBootstrap()
     }
 
+    @discardableResult
+    func invalidateLocalPhotoInventory() -> Bool {
+        hashRepo.invalidateLocalPhotoInventory()
+    }
+
     func countNotUploadedVisibleAssets() -> Int? {
         hashRepo.countNotUploadedVisibleAssets()
     }
@@ -308,7 +313,8 @@ final class DatabaseManager {
         hashRepo.reconcileForegroundPendingAssets(snapshots: snapshots)
     }
 
-    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {
+    @discardableResult
+    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) -> Bool {
         hashRepo.discardForegroundPendingIdentifiers(identifiers)
     }
 

@@ -1292,6 +1292,20 @@ final class HashCacheRepository {
         }
     }
 
+    /// Called if journal replay fails: a partially reconciled inventory must
+    /// never be treated as a complete membership snapshot.
+    @discardableResult
+    func invalidateLocalPhotoInventory() -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            sqlite3_exec(
+                connection.db,
+                "UPDATE local_photo_inventory_state SET is_ready = 0 WHERE id = 1;",
+                nil, nil, nil
+            ) == SQLITE_OK
+        }
+    }
+
     func finishLocalPhotoInventoryBootstrap() -> Bool {
         connection.ensureInitialized()
         return connection.dbQueue.sync {
@@ -1840,7 +1854,14 @@ final class HashCacheRepository {
             var lookup: OpaquePointer?
             var update: OpaquePointer?
             var receiptLookup: OpaquePointer?
+            var inventoryUpsert: OpaquePointer?
             guard sqlite3_prepare_v2(
+                self.connection.db,
+                "INSERT INTO local_photo_assets(asset_id, is_hidden) VALUES (?, 0) "
+                  + "ON CONFLICT(asset_id) DO UPDATE SET is_hidden = 0;",
+                -1, &inventoryUpsert, nil
+            ) == SQLITE_OK,
+            sqlite3_prepare_v2(
                 self.connection.db,
                 "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1;",
                 -1, &lookup, nil
@@ -1858,12 +1879,14 @@ final class HashCacheRepository {
                 sqlite3_finalize(lookup)
                 sqlite3_finalize(update)
                 sqlite3_finalize(receiptLookup)
+                sqlite3_finalize(inventoryUpsert)
                 return Set(snapshots.map(\.localIdentifier))
             }
             defer {
                 sqlite3_finalize(lookup)
                 sqlite3_finalize(update)
                 sqlite3_finalize(receiptLookup)
+                sqlite3_finalize(inventoryUpsert)
             }
 
             func execute(_ sql: String, _ assetId: String) -> Bool {
@@ -1890,6 +1913,20 @@ final class HashCacheRepository {
 
             var retained = Set<String>()
             for snapshot in snapshots where !snapshot.isHidden {
+                // Previously unresolved PhotoKit IDs can appear after their
+                // change token was already committed. Update membership in the
+                // SAME transaction as pending/hash reconciliation, even when
+                // iCloud has not supplied a resource fingerprint.
+                sqlite3_reset(inventoryUpsert)
+                sqlite3_clear_bindings(inventoryUpsert)
+                sqlite3_bind_text(
+                    inventoryUpsert, 1,
+                    (snapshot.localIdentifier as NSString).utf8String, -1,
+                    unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                )
+                guard sqlite3_step(inventoryUpsert) == SQLITE_DONE else {
+                    return Set(snapshots.map(\.localIdentifier))
+                }
                 guard let currentFingerprint = snapshot.resourceFingerprint else {
                     retained.insert(snapshot.localIdentifier)
                     continue
@@ -1968,30 +2005,51 @@ final class HashCacheRepository {
     /// Hidden assets should not be hashed by the visible-library pipeline.
     /// Only explicit hidden PHAssets are acknowledged; temporarily absent
     /// local identifiers remain pending until PhotoKit can resolve them.
-    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) {
-        guard !identifiers.isEmpty else { return }
+    @discardableResult
+    func discardForegroundPendingIdentifiers(_ identifiers: Set<String>) -> Bool {
+        guard !identifiers.isEmpty else { return true }
         connection.ensureInitialized()
-        connection.dbQueue.sync { [weak self] in
-            guard let self else { return }
-            var statement: OpaquePointer?
+        return connection.dbQueue.sync { [weak self] in
+            guard let self, self.connection.beginTransaction() else { return false }
+            var committed = false
+            defer { if !committed { self.connection.rollbackTransaction() } }
+            var hiddenUpsert: OpaquePointer?
+            var pendingDelete: OpaquePointer?
             guard sqlite3_prepare_v2(
                 self.connection.db,
+                "INSERT INTO local_photo_assets(asset_id, is_hidden) VALUES (?, 1) "
+                  + "ON CONFLICT(asset_id) DO UPDATE SET is_hidden = 1;",
+                -1, &hiddenUpsert, nil
+            ) == SQLITE_OK,
+            sqlite3_prepare_v2(
+                self.connection.db,
                 "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
-                -1, &statement, nil
+                -1, &pendingDelete, nil
             ) == SQLITE_OK else {
-                sqlite3_finalize(statement)
-                return
+                sqlite3_finalize(hiddenUpsert)
+                sqlite3_finalize(pendingDelete)
+                return false
             }
-            defer { sqlite3_finalize(statement) }
+            defer {
+                sqlite3_finalize(hiddenUpsert)
+                sqlite3_finalize(pendingDelete)
+            }
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             for id in identifiers {
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
-                    logError("Failed to discard hidden foreground PhotoKit ID", category: .database)
-                    break
+                for statement in [hiddenUpsert, pendingDelete] {
+                    sqlite3_reset(statement)
+                    sqlite3_clear_bindings(statement)
+                    guard sqlite3_bind_text(
+                        statement, 1, (id as NSString).utf8String, -1, transient
+                    ) == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else {
+                        logError("Failed to reconcile hidden foreground PhotoKit ID", category: .database)
+                        return false
+                    }
                 }
             }
+            guard self.connection.commitTransaction() else { return false }
+            committed = true
+            return true
         }
     }
 

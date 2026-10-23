@@ -582,6 +582,89 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(ids(for: "SELECT asset_id FROM local_photo_assets;"), ["new-only"])
     }
 
+    func testInventoryRemainsUnreadyWhilePersistedDeltaReplays() {
+        // This models an upgraded database with an old PhotoKit cursor.
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "kept", isHidden: false),
+            (identifier: "deleted", isHidden: false)
+        ]))
+        XCTAssertFalse(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertNil(hashRepository.countNotUploadedVisibleAssets())
+
+        // A committed journal window must not implicitly publish inventory
+        // readiness, even if it persisted its own new cursor successfully.
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: "inserted", modificationDate: nil
+            )],
+            pendingIdentifiers: ["inserted"],
+            deletedIdentifiers: ["deleted"],
+            tokenData: Data([4]), bootstrap: false
+        ))
+        XCTAssertFalse(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertNil(hashRepository.countNotUploadedVisibleAssets())
+        XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([4]))
+
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 2)
+        XCTAssertEqual(ids(for: "SELECT asset_id FROM local_photo_assets ORDER BY asset_id;"),
+                       ["inserted", "kept"])
+        XCTAssertTrue(hashRepository.invalidateLocalPhotoInventory())
+        XCTAssertNil(hashRepository.countNotUploadedVisibleAssets())
+    }
+
+    func testRecoveredPendingPhotoCreatesVisibleInventoryEvenWithoutFingerprint() {
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        execute("INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('late-photo');")
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 0)
+        let retained = hashRepository.reconcileForegroundPendingAssets(snapshots: [
+            PhotoAssetSnapshot(localIdentifier: "late-photo", modificationDate: nil)
+        ])
+        XCTAssertEqual(retained, ["late-photo"])
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+        XCTAssertEqual(ids(for: "SELECT asset_id FROM local_photo_assets;"), ["late-photo"])
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["late-photo"])
+    }
+
+    func testRecoveredHiddenPhotoHidesInventoryAndAcknowledgesPending() {
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "late-hidden", isHidden: false)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        execute("INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('late-hidden');")
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+
+        XCTAssertTrue(hashRepository.discardForegroundPendingIdentifiers(["late-hidden"]))
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 0)
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+        XCTAssertEqual(sqlCount(
+            "SELECT COUNT(*) FROM local_photo_assets WHERE asset_id = 'late-hidden' AND is_hidden = 1;"
+        ), 1)
+    }
+
+    func testFailedHiddenAcknowledgementRollsBackInventory() {
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "hidden-pending", isHidden: false)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        execute("""
+            INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('hidden-pending');
+            CREATE TRIGGER fail_hidden_pending_delete
+            BEFORE DELETE ON foreground_photo_pending_assets
+            BEGIN SELECT RAISE(ABORT, 'simulated deletion failure'); END;
+            """)
+        XCTAssertFalse(hashRepository.discardForegroundPendingIdentifiers(["hidden-pending"]))
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["hidden-pending"])
+        XCTAssertEqual(sqlCount(
+            "SELECT COUNT(*) FROM local_photo_assets WHERE asset_id = 'hidden-pending' AND is_hidden = 0;"
+        ), 1)
+    }
+
     func testSQLiteLocalCountMatchesPendingReceiptsAndRAWPairSemantics() {
         XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
         let ids = ["primary-done", "raw-partial", "raw-receipt", "receipt", "pending", "new", "hidden"]
