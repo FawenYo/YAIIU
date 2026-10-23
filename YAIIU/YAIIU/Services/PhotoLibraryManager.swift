@@ -865,7 +865,18 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Both startup and post-import reconciliation use the same serialized
     /// PhotoKit journal replay before any unknown hash receives a baseline.
     private func prepareForegroundPhotoWork(forceVersionBaseline: Bool) -> ForegroundPhotoWork {
-        Self.foregroundChangeQueue.sync {
+        let result = Self.foregroundChangeQueue.sync { prepareForegroundPhotoWorkLocked() }
+        // Durable 300-row backfill happens after returning to the gallery and
+        // releasing the upload verification gate.
+        if case .incremental = result {
+            Self.foregroundChangeQueue.async { [weak self] in
+                self?.backfillUnknownHashVersionsLocked(force: forceVersionBaseline)
+            }
+        }
+        return result
+    }
+
+    private func prepareForegroundPhotoWorkLocked() -> ForegroundPhotoWork {
             let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
             guard authorization == .authorized || authorization == .limited else {
                 return .unavailable
@@ -883,7 +894,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                   let token = try? NSKeyedUnarchiver.unarchivedObject(
                       ofClass: PHPersistentChangeToken.self, from: tokenData
                   ) else {
-                return bootstrapForegroundPhotoWork()
+                let work = bootstrapForegroundPhotoWork()
+                if case .incremental = work {
+                    // Replay edits since the token sampled BEFORE the scan.
+                    return prepareForegroundPhotoWorkLocked()
+                }
+                return work
             }
 
             // Existing installations have a cursor but no complete local ID
@@ -1029,18 +1045,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         category: .hash
                     )
                 }
-                // Baseline only after successful, durable journal replay.
-                // Updated unknown-version hashes were already invalidated.
-                let baselineStartedAt = Date()
-                backfillUnknownHashVersionsLocked(
-                    force: forceVersionBaseline,
-                    excludingIdentifiers: replayedIdentifiers
-                )
-                let baselineElapsed = Date().timeIntervalSince(baselineStartedAt)
+                // Version backfill runs on the serialized queue after this replay.
                 let pendingStartedAt = Date()
                 let pendingIdentifiers = visibleForegroundPendingIdentifiers()
                 logInfo(
-                    "Foreground PhotoKit post-replay: versionBaseline=\(String(format: "%.1f", baselineElapsed))s, " +
+                    "Foreground PhotoKit post-replay: baseline=deferred, " +
                     "pendingReconciliation=\(String(format: "%.1f", Date().timeIntervalSince(pendingStartedAt)))s, " +
                     "queued=\(pendingIdentifiers.count)",
                     category: .hash
@@ -1063,7 +1072,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 _ = db.invalidateLocalPhotoInventory()
                 return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
             }
-        }
     }
 
     /// A delayed extension event may re-enqueue previously hidden assets.
@@ -1154,7 +1162,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let assets = PHAsset.fetchAssets(with: options)
         let db = DatabaseManager.shared
         guard db.beginLocalPhotoInventoryBootstrap() else { return false }
-
+        publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: 0, total: assets.count))
+        defer { publishForegroundBaselineProgress(nil) }
+        var processed = 0
         var batch: [(identifier: String, isHidden: Bool)] = []
         batch.reserveCapacity(300)
         var succeeded = true
@@ -1162,14 +1172,17 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             in: assets, shouldStop: { !succeeded }
         ) { asset, _ in
             batch.append((asset.localIdentifier, asset.isHidden))
+            processed += 1
             if batch.count == 300 {
                 if !db.appendLocalPhotoInventoryBatch(batch) { succeeded = false }
                 batch.removeAll(keepingCapacity: true)
+                publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: processed, total: assets.count))
             }
         }
         guard completed, succeeded,
               PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
               db.appendLocalPhotoInventoryBatch(batch) else { return false }
+        publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: assets.count, total: assets.count))
 
         // The caller must first replay the old token (including events that
         // arrived during this enumeration) before committing readiness.
@@ -1186,27 +1199,19 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 withRootObject: PHPhotoLibrary.shared().currentChangeToken,
                 requiringSecureCoding: true
             )
-            let snapshots = allAssetSnapshots(includingHidden: true)
-            guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
-                return .fallbackSnapshot(snapshots)
-            }
-            guard DatabaseManager.shared.applyForegroundPhotoChanges(
-                snapshots: snapshots,
-                pendingIdentifiers: Set(PhotoAssetSnapshot.visibleIdentifiers(in: snapshots)),
-                deletedIdentifiers: [],
-                tokenData: tokenData,
-                bootstrap: true
-            ) else {
-                logError("Foreground PhotoKit bootstrap checkpoint persistence failed", category: .database)
+            guard bootstrapLocalPhotoInventory(),
+                  PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+                  DatabaseManager.shared.commitInitialForegroundPhotoBootstrap(tokenData: tokenData) else {
+                logError("Lightweight PhotoKit inventory bootstrap failed; retrying later", category: .database)
                 _ = DatabaseManager.shared.invalidateLocalPhotoInventory()
-                return .fallbackSnapshot(snapshots)
+                return .unavailable
             }
-            logInfo("Foreground PhotoKit initial checkpoint built; assets=\(snapshots.count)", category: .hash)
-            return .incremental(visibleForegroundPendingIdentifiers())
+            logInfo("Initial PhotoKit inventory checkpoint committed without invalidating old hashes", category: .hash)
+            return .incremental([])
         } catch {
             logWarning("Could not capture foreground PhotoKit change token: \(error.localizedDescription)", category: .hash)
             _ = DatabaseManager.shared.invalidateLocalPhotoInventory()
-            return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+            return .unavailable
         }
     }
 

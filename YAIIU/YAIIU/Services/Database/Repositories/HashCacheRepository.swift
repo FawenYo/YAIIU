@@ -1306,6 +1306,44 @@ final class HashCacheRepository {
         }
     }
 
+
+    /// Commit a lightweight first-time inventory together with its PhotoKit
+    /// start-of-scan token. Keep old hashes/receipts until verified.
+    func commitInitialForegroundPhotoBootstrap(tokenData: Data) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            guard connection.beginTransaction() else { return false }
+            var committed = false
+            defer { if !committed { connection.rollbackTransaction() } }
+            let missing = """
+                INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
+                SELECT a.asset_id FROM local_photo_assets a WHERE a.is_hidden = 0
+                  AND NOT EXISTS (SELECT 1 FROM hash_cache h WHERE h.asset_id = a.asset_id)
+                  AND NOT EXISTS (SELECT 1 FROM uploaded_assets u WHERE u.asset_id = a.asset_id);
+                """
+            guard sqlite3_exec(connection.db, missing, nil, nil, nil) == SQLITE_OK else { return false }
+            var token: OpaquePointer?
+            guard sqlite3_prepare_v2(connection.db,
+                  "INSERT OR REPLACE INTO foreground_photo_change_state(id, token_data) VALUES (1, ?);",
+                  -1, &token, nil) == SQLITE_OK else {
+                sqlite3_finalize(token)
+                return false
+            }
+            defer { sqlite3_finalize(token) }
+            let bound = tokenData.withUnsafeBytes { bytes in
+                sqlite3_bind_blob(token, 1, bytes.baseAddress, Int32(bytes.count),
+                    unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+            guard bound == SQLITE_OK, sqlite3_step(token) == SQLITE_DONE,
+                  sqlite3_exec(connection.db,
+                      "INSERT OR REPLACE INTO local_photo_inventory_state(id, is_ready) VALUES (1, 1);",
+                      nil, nil, nil) == SQLITE_OK,
+                  connection.commitTransaction() else { return false }
+            committed = true
+            return true
+        }
+    }
+
     func finishLocalPhotoInventoryBootstrap() -> Bool {
         connection.ensureInitialized()
         return connection.dbQueue.sync {
@@ -1550,8 +1588,12 @@ final class HashCacheRepository {
                     WHERE s.is_hidden = 0
                       AND s.resource_fingerprint IS NOT NULL
                       AND (
-                        h.asset_resource_fingerprint IS NULL
-                        OR s.resource_fingerprint != h.asset_resource_fingerprint
+                        (h.asset_resource_fingerprint IS NOT NULL AND
+                         s.resource_fingerprint != h.asset_resource_fingerprint)
+                        OR (h.asset_resource_fingerprint IS NULL AND
+                            h.asset_modification_date IS NOT NULL AND
+                            s.modified_at IS NOT NULL AND
+                            h.asset_modification_date != s.modified_at)
                       );
                     """
                 var query: OpaquePointer?
@@ -1607,7 +1649,12 @@ final class HashCacheRepository {
                             JOIN hash_cache AS h ON h.asset_id = s.asset_id
                             WHERE s.is_hidden = 0
                               AND s.resource_fingerprint IS NOT NULL
-                              AND s.resource_fingerprint = h.asset_resource_fingerprint
+                              AND (
+                                  s.resource_fingerprint = h.asset_resource_fingerprint
+                                  OR (h.asset_resource_fingerprint IS NULL AND
+                                      (h.asset_modification_date IS NULL OR
+                                       h.asset_modification_date = s.modified_at))
+                              )
                         );
                         """),
                       // Inventory and foreground PhotoKit cursor commit atomically.
@@ -1686,14 +1733,27 @@ final class HashCacheRepository {
                                         break
                                     }
                                 }
+                            } else if let storedDate, let currentDate = snapshot.modificationDate,
+                                      storedDate == currentDate {
+                                unchangedCachedCount += 1
+                                resolvedPendingIdentifiers.insert(snapshot.localIdentifier)
+                                sqlite3_reset(updateStatement)
+                                sqlite3_clear_bindings(updateStatement)
+                                sqlite3_bind_double(updateStatement, 1, currentDate.timeIntervalSince1970)
+                                sqlite3_bind_text(updateStatement, 2, (currentFingerprint as NSString).utf8String, -1, nil)
+                                sqlite3_bind_text(updateStatement, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
+                                guard sqlite3_step(updateStatement) == SQLITE_DONE else {
+                                    checkOK = false
+                                    break
+                                }
+                            } else if storedDate == nil {
+                                // Missing legacy date is not proof of a byte change.
+                                unchangedCachedCount += 1
+                                unknownResourceFingerprintCount += 1
+                                resolvedPendingIdentifiers.insert(snapshot.localIdentifier)
                             } else {
-                                // Legacy/imported hashes have no trusted resource
-                                // evidence. Rehash before reuse.
                                 missingResourceFingerprintCount += 1
                                 modified.insert(snapshot.localIdentifier)
-                                recordCacheDetail(
-                                    "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=resource_fingerprint_missing"
-                                )
                             }
                         } else {
                             // PhotoKit may temporarily return no resources while
@@ -1922,7 +1982,7 @@ final class HashCacheRepository {
             ) == SQLITE_OK,
             sqlite3_prepare_v2(
                 self.connection.db,
-                "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1;",
+                "SELECT asset_resource_fingerprint, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1;",
                 -1, &lookup, nil
             ) == SQLITE_OK,
             sqlite3_prepare_v2(
@@ -2003,7 +2063,11 @@ final class HashCacheRepository {
                     ? sqlite3_column_text(lookup, 0).map { String(cString: $0) }
                     : nil
 
-                if storedFingerprint == currentFingerprint {
+                let storedDate = hasHashCacheRow && sqlite3_column_type(lookup, 1) != SQLITE_NULL
+                    ? Date(timeIntervalSince1970: sqlite3_column_double(lookup, 1)) : nil
+                let legacyMatch = hasHashCacheRow && storedFingerprint == nil &&
+                    storedDate != nil && storedDate == snapshot.modificationDate
+                if storedFingerprint == currentFingerprint || legacyMatch {
                     sqlite3_reset(update)
                     sqlite3_clear_bindings(update)
                     if let date = snapshot.modificationDate {
@@ -2022,6 +2086,11 @@ final class HashCacheRepository {
                     }
                 } else {
                     retained.insert(snapshot.localIdentifier)
+                    if hasHashCacheRow && storedFingerprint == nil && storedDate == nil {
+                        guard execute("DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
+                                      snapshot.localIdentifier) else { return Set(snapshots.map(\.localIdentifier)) }
+                        continue
+                    }
                     let hasCurrentReceipt = hasCurrentReceipt(
                         assetId: snapshot.localIdentifier,
                         fingerprint: currentFingerprint
@@ -2130,6 +2199,7 @@ final class HashCacheRepository {
         // upload job version headers, but never decides hash invalidation.
         let sql = "SELECT asset_id, asset_modification_date, asset_resource_fingerprint FROM hash_cache;"
         var statement: OpaquePointer?
+        var storedDates: [String: Date] = [:]
         var storedFingerprints: [String: String] = [:]
         var cachedIds: Set<String> = []
 
@@ -2138,6 +2208,9 @@ final class HashCacheRepository {
                 if let idCString = sqlite3_column_text(statement, 0) {
                     let assetId = String(cString: idCString)
                     cachedIds.insert(assetId)
+                    if sqlite3_column_type(statement, 1) != SQLITE_NULL {
+                        storedDates[assetId] = Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
+                    }
                     if let fingerprint = sqlite3_column_text(statement, 2) {
                         storedFingerprints[assetId] = String(cString: fingerprint)
                     }
@@ -2203,9 +2276,12 @@ final class HashCacheRepository {
                 } else {
                     baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentFingerprint))
                 }
+            } else if let oldDate = storedDates[snapshot.localIdentifier],
+                      let date = snapshot.modificationDate, oldDate == date {
+                baselineUpdates.append((snapshot.localIdentifier, date, currentFingerprint))
+            } else if storedDates[snapshot.localIdentifier] == nil {
+                continue
             } else {
-                // Legacy/imported hash has no trusted resource evidence.
-                // Invalidate before reuse; next hash stores a fingerprint.
                 modifiedIds.insert(snapshot.localIdentifier)
             }
         }
