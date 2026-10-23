@@ -1013,11 +1013,20 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 }
                 // Baseline only after successful, durable journal replay.
                 // Updated unknown-version hashes were already invalidated.
+                let baselineStartedAt = Date()
                 backfillUnknownHashVersionsLocked(
                     force: forceVersionBaseline,
                     excludingIdentifiers: replayedIdentifiers
                 )
+                let baselineElapsed = Date().timeIntervalSince(baselineStartedAt)
+                let pendingStartedAt = Date()
                 let pendingIdentifiers = visibleForegroundPendingIdentifiers()
+                logInfo(
+                    "Foreground PhotoKit post-replay: versionBaseline=\(String(format: "%.1f", baselineElapsed))s, " +
+                    "pendingReconciliation=\(String(format: "%.1f", Date().timeIntervalSince(pendingStartedAt)))s, " +
+                    "queued=\(pendingIdentifiers.count)",
+                    category: .hash
+                )
                 // Existing installations seed IDs BEFORE replaying the old
                 // PhotoKit token. Do not advertise readiness until replay wins.
                 if needsInventoryBootstrap && !db.finishLocalPhotoInventoryBootstrap() {
@@ -1043,34 +1052,79 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Check only pending IDs, never the whole library, and retain
     /// temporarily unavailable IDs for a subsequent pass.
     private func visibleForegroundPendingIdentifiers() -> [String] {
-        let pending = DatabaseManager.shared.getPendingForegroundPhotoIdentifiers()
-        guard !pending.isEmpty else { return [] }
+        let startedAt = Date()
+        let db = DatabaseManager.shared
+        // The journal has already reconciled changed assets and updated the
+        // inventory. A visible pending ID without a hash or receipt has no
+        // existing resource evidence to invalidate, so it can go straight to
+        // the hash pipeline without another PhotoKit resource enumeration.
+        // On an incomplete inventory or SQL error, retain the old full check.
+        let classified = db.isLocalPhotoInventoryReady()
+            ? db.classifyForegroundPendingIdentifiers()
+            : nil
+        let knownVisible = classified?.visibleWithoutEvidence ?? []
+        let knownHidden = classified?.hidden ?? []
+        let needsPhotoKit = classified?.needsPhotoKit
+            ?? db.getPendingForegroundPhotoIdentifiers()
+        guard !knownVisible.isEmpty || !knownHidden.isEmpty || !needsPhotoKit.isEmpty else {
+            return []
+        }
+
+        if !knownHidden.isEmpty && !db.discardForegroundPendingIdentifiers(knownHidden) {
+            // Do not hand off stale hidden work if its durable cleanup failed.
+            logWarning("Failed to discard known-hidden foreground pending work", category: .hash)
+            return []
+        }
+
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
-        let result = PHAsset.fetchAssets(withLocalIdentifiers: pending, options: options)
-        var visible = Set<String>()
-        var hidden = Set<String>()
-        var visibleSnapshots = [PhotoAssetSnapshot]()
-        PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
-            if asset.isHidden {
-                hidden.insert(asset.localIdentifier)
-            } else {
-                visible.insert(asset.localIdentifier)
-                visibleSnapshots.append(PhotoAssetSnapshot(
-                    asset: asset,
-                    includeResourceFingerprint: true,
-                    includeResourceDiagnostics: false
-                ))
+        var output = knownVisible
+        var fetchedVisible = 0
+        var missingFromPhotoKit = 0
+        // Verify only IDs with an existing hash/receipt or unknown inventory
+        // membership. Chunk both native PhotoKit objects AND SQLite writes;
+        // do not retain a library-sized array of PHAsset snapshots.
+        for start in stride(from: 0, to: needsPhotoKit.count, by: 300) {
+            let end = min(start + 300, needsPhotoKit.count)
+            let identifiers = Array(needsPhotoKit[start..<end])
+            let result = PHAsset.fetchAssets(
+                withLocalIdentifiers: identifiers, options: options
+            )
+            var visible = Set<String>()
+            var hidden = Set<String>()
+            var snapshots = [PhotoAssetSnapshot]()
+            snapshots.reserveCapacity(result.count)
+            PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
+                if asset.isHidden {
+                    hidden.insert(asset.localIdentifier)
+                } else {
+                    visible.insert(asset.localIdentifier)
+                    snapshots.append(PhotoAssetSnapshot(
+                        asset: asset,
+                        includeResourceFingerprint: true,
+                        includeResourceDiagnostics: false
+                    ))
+                }
             }
-        }
-        if !hidden.isEmpty {
-            // Keep hidden inventory and pending acknowledgement atomic.
-            guard DatabaseManager.shared.discardForegroundPendingIdentifiers(hidden) else {
+            missingFromPhotoKit += max(0, identifiers.count - result.count)
+            if !hidden.isEmpty && !db.discardForegroundPendingIdentifiers(hidden) {
+                logWarning("Failed to discard hidden foreground pending work", category: .hash)
                 return []
             }
+            let retained = db.reconcileForegroundPendingAssets(snapshots: snapshots)
+            fetchedVisible += visible.count
+            output.append(contentsOf: identifiers.filter {
+                visible.contains($0) && retained.contains($0)
+            })
         }
-        let retained = DatabaseManager.shared.reconcileForegroundPendingAssets(snapshots: visibleSnapshots)
-        return pending.filter { visible.contains($0) && retained.contains($0) }
+        logInfo(
+            "Foreground pending reconciliation: knownVisible=\(knownVisible.count), " +
+            "knownHidden=\(knownHidden.count), verifiedWithPhotoKit=\(needsPhotoKit.count), " +
+            "fetchedVisible=\(fetchedVisible), temporarilyMissing=\(missingFromPhotoKit), " +
+            "returned=\(output.count), elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startedAt)))s",
+            category: .hash
+        )
+        return output
     }
 
     /// One-time upgrade: only stream PhotoKit IDs + hidden flags in 300-item
