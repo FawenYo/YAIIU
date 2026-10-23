@@ -108,6 +108,7 @@ struct PhotoKitBaselineBanner: View {
 }
 
 struct SettingsView: View {
+    @ObservedObject private var photoLibraryManager = PhotoLibraryManager.shared
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var uploadManager: UploadManager
     @State private var showingLogoutAlert = false
@@ -142,6 +143,13 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             List {
+                if photoLibraryManager.foregroundBaselineProgress != nil {
+                    Section {
+                        PhotoKitBaselineBanner()
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                    }
+                }
                 Section(header: Text(L10n.Settings.serverInfo)) {
                     // Network Settings - shows current status and allows editing
                     NavigationLink(destination: NetworkSettingsView()) {
