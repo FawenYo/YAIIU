@@ -848,7 +848,11 @@ struct PhotoGridView: View {
 
     @ViewBuilder
     private var processingScreen: some View {
+        // Keep an existing gallery browsable during a large metadata baseline.
+        // The compact toolbar status and upload/count readiness gates remain
+        // active; show this full-screen placeholder only before first paint.
         if hashManager.isProcessing,
+           photoLibraryManager.fetchResult == nil,
            photoLibraryManager.foregroundBaselineProgress != nil {
             VStack(spacing: 20) {
                 Image(systemName: "photo.on.rectangle.angled")
