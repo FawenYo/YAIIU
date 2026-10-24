@@ -418,6 +418,12 @@ struct PhotoGridView: View {
     /// filtered fetch. Users can still select its visible assets by identifier.
     /// Limited Photos users still need a functioning filtered gallery.
     /// Only the count requires a full-access inventory.
+    /// Never store or log this value. It only scopes the in-memory snapshot.
+    private var statusDestinationIdentity: String {
+        settingsManager.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            + "|" + settingsManager.apiKey
+    }
+
     private var canBuildNotUploadedFilter: Bool {
         PhotoLibraryStatusCount.canBuildNotUploadedFilter(
             hasLoadedStatusSnapshot: hashManager.hasLoadedSyncStatusCache,
@@ -545,6 +551,7 @@ struct PhotoGridView: View {
             processingScreen
         }
         .onAppear {
+            hashManager.bindProvisionalSyncStatus(to: statusDestinationIdentity)
             if !hasAppeared {
                 hasAppeared = true
                 photoLibraryManager.requestAuthorization { status in
@@ -558,6 +565,14 @@ struct PhotoGridView: View {
             if currentFilter == .favorites || currentFilter == .album {
                 refreshPhotoKitFilter()
             }
+        }
+        .onChange(of: settingsManager.serverURL) { _, _ in
+            hashManager.bindProvisionalSyncStatus(to: statusDestinationIdentity)
+            scheduleCountRefresh()
+        }
+        .onChange(of: settingsManager.apiKey) { _, _ in
+            hashManager.bindProvisionalSyncStatus(to: statusDestinationIdentity)
+            scheduleCountRefresh()
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {

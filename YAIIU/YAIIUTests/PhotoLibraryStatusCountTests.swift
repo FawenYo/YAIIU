@@ -2,6 +2,13 @@ import XCTest
 @testable import YAIIU
 
 final class PhotoLibraryStatusCountTests: XCTestCase {
+    func testProvisionalStatusIsInvalidatedOnlyOnDestinationChange() {
+        XCTAssertFalse(PhotoLibraryStatusCount.destinationChanged(previous: nil, current: "server|first"))
+        XCTAssertFalse(PhotoLibraryStatusCount.destinationChanged(previous: "server|first", current: "server|first"))
+        XCTAssertTrue(PhotoLibraryStatusCount.destinationChanged(previous: "server|first", current: "server|second"))
+        XCTAssertTrue(PhotoLibraryStatusCount.destinationChanged(previous: "server|first", current: "other|first"))
+    }
+
     func testNotUploadedFilterUsesProvisionalCacheWhileBadgeIsHidden() {
         let buildable = PhotoLibraryStatusCount.canBuildNotUploadedFilter(
             hasLoadedStatusSnapshot: true,

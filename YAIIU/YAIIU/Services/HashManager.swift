@@ -398,6 +398,8 @@ class HashManager: ObservableObject {
     /// A first SQLite snapshot may be displayed as provisional filtering
     /// evidence while the migration/hash pipeline is still running.
     @Published private(set) var hasLoadedSyncStatusCache = false
+    private var provisionalStatusDestination: String?
+    private var suppressProvisionalStatusUntilNewRunCompletes = false
     
     @Published var iCloudIdMatchCount: Int = 0
 
@@ -442,7 +444,7 @@ class HashManager: ObservableObject {
             DatabaseManager.shared.getAllSyncStatusAsync(completion: completion)
         },
         publish: { [weak self] statusMap in
-            guard let self else { return }
+            guard let self, !self.suppressProvisionalStatusUntilNewRunCompletes else { return }
             // Publish only the initial snapshot during active processing;
             // later refreshes must not overwrite new hash/receipt updates.
             if !self.hasLoadedSyncStatusCache {
@@ -482,6 +484,23 @@ class HashManager: ObservableObject {
     @MainActor
     var hasActivePipeline: Bool {
         runState.isRunning
+    }
+
+    /// Bind the filter's provisional snapshot to the actual Immich login,
+    /// never allowing a prior server/account to mark photos uploaded.
+    @MainActor
+    func bindProvisionalSyncStatus(to destination: String) {
+        if PhotoLibraryStatusCount.destinationChanged(
+            previous: provisionalStatusDestination, current: destination
+        ) {
+            suppressProvisionalStatusUntilNewRunCompletes = true
+            hasLoadedSyncStatusCache = false
+            isSyncStatusCacheReady = false
+            syncStatusCache.removeAll()
+            pendingICloudIdUpdates.removeAll()
+            if hasActivePipeline { stopProcessing() }
+        }
+        provisionalStatusDestination = destination
     }
 
     @MainActor
@@ -1123,6 +1142,9 @@ class HashManager: ObservableObject {
         statusMessage = ""
         processingProgress = 1.0
 
+        // After new-account verification, the refreshed SQLite view can be
+        // adopted again. Previously loaded snapshots remain suppressed.
+        suppressProvisionalStatusUntilNewRunCompletes = false
         loadCachedStatus()
     }
     
