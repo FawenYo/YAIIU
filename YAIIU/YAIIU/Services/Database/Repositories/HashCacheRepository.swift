@@ -350,7 +350,9 @@ final class HashCacheRepository {
                 let storedDate: Date? = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 0) != SQLITE_NULL
                     ? Date(timeIntervalSince1970: sqlite3_column_double(existingStatement, 0))
                     : nil
-                let fingerprintMissing = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 1) == SQLITE_NULL
+                let storedFingerprint = existingResult == SQLITE_ROW
+                    ? sqlite3_column_text(existingStatement, 1).map { String(cString: $0) } : nil
+                let fingerprintMissing = existingResult == SQLITE_ROW && storedFingerprint == nil
                 let isHidden = existingResult == SQLITE_ROW && sqlite3_column_int(existingStatement, 2) != 0
                 sqlite3_finalize(existingStatement)
                 // Photos hidden from the foreground grid cannot be safely
@@ -361,9 +363,12 @@ final class HashCacheRepository {
                 // but no resource fingerprint. Do not stamp current metadata onto
                 // an edited asset; invalidate and let the normal hash pipeline
                 // rebuild a trusted row when dates disagree or current date is absent.
-                if fingerprintMissing,
-                   storedDate == nil ||
-                   storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970 {
+                let fingerprintChanged = storedFingerprint != nil &&
+                    storedFingerprint != update.resourceFingerprint
+                let legacyDateChanged = fingerprintMissing &&
+                    (storedDate == nil ||
+                     storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970)
+                if fingerprintChanged || legacyDateChanged {
                     for sql in [
                         "DELETE FROM hash_cache WHERE asset_id = ? AND sha1_hash = ?;",
                         "DELETE FROM uploaded_assets WHERE asset_id = ?;",
@@ -1329,6 +1334,32 @@ final class HashCacheRepository {
                   AND NOT EXISTS (SELECT 1 FROM hash_cache h WHERE h.asset_id = a.asset_id);
                 """
             guard sqlite3_exec(connection.db, missing, nil, nil, nil) == SQLITE_OK else { return false }
+
+            // On a FIRST checkpoint, PhotoKit history cannot describe prior
+            // deletions or edits. Full inventory (including hidden assets)
+            // is authoritative for missing IDs; prune stale persisted records
+            // atomically before the new cursor becomes visible.
+            let absent = "asset_id NOT IN (SELECT asset_id FROM local_photo_assets)"
+            for table in ["hash_cache", "uploaded_assets", "foreground_photo_pending_assets",
+                          "background_upload_queue"] {
+                guard sqlite3_exec(connection.db, "DELETE FROM \(table) WHERE \(absent);",
+                                   nil, nil, nil) == SQLITE_OK else { return false }
+            }
+            guard sqlite3_exec(connection.db, """
+                DELETE FROM upload_jobs WHERE \(absent) AND status IN ('pending', 'failed');
+                """, nil, nil, nil) == SQLITE_OK else { return false }
+
+            // Previously fingerprinted hashes may have changed before the
+            // new token was taken. They must be compared against current
+            // PhotoKit resource evidence, not accepted based on old receipts.
+            // Legacy NULL fingerprints are handled by the version backfill.
+            guard sqlite3_exec(connection.db, """
+                INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
+                SELECT h.asset_id FROM hash_cache AS h
+                JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
+                WHERE a.is_hidden = 0 AND h.asset_resource_fingerprint IS NOT NULL;
+                """, nil, nil, nil) == SQLITE_OK else { return false }
+
             var token: OpaquePointer?
             guard sqlite3_prepare_v2(connection.db,
                   "INSERT OR REPLACE INTO foreground_photo_change_state(id, token_data) VALUES (1, ?);",

@@ -876,15 +876,18 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Both startup and post-import reconciliation use the same serialized
     /// PhotoKit journal replay before any unknown hash receives a baseline.
     private func prepareForegroundPhotoWork(forceVersionBaseline: Bool) -> ForegroundPhotoWork {
-        let result = Self.foregroundChangeQueue.sync { prepareForegroundPhotoWorkLocked() }
-        // Durable 300-row backfill happens after returning to the gallery and
-        // releasing the upload verification gate.
-        if case .incremental = result {
-            Self.foregroundChangeQueue.async { [weak self] in
-                self?.backfillUnknownHashVersionsLocked(force: forceVersionBaseline)
+        Self.foregroundChangeQueue.sync {
+            let result = prepareForegroundPhotoWorkLocked()
+            // Caller holds ServerAssetVerificationGate across this method.
+            // Backfill may invalidate old checksums; never let server
+            // verification bind an iCloud ID using one of those stale hashes.
+            // This still executes on PhotoGrid's detached utility task, not
+            // on the UI thread. Each SQLite window commits independently.
+            if case .incremental = result {
+                backfillUnknownHashVersionsLocked(force: forceVersionBaseline)
             }
+            return result
         }
-        return result
     }
 
     private func prepareForegroundPhotoWorkLocked() -> ForegroundPhotoWork {
