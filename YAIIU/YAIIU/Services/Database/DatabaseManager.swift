@@ -193,6 +193,10 @@ final class DatabaseManager {
         hashRepo.finishLocalPhotoInventoryBootstrap()
     }
 
+    func commitInitialForegroundPhotoBootstrap(tokenData: Data) -> Bool {
+        hashRepo.commitInitialForegroundPhotoBootstrap(tokenData: tokenData)
+    }
+
     @discardableResult
     func invalidateLocalPhotoInventory() -> Bool {
         hashRepo.invalidateLocalPhotoInventory()

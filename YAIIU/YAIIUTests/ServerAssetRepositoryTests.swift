@@ -916,6 +916,237 @@ final class ServerAssetRepositoryTests: XCTestCase {
 
     // MARK: - Phase 2: Foreground PhotoKit Change Journal
 
+
+    func testFirstTimeInventoryBootstrapKeepsLegacyEvidenceAndSeedsOnlyMissing() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "old-uploaded", primaryHash: "existing-sha",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "old-uploaded", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "on-server"
+        )
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "old-uploaded", isHidden: false),
+            (identifier: "new-local", isHidden: false),
+            (identifier: "hidden-local", isHidden: true)
+        ]))
+        XCTAssertFalse(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertTrue(hashRepository.commitInitialForegroundPhotoBootstrap(tokenData: Data([11])))
+        XCTAssertTrue(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([11]))
+        XCTAssertEqual(Set(hashRepository.getPendingForegroundPhotoIdentifiers()), ["new-local"])
+        XCTAssertEqual(hashRepository.getHashCache(localIdentifier: "old-uploaded")?.sha1Hash, "existing-sha")
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "old-uploaded"))
+        XCTAssertEqual(hashRepository.countNotUploadedVisibleAssets(), 1)
+    }
+
+
+    func testFirstTimeBootstrapEnqueuesReceiptOnlyAssetsForVerification() {
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "receipt-only", resourceType: "jpeg",
+            filename: "existing.jpg", immichId: "remote-existing"
+        )
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "receipt-only", isHidden: false),
+            (identifier: "uncached", isHidden: false),
+            (identifier: "hidden-receipt", isHidden: true)
+        ]))
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "hidden-receipt", resourceType: "jpeg",
+            filename: "hidden.jpg", immichId: "remote-hidden"
+        )
+        XCTAssertTrue(hashRepository.commitInitialForegroundPhotoBootstrap(tokenData: Data([13])))
+        XCTAssertEqual(Set(hashRepository.getPendingForegroundPhotoIdentifiers()),
+                       Set(["receipt-only", "uncached"]))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "hidden-receipt"))
+    }
+
+    func testLegacyHiddenAssetIsExcludedFromBackfillInvalidation() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "hidden-legacy", primaryHash: "original",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "hidden-legacy", resourceType: "jpeg",
+            filename: "hidden.jpg", immichId: "remote-hidden"
+        )
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "hidden-legacy", isHidden: true)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+        XCTAssertFalse(hashRepository.hashCacheRowsNeedingPhotoKitBaseline()
+            .contains(where: { $0.localIdentifier == "hidden-legacy" }))
+        XCTAssertEqual(hashRepository.backfillPhotoKitVersionMetadata([
+            (localIdentifier: "hidden-legacy", sha1Hash: "original",
+             modificationDate: Date(timeIntervalSince1970: 200),
+             resourceFingerprint: "resource-now")
+        ]), 0)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "hidden-legacy"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "hidden-legacy"))
+        XCTAssertFalse(hashRepository.getPendingForegroundPhotoIdentifiers().contains("hidden-legacy"))
+    }
+
+    func testFirstTimeBootstrapPrunesDeletedLegacyIDsAndQueuesVersionedCaches() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "missing", primaryHash: "deleted-photo",
+            rawHash: nil, hasRAW: false, modificationDate: Date(timeIntervalSince1970: 30)
+        )
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "edited", primaryHash: "old-sha",
+            rawHash: nil, hasRAW: false, modificationDate: Date(timeIntervalSince1970: 40),
+            resourceFingerprint: "old-resource"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "missing", resourceType: "jpeg",
+            filename: "deleted.jpg", immichId: "remote-deleted"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "edited", resourceType: "jpeg",
+            filename: "edited.jpg", immichId: "remote-edited"
+        )
+        execute("INSERT INTO background_upload_queue(asset_id, enqueued_at) VALUES ('missing', 1);")
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([(identifier: "edited", isHidden: false)]))
+        XCTAssertTrue(hashRepository.commitInitialForegroundPhotoBootstrap(tokenData: Data([33])))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "missing"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "missing"))
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM background_upload_queue WHERE asset_id = 'missing';"), 0)
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["edited"])
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "edited"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "edited"))
+    }
+
+    func testBaselineInvalidatesDifferentKnownFingerprintEvenWithoutDate() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "edited", primaryHash: "sha-before",
+            rawHash: nil, hasRAW: false, modificationDate: nil,
+            resourceFingerprint: "fingerprint-before"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "edited", resourceType: "jpeg",
+            filename: "edited.jpg", immichId: "remote"
+        )
+        XCTAssertEqual(hashRepository.backfillPhotoKitVersionMetadata([
+            (localIdentifier: "edited", sha1Hash: "sha-before",
+             modificationDate: Date(timeIntervalSince1970: 55),
+             resourceFingerprint: "fingerprint-after")
+        ]), 1)
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "edited"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "edited"))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["edited"])
+    }
+
+    func testFirstTimeBootstrapRollbackLeavesNoUsableCursor() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "old-uploaded", primaryHash: "existing-sha",
+            rawHash: nil, hasRAW: false, modificationDate: nil
+        )
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "old-uploaded", isHidden: false),
+            (identifier: "unhashed", isHidden: false)
+        ]))
+        execute("""
+            CREATE TRIGGER reject_initial_foreground_cursor
+            BEFORE INSERT ON foreground_photo_change_state
+            BEGIN SELECT RAISE(ABORT, 'forced cursor failure'); END;
+            """)
+        XCTAssertFalse(hashRepository.commitInitialForegroundPhotoBootstrap(tokenData: Data([12])))
+        XCTAssertNil(hashRepository.loadForegroundPhotoToken())
+        XCTAssertFalse(hashRepository.isLocalPhotoInventoryReady())
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "old-uploaded"))
+    }
+
+    func testLegacyBaselineOnlyPromotesMatchingModificationDate() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "unchanged", primaryHash: "old-sha",
+            rawHash: nil, hasRAW: false, modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "changed", primaryHash: "old-sha-2",
+            rawHash: nil, hasRAW: false, modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "unchanged", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "remote"
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "changed", resourceType: "jpeg",
+            filename: "new.jpg", immichId: "old-remote"
+        )
+        XCTAssertEqual(hashRepository.backfillPhotoKitVersionMetadata([
+            (localIdentifier: "unchanged", sha1Hash: "old-sha",
+             modificationDate: Date(timeIntervalSince1970: 100), resourceFingerprint: "fingerprint-v1"),
+            (localIdentifier: "changed", sha1Hash: "old-sha-2",
+             modificationDate: Date(timeIntervalSince1970: 200), resourceFingerprint: "fingerprint-v2")
+        ]), 2)
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache
+            WHERE asset_id = 'unchanged' AND sha1_hash = 'old-sha'
+              AND asset_resource_fingerprint = 'fingerprint-v1';
+            """), 1)
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "unchanged"))
+        XCTAssertNil(hashRepository.getHashCache(localIdentifier: "changed"))
+        XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "changed"))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["changed"])
+    }
+
+    func testFullSnapshotRetainsMatchingLegacyDateWithoutRehash() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "legacy", primaryHash: "old-sha",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "remote"
+        )
+        XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
+            snapshots: [PhotoAssetSnapshot(
+                localIdentifier: "legacy",
+                modificationDate: Date(timeIntervalSince1970: 100),
+                resourceFingerprint: "fingerprint-v1"
+            )],
+            pendingIdentifiers: ["legacy"], deletedIdentifiers: [],
+            tokenData: Data([10]), bootstrap: true
+        ))
+        XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: "legacy"))
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "legacy"))
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+    }
+
+    func testBackgroundExtensionAdoptsMatchingLegacyDate() {
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "legacy", primaryHash: "old-sha",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100)
+        )
+        uploadRepository.recordUploadedAsset(
+            localIdentifier: "legacy", resourceType: "jpeg",
+            filename: "old.jpg", immichId: "remote"
+        )
+        let ext = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let result = ext.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: ["legacy"], deletedAssetIds: [],
+            updatedAssetModificationDates: ["legacy": Date(timeIntervalSince1970: 100)],
+            updatedAssetResourceFingerprints: ["legacy": "fingerprint-v1"],
+            tokenData: Data([6])
+        )
+        XCTAssertEqual(result?.invalidatedVersions, 0)
+        XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "legacy"))
+        XCTAssertEqual(sqlCount("""
+            SELECT COUNT(*) FROM hash_cache WHERE asset_id = 'legacy'
+            AND asset_resource_fingerprint = 'fingerprint-v1';
+            """), 1)
+    }
+
     func testForegroundBootstrapQueuesOnlyUnhashedVisiblePhotos() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "cached", primaryHash: "sha-cached",

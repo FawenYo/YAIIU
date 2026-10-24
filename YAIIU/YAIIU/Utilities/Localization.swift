@@ -290,6 +290,7 @@ enum L10n {
         static var filterAlbum: String { "photoGrid.filter.album".localized }
         static var filterChooseAlbum: String { "photoGrid.filter.chooseAlbum".localized }
         static var filterNoAlbums: String { "photoGrid.filter.noAlbums".localized }
+        static var filterUpdating: String { "photoGrid.filter.updating".localized }
         static func filterActive(_ count: Int) -> String {
             return "photoGrid.filter.active".localized(with: count)
         }

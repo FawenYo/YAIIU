@@ -41,7 +41,6 @@ struct ContentView: View {
 struct MainTabView: View {
     @State private var selectedTab = 0
     @ObservedObject private var languageManager = LanguageManager.shared
-    
     var body: some View {
         TabView(selection: $selectedTab) {
             PhotoGridView()
@@ -63,10 +62,53 @@ struct MainTabView: View {
                 .tag(2)
         }
         .id(languageManager.currentLanguage)
+
+    }
+}
+
+
+/// An in-content status strip. Never attach this to the outer TabView:
+/// a parent safe-area inset can displace the child NavigationView toolbar.
+/// Each tab places this BELOW its own navigation bar.
+struct PhotoKitBaselineBanner: View {
+    @ObservedObject private var photoLibraryManager = PhotoLibraryManager.shared
+
+    var body: some View {
+        if let progress = photoLibraryManager.foregroundBaselineProgress {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Image(systemName: "externaldrive.badge.timemachine")
+                    Text(L10n.PhotoGrid.processingBaseline(progress.completed, progress.total))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 8)
+                    if progress.total > 0 {
+                        Text("\(Int(progress.fraction * 100))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if progress.total > 0 {
+                    ProgressView(value: progress.fraction)
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity)
+            .background(.regularMaterial)
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .combine)
+        }
     }
 }
 
 struct SettingsView: View {
+    @ObservedObject private var photoLibraryManager = PhotoLibraryManager.shared
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var uploadManager: UploadManager
     @State private var showingLogoutAlert = false
@@ -101,6 +143,13 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             List {
+                if photoLibraryManager.foregroundBaselineProgress != nil {
+                    Section {
+                        PhotoKitBaselineBanner()
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                    }
+                }
                 Section(header: Text(L10n.Settings.serverInfo)) {
                     // Network Settings - shows current status and allows editing
                     NavigationLink(destination: NetworkSettingsView()) {

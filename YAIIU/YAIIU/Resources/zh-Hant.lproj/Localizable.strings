@@ -139,6 +139,7 @@
 "photoGrid.filter.chooseAlbum" = "選擇相簿";
 "photoGrid.filter.noAlbums" = "沒有可選擇的相簿";
 "photoGrid.filter.active" = "顯示 %d 個項目";
+"photoGrid.filter.updating" = "更新中…";
 "photoGrid.selectAllNotUploaded" = "全選未上傳";
 "photoGrid.section.today" = "今天";
 "photoGrid.section.yesterday" = "昨天";

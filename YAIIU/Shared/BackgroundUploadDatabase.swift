@@ -899,7 +899,7 @@ final class BackgroundUploadDatabase {
             // rejects this checkpoint; legacy rows invalidate when evidence exists.
             var invalidatedUpdatedIds = deletedAssetIds
             if !updatedAssetIds.isEmpty {
-                let sql = "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1"
+                let sql = "SELECT asset_resource_fingerprint, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1"
                 var versionStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, sql, -1, &versionStmt, nil) == SQLITE_OK {
                     defer { sqlite3_finalize(versionStmt) }
@@ -920,9 +920,23 @@ final class BackgroundUploadDatabase {
                                 if let storedFingerprint, storedFingerprint != currentFingerprint {
                                     invalidatedUpdatedIds.insert(assetId)
                                 } else if storedFingerprint == nil {
-                                    // Legacy/imported hashes have no trusted
-                                    // resource evidence. Rehash before reuse.
-                                    invalidatedUpdatedIds.insert(assetId)
+                                    let oldDate: TimeInterval? =
+                                        sqlite3_column_type(versionStmt, 1) == SQLITE_NULL
+                                        ? nil : sqlite3_column_double(versionStmt, 1)
+                                    if PhotoAssetVersionPolicy.canReuseCachedHash(
+                                        storedModificationTime: oldDate,
+                                        currentModificationDate: updatedAssetModificationDates[assetId]
+                                    ) {
+                                        guard updateResourceFingerprint(
+                                            db: db, assetId: assetId,
+                                            modificationDate: updatedAssetModificationDates[assetId],
+                                            fingerprint: currentFingerprint
+                                        ) else { return nil }
+                                    } else {
+                                        // A PhotoKit update on a versionless
+                                        // legacy asset requires a fresh checksum.
+                                        invalidatedUpdatedIds.insert(assetId)
+                                    }
                                 } else {
                                     guard updateResourceFingerprint(
                                         db: db,

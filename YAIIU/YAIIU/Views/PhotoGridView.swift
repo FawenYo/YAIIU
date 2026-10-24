@@ -418,11 +418,18 @@ struct PhotoGridView: View {
     /// filtered fetch. Users can still select its visible assets by identifier.
     /// Limited Photos users still need a functioning filtered gallery.
     /// Only the count requires a full-access inventory.
+    /// Never store or log this value. It only scopes the in-memory snapshot.
+    private var statusDestinationIdentity: String {
+        settingsManager.serverURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            + "|" + settingsManager.apiKey
+    }
+
     private var canBuildNotUploadedFilter: Bool {
-        hashManager.isSyncStatusCacheReady && !isSyncing &&
-            !hashManager.isProcessing && !uploadManager.isUploading &&
-            !waitingForPostUploadRefresh &&
-            photoLibraryManager.fetchResult != nil && !photoLibraryManager.isLoading
+        PhotoLibraryStatusCount.canBuildNotUploadedFilter(
+            hasLoadedStatusSnapshot: hashManager.hasLoadedSyncStatusCache,
+            hasPhotoLibraryFetch: photoLibraryManager.fetchResult != nil,
+            isPhotoLibraryLoading: photoLibraryManager.isLoading
+        )
     }
 
     private var canPresentNotUploadedCount: Bool {
@@ -466,6 +473,7 @@ struct PhotoGridView: View {
                 }
                 .navigationTitle(navigationTitle)
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar(.visible, for: .navigationBar)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
                         if isSelectionMode {
@@ -478,10 +486,10 @@ struct PhotoGridView: View {
                                 dragState.reset()
                             }
                         } else {
-                            HStack(spacing: 8) {
-                                processingStatusView
-                                filterMenuButton
-                            }
+                            // Keep this navigation item dedicated to filtering:
+                            // processing labels are drawn on a separate content
+                            // row so they can never compress or cover the menu.
+                            filterMenuButton
                         }
                     }
                     
@@ -543,6 +551,7 @@ struct PhotoGridView: View {
             processingScreen
         }
         .onAppear {
+            hashManager.bindProvisionalSyncStatus(to: statusDestinationIdentity)
             if !hasAppeared {
                 hasAppeared = true
                 photoLibraryManager.requestAuthorization { status in
@@ -556,6 +565,14 @@ struct PhotoGridView: View {
             if currentFilter == .favorites || currentFilter == .album {
                 refreshPhotoKitFilter()
             }
+        }
+        .onChange(of: settingsManager.serverURL) { _, _ in
+            hashManager.bindProvisionalSyncStatus(to: statusDestinationIdentity)
+            scheduleCountRefresh()
+        }
+        .onChange(of: settingsManager.apiKey) { _, _ in
+            hashManager.bindProvisionalSyncStatus(to: statusDestinationIdentity)
+            scheduleCountRefresh()
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
@@ -674,6 +691,13 @@ struct PhotoGridView: View {
         .onReceive(hashManager.$isSyncStatusCacheReady.receive(on: RunLoop.main)) { _ in
             scheduleCountRefresh()
         }
+        .onReceive(hashManager.$hasLoadedSyncStatusCache.receive(on: RunLoop.main)) { loaded in
+            if loaded && currentFilter == .notUploaded {
+                // Resume building the filtered index as soon as the initial
+                // SQLite snapshot becomes available, even during backfill.
+                scheduleCountRefresh()
+            }
+        }
         .onReceive(photoLibraryManager.$assetFetchGeneration.receive(on: RunLoop.main)) { _ in
             cachedNotUploadedCount = nil
             // A filtered index is a position within one particular PHFetchResult.
@@ -789,10 +813,16 @@ struct PhotoGridView: View {
 
                 Text(getCompactProcessingStatusText())
                     .font(.system(size: 12).monospacedDigit())
-                    .foregroundColor(.primary)
-                    .fixedSize(horizontal: true, vertical: false)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
             }
-            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.systemGray6))
+            .allowsHitTesting(false)
             .accessibilityLabel(getProcessingStatusText())
         } else {
             EmptyView()
@@ -849,8 +879,8 @@ struct PhotoGridView: View {
     @ViewBuilder
     private var processingScreen: some View {
         // Keep an existing gallery browsable during a large metadata baseline.
-        // The compact toolbar status and upload/count readiness gates remain
-        // active; show this full-screen placeholder only before first paint.
+        // A dedicated content-row status and conservative upload/count readiness
+        // gates remain active; show this placeholder only before first paint.
         if hashManager.isProcessing,
            photoLibraryManager.fetchResult == nil,
            photoLibraryManager.foregroundBaselineProgress != nil {
@@ -954,10 +984,16 @@ struct PhotoGridView: View {
     private var photoGridContent: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
+                // Keep both progress stages below the NavigationView toolbar.
+                // Filter / Select controls always retain their full toolbar row.
+                PhotoKitBaselineBanner()
+                if hashManager.isProcessing && photoLibraryManager.foregroundBaselineProgress == nil {
+                    processingStatusView
+                }
                 if currentFilter != .all {
                     filterIndicatorView
                 }
-                
+
                 simpleGridView
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -1148,6 +1184,15 @@ struct PhotoGridView: View {
             if isFilterLoading && filteredFetchResult == nil {
                 ProgressView()
                     .scaleEffect(0.7)
+            } else if currentFilter == .notUploaded && !canPresentNotUploadedCount {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .scaleEffect(0.65)
+                    Text(L10n.PhotoGrid.filterUpdating)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .accessibilityLabel(L10n.PhotoGrid.filterUpdating)
             } else {
                 Text(L10n.PhotoGrid.filterActive(displayCount))
                     .font(.subheadline)
@@ -1168,38 +1213,36 @@ struct PhotoGridView: View {
 
     @ViewBuilder
     private var filterMenuButton: some View {
-        if !hashManager.isProcessing {
-            Menu {
-                ForEach(PhotoFilterOption.allCases) { option in
-                    Button {
-                        if option == .album {
-                            albumSearch = ""
-                            isAlbumPickerPresented = true
+        Menu {
+            ForEach(PhotoFilterOption.allCases) { option in
+                Button {
+                    if option == .album {
+                        albumSearch = ""
+                        isAlbumPickerPresented = true
+                    } else {
+                        applyFilter(option)
+                    }
+                } label: {
+                    Label {
+                        if option == .notUploaded,
+                           canPresentNotUploadedCount,
+                           let count = cachedNotUploadedCount {
+                            Text("\(option.localizedTitle) (\(count))")
                         } else {
-                            applyFilter(option)
+                            Text(option.localizedTitle)
                         }
-                    } label: {
-                        Label {
-                            if option == .notUploaded,
-                               canPresentNotUploadedCount,
-                               let count = cachedNotUploadedCount {
-                                Text("\(option.localizedTitle) (\(count))")
-                            } else {
-                                Text(option.localizedTitle)
-                            }
-                        } icon: {
-                            if currentFilter == option {
-                                Image(systemName: "checkmark")
-                            } else {
-                                Image(systemName: option.iconName)
-                            }
+                    } icon: {
+                        if currentFilter == option {
+                            Image(systemName: "checkmark")
+                        } else {
+                            Image(systemName: option.iconName)
                         }
                     }
                 }
-            } label: {
-                Image(systemName: currentFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                    .foregroundColor(currentFilter == .all ? .primary : .orange)
             }
+        } label: {
+            Image(systemName: currentFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                .foregroundColor(currentFilter == .all ? .primary : .orange)
         }
     }
 
@@ -1459,7 +1502,8 @@ struct PhotoGridView: View {
         let version = countComputeVersion
 
         // Never treat an empty/not-yet-loaded status map as evidence that all
-        // photos still need uploading. Defer low-priority counting during work.
+        // photos still need uploading. A provisional status snapshot may still
+        // build the user's Not Uploaded index while its count remains hidden.
         if !canPresentNotUploadedCount { cachedNotUploadedCount = nil }
         guard canBuildNotUploadedFilter else { return }
         guard canPresentNotUploadedCount || currentFilter == .notUploaded else { return }
@@ -1473,6 +1517,7 @@ struct PhotoGridView: View {
         // An indexed gallery is a presentation cache, never an authoritative
         // badge count. Rebind reusable positions, but always refresh the badge
         // independently using SQLite (even when the gallery is already cached).
+        let shouldQueryAuthoritativeCount = canPresentNotUploadedCount
         let canReuseIndices =
             manager.orderedIdentifiersGeneration == manager.assetFetchGeneration &&
             fetchStorage.canReuseNotUploadedIndices(
@@ -1504,7 +1549,8 @@ struct PhotoGridView: View {
 
             // The sole source of truth for the menu badge. Building filtered
             // indices never substitutes an in-memory count for this SQL result.
-            let sqlCount = DatabaseManager.shared.countNotUploadedVisibleAssets()
+            let sqlCount = shouldQueryAuthoritativeCount
+                ? DatabaseManager.shared.countNotUploadedVisibleAssets() : nil
             guard !Task.isCancelled else { return }
             if !requiresIndices || snapshotGeneration != generation {
                 guard let count = sqlCount else { return }

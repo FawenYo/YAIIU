@@ -266,10 +266,12 @@ final class HashCacheRepository {
             guard let self else { return [] }
             var statement: OpaquePointer?
             let sql = """
-                SELECT asset_id, sha1_hash
-                FROM hash_cache
-                WHERE asset_modification_date IS NULL
-                   OR asset_resource_fingerprint IS NULL;
+                SELECT h.asset_id, h.sha1_hash
+                FROM hash_cache AS h
+                LEFT JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
+                WHERE (h.asset_modification_date IS NULL
+                   OR h.asset_resource_fingerprint IS NULL)
+                  AND COALESCE(a.is_hidden, 0) = 0;
                 """
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
                 sqlite3_finalize(statement)
@@ -331,7 +333,9 @@ final class HashCacheRepository {
                 var existingStatement: OpaquePointer?
                 guard sqlite3_prepare_v2(
                     self.connection.db,
-                    "SELECT asset_modification_date, asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? AND sha1_hash = ? LIMIT 1;",
+                    "SELECT h.asset_modification_date, h.asset_resource_fingerprint, "
+                  + "COALESCE((SELECT a.is_hidden FROM local_photo_assets a WHERE a.asset_id = h.asset_id), 0) "
+                  + "FROM hash_cache h WHERE h.asset_id = ? AND h.sha1_hash = ? LIMIT 1;",
                     -1,
                     &existingStatement,
                     nil
@@ -346,16 +350,25 @@ final class HashCacheRepository {
                 let storedDate: Date? = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 0) != SQLITE_NULL
                     ? Date(timeIntervalSince1970: sqlite3_column_double(existingStatement, 0))
                     : nil
-                let fingerprintMissing = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 1) == SQLITE_NULL
+                let storedFingerprint = existingResult == SQLITE_ROW
+                    ? sqlite3_column_text(existingStatement, 1).map { String(cString: $0) } : nil
+                let fingerprintMissing = existingResult == SQLITE_ROW && storedFingerprint == nil
+                let isHidden = existingResult == SQLITE_ROW && sqlite3_column_int(existingStatement, 2) != 0
                 sqlite3_finalize(existingStatement)
+                // Photos hidden from the foreground grid cannot be safely
+                // rebuilt by the visible hash pipeline. Keep prior evidence.
+                if isHidden { continue }
 
                 // A legacy row with a previous PhotoKit date has version evidence,
                 // but no resource fingerprint. Do not stamp current metadata onto
                 // an edited asset; invalidate and let the normal hash pipeline
                 // rebuild a trusted row when dates disagree or current date is absent.
-                if fingerprintMissing,
-                   storedDate != nil,
-                   storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970 {
+                let fingerprintChanged = storedFingerprint != nil &&
+                    storedFingerprint != update.resourceFingerprint
+                let legacyDateChanged = fingerprintMissing &&
+                    (storedDate == nil ||
+                     storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970)
+                if fingerprintChanged || legacyDateChanged {
                     for sql in [
                         "DELETE FROM hash_cache WHERE asset_id = ? AND sha1_hash = ?;",
                         "DELETE FROM uploaded_assets WHERE asset_id = ?;",
@@ -1306,6 +1319,69 @@ final class HashCacheRepository {
         }
     }
 
+
+    /// Commit a lightweight first-time inventory together with its PhotoKit
+    /// start-of-scan token. Keep old hashes/receipts until verified.
+    func commitInitialForegroundPhotoBootstrap(tokenData: Data) -> Bool {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync {
+            guard connection.beginTransaction() else { return false }
+            var committed = false
+            defer { if !committed { connection.rollbackTransaction() } }
+            let missing = """
+                INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
+                SELECT a.asset_id FROM local_photo_assets a WHERE a.is_hidden = 0
+                  AND NOT EXISTS (SELECT 1 FROM hash_cache h WHERE h.asset_id = a.asset_id);
+                """
+            guard sqlite3_exec(connection.db, missing, nil, nil, nil) == SQLITE_OK else { return false }
+
+            // On a FIRST checkpoint, PhotoKit history cannot describe prior
+            // deletions or edits. Full inventory (including hidden assets)
+            // is authoritative for missing IDs; prune stale persisted records
+            // atomically before the new cursor becomes visible.
+            let absent = "asset_id NOT IN (SELECT asset_id FROM local_photo_assets)"
+            for table in ["hash_cache", "uploaded_assets", "foreground_photo_pending_assets",
+                          "background_upload_queue"] {
+                guard sqlite3_exec(connection.db, "DELETE FROM \(table) WHERE \(absent);",
+                                   nil, nil, nil) == SQLITE_OK else { return false }
+            }
+            guard sqlite3_exec(connection.db, """
+                DELETE FROM upload_jobs WHERE \(absent) AND status IN ('pending', 'failed');
+                """, nil, nil, nil) == SQLITE_OK else { return false }
+
+            // Previously fingerprinted hashes may have changed before the
+            // new token was taken. They must be compared against current
+            // PhotoKit resource evidence, not accepted based on old receipts.
+            // Legacy NULL fingerprints are handled by the version backfill.
+            guard sqlite3_exec(connection.db, """
+                INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
+                SELECT h.asset_id FROM hash_cache AS h
+                JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
+                WHERE a.is_hidden = 0 AND h.asset_resource_fingerprint IS NOT NULL;
+                """, nil, nil, nil) == SQLITE_OK else { return false }
+
+            var token: OpaquePointer?
+            guard sqlite3_prepare_v2(connection.db,
+                  "INSERT OR REPLACE INTO foreground_photo_change_state(id, token_data) VALUES (1, ?);",
+                  -1, &token, nil) == SQLITE_OK else {
+                sqlite3_finalize(token)
+                return false
+            }
+            defer { sqlite3_finalize(token) }
+            let bound = tokenData.withUnsafeBytes { bytes in
+                sqlite3_bind_blob(token, 1, bytes.baseAddress, Int32(bytes.count),
+                    unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+            guard bound == SQLITE_OK, sqlite3_step(token) == SQLITE_DONE,
+                  sqlite3_exec(connection.db,
+                      "INSERT OR REPLACE INTO local_photo_inventory_state(id, is_ready) VALUES (1, 1);",
+                      nil, nil, nil) == SQLITE_OK,
+                  connection.commitTransaction() else { return false }
+            committed = true
+            return true
+        }
+    }
+
     func finishLocalPhotoInventoryBootstrap() -> Bool {
         connection.ensureInitialized()
         return connection.dbQueue.sync {
@@ -1550,8 +1626,12 @@ final class HashCacheRepository {
                     WHERE s.is_hidden = 0
                       AND s.resource_fingerprint IS NOT NULL
                       AND (
-                        h.asset_resource_fingerprint IS NULL
-                        OR s.resource_fingerprint != h.asset_resource_fingerprint
+                        (h.asset_resource_fingerprint IS NOT NULL AND
+                         s.resource_fingerprint != h.asset_resource_fingerprint)
+                        OR (h.asset_resource_fingerprint IS NULL AND
+                            h.asset_modification_date IS NOT NULL AND
+                            s.modified_at IS NOT NULL AND
+                            h.asset_modification_date != s.modified_at)
                       );
                     """
                 var query: OpaquePointer?
@@ -1607,7 +1687,12 @@ final class HashCacheRepository {
                             JOIN hash_cache AS h ON h.asset_id = s.asset_id
                             WHERE s.is_hidden = 0
                               AND s.resource_fingerprint IS NOT NULL
-                              AND s.resource_fingerprint = h.asset_resource_fingerprint
+                              AND (
+                                  s.resource_fingerprint = h.asset_resource_fingerprint
+                                  OR (h.asset_resource_fingerprint IS NULL AND
+                                      (h.asset_modification_date IS NULL OR
+                                       h.asset_modification_date = s.modified_at))
+                              )
                         );
                         """),
                       // Inventory and foreground PhotoKit cursor commit atomically.
@@ -1686,14 +1771,24 @@ final class HashCacheRepository {
                                         break
                                     }
                                 }
+                            } else if let storedDate, let currentDate = snapshot.modificationDate,
+                                      storedDate == currentDate {
+                                unchangedCachedCount += 1
+                                resolvedPendingIdentifiers.insert(snapshot.localIdentifier)
+                                sqlite3_reset(updateStatement)
+                                sqlite3_clear_bindings(updateStatement)
+                                sqlite3_bind_double(updateStatement, 1, currentDate.timeIntervalSince1970)
+                                sqlite3_bind_text(updateStatement, 2, (currentFingerprint as NSString).utf8String, -1, nil)
+                                sqlite3_bind_text(updateStatement, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
+                                guard sqlite3_step(updateStatement) == SQLITE_DONE else {
+                                    checkOK = false
+                                    break
+                                }
                             } else {
-                                // Legacy/imported hashes have no trusted resource
-                                // evidence. Rehash before reuse.
+                                // No historical date or a different date cannot
+                                // establish byte-equivalent legacy data.
                                 missingResourceFingerprintCount += 1
                                 modified.insert(snapshot.localIdentifier)
-                                recordCacheDetail(
-                                    "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=resource_fingerprint_missing"
-                                )
                             }
                         } else {
                             // PhotoKit may temporarily return no resources while
@@ -1922,7 +2017,7 @@ final class HashCacheRepository {
             ) == SQLITE_OK,
             sqlite3_prepare_v2(
                 self.connection.db,
-                "SELECT asset_resource_fingerprint FROM hash_cache WHERE asset_id = ? LIMIT 1;",
+                "SELECT asset_resource_fingerprint, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1;",
                 -1, &lookup, nil
             ) == SQLITE_OK,
             sqlite3_prepare_v2(
@@ -2003,7 +2098,11 @@ final class HashCacheRepository {
                     ? sqlite3_column_text(lookup, 0).map { String(cString: $0) }
                     : nil
 
-                if storedFingerprint == currentFingerprint {
+                let storedDate = hasHashCacheRow && sqlite3_column_type(lookup, 1) != SQLITE_NULL
+                    ? Date(timeIntervalSince1970: sqlite3_column_double(lookup, 1)) : nil
+                let legacyMatch = hasHashCacheRow && storedFingerprint == nil &&
+                    storedDate != nil && storedDate == snapshot.modificationDate
+                if storedFingerprint == currentFingerprint || legacyMatch {
                     sqlite3_reset(update)
                     sqlite3_clear_bindings(update)
                     if let date = snapshot.modificationDate {
@@ -2130,6 +2229,7 @@ final class HashCacheRepository {
         // upload job version headers, but never decides hash invalidation.
         let sql = "SELECT asset_id, asset_modification_date, asset_resource_fingerprint FROM hash_cache;"
         var statement: OpaquePointer?
+        var storedDates: [String: Date] = [:]
         var storedFingerprints: [String: String] = [:]
         var cachedIds: Set<String> = []
 
@@ -2138,6 +2238,9 @@ final class HashCacheRepository {
                 if let idCString = sqlite3_column_text(statement, 0) {
                     let assetId = String(cString: idCString)
                     cachedIds.insert(assetId)
+                    if sqlite3_column_type(statement, 1) != SQLITE_NULL {
+                        storedDates[assetId] = Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
+                    }
                     if let fingerprint = sqlite3_column_text(statement, 2) {
                         storedFingerprints[assetId] = String(cString: fingerprint)
                     }
@@ -2203,9 +2306,10 @@ final class HashCacheRepository {
                 } else {
                     baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentFingerprint))
                 }
+            } else if let oldDate = storedDates[snapshot.localIdentifier],
+                      let date = snapshot.modificationDate, oldDate == date {
+                baselineUpdates.append((snapshot.localIdentifier, date, currentFingerprint))
             } else {
-                // Legacy/imported hash has no trusted resource evidence.
-                // Invalidate before reuse; next hash stores a fingerprint.
                 modifiedIds.insert(snapshot.localIdentifier)
             }
         }

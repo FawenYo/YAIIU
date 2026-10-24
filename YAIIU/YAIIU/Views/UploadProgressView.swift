@@ -5,7 +5,8 @@ struct UploadProgressView: View {
     
     var body: some View {
         NavigationView {
-            VStack {
+            VStack(spacing: 0) {
+                PhotoKitBaselineBanner()
                 if uploadManager.uploadQueue.isEmpty && !uploadManager.isUploading {
                     emptyStateView
                 } else {

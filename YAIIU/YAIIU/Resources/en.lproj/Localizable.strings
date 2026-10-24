@@ -139,6 +139,7 @@
 "photoGrid.filter.chooseAlbum" = "Choose Album";
 "photoGrid.filter.noAlbums" = "No albums available";
 "photoGrid.filter.active" = "Showing %d items";
+"photoGrid.filter.updating" = "Updating…";
 "photoGrid.selectAllNotUploaded" = "All Not Uploaded";
 "photoGrid.section.today" = "Today";
 "photoGrid.section.yesterday" = "Yesterday";
