@@ -776,7 +776,19 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// Replay any outstanding PhotoKit changes before binding imported hashes
     /// to dates; calling the baseline directly would hide an offline edit.
     func backfillUnknownHashVersionsAfterImport() {
-        _ = prepareForegroundPhotoWork(forceVersionBaseline: true)
+        // Imports can add unversioned hashes while a different task is
+        // performing cloud verification. Reconcile/invalidate those hashes
+        // under the same gate before a server check can trust them.
+        // Keep this work off the importer's/UI's completion path.
+        Task.detached(priority: .utility) { [weak self] in
+            await ServerAssetVerificationGate.shared.acquire()
+            guard let self else {
+                await ServerAssetVerificationGate.shared.release()
+                return
+            }
+            _ = self.prepareForegroundPhotoWork(forceVersionBaseline: true)
+            await ServerAssetVerificationGate.shared.release()
+        }
     }
 
     private func backfillUnknownHashVersionsLocked(
