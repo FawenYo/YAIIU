@@ -1139,15 +1139,21 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         var output = knownVisible
         var fetchedVisible = 0
         var missingFromPhotoKit = 0
+        var fetchSetupElapsed: TimeInterval = 0
+        var snapshotEnumerationElapsed: TimeInterval = 0
+        var sqliteReconciliationElapsed: TimeInterval = 0
         // Verify only IDs with an existing hash/receipt or unknown inventory
         // membership. Chunk both native PhotoKit objects AND SQLite writes;
         // do not retain a library-sized array of PHAsset snapshots.
         for start in stride(from: 0, to: needsPhotoKit.count, by: 300) {
             let end = min(start + 300, needsPhotoKit.count)
             let identifiers = Array(needsPhotoKit[start..<end])
+            let fetchStartedAt = Date()
             let result = PHAsset.fetchAssets(
                 withLocalIdentifiers: identifiers, options: options
             )
+            fetchSetupElapsed += Date().timeIntervalSince(fetchStartedAt)
+            let enumerationStartedAt = Date()
             var visible = Set<String>()
             var hidden = Set<String>()
             var snapshots = [PhotoAssetSnapshot]()
@@ -1164,12 +1170,15 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     ))
                 }
             }
+            snapshotEnumerationElapsed += Date().timeIntervalSince(enumerationStartedAt)
             missingFromPhotoKit += max(0, identifiers.count - result.count)
+            let reconcileStartedAt = Date()
             if !hidden.isEmpty && !db.discardForegroundPendingIdentifiers(hidden) {
                 logWarning("Failed to discard hidden foreground pending work", category: .hash)
                 return []
             }
             let retained = db.reconcileForegroundPendingAssets(snapshots: snapshots)
+            sqliteReconciliationElapsed += Date().timeIntervalSince(reconcileStartedAt)
             fetchedVisible += visible.count
             output.append(contentsOf: identifiers.filter {
                 visible.contains($0) && retained.contains($0)
@@ -1179,7 +1188,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             "Foreground pending reconciliation: knownVisible=\(knownVisible.count), " +
             "knownHidden=\(knownHidden.count), verifiedWithPhotoKit=\(needsPhotoKit.count), " +
             "fetchedVisible=\(fetchedVisible), temporarilyMissing=\(missingFromPhotoKit), " +
-            "returned=\(output.count), elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startedAt)))s",
+            "returned=\(output.count), elapsed=\(String(format: "%.1f", Date().timeIntervalSince(startedAt)))s, " +
+            "fetchSetup=\(String(format: "%.1f", fetchSetupElapsed))s, " +
+            "snapshotEnumeration=\(String(format: "%.1f", snapshotEnumerationElapsed))s, " +
+            "sqliteReconciliation=\(String(format: "%.1f", sqliteReconciliationElapsed))s",
             category: .hash
         )
         return output

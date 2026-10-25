@@ -1854,6 +1854,58 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE asset_id = 'unchanged-raw-pair';"), 2)
         XCTAssertEqual(background.loadChangeToken(), Data([1]))
         XCTAssertTrue(queuedIds().contains(id))
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 0)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 1)
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+    }
+
+    func testBackgroundMetadataUpdatesSkipRedundantForegroundVerification() {
+        let ids = (0..<80).map { "metadata-only-\($0)" }
+        for id in ids {
+            hashRepository.saveMultiResourceHashCache(
+                localIdentifier: id, primaryHash: "sha-\(id)",
+                rawHash: nil, hasRAW: false,
+                modificationDate: Date(timeIntervalSince1970: 100),
+                resourceFingerprint: "stable-resource"
+            )
+        }
+        let fingerprints = Dictionary(uniqueKeysWithValues: ids.map { ($0, "stable-resource") })
+        let dates = Dictionary(uniqueKeysWithValues: ids.map {
+            ($0, Date(timeIntervalSince1970: 120))
+        })
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: Set(ids), deletedAssetIds: [],
+            updatedAssetModificationDates: dates,
+            updatedAssetResourceFingerprints: fingerprints,
+            tokenData: Data([24])
+        )
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 0)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 80)
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache;"), 80)
+        XCTAssertEqual(background.loadChangeToken(), Data([24]))
+    }
+
+    func testBackgroundMetadataUpdateDoesNotDropAlreadyPendingForegroundWork() {
+        let id = "foreground-newer-pending"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-current",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100),
+            resourceFingerprint: "stable-resource"
+        )
+        execute("INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('foreground-newer-pending');")
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
+            updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 120)],
+            updatedAssetResourceFingerprints: [id: "stable-resource"],
+            tokenData: Data([25])
+        )
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 0)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 1)
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
     }
 
     func testBackgroundInvalidatesVersionChangedWithinOneSecond() {
@@ -1881,6 +1933,8 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
         XCTAssertEqual(background.loadChangeToken(), Data([3]))
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 1)
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
     }
 
     func testForegroundInvalidatesResourceFingerprintChangedWithinOneSecond() {
@@ -1983,6 +2037,14 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "missing-date"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "missing-date"))
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
+        // A matching upload receipt does not replace missing foreground hash
+        // evidence: the asset still needs the normal hash pipeline.
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 4)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 0)
+        XCTAssertEqual(
+            Set(hashRepository.getPendingForegroundPhotoIdentifiers()),
+            Set(["edited", "legacy", "missing-date", "receipt-only"])
+        )
         for id in ids {
             XCTAssertTrue(queuedIds().contains(id))
         }
@@ -2046,6 +2108,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(summary?.retainedVersions, 1)
         XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
         XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE asset_id = 'foreground-rehashed';"), 0)
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
     }
 
     func testBackgroundExtensionFallsBackWhenHostHasNotMigratedVersionColumn() {

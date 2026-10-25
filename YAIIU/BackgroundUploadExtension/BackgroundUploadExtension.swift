@@ -472,7 +472,8 @@ final class BackgroundUploadExtensionCore {
         var bootstrapTokenData: Data?
 
         if database.loadChangeToken() != nil {
-            switch try ingestPersistentChanges() {
+            let ingestion = try timeStage("create.ingest") { try ingestPersistentChanges() }
+            switch ingestion {
             case .ready:
                 persistentMode = true
             case .requiresBootstrap:
@@ -499,12 +500,16 @@ final class BackgroundUploadExtensionCore {
 
         let discovery: DiscoveryResult
         if persistentMode {
-            discovery = try fetchQueuedResources(limit: max(capacity * 2, 20))
+            discovery = try timeStage("create.delta-discovery") {
+                try fetchQueuedResources(limit: max(capacity * 2, 20))
+            }
             logDebug("Delta discovery found \(discovery.resources.count) pending resources")
         } else {
             // Initial sync / recovery only. Normal invocations never enumerate the
             // whole photo library once a persistent change token has been established.
-            discovery = fetchPendingResources(limit: max(capacity * 2, 20))
+            discovery = timeStage("create.bootstrap-discovery") {
+                fetchPendingResources(limit: max(capacity * 2, 20))
+            }
             logDebug("Bootstrap discovery found \(discovery.resources.count) pending resources (complete scan: \(discovery.complete))")
         }
 
@@ -659,6 +664,8 @@ final class BackgroundUploadExtensionCore {
             var deletedCount = 0
             var retainedVersionCount = 0
             var invalidatedVersionCount = 0
+            var foregroundCandidates = 0
+            var foregroundSkipped = 0
 
             for change in changes {
                 guard !isCancelled else { return .cancelled }
@@ -711,10 +718,12 @@ final class BackgroundUploadExtensionCore {
                 deletedCount += deleted.count
                 retainedVersionCount += summary.retainedVersions
                 invalidatedVersionCount += summary.invalidatedVersions
+                foregroundCandidates += summary.foregroundCandidatesQueued
+                foregroundSkipped += summary.foregroundVerifiedSkipped
             }
 
             if changeCount > 0 {
-                log("Persistent changes: \(changeCount) batch(es), \(insertedCount) inserted, \(updatedCount) updated (\(retainedVersionCount) cached versions retained, \(invalidatedVersionCount) invalidated/unknown), \(deletedCount) deleted")
+                log("Persistent changes: \(changeCount) batch(es), \(insertedCount) inserted, \(updatedCount) updated (\(retainedVersionCount) cached versions retained, \(invalidatedVersionCount) invalidated/unknown), \(deletedCount) deleted; foreground pending candidates=\(foregroundCandidates), verified updates skipped=\(foregroundSkipped)")
             }
             return isCancelled ? .cancelled : .ready
         } catch let error as NSError

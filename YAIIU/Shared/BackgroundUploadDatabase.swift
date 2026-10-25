@@ -79,6 +79,8 @@ enum PhotoAssetVersionPolicy {
 struct PhotoAssetChangeCommitSummary {
     let retainedVersions: Int
     let invalidatedVersions: Int
+    let foregroundCandidatesQueued: Int
+    let foregroundVerifiedSkipped: Int
 }
 
 final class BackgroundUploadDatabase {
@@ -898,6 +900,10 @@ final class BackgroundUploadDatabase {
             // invalidation and cursor advancement. Missing resource evidence
             // rejects this checkpoint; legacy rows invalidate when evidence exists.
             var invalidatedUpdatedIds = deletedAssetIds
+            // A receipt can exist without any foreground hash cache row.
+            // These assets still need foreground reconciliation even if the
+            // uploaded receipt's resource version already matches.
+            var updatedWithoutHashIds = Set<String>()
             if !updatedAssetIds.isEmpty {
                 let sql = "SELECT asset_resource_fingerprint, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1"
                 var versionStmt: OpaquePointer?
@@ -947,6 +953,7 @@ final class BackgroundUploadDatabase {
                                 }
                             }
                         } else if result == SQLITE_DONE {
+                            updatedWithoutHashIds.insert(assetId)
                             // A background upload can finish after foreground
                             // invalidation and create a current receipt before
                             // the hash cache is rebuilt. Preserve only receipts
@@ -1025,10 +1032,21 @@ final class BackgroundUploadDatabase {
                 }
             }
 
-            // Enqueue all updated identifiers even when a cached version is
-            // unchanged: missing hashes and concurrent foreground work are
-            // reconciled by the existing durable queue.
-            // Otherwise both change cursors can advance past an unhashed asset.
+            // Only enqueue new assets, genuinely changed/unknown resource
+            // versions, or updates without foreground hash evidence. The
+            // background cursor has already verified unchanged cached hashes
+            // using PhotoKit resource fingerprints in this transaction: queuing
+            // those updates forces thousands of redundant foreground reads.
+            //
+            // Never DELETE previously queued IDs here. Foreground may have
+            // queued newer work while the extension was checking an older event.
+            let foregroundCandidates = insertedAssetIds
+                .union(invalidatedUpdatedIds)
+                .union(updatedWithoutHashIds)
+                .subtracting(effectiveDeletedAssetIds)
+            let foregroundVerifiedSkipped = updatedAssetIds
+                .subtracting(effectiveDeletedAssetIds)
+                .subtracting(foregroundCandidates)
             let foregroundSQL = """
                 INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
                 VALUES (?)
@@ -1039,7 +1057,7 @@ final class BackgroundUploadDatabase {
                 return nil
             }
             defer { sqlite3_finalize(foregroundStmt) }
-            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(effectiveDeletedAssetIds) {
+            for assetId in foregroundCandidates {
                 sqlite3_reset(foregroundStmt)
                 sqlite3_clear_bindings(foregroundStmt)
                 guard sqlite3_bind_text(foregroundStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
@@ -1101,7 +1119,9 @@ final class BackgroundUploadDatabase {
             committed = true
             return PhotoAssetChangeCommitSummary(
                 retainedVersions: updatedAssetIds.count - invalidatedUpdatedIds.count,
-                invalidatedVersions: invalidatedUpdatedIds.count
+                invalidatedVersions: invalidatedUpdatedIds.count,
+                foregroundCandidatesQueued: foregroundCandidates.count,
+                foregroundVerifiedSkipped: foregroundVerifiedSkipped.count
             )
         }
     }
