@@ -174,12 +174,14 @@ struct PhotoKitBaselineProgress: Equatable, Sendable {
 
 
 
-/// Bounded PhotoKit journal window. Coalescing repeated asset notifications
-/// avoids thousands of identical SQLite commits, while each flush persists its
-/// latest change token atomically with the work it represents.
+/// Bounded PhotoKit journal window. Coalesce historical updates before
+/// requesting expensive PHAssetResource metadata: on devices with large
+/// libraries, repeated iCloud/metadata updates can span thousands of journal
+/// events. Each flush persists its cursor atomically with the work it represents.
+/// The distinct-ID cap also bounds native PhotoKit snapshots and memory use.
 struct ForegroundPhotoChangeBatch {
-    static let maxChangeBatches = 128
-    static let maxChangedIdentifiers = 512
+    static let maxChangeBatches = 4096
+    static let maxChangedIdentifiers = 4096
 
     private(set) var affectedIdentifiers = Set<String>()
     private(set) var deletedIdentifiers = Set<String>()
@@ -188,9 +190,17 @@ struct ForegroundPhotoChangeBatch {
 
     var hasPending: Bool { tokenData != nil }
 
-    /// Flush before a deletion to preserve delete-then-reinsert semantics.
-    func requiresFlushBefore(deleting identifiers: Set<String>) -> Bool {
-        hasPending && !identifiers.isEmpty
+    /// Deletion is an ordering barrier only when an identifier crosses from
+    /// update to delete or from delete to insert/update. Unrelated deletions
+    /// can be coalesced into this window without an extra PhotoKit fetch.
+    func requiresFlushBefore(
+        adding affected: Set<String>,
+        deleting deleted: Set<String>
+    ) -> Bool {
+        hasPending && (
+            !affected.isDisjoint(with: deletedIdentifiers) ||
+            !deleted.isDisjoint(with: affectedIdentifiers)
+        )
     }
 
     var shouldFlush: Bool {
@@ -955,9 +965,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 var emptyAssetBatches = 0
                 var uniqueUpdatedIdentifiers = Set<String>()
                 var sampleIdentifiersLogged = 0
-                var replayedIdentifiers = Set<String>()
                 var window = ForegroundPhotoChangeBatch()
                 var committedWindows = 0
+                var fetchedSnapshotCount = 0
+                var totalPhotoKitElapsed: TimeInterval = 0
+                var totalSQLiteElapsed: TimeInterval = 0
                 var unresolvedLookups = 0
                 let replayStartedAt = Date()
 
@@ -978,18 +990,25 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     // the atomic SQLite cursor+work transaction.
                     for start in stride(from: 0, to: identifiers.count, by: 300) {
                         let end = min(start + 300, identifiers.count)
-                        let fetched = PHAsset.fetchAssets(
-                            withLocalIdentifiers: Array(identifiers[start..<end]),
-                            options: options
-                        )
-                        PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
-                            snapshots.append(PhotoAssetSnapshot(
-                                asset: asset,
-                                includeResourceFingerprint: true
-                            ))
+                        // Larger coalescing windows still keep native PhotoKit
+                        // objects short-lived. Only value snapshots survive.
+                        autoreleasepool {
+                            let fetched = PHAsset.fetchAssets(
+                                withLocalIdentifiers: Array(identifiers[start..<end]),
+                                options: options
+                            )
+                            PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
+                                snapshots.append(PhotoAssetSnapshot(
+                                    asset: asset,
+                                    includeResourceFingerprint: true,
+                                    includeResourceDiagnostics: snapshots.count < 10
+                                ))
+                            }
                         }
                     }
                     let photoKitElapsed = Date().timeIntervalSince(startedAt)
+                    totalPhotoKitElapsed += photoKitElapsed
+                    fetchedSnapshotCount += snapshots.count
                     unresolvedLookups += max(0, identifiers.count - snapshots.count)
                     guard db.applyForegroundPhotoChanges(
                         snapshots: snapshots,
@@ -1003,6 +1022,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     }
                     committedWindows += 1
                     let totalElapsed = Date().timeIntervalSince(startedAt)
+                    totalSQLiteElapsed += max(0, totalElapsed - photoKitElapsed)
                     if totalElapsed >= 1 || identifiers.count >= 300 {
                         logInfo(
                             "Foreground PhotoKit window: events=\(window.changeCount), " +
@@ -1025,7 +1045,8 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
                     // A deletion is a barrier: never merge an earlier update
                     // with a later deletion/reinsertion of the same identifier.
-                    if window.requiresFlushBefore(deleting: deleted) && !flushWindow() {
+                    if window.requiresFlushBefore(adding: affected, deleting: deleted)
+                        && !flushWindow() {
                         _ = db.invalidateLocalPhotoInventory()
                         return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
                     }
@@ -1034,8 +1055,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         withRootObject: change.changeToken, requiringSecureCoding: true
                     )
                     window.append(affected: affected, deleted: deleted, tokenData: nextTokenData)
-                    replayedIdentifiers.formUnion(affected)
-                    replayedIdentifiers.formUnion(deleted)
                     uniqueUpdatedIdentifiers.formUnion(details.updatedLocalIdentifiers)
 
                     processedBatches += 1
@@ -1073,7 +1092,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 }
                 if processedBatches > 0 {
                     logInfo(
-                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)); emptyAssetBatches=\(emptyAssetBatches), uniqueUpdated=\(uniqueUpdatedIdentifiers.count), repeatedUpdateEvents=\(updatedCount - uniqueUpdatedIdentifiers.count), unresolvedLookups=\(unresolvedLookups), sqliteWindows=\(committedWindows), elapsed=\(String(format: "%.1f", Date().timeIntervalSince(replayStartedAt)))s",
+                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)); emptyAssetBatches=\(emptyAssetBatches), uniqueUpdated=\(uniqueUpdatedIdentifiers.count), repeatedUpdateEvents=\(updatedCount - uniqueUpdatedIdentifiers.count), resourceSnapshots=\(fetchedSnapshotCount), unresolvedLookups=\(unresolvedLookups), sqliteWindows=\(committedWindows), photoKit=\(String(format: "%.1f", totalPhotoKitElapsed))s, sqlite=\(String(format: "%.1f", totalSQLiteElapsed))s, elapsed=\(String(format: "%.1f", Date().timeIntervalSince(replayStartedAt)))s",
                         category: .hash
                     )
                 }

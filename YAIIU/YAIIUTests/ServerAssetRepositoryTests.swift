@@ -822,10 +822,32 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([3]))
     }
 
+    func testForegroundJournalCoalescesMoreThanOld128BatchLimit() {
+        var batch = ForegroundPhotoChangeBatch()
+        for i in 0..<2048 {
+            // Metadata/iCloud updates for the same assets should not
+            // repeatedly fetch expensive PhotoKit resource metadata.
+            batch.append(
+                affected: ["photo-\(i % 40)"],
+                deleted: [],
+                tokenData: Data([UInt8(truncatingIfNeeded: i)])
+            )
+        }
+        XCTAssertFalse(batch.shouldFlush)
+        XCTAssertEqual(batch.changeCount, 2048)
+        XCTAssertEqual(batch.affectedIdentifiers.count, 40)
+        XCTAssertEqual(batch.tokenData, Data([255]))
+        // Unrelated deletes stay coalesced. Reinsert after a delete still
+        // creates a checkpoint barrier so an old receipt is not reused.
+        XCTAssertFalse(batch.requiresFlushBefore(adding: [], deleting: ["unrelated"]))
+        batch.append(affected: [], deleted: ["unrelated"], tokenData: Data([253]))
+        XCTAssertTrue(batch.requiresFlushBefore(adding: ["unrelated"], deleting: []))
+    }
+
     func testForegroundJournalBatchFlushesEvenWhenOnlyJobEventsOccur() {
         var batch = ForegroundPhotoChangeBatch()
         for i in 0..<ForegroundPhotoChangeBatch.maxChangeBatches {
-            batch.append(affected: [], deleted: [], tokenData: Data([UInt8(i)]))
+            batch.append(affected: [], deleted: [], tokenData: Data([UInt8(truncatingIfNeeded: i)]))
         }
         XCTAssertTrue(batch.shouldFlush)
         XCTAssertTrue(batch.affectedIdentifiers.isEmpty)
@@ -839,7 +861,10 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: batch.tokenData!,
             bootstrap: false
         ))
-        XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([127]))
+        XCTAssertEqual(
+            hashRepository.loadForegroundPhotoToken(),
+            Data([UInt8(truncatingIfNeeded: ForegroundPhotoChangeBatch.maxChangeBatches - 1)])
+        )
         XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
         batch.reset()
         XCTAssertFalse(batch.hasPending)
@@ -867,7 +892,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: window.tokenData!, bootstrap: false
         ))
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "same-local-id"))
-        XCTAssertTrue(window.requiresFlushBefore(deleting: ["same-local-id"]))
+        XCTAssertTrue(window.requiresFlushBefore(adding: [], deleting: ["same-local-id"]))
 
         window.reset()
         window.append(affected: [], deleted: ["same-local-id"], tokenData: Data([11]))
@@ -901,17 +926,20 @@ final class ServerAssetRepositoryTests: XCTestCase {
         }
         XCTAssertTrue(batch.shouldFlush)
         XCTAssertEqual(batch.affectedIdentifiers.count, ForegroundPhotoChangeBatch.maxChangedIdentifiers)
-        XCTAssertTrue(batch.requiresFlushBefore(deleting: ["id-1"]))
-        XCTAssertFalse(batch.requiresFlushBefore(deleting: []))
+        XCTAssertTrue(batch.requiresFlushBefore(adding: [], deleting: ["id-1"]))
+        XCTAssertFalse(batch.requiresFlushBefore(adding: [], deleting: []))
+        XCTAssertFalse(batch.requiresFlushBefore(adding: [], deleting: ["unrelated-id"]))
 
         batch.reset()
         batch.append(affected: ["reinserted"], deleted: [], tokenData: Data([3]))
-        XCTAssertTrue(batch.requiresFlushBefore(deleting: ["reinserted"]))
+        XCTAssertTrue(batch.requiresFlushBefore(adding: [], deleting: ["reinserted"]))
         // The caller must commit the first window before processing a delete.
         batch.reset()
         batch.append(affected: [], deleted: ["reinserted"], tokenData: Data([4]))
         XCTAssertTrue(batch.deletedIdentifiers.contains("reinserted"))
         XCTAssertFalse(batch.affectedIdentifiers.contains("reinserted"))
+        XCTAssertTrue(batch.requiresFlushBefore(adding: ["reinserted"], deleting: []))
+        XCTAssertFalse(batch.requiresFlushBefore(adding: ["unrelated"], deleting: []))
     }
 
     // MARK: - Phase 2: Foreground PhotoKit Change Journal
