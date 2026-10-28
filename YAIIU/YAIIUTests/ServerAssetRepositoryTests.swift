@@ -782,7 +782,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         }
     }
 
-    func testForegroundJournalBatchCoalescesRepeatedUpdatesAndUsesLastToken() {
+    func testForegroundJournalBatchCoalescesRepeatedUpdatesAndUsesLastToken() throws {
         var batch = ForegroundPhotoChangeBatch()
         batch.append(affected: ["photo-a"], deleted: [], tokenData: Data([1]))
         batch.append(affected: ["photo-a", "photo-b"], deleted: [], tokenData: Data([2]))
@@ -792,6 +792,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(batch.deletedIdentifiers.isEmpty)
         XCTAssertEqual(batch.changeCount, 3)
         XCTAssertEqual(batch.tokenData, Data([3]))
+        XCTAssertEqual(try batch.serializedTokenData(), Data([3]))
         XCTAssertFalse(batch.shouldFlush)
 
         hashRepository.saveMultiResourceHashCache(
@@ -822,15 +823,43 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([3]))
     }
 
-    func testForegroundJournalBatchFlushesEvenWhenOnlyJobEventsOccur() {
+    func testForegroundJournalCoalescesMoreThanOld128BatchLimit() throws {
+        var batch = ForegroundPhotoChangeBatch()
+        for i in 0..<2048 {
+            // Metadata/iCloud updates for the same assets should not
+            // repeatedly fetch expensive PhotoKit resource metadata.
+            batch.append(
+                affected: ["photo-\(i % 40)"],
+                deleted: [],
+                tokenData: Data([UInt8(truncatingIfNeeded: i)])
+            )
+        }
+        XCTAssertFalse(batch.shouldFlush)
+        XCTAssertEqual(batch.changeCount, 2048)
+        XCTAssertEqual(batch.affectedIdentifiers.count, 40)
+        XCTAssertEqual(batch.tokenData, Data([255]))
+        // Unrelated deletes stay coalesced. Reinsert after a delete still
+        // creates a checkpoint barrier so an old receipt is not reused.
+        XCTAssertFalse(batch.requiresFlushBefore(adding: [], deleting: ["unrelated"]))
+        batch.append(affected: [], deleted: ["unrelated"], tokenData: Data([253]))
+        XCTAssertFalse(batch.shouldFlush) // Unrelated deletion no longer triggers a flush.
+        XCTAssertTrue(batch.requiresFlushBefore(adding: ["unrelated"], deleting: []))
+        XCTAssertEqual(try batch.serializedTokenData(), Data([253]))
+    }
+
+    func testForegroundJournalBatchFlushesEvenWhenOnlyJobEventsOccur() throws {
         var batch = ForegroundPhotoChangeBatch()
         for i in 0..<ForegroundPhotoChangeBatch.maxChangeBatches {
-            batch.append(affected: [], deleted: [], tokenData: Data([UInt8(i)]))
+            batch.append(affected: [], deleted: [], tokenData: Data([UInt8(truncatingIfNeeded: i)]))
         }
         XCTAssertTrue(batch.shouldFlush)
         XCTAssertTrue(batch.affectedIdentifiers.isEmpty)
         XCTAssertTrue(batch.deletedIdentifiers.isEmpty)
         XCTAssertEqual(batch.changeCount, ForegroundPhotoChangeBatch.maxChangeBatches)
+        XCTAssertEqual(
+            try batch.serializedTokenData(),
+            Data([UInt8(truncatingIfNeeded: ForegroundPhotoChangeBatch.maxChangeBatches - 1)])
+        )
 
         XCTAssertTrue(hashRepository.applyForegroundPhotoChanges(
             snapshots: [],
@@ -839,10 +868,14 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: batch.tokenData!,
             bootstrap: false
         ))
-        XCTAssertEqual(hashRepository.loadForegroundPhotoToken(), Data([127]))
+        XCTAssertEqual(
+            hashRepository.loadForegroundPhotoToken(),
+            Data([UInt8(truncatingIfNeeded: ForegroundPhotoChangeBatch.maxChangeBatches - 1)])
+        )
         XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
         batch.reset()
         XCTAssertFalse(batch.hasPending)
+        XCTAssertNil(try batch.serializedTokenData())
         XCTAssertEqual(batch.changeCount, 0)
     }
 
@@ -867,7 +900,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             tokenData: window.tokenData!, bootstrap: false
         ))
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "same-local-id"))
-        XCTAssertTrue(window.requiresFlushBefore(deleting: ["same-local-id"]))
+        XCTAssertTrue(window.requiresFlushBefore(adding: [], deleting: ["same-local-id"]))
 
         window.reset()
         window.append(affected: [], deleted: ["same-local-id"], tokenData: Data([11]))
@@ -901,17 +934,39 @@ final class ServerAssetRepositoryTests: XCTestCase {
         }
         XCTAssertTrue(batch.shouldFlush)
         XCTAssertEqual(batch.affectedIdentifiers.count, ForegroundPhotoChangeBatch.maxChangedIdentifiers)
-        XCTAssertTrue(batch.requiresFlushBefore(deleting: ["id-1"]))
-        XCTAssertFalse(batch.requiresFlushBefore(deleting: []))
+        XCTAssertTrue(batch.requiresFlushBefore(adding: [], deleting: ["id-1"]))
+        XCTAssertFalse(batch.requiresFlushBefore(adding: [], deleting: []))
+        XCTAssertFalse(batch.requiresFlushBefore(adding: [], deleting: ["unrelated-id"]))
 
         batch.reset()
         batch.append(affected: ["reinserted"], deleted: [], tokenData: Data([3]))
-        XCTAssertTrue(batch.requiresFlushBefore(deleting: ["reinserted"]))
+        XCTAssertTrue(batch.requiresFlushBefore(adding: [], deleting: ["reinserted"]))
         // The caller must commit the first window before processing a delete.
         batch.reset()
         batch.append(affected: [], deleted: ["reinserted"], tokenData: Data([4]))
         XCTAssertTrue(batch.deletedIdentifiers.contains("reinserted"))
         XCTAssertFalse(batch.affectedIdentifiers.contains("reinserted"))
+        XCTAssertTrue(batch.requiresFlushBefore(adding: ["reinserted"], deleting: []))
+        XCTAssertFalse(batch.requiresFlushBefore(adding: ["unrelated"], deleting: []))
+    }
+
+    func testForegroundJournalCoalescesUnrelatedDeletesAndStillOrdersReinsertion() throws {
+        var batch = ForegroundPhotoChangeBatch()
+        batch.append(affected: ["updated"], deleted: [], tokenData: Data([1]))
+        XCTAssertFalse(batch.requiresFlushBefore(adding: [], deleting: ["other"]))
+        batch.append(affected: [], deleted: ["other"], tokenData: Data([2]))
+        XCTAssertEqual(batch.affectedIdentifiers, Set(["updated"]))
+        XCTAssertEqual(batch.deletedIdentifiers, Set(["other"]))
+        XCTAssertEqual(try batch.serializedTokenData(), Data([2]))
+        XCTAssertFalse(batch.shouldFlush)
+
+        // Deleting the previously updated ID must commit its old version first.
+        XCTAssertTrue(batch.requiresFlushBefore(adding: [], deleting: ["updated"]))
+        // Re-inserting the deleted ID must commit the deletion first.
+        XCTAssertTrue(batch.requiresFlushBefore(adding: ["other"], deleting: []))
+        // An empty batch still advances to the latest cursor without work.
+        batch.append(affected: [], deleted: [], tokenData: Data([3]))
+        XCTAssertEqual(try batch.serializedTokenData(), Data([3]))
     }
 
     // MARK: - Phase 2: Foreground PhotoKit Change Journal
@@ -1854,6 +1909,58 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE asset_id = 'unchanged-raw-pair';"), 2)
         XCTAssertEqual(background.loadChangeToken(), Data([1]))
         XCTAssertTrue(queuedIds().contains(id))
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 0)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 1)
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+    }
+
+    func testBackgroundMetadataUpdatesSkipRedundantForegroundVerification() {
+        let ids = (0..<80).map { "metadata-only-\($0)" }
+        for id in ids {
+            hashRepository.saveMultiResourceHashCache(
+                localIdentifier: id, primaryHash: "sha-\(id)",
+                rawHash: nil, hasRAW: false,
+                modificationDate: Date(timeIntervalSince1970: 100),
+                resourceFingerprint: "stable-resource"
+            )
+        }
+        let fingerprints = Dictionary(uniqueKeysWithValues: ids.map { ($0, "stable-resource") })
+        let dates = Dictionary(uniqueKeysWithValues: ids.map {
+            ($0, Date(timeIntervalSince1970: 120))
+        })
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: Set(ids), deletedAssetIds: [],
+            updatedAssetModificationDates: dates,
+            updatedAssetResourceFingerprints: fingerprints,
+            tokenData: Data([24])
+        )
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 0)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 80)
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
+        XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM hash_cache;"), 80)
+        XCTAssertEqual(background.loadChangeToken(), Data([24]))
+    }
+
+    func testBackgroundMetadataUpdateDoesNotDropAlreadyPendingForegroundWork() {
+        let id = "foreground-newer-pending"
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: id, primaryHash: "sha-current",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 100),
+            resourceFingerprint: "stable-resource"
+        )
+        execute("INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('foreground-newer-pending');")
+        let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
+        let summary = background.commitPersistentChange(
+            insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
+            updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 120)],
+            updatedAssetResourceFingerprints: [id: "stable-resource"],
+            tokenData: Data([25])
+        )
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 0)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 1)
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
     }
 
     func testBackgroundInvalidatesVersionChangedWithinOneSecond() {
@@ -1881,6 +1988,8 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: id))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: id))
         XCTAssertEqual(background.loadChangeToken(), Data([3]))
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 1)
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), [id])
     }
 
     func testForegroundInvalidatesResourceFingerprintChangedWithinOneSecond() {
@@ -1983,6 +2092,14 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertNil(hashRepository.getHashCache(localIdentifier: "missing-date"))
         XCTAssertFalse(uploadRepository.isAnyResourceUploaded(localIdentifier: "missing-date"))
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "receipt-only"))
+        // A matching upload receipt does not replace missing foreground hash
+        // evidence: the asset still needs the normal hash pipeline.
+        XCTAssertEqual(summary?.foregroundCandidatesQueued, 4)
+        XCTAssertEqual(summary?.foregroundVerifiedSkipped, 0)
+        XCTAssertEqual(
+            Set(hashRepository.getPendingForegroundPhotoIdentifiers()),
+            Set(["edited", "legacy", "missing-date", "receipt-only"])
+        )
         for id in ids {
             XCTAssertTrue(queuedIds().contains(id))
         }
@@ -2046,6 +2163,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertEqual(summary?.retainedVersions, 1)
         XCTAssertNotNil(hashRepository.getHashCache(localIdentifier: id))
         XCTAssertEqual(sqlCount("SELECT COUNT(*) FROM upload_jobs WHERE asset_id = 'foreground-rehashed';"), 0)
+        XCTAssertTrue(hashRepository.getPendingForegroundPhotoIdentifiers().isEmpty)
     }
 
     func testBackgroundExtensionFallsBackWhenHostHasNotMigratedVersionColumn() {
