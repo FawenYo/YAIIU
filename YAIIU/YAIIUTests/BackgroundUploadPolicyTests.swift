@@ -31,4 +31,27 @@ final class BackgroundUploadPolicyTests: XCTestCase {
     func testUnavailableNetworkDoesNotCreateJobs() {
         XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: true, interface: .unavailable))
     }
+    func testIsolationGroupsPreserveAssetSiblings() {
+        let jobs = [
+            ("asset-a", "heic"), ("asset-b", "jpeg"),
+            ("asset-a", "raw"), ("asset-c", "heic")
+        ]
+        let groups = BackgroundUploadPolicy.isolationGroups(
+            jobs, maxGroups: 2, assetIdentifier: { $0.0 }
+        )
+        XCTAssertEqual(groups.map { $0.map { $0.1 } }, [["heic", "raw"], ["jpeg"]])
+    }
+
+    func testIsolationGroupsEnforceBoundAndReturnEmptyForZeroLimit() {
+        let jobs = ["a", "b", "a", "c", "d"]
+        let bounded = BackgroundUploadPolicy.isolationGroups(
+            jobs, maxGroups: 2, assetIdentifier: { $0 }
+        )
+        XCTAssertEqual(bounded, [["a", "a"], ["b"]])
+        let empty = BackgroundUploadPolicy.isolationGroups(
+            jobs, maxGroups: 0, assetIdentifier: { $0 }
+        )
+        XCTAssertTrue(empty.isEmpty)
+    }
+
 }

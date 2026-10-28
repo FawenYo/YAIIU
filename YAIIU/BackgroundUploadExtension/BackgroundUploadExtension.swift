@@ -80,7 +80,7 @@ final class BackgroundUploadExtensionCore {
             logWarning("PhotoKit in-flight job limit exceeded; deferring new work")
             return .processing
         } catch {
-            logError("Error: \(error.localizedDescription)")
+            logError("Error: \(diagnosticError(error))")
             return .failure
         }
     }
@@ -134,13 +134,17 @@ final class BackgroundUploadExtensionCore {
 
     private func timeStage<T>(_ name: String, _ body: () throws -> T) rethrows -> T {
         let started = Date()
+        var succeeded = false
         defer {
             let elapsed = Date().timeIntervalSince(started)
-            let line = "Stage \(name) finished in \(String(format: "%.1f", elapsed))s"
-            if elapsed > 1 { log(line) } else { logDebug(line) }
+            let outcome = succeeded ? "succeeded" : "failed"
+            let line = "Stage \(name) \(outcome) in \(String(format: "%.1f", elapsed))s"
+            if elapsed > 1 || !succeeded { log(line) } else { logDebug(line) }
         }
         logDebug("Stage \(name) starting")
-        return try body()
+        let result = try body()
+        succeeded = true
+        return result
     }
 
     private func hasJobsInFlight() -> Bool {
@@ -225,14 +229,41 @@ final class BackgroundUploadExtensionCore {
     private func reconcileTrackedJobs() -> Int {
         guard #available(iOS 26.5, *) else { return 0 }
         var liveKeys = Set<String>()
+        var trackedKeys = database.getInflightJobKeys()
+        var adoptedCount = 0
         let actions: [PHAssetResourceUploadJob.Action] = [.process, .acknowledge, .retry]
         for action in actions {
             let jobs = PHAssetResourceUploadJob.fetchJobs(action: action, options: nil)
             for i in 0..<jobs.count {
-                if let identity = identity(for: jobs.object(at: i)) {
-                    liveKeys.insert("\(identity.assetLocalIdentifier)||\(identity.resourceType)")
-                }
+                let job = jobs.object(at: i)
+                guard let identity = identity(for: job) else { continue }
+                let key = "\(identity.assetLocalIdentifier)||\(identity.resourceType)"
+                liveKeys.insert(key)
+
+                // PhotoKit can commit a job before the extension persists its
+                // tracking row. Adopt it rather than cancelling it as untracked.
+                guard !trackedKeys.contains(key),
+                      jobTargetsCurrentDestination(job),
+                      !database.isResourceUploaded(
+                        assetId: identity.assetLocalIdentifier,
+                        resourceType: identity.resourceType
+                      ) else { continue }
+                database.createOrUpdateJob(
+                    assetId: identity.assetLocalIdentifier,
+                    resourceType: identity.resourceType,
+                    filename: identity.filename,
+                    status: .uploading
+                )
+                database.markResourcePresent(
+                    assetId: identity.assetLocalIdentifier,
+                    resourceType: identity.resourceType
+                )
+                trackedKeys.insert(key)
+                adoptedCount += 1
             }
+        }
+        if adoptedCount > 0 {
+            log("Recovered \(adoptedCount) PhotoKit upload job(s) missing from local tracking")
         }
         let removed = database.pruneTrackedJobs(
             liveKeys: liveKeys,
@@ -241,7 +272,7 @@ final class BackgroundUploadExtensionCore {
         if removed > 0 {
             logDebug("Pruned \(removed) tracked jobs absent from PhotoKit")
         }
-        return removed
+        return removed + adoptedCount
     }
 
 
@@ -580,45 +611,148 @@ final class BackgroundUploadExtensionCore {
         let timezones = captureTimezones(for: batch)
         guard !isCancelled else { return .deferred }
 
-        let library = PHPhotoLibrary.shared()
-        var createdAny = false
-        try library.performChangesAndWait {
-            for resource in batch where !self.isCancelled {
-                guard let dest = self.buildDestination(
+        // Prepare PhotoKit metadata and requests outside the change transaction;
+        // do not perform nested PhotoKit reads or SQLite writes in its block.
+        let preparedJobs: [PreparedUploadJob] = batch.compactMap { resource in
+            guard !isCancelled,
+                  let destination = buildDestination(
                     for: resource,
                     timezone: timezones[resource.assetLocalIdentifier] ?? TimeZone.current,
                     purpose: .newJob
-                ) else {
-                    continue
-                }
-                let resolvedFilename = resource.resolvedFilename()
-                self.logDebug("Creating upload job for resource: \(resolvedFilename)")
+                  ) else { return nil }
+            return PreparedUploadJob(
+                resource: resource,
+                destination: destination,
+                identity: JobIdentity(
+                    assetLocalIdentifier: resource.assetLocalIdentifier,
+                    resourceType: resourceTypeString(for: resource),
+                    filename: resource.resolvedFilename()
+                )
+            )
+        }
+        guard !isCancelled else { return .deferred }
+        guard !preparedJobs.isEmpty else { return .remaining }
+        let skippedResources = preparedJobs.count < batch.count
 
+        do {
+            let committed = try submitUploadJobs(preparedJobs)
+            recordCreatedJobs(committed)
+            guard !committed.isEmpty else { return .deferred }
+            return truncated || skippedResources || committed.count < preparedJobs.count
+                ? .remaining : .scheduled
+        } catch {
+            let nsError = error as NSError
+            logError(
+                "PhotoKit batch creation failed for \(preparedJobs.count) resource(s): "
+                    + diagnosticError(error)
+            )
+            // The job limit needs acknowledgement, not more creation attempts.
+            // Only isolate the ambiguous PhotoKit internal error (-1).
+            guard nsError.domain == PHPhotosErrorDomain,
+                  nsError.code == -1,
+                  preparedJobs.count > 1 else { throw error }
+
+            // Limit fallback transactions to protect the extension's runtime.
+            // Keep RAW/JPEG siblings in the same per-asset transaction.
+            let isolatedGroups = BackgroundUploadPolicy.isolationGroups(
+                preparedJobs,
+                maxGroups: 8,
+                assetIdentifier: { $0.identity.assetLocalIdentifier }
+            )
+            var committedCount = 0
+            var failedGroups = 0
+            for group in isolatedGroups where !isCancelled {
+                do {
+                    let committed = try submitUploadJobs(group)
+                    recordCreatedJobs(committed)
+                    committedCount += committed.count
+                    logDebug(
+                        "PhotoKit isolated creation succeeded for asset "
+                            + "\(group[0].identity.assetLocalIdentifier)"
+                    )
+                } catch {
+                    let nsError = error as NSError
+                    if nsError.domain == PHPhotosErrorDomain,
+                       nsError.code == PHPhotosError.limitExceeded.rawValue {
+                        throw error
+                    }
+                    failedGroups += 1
+                    let filenames = group.map { $0.identity.filename }.joined(separator: ", ")
+                    logError(
+                        "PhotoKit isolated creation failed for [\(filenames)] "
+                            + "asset=\(group[0].identity.assetLocalIdentifier): "
+                            + diagnosticError(error)
+                    )
+                }
+            }
+            guard !isCancelled else { return .deferred }
+            // Avoid re-invocation loops if all retry transactions failed.
+            guard committedCount > 0 else { throw error }
+            log("Recovered \(committedCount) upload job(s) via isolated creation")
+            return failedGroups > 0 || committedCount < preparedJobs.count || truncated
+                || skippedResources ? .remaining : .scheduled
+        }
+    }
+
+    private struct PreparedUploadJob {
+        let resource: PHAssetResource
+        let destination: URLRequest
+        let identity: JobIdentity
+    }
+
+    /// Only submit PhotoKit change requests in the transaction. If the system
+    /// cancels processing, return only requests that were actually submitted.
+    private func submitUploadJobs(_ jobs: [PreparedUploadJob]) throws -> [PreparedUploadJob] {
+        var requested = [PreparedUploadJob]()
+        try PHPhotoLibrary.shared().performChangesAndWait {
+            for job in jobs where !self.isCancelled {
+                self.logDebug("Creating upload job for resource: \(job.identity.filename)")
                 if #available(iOS 26.4, *) {
-
-                    PHAssetResourceUploadJobChangeRequest.creationRequestForJob(destination: dest, resource: resource)
+                    let request = PHAssetResourceUploadJobChangeRequest.creationRequestForJob(
+                        destination: job.destination,
+                        resource: job.resource
+                    )
+                    if let identifier = request.placeholderForCreatedAssetResourceUploadJob?.localIdentifier {
+                        self.logDebug("PhotoKit upload job placeholder: \(identifier)")
+                    }
                 } else {
-                    PHAssetResourceUploadJobChangeRequest.createJob(destination: dest, resource: resource)
+                    PHAssetResourceUploadJobChangeRequest.createJob(
+                        destination: job.destination,
+                        resource: job.resource
+                    )
                 }
-                createdAny = true
-
-                self.database.createOrUpdateJob(
-                    assetId: resource.assetLocalIdentifier,
-                    resourceType: self.resourceTypeString(for: resource),
-                    filename: resolvedFilename,
-                    status: .uploading
-                )
-                self.database.markResourcePresent(
-                    assetId: resource.assetLocalIdentifier,
-                    resourceType: self.resourceTypeString(for: resource)
-                )
+                requested.append(job)
             }
         }
-        guard createdAny else { return .remaining }
+        return requested
+    }
 
-        // A truncated batch means unscheduled resources remain; the legacy process()
-        // path maps .scheduled to .completed, so signal remaining work explicitly.
-        return truncated ? .remaining : .scheduled
+    /// If terminated between PhotoKit commit and SQLite bookkeeping, the
+    /// next reconcile pass adopts the already-created jobs.
+    private func recordCreatedJobs(_ jobs: [PreparedUploadJob]) {
+        for job in jobs {
+            database.createOrUpdateJob(
+                assetId: job.identity.assetLocalIdentifier,
+                resourceType: job.identity.resourceType,
+                filename: job.identity.filename,
+                status: .uploading
+            )
+            database.markResourcePresent(
+                assetId: job.identity.assetLocalIdentifier,
+                resourceType: job.identity.resourceType
+            )
+        }
+    }
+
+    private func diagnosticError(_ error: Error) -> String {
+        let nsError = error as NSError
+        let underlying = (nsError.userInfo[NSUnderlyingErrorKey] as? NSError)
+            .map { "\($0.domain)(\($0.code)): \($0.localizedDescription)" } ?? "none"
+        // Never dump userInfo values; they may include authenticated requests.
+        let keys = nsError.userInfo.keys.sorted().joined(separator: ",")
+        return "\(nsError.domain)(\(nsError.code)): \(nsError.localizedDescription); "
+            + "reason=\(nsError.localizedFailureReason ?? "none"); "
+            + "underlying=\(underlying); userInfoKeys=[\(keys)]"
     }
 
     // MARK: - Persistent Photo Library Changes
@@ -1409,7 +1543,7 @@ extension BackgroundUploadExtensionCore {
             logWarning("PhotoKit in-flight job limit exceeded; deferring new work")
             return .processing
         } catch {
-            logError("Error: \(error.localizedDescription)")
+            logError("Error: \(diagnosticError(error))")
             return .failure
         }
     }
