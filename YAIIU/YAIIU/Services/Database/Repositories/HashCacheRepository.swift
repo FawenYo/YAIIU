@@ -295,6 +295,12 @@ final class HashCacheRepository {
     /// Store current PhotoKit metadata without reading or hashing media bytes.
     /// Only rows with the same checksum captured by the caller are updated,
     /// so concurrent hashing cannot be overwritten by a stale baseline.
+    /// A row without any version evidence (imported or legacy: date AND
+    /// fingerprint both NULL) is stamped, never invalidated: absence of
+    /// evidence is not evidence of a change. Only evidence that contradicts
+    /// current PhotoKit state (stored fingerprint differs, or a stored date
+    /// disagrees) invalidates the row. Filled and invalidated counts are kept
+    /// separate so an invalidation can never be logged as a successful fill.
     @discardableResult
     func backfillPhotoKitVersionMetadata(
         _ updates: [(
@@ -303,14 +309,14 @@ final class HashCacheRepository {
             modificationDate: Date?,
             resourceFingerprint: String
         )]
-    ) -> Int {
-        guard !updates.isEmpty else { return 0 }
+    ) -> (filled: Int, invalidated: Int) {
+        guard !updates.isEmpty else { return (0, 0) }
         connection.ensureInitialized()
         return connection.dbQueue.sync { [weak self] in
-            guard let self else { return 0 }
+            guard let self else { return (0, 0) }
             guard self.connection.beginTransaction() else {
                 logError("Could not begin PhotoKit baseline backfill", category: .database)
-                return 0
+                return (0, 0)
             }
             var committed = false
             defer { if !committed { self.connection.rollbackTransaction() } }
@@ -325,10 +331,11 @@ final class HashCacheRepository {
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
                 sqlite3_finalize(statement)
                 logError("Could not prepare PhotoKit baseline backfill", category: .database)
-                return 0
+                return (0, 0)
             }
             defer { sqlite3_finalize(statement) }
-            var written = 0
+            var filled = 0
+            var invalidated = 0
             for update in updates {
                 var existingStatement: OpaquePointer?
                 guard sqlite3_prepare_v2(
@@ -342,7 +349,7 @@ final class HashCacheRepository {
                 ) == SQLITE_OK else {
                     sqlite3_finalize(existingStatement)
                     logError("Could not inspect PhotoKit baseline row", category: .database)
-                    return 0
+                    return (0, 0)
                 }
                 sqlite3_bind_text(existingStatement, 1, (update.localIdentifier as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(existingStatement, 2, (update.sha1Hash as NSString).utf8String, -1, nil)
@@ -359,15 +366,17 @@ final class HashCacheRepository {
                 // rebuilt by the visible hash pipeline. Keep prior evidence.
                 if isHidden { continue }
 
-                // A legacy row with a previous PhotoKit date has version evidence,
-                // but no resource fingerprint. Do not stamp current metadata onto
-                // an edited asset; invalidate and let the normal hash pipeline
-                // rebuild a trusted row when dates disagree or current date is absent.
+                // Invalidate only on contradicted evidence: a stored
+                // fingerprint that differs, or a stored legacy date that
+                // disagrees with the current PhotoKit date. Rows with NO
+                // evidence at all (Immich imports, legacy upgrades: both
+                // NULL) are stamped with the current baseline instead;
+                // deleting them re-queued every imported asset for a full
+                // rehash on every launch.
                 let fingerprintChanged = storedFingerprint != nil &&
                     storedFingerprint != update.resourceFingerprint
-                let legacyDateChanged = fingerprintMissing &&
-                    (storedDate == nil ||
-                     storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970)
+                let legacyDateChanged = fingerprintMissing && storedDate != nil &&
+                    storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970
                 if fingerprintChanged || legacyDateChanged {
                     for sql in [
                         "DELETE FROM hash_cache WHERE asset_id = ? AND sha1_hash = ?;",
@@ -379,7 +388,7 @@ final class HashCacheRepository {
                         guard sqlite3_prepare_v2(self.connection.db, sql, -1, &invalidationStatement, nil) == SQLITE_OK else {
                             sqlite3_finalize(invalidationStatement)
                             logError("Could not prepare PhotoKit baseline invalidation", category: .database)
-                            return 0
+                            return (0, 0)
                         }
                         sqlite3_bind_text(invalidationStatement, 1, (update.localIdentifier as NSString).utf8String, -1, nil)
                         if sql.contains("sha1_hash") {
@@ -388,11 +397,11 @@ final class HashCacheRepository {
                         guard sqlite3_step(invalidationStatement) == SQLITE_DONE else {
                             sqlite3_finalize(invalidationStatement)
                             logError("PhotoKit baseline invalidation failed", category: .database)
-                            return 0
+                            return (0, 0)
                         }
                         sqlite3_finalize(invalidationStatement)
                     }
-                    written += 1
+                    invalidated += 1
                     continue
                 }
 
@@ -401,27 +410,27 @@ final class HashCacheRepository {
                 if let modificationDate = update.modificationDate {
                     guard sqlite3_bind_double(statement, 1, modificationDate.timeIntervalSince1970) == SQLITE_OK else {
                         logError("PhotoKit baseline date bind failed", category: .database)
-                        return 0
+                        return (0, 0)
                     }
                 } else if sqlite3_bind_null(statement, 1) != SQLITE_OK {
                     logError("PhotoKit baseline date bind failed", category: .database)
-                    return 0
+                    return (0, 0)
                 }
                 guard sqlite3_bind_text(statement, 2, (update.resourceFingerprint as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_bind_text(statement, 3, (update.localIdentifier as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_bind_text(statement, 4, (update.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_step(statement) == SQLITE_DONE else {
                     logError("PhotoKit baseline backfill failed", category: .database)
-                    return 0
+                    return (0, 0)
                 }
-                written += Int(sqlite3_changes(self.connection.db))
+                filled += Int(sqlite3_changes(self.connection.db))
             }
             guard self.connection.commitTransaction() else {
                 logError("Could not commit PhotoKit baseline backfill", category: .database)
-                return 0
+                return (0, 0)
             }
             committed = true
-            return written
+            return (filled, invalidated)
         }
     }
 
@@ -2306,11 +2315,20 @@ final class HashCacheRepository {
                 } else {
                     baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentFingerprint))
                 }
-            } else if let oldDate = storedDates[snapshot.localIdentifier],
-                      let date = snapshot.modificationDate, oldDate == date {
-                baselineUpdates.append((snapshot.localIdentifier, date, currentFingerprint))
+            } else if let oldDate = storedDates[snapshot.localIdentifier] {
+                // Legacy row with a stored date: only an agreeing date proves
+                // the hash still describes current resources.
+                if let date = snapshot.modificationDate, oldDate == date {
+                    baselineUpdates.append((snapshot.localIdentifier, date, currentFingerprint))
+                } else {
+                    modifiedIds.insert(snapshot.localIdentifier)
+                }
             } else {
-                modifiedIds.insert(snapshot.localIdentifier)
+                // No version evidence at all (Immich import): stamp the
+                // current baseline instead of deleting, mirroring the
+                // version backfill rule. A later fingerprint mismatch
+                // invalidates normally.
+                baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentFingerprint))
             }
         }
 

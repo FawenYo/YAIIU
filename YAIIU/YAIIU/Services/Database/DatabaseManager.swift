@@ -125,7 +125,7 @@ final class DatabaseManager {
             modificationDate: Date?,
             resourceFingerprint: String
         )]
-    ) -> Int {
+    ) -> (filled: Int, invalidated: Int) {
         hashRepo.backfillPhotoKitVersionMetadata(updates)
     }
 
