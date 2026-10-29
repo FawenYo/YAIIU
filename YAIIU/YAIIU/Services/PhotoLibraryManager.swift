@@ -864,6 +864,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         options.includeHiddenAssets = true
         var matched = 0
         var filled = 0
+        var invalidated = 0
         // Fetch only identifiers missing PhotoKit metadata, never resource bytes.
         // Chunking caps temporary allocations for large Immich imports.
         for start in stride(from: 0, to: rows.count, by: 300) {
@@ -903,7 +904,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 ))
             }
             matched += updates.count
-            filled += db.backfillPhotoKitVersionMetadata(updates)
+            let result = db.backfillPhotoKitVersionMetadata(updates)
+            filled += result.filled
+            invalidated += result.invalidated
             publishForegroundBaselineProgress(
                 PhotoKitBaselineProgress(
                     completed: end,
@@ -912,7 +915,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             )
         }
         logInfo(
-            "PhotoKit hash-version baseline: needingMetadata=\(rows.count), foundFingerprint=\(matched), filled=\(filled), unresolved=\(rows.count - filled)",
+            "PhotoKit hash-version baseline: needingMetadata=\(rows.count), foundFingerprint=\(matched), filled=\(filled), invalidated=\(invalidated), unresolved=\(rows.count - filled - invalidated)",
             category: .hash
         )
     }
