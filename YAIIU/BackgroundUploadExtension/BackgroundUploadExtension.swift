@@ -28,6 +28,9 @@ final class BackgroundUploadExtensionCore {
     private var currentPath: NWPath?
     private var hasReceivedInitialPath = false
     private let appGroupID = "group.com.fawenyo.yaiiu"
+    private lazy var creationRecovery = BackgroundUploadCreationRecovery(
+        preferences: UserDefaults(suiteName: appGroupID)
+    )
     private let immichAssetIDHeader = "x-yaiiu-immich-asset-id"
 
     private var isCancelled: Bool {
@@ -68,9 +71,9 @@ final class BackgroundUploadExtensionCore {
 
         do {
             switch try processUploadJobs() {
-            case .deferred, .remaining:
+            case .deferred, .remaining, .scheduled:
                 return .processing
-            case .completed, .scheduled:
+            case .completed:
                 return .completed
             }
         } catch let error as NSError
@@ -646,6 +649,13 @@ final class BackgroundUploadExtensionCore {
                 "PhotoKit batch creation failed for \(preparedJobs.count) resource(s): "
                     + diagnosticError(error)
             )
+            // Returning .failure preserves PhotoKit's post-processing state, where
+            // new jobs are rejected with -1. Yield .processing once so the system
+            // can resume processing; keep every resource pending until a commit.
+            if creationRecovery.requestRetry(after: nsError) {
+                logWarning("Deferring job creation once after PhotoKit internal error; requesting processing-state recovery")
+                return .deferred
+            }
             // The job limit needs acknowledgement, not more creation attempts.
             // Only isolate the ambiguous PhotoKit internal error (-1).
             guard nsError.domain == PHPhotosErrorDomain,
@@ -730,6 +740,7 @@ final class BackgroundUploadExtensionCore {
     /// If terminated between PhotoKit commit and SQLite bookkeeping, the
     /// next reconcile pass adopts the already-created jobs.
     private func recordCreatedJobs(_ jobs: [PreparedUploadJob]) {
+        if !jobs.isEmpty { creationRecovery.recordSuccessfulCreation() }
         for job in jobs {
             database.createOrUpdateJob(
                 assetId: job.identity.assetLocalIdentifier,
@@ -1531,9 +1542,9 @@ extension BackgroundUploadExtensionCore {
 
         do {
             switch try processUploadJobs() {
-            case .completed, .scheduled:
+            case .completed:
                 return .completed
-            case .deferred, .remaining:
+            case .deferred, .remaining, .scheduled:
                 return .processing
             }
         } catch let error as NSError

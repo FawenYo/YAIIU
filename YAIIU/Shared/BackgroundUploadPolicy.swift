@@ -62,3 +62,28 @@ public enum BackgroundUploadPolicy {
     }
 
 }
+
+/// Limits public-API state recovery across extension process lifetimes.
+final class BackgroundUploadCreationRecovery {
+    private let preferences: UserDefaults?
+    private let attemptedKey = "yaiiu_background_upload_creation_recovery_attempted"
+
+    init(preferences: UserDefaults?) {
+        self.preferences = preferences
+    }
+
+    /// A creation failure can mean PhotoKit is still finishing its previous pass.
+    /// Permit one yield to the system, not an unlimited retry loop for bad resources.
+    func requestRetry(after error: NSError) -> Bool {
+        guard error.domain == "PHPhotosErrorDomain", error.code == -1,
+              let preferences, !preferences.bool(forKey: attemptedKey) else {
+            return false
+        }
+        preferences.set(true, forKey: attemptedKey)
+        return true
+    }
+
+    func recordSuccessfulCreation() {
+        preferences?.removeObject(forKey: attemptedKey)
+    }
+}

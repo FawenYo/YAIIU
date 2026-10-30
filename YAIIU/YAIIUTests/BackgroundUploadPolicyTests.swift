@@ -55,3 +55,51 @@ final class BackgroundUploadPolicyTests: XCTestCase {
     }
 
 }
+
+final class BackgroundUploadCreationRecoveryTests: XCTestCase {
+    private var suites = [String]()
+
+    override func tearDown() {
+        for suite in suites {
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        super.tearDown()
+    }
+
+    private func makePreferences() -> UserDefaults {
+        let suite = "BackgroundUploadCreationRecoveryTests.\(UUID().uuidString)"
+        suites.append(suite)
+        return UserDefaults(suiteName: suite)!
+    }
+
+    func testInternalCreationFailureGetsOnlyOneRecoveryAcrossExtensionInstances() {
+        let preferences = makePreferences()
+        let error = NSError(domain: "PHPhotosErrorDomain", code: -1)
+        let first = BackgroundUploadCreationRecovery(preferences: preferences)
+        XCTAssertTrue(first.requestRetry(after: error))
+        XCTAssertFalse(first.requestRetry(after: error))
+        let relaunched = BackgroundUploadCreationRecovery(preferences: preferences)
+        XCTAssertFalse(relaunched.requestRetry(after: error))
+    }
+
+    func testSuccessfulCreationAllowsRecoveryOfALaterFailure() {
+        let recovery = BackgroundUploadCreationRecovery(preferences: makePreferences())
+        let error = NSError(domain: "PHPhotosErrorDomain", code: -1)
+        XCTAssertTrue(recovery.requestRetry(after: error))
+        recovery.recordSuccessfulCreation()
+        XCTAssertTrue(recovery.requestRetry(after: error))
+        XCTAssertFalse(recovery.requestRetry(after: error))
+    }
+
+    func testOtherErrorsDoNotConsumeOrReceiveStateRecovery() {
+        let recovery = BackgroundUploadCreationRecovery(preferences: makePreferences())
+        XCTAssertFalse(recovery.requestRetry(after: NSError(domain: NSURLErrorDomain, code: -1)))
+        XCTAssertFalse(recovery.requestRetry(after: NSError(domain: "PHPhotosErrorDomain", code: 3201)))
+        XCTAssertTrue(recovery.requestRetry(after: NSError(domain: "PHPhotosErrorDomain", code: -1)))
+    }
+
+    func testMissingPersistentStorageDoesNotAllowUnboundedRecoveryOnRelaunch() {
+        let recovery = BackgroundUploadCreationRecovery(preferences: nil)
+        XCTAssertFalse(recovery.requestRetry(after: NSError(domain: "PHPhotosErrorDomain", code: -1)))
+    }
+}
