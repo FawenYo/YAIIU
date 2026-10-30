@@ -40,4 +40,50 @@ public enum BackgroundUploadPolicy {
             return true
         }
     }
+    /// Bound diagnostic retries and keep all copies of a selected asset together.
+    public static func isolationGroups<Item, AssetID: Hashable>(
+        _ jobs: [Item],
+        maxGroups: Int,
+        assetIdentifier: (Item) -> AssetID
+    ) -> [[Item]] {
+        guard maxGroups > 0 else { return [] }
+        var groups = [[Item]]()
+        var indices = [AssetID: Int]()
+        for job in jobs {
+            let identifier = assetIdentifier(job)
+            if let index = indices[identifier] {
+                groups[index].append(job)
+            } else if groups.count < maxGroups {
+                indices[identifier] = groups.count
+                groups.append([job])
+            }
+        }
+        return groups
+    }
+
+}
+
+/// Limits public-API state recovery across extension process lifetimes.
+final class BackgroundUploadCreationRecovery {
+    private let preferences: UserDefaults?
+    private let attemptedKey = "yaiiu_background_upload_creation_recovery_attempted"
+
+    init(preferences: UserDefaults?) {
+        self.preferences = preferences
+    }
+
+    /// A creation failure can mean PhotoKit is still finishing its previous pass.
+    /// Permit one yield to the system, not an unlimited retry loop for bad resources.
+    func requestRetry(after error: NSError) -> Bool {
+        guard error.domain == "PHPhotosErrorDomain", error.code == -1,
+              let preferences, !preferences.bool(forKey: attemptedKey) else {
+            return false
+        }
+        preferences.set(true, forKey: attemptedKey)
+        return true
+    }
+
+    func recordSuccessfulCreation() {
+        preferences?.removeObject(forKey: attemptedKey)
+    }
 }

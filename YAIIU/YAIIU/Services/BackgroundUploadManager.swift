@@ -62,10 +62,8 @@ class BackgroundUploadManager: ObservableObject {
         // Enable the extension
         let library = PHPhotoLibrary.shared()
 
-        // setUploadJobExtensionEnabled(true) throws PHPhotosErrorDomain 3202 when the
-        // extension is already enabled. The system state can already be enabled from a
-        // previous session, so treat an already-enabled extension as success and skip
-        // the redundant call.
+        // Enabling an already-enabled extension may fail (including PhotoKit error
+        // 3202 on older iOS versions). Honor the system state and skip redundant calls.
         guard !library.uploadJobExtensionEnabled else {
             await MainActor.run {
                 self.isEnabled = true
@@ -77,7 +75,11 @@ class BackgroundUploadManager: ObservableObject {
         }
 
         do {
-            try library.setUploadJobExtensionEnabled(true)
+            if #available(iOS 27.0, *) {
+                try library.enableUploadJobExtension(with: nil)
+            } else {
+                try library.setUploadJobExtensionEnabled(true)
+            }
 
             await MainActor.run {
                 self.isEnabled = true
@@ -89,9 +91,9 @@ class BackgroundUploadManager: ObservableObject {
 
         } catch {
             if let nsError = error as NSError? {
-                logError("setUploadJobExtensionEnabled failed: domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)", category: .upload)
+                logError("Failed to enable background upload extension: domain=\(nsError.domain) code=\(nsError.code)", category: .upload)
             } else {
-                logError("setUploadJobExtensionEnabled failed: \(error.localizedDescription)", category: .upload)
+                logError("Failed to enable background upload extension: \(error.localizedDescription)", category: .upload)
             }
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
@@ -105,8 +107,7 @@ class BackgroundUploadManager: ObservableObject {
         
         let library = PHPhotoLibrary.shared()
 
-        // Skip the redundant call if the extension is already disabled to avoid a
-        // symmetric state error from setUploadJobExtensionEnabled(false).
+        // Skip a redundant disable call when PhotoKit already reports it disabled.
         guard library.uploadJobExtensionEnabled else {
             await MainActor.run {
                 self.isEnabled = false
@@ -118,7 +119,11 @@ class BackgroundUploadManager: ObservableObject {
         }
 
         do {
-            try library.setUploadJobExtensionEnabled(false)
+            if #available(iOS 27.0, *) {
+                try library.disableUploadJobExtension()
+            } else {
+                try library.setUploadJobExtensionEnabled(false)
+            }
 
             await MainActor.run {
                 self.isEnabled = false
