@@ -825,15 +825,24 @@ final class BackgroundUploadExtensionCore {
                 if !updated.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
-                    let assets = PHAsset.fetchAssets(
-                        withLocalIdentifiers: Array(updated), options: options
-                    )
-                    assets.enumerateObjects { asset, _, _ in
-                        if let date = asset.modificationDate {
-                            modificationDates[asset.localIdentifier] = date
-                        }
-                        if let fingerprint = PhotoAssetResourceFingerprint.make(for: asset) {
-                            resourceFingerprints[asset.localIdentifier] = fingerprint
+                    let identifiers = Array(updated)
+                    for start in stride(from: 0, to: identifiers.count, by: 300) {
+                        autoreleasepool {
+                            let end = min(start + 300, identifiers.count)
+                            let assets = PHAsset.fetchAssets(
+                                withLocalIdentifiers: Array(identifiers[start..<end]),
+                                options: options
+                            )
+                            assets.enumerateObjects { asset, _, _ in
+                                autoreleasepool {
+                                    if let date = asset.modificationDate {
+                                        modificationDates[asset.localIdentifier] = date
+                                    }
+                                    if let fingerprint = PhotoAssetResourceFingerprint.make(for: asset) {
+                                        resourceFingerprints[asset.localIdentifier] = fingerprint
+                                    }
+                                }
+                            }
                         }
                     }
                 }

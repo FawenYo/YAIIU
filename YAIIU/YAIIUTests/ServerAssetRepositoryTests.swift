@@ -1546,6 +1546,44 @@ final class ServerAssetRepositoryTests: XCTestCase {
             """), 1)
     }
 
+    func testPhotoKitBaselineKeysetPagesRemainStableAfterRowsAreBackfilled() {
+        for identifier in ["asset-a", "asset-b", "asset-c", "asset-d", "asset-hidden"] {
+            hashRepository.saveMultiResourceHashCache(
+                localIdentifier: identifier, primaryHash: "sha-\(identifier)",
+                rawHash: nil, hasRAW: false, modificationDate: nil
+            )
+        }
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "asset-hidden", isHidden: true)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+
+        XCTAssertEqual(hashRepository.countHashCacheRowsNeedingPhotoKitBaseline(), 4)
+        let first = hashRepository.hashCacheRowsNeedingPhotoKitBaseline(after: nil, limit: 2)
+        XCTAssertEqual(first.map(\.localIdentifier), ["asset-a", "asset-b"])
+
+        let result = hashRepository.backfillPhotoKitVersionMetadata(first.map {
+            (
+                localIdentifier: $0.localIdentifier,
+                sha1Hash: $0.sha1Hash,
+                modificationDate: Date(timeIntervalSince1970: 100),
+                resourceFingerprint: "resource-\($0.localIdentifier)"
+            )
+        })
+        XCTAssertEqual(result.filled, 2)
+        XCTAssertEqual(hashRepository.countHashCacheRowsNeedingPhotoKitBaseline(), 2)
+
+        let second = hashRepository.hashCacheRowsNeedingPhotoKitBaseline(
+            after: first.last?.localIdentifier, limit: 2
+        )
+        XCTAssertEqual(second.map(\.localIdentifier), ["asset-c", "asset-d"])
+        XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline(
+            after: second.last?.localIdentifier, limit: 2
+        ).isEmpty)
+        XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline(after: nil, limit: 0).isEmpty)
+    }
+
     func testPhotoKitBaselineBackfillIncludesMissingFingerprintAndPreservesHashState() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "missing-date-and-fingerprint", primaryHash: "primary-a",
