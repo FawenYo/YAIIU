@@ -845,16 +845,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         hasBackfilledUnknownHashVersions = true
 
         let db = DatabaseManager.shared
-        let rows = db.hashCacheRowsNeedingPhotoKitBaseline()
-        guard !rows.isEmpty else { return }
+        let totalRows = db.countHashCacheRowsNeedingPhotoKitBaseline()
+        guard totalRows > 0 else { return }
         publishForegroundBaselineProgress(
-            PhotoKitBaselineProgress(completed: 0, total: rows.count)
+            PhotoKitBaselineProgress(completed: 0, total: totalRows)
         )
         defer {
             publishForegroundBaselineProgress(nil)
-            // Background baseline may invalidate old-date hashes after the
-            // first hash run has started. Trigger another durable pending pass
-            // so those assets are not stranded until the next app launch.
+            // Recheck pending work after version metadata has been updated.
             DispatchQueue.main.async { [weak self] in
                 self?.inventoryChangeRevision &+= 1
             }
@@ -862,60 +860,80 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
+        let batchSize = 300
+        var cursor: String?
+        var completed = 0
         var matched = 0
         var filled = 0
         var invalidated = 0
-        // Fetch only identifiers missing PhotoKit metadata, never resource bytes.
-        // Chunking caps temporary allocations for large Immich imports.
-        for start in stride(from: 0, to: rows.count, by: 300) {
-            let end = min(start + 300, rows.count)
-            let batch = rows[start..<end]
-                .filter { !excludingIdentifiers.contains($0.localIdentifier) }
+
+        // Use keyset pagination instead of retaining every imported hash row.
+        // Advance the cursor before committing each page, since successfully
+        // backfilled rows disappear from the eligible SQL result set.
+        while completed < totalRows {
+            let page = db.hashCacheRowsNeedingPhotoKitBaseline(
+                after: cursor, limit: batchSize
+            )
+            guard let lastIdentifier = page.last?.localIdentifier else { break }
+            cursor = lastIdentifier
+            completed += page.count
+
+            let batch = page.filter {
+                !excludingIdentifiers.contains($0.localIdentifier)
+            }
             if batch.isEmpty {
                 publishForegroundBaselineProgress(
-                    PhotoKitBaselineProgress(completed: end, total: rows.count)
+                    PhotoKitBaselineProgress(completed: completed, total: totalRows)
                 )
                 continue
             }
-            let checksums = Dictionary(uniqueKeysWithValues: batch.map {
-                ($0.localIdentifier, $0.sha1Hash)
-            })
-            let assets = PHAsset.fetchAssets(
-                withLocalIdentifiers: batch.map(\.localIdentifier),
-                options: options
-            )
-            var updates: [(
+
+            // Include the PHFetchResult itself in the pool: the per-asset pool
+            // alone does not release PhotoKit's batch-level native allocations.
+            let updates: [(
                 localIdentifier: String,
                 sha1Hash: String,
                 modificationDate: Date?,
                 resourceFingerprint: String
-            )] = []
-            PhotoLibraryEnumeration.forEach(in: assets) { asset, _ in
-                // Never erase a hidden photo's legacy upload receipt: hidden
-                // resources are not eligible for foreground re-hashing.
-                guard !asset.isHidden,
-                      let checksum = checksums[asset.localIdentifier],
-                      let resourceFingerprint = PhotoAssetResourceFingerprint.make(for: asset) else { return }
-                updates.append((
-                    localIdentifier: asset.localIdentifier,
-                    sha1Hash: checksum,
-                    modificationDate: asset.modificationDate,
-                    resourceFingerprint: resourceFingerprint
-                ))
+            )] = autoreleasepool {
+                let checksums = Dictionary(uniqueKeysWithValues: batch.map {
+                    ($0.localIdentifier, $0.sha1Hash)
+                })
+                let assets = PHAsset.fetchAssets(
+                    withLocalIdentifiers: batch.map(\.localIdentifier),
+                    options: options
+                )
+                var updates: [(
+                    localIdentifier: String,
+                    sha1Hash: String,
+                    modificationDate: Date?,
+                    resourceFingerprint: String
+                )] = []
+                updates.reserveCapacity(batch.count)
+                PhotoLibraryEnumeration.forEach(in: assets) { asset, _ in
+                    guard !asset.isHidden,
+                          let checksum = checksums[asset.localIdentifier],
+                          let fingerprint = PhotoAssetResourceFingerprint.make(for: asset)
+                    else { return }
+                    updates.append((
+                        localIdentifier: asset.localIdentifier,
+                        sha1Hash: checksum,
+                        modificationDate: asset.modificationDate,
+                        resourceFingerprint: fingerprint
+                    ))
+                }
+                return updates
             }
             matched += updates.count
             let result = db.backfillPhotoKitVersionMetadata(updates)
             filled += result.filled
             invalidated += result.invalidated
             publishForegroundBaselineProgress(
-                PhotoKitBaselineProgress(
-                    completed: end,
-                    total: rows.count
-                )
+                PhotoKitBaselineProgress(completed: completed, total: totalRows)
             )
         }
         logInfo(
-            "PhotoKit hash-version baseline: needingMetadata=\(rows.count), foundFingerprint=\(matched), filled=\(filled), invalidated=\(invalidated), unresolved=\(rows.count - filled - invalidated)",
+            "PhotoKit hash-version baseline: needingMetadata=\(totalRows), foundFingerprint=\(matched), filled=\(filled), invalidated=\(invalidated), unresolved=\(totalRows - filled - invalidated)",
             category: .hash
         )
     }

@@ -1546,6 +1546,66 @@ final class ServerAssetRepositoryTests: XCTestCase {
             """), 1)
     }
 
+    func testPhotoKitBaselineKeysetPagesRemainStableAfterRowsAreBackfilled() {
+        for identifier in ["asset-a", "asset-b", "asset-c", "asset-d", "asset-hidden"] {
+            hashRepository.saveMultiResourceHashCache(
+                localIdentifier: identifier, primaryHash: "sha-\(identifier)",
+                rawHash: nil, hasRAW: false, modificationDate: nil
+            )
+        }
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "asset-hidden", isHidden: true)
+        ]))
+        XCTAssertTrue(hashRepository.finishLocalPhotoInventoryBootstrap())
+
+        XCTAssertEqual(hashRepository.countHashCacheRowsNeedingPhotoKitBaseline(), 4)
+        let first = hashRepository.hashCacheRowsNeedingPhotoKitBaseline(after: nil, limit: 2)
+        XCTAssertEqual(first.map(\.localIdentifier), ["asset-a", "asset-b"])
+
+        let result = hashRepository.backfillPhotoKitVersionMetadata(first.map {
+            (
+                localIdentifier: $0.localIdentifier,
+                sha1Hash: $0.sha1Hash,
+                modificationDate: Date(timeIntervalSince1970: 100),
+                resourceFingerprint: "resource-\($0.localIdentifier)"
+            )
+        })
+        XCTAssertEqual(result.filled, 2)
+        XCTAssertEqual(hashRepository.countHashCacheRowsNeedingPhotoKitBaseline(), 2)
+
+        let second = hashRepository.hashCacheRowsNeedingPhotoKitBaseline(
+            after: first.last?.localIdentifier, limit: 2
+        )
+        XCTAssertEqual(second.map(\.localIdentifier), ["asset-c", "asset-d"])
+        XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline(
+            after: second.last?.localIdentifier, limit: 2
+        ).isEmpty)
+        XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline(after: nil, limit: 0).isEmpty)
+    }
+
+    func testPhotoKitBaselineCursorPageUsesIndexedRangeSearch() {
+        // Inspect the same SQL constructed by the repository, not a copy of it.
+        let sql = "EXPLAIN QUERY PLAN " +
+            HashCacheRepository.photoKitBaselinePageSQL(hasCursor: true)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return XCTFail("Could not prepare PhotoKit baseline query plan")
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var hasIndexedRangeSearch = false
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let detail = sqlite3_column_text(statement, 3) else { continue }
+            let description = String(cString: detail)
+            if description.contains("SEARCH h") && description.contains("asset_id>?") {
+                hasIndexedRangeSearch = true
+            }
+        }
+        XCTAssertTrue(hasIndexedRangeSearch, "Cursor pages should seek using the asset ID index")
+    }
+
     func testPhotoKitBaselineBackfillIncludesMissingFingerprintAndPreservesHashState() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "missing-date-and-fingerprint", primaryHash: "primary-a",

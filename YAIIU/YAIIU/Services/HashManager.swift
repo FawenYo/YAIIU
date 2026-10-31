@@ -873,7 +873,9 @@ class HashManager: ObservableObject {
         gate: ResourceBudget,
         runID: UUID
     ) async {
-        await withTaskGroup(of: Void.self) { group in
+        // Discard completed child tasks as they finish instead of retaining a
+        // run-sized TaskGroup history while processing a large library.
+        await withDiscardingTaskGroup { group in
             for await work in stream {
                 guard await gate.acquire(1) else {
                     work.complete()
@@ -889,7 +891,6 @@ class HashManager: ObservableObject {
                     await self.hashPreparedAsset(work, runID: runID)
                 }
             }
-            await group.waitForAll()
         }
     }
 

@@ -117,6 +117,17 @@ final class DatabaseManager {
         hashRepo.hashCacheRowsNeedingPhotoKitBaseline()
     }
 
+    func countHashCacheRowsNeedingPhotoKitBaseline() -> Int {
+        hashRepo.countHashCacheRowsNeedingPhotoKitBaseline()
+    }
+
+    func hashCacheRowsNeedingPhotoKitBaseline(
+        after identifier: String?,
+        limit: Int
+    ) -> [(localIdentifier: String, sha1Hash: String)] {
+        hashRepo.hashCacheRowsNeedingPhotoKitBaseline(after: identifier, limit: limit)
+    }
+
     @discardableResult
     func backfillPhotoKitVersionMetadata(
         _ updates: [(
