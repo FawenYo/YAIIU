@@ -317,6 +317,24 @@ final class HashCacheRepository {
         }
     }
 
+    /// Keep the cursor predicate separate from the first-page query so
+    /// SQLite can seek into idx_hash_asset rather than scanning prior pages.
+    static func photoKitBaselinePageSQL(hasCursor: Bool) -> String {
+        let cursorPredicate = hasCursor ? "AND h.asset_id > ?1" : ""
+        let limitParameter = hasCursor ? "?2" : "?1"
+        return """
+            SELECT h.asset_id, h.sha1_hash
+            FROM hash_cache AS h
+            LEFT JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
+            WHERE (h.asset_modification_date IS NULL
+               OR h.asset_resource_fingerprint IS NULL)
+              AND COALESCE(a.is_hidden, 0) = 0
+              \(cursorPredicate)
+            ORDER BY h.asset_id
+            LIMIT \(limitParameter);
+            """
+    }
+
     /// Keyset pagination bounds the number of cached rows held in memory.
     /// The cursor is based on the stable asset ID, so updating or invalidating
     /// a previously visited row cannot shift the subsequent page.
@@ -329,17 +347,7 @@ final class HashCacheRepository {
         return connection.dbQueue.sync { [weak self] in
             guard let self else { return [] }
             var statement: OpaquePointer?
-            let sql = """
-                SELECT h.asset_id, h.sha1_hash
-                FROM hash_cache AS h
-                LEFT JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
-                WHERE (h.asset_modification_date IS NULL
-                   OR h.asset_resource_fingerprint IS NULL)
-                  AND COALESCE(a.is_hidden, 0) = 0
-                  AND (?1 IS NULL OR h.asset_id > ?1)
-                ORDER BY h.asset_id
-                LIMIT ?2;
-                """
+            let sql = Self.photoKitBaselinePageSQL(hasCursor: identifier != nil)
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
                 sqlite3_finalize(statement)
                 logError("Could not prepare paged PhotoKit baseline lookup", category: .database)
@@ -348,10 +356,10 @@ final class HashCacheRepository {
             defer { sqlite3_finalize(statement) }
             if let identifier {
                 sqlite3_bind_text(statement, 1, (identifier as NSString).utf8String, -1, nil)
+                sqlite3_bind_int(statement, 2, Int32(min(limit, Int(Int32.max))))
             } else {
-                sqlite3_bind_null(statement, 1)
+                sqlite3_bind_int(statement, 1, Int32(min(limit, Int(Int32.max))))
             }
-            sqlite3_bind_int(statement, 2, Int32(min(limit, Int(Int32.max))))
             var rows: [(localIdentifier: String, sha1Hash: String)] = []
             rows.reserveCapacity(limit)
             while sqlite3_step(statement) == SQLITE_ROW {

@@ -1584,6 +1584,28 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(hashRepository.hashCacheRowsNeedingPhotoKitBaseline(after: nil, limit: 0).isEmpty)
     }
 
+    func testPhotoKitBaselineCursorPageUsesIndexedRangeSearch() {
+        // Inspect the same SQL constructed by the repository, not a copy of it.
+        let sql = "EXPLAIN QUERY PLAN " +
+            HashCacheRepository.photoKitBaselinePageSQL(hasCursor: true)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return XCTFail("Could not prepare PhotoKit baseline query plan")
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var hasIndexedRangeSearch = false
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let detail = sqlite3_column_text(statement, 3) else { continue }
+            let description = String(cString: detail)
+            if description.contains("SEARCH h") && description.contains("asset_id>?") {
+                hasIndexedRangeSearch = true
+            }
+        }
+        XCTAssertTrue(hasIndexedRangeSearch, "Cursor pages should seek using the asset ID index")
+    }
+
     func testPhotoKitBaselineBackfillIncludesMissingFingerprintAndPreservesHashState() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "missing-date-and-fingerprint", primaryHash: "primary-a",
