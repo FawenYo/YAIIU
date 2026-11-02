@@ -760,7 +760,7 @@ struct PhotoGridView: View {
             cachedNotUploadedCount = nil
             recomputeTask?.cancel()
             countComputeVersion &+= 1
-            // Reconcile PhotoKit's journal and fingerprints before publishing a
+            // Reconcile PhotoKit's journal and adjustment versions before publishing a
             // count from local_photo_assets. The existing gate coalesces bursts
             // and preserves pending work while hashing is active.
             startBackgroundProcessing()
@@ -861,7 +861,7 @@ struct PhotoGridView: View {
 
     private func getProcessingDetailText() -> String {
         if let progress = photoLibraryManager.foregroundBaselineProgress {
-            return L10n.PhotoGrid.processingBaseline(progress.completed, progress.total)
+            return L10n.PhotoGrid.processingBaseline(progress)
         }
         return L10n.PhotoGrid.processingReadingPhotoLibrary
     }

@@ -28,7 +28,7 @@ final class HashCacheRepository {
                 rawHash: nil,
                 hasRAW: false,
                 modificationDate: nil,
-                resourceFingerprint: nil
+                adjustmentVersion: nil
             )
         }
     }
@@ -39,7 +39,7 @@ final class HashCacheRepository {
         rawHash: String?,
         hasRAW: Bool,
         modificationDate: Date? = nil,
-        resourceFingerprint: String? = nil
+        adjustmentVersion: String? = nil
     ) {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return }
@@ -49,7 +49,7 @@ final class HashCacheRepository {
                 rawHash: rawHash,
                 hasRAW: hasRAW,
                 modificationDate: modificationDate,
-                resourceFingerprint: resourceFingerprint
+                adjustmentVersion: adjustmentVersion
             )
         }
     }
@@ -60,11 +60,11 @@ final class HashCacheRepository {
         rawHash: String?,
         hasRAW: Bool,
         modificationDate: Date?,
-        resourceFingerprint: String?
+        adjustmentVersion: String?
     ) {
         let sql = """
         INSERT OR REPLACE INTO hash_cache
-        (asset_id, sha1_hash, is_on_server, calculated_at, raw_hash, raw_on_server, has_raw, asset_modification_date, asset_resource_fingerprint)
+        (asset_id, sha1_hash, is_on_server, calculated_at, raw_hash, raw_on_server, has_raw, asset_modification_date, asset_adjustment_version)
         VALUES (?, ?, 0, ?, ?, 0, ?, ?, ?);
         """
 
@@ -89,8 +89,8 @@ final class HashCacheRepository {
                 sqlite3_bind_null(statement, 6)
             }
 
-            if let resourceFingerprint {
-                sqlite3_bind_text(statement, 7, (resourceFingerprint as NSString).utf8String, -1, nil)
+            if let adjustmentVersion {
+                sqlite3_bind_text(statement, 7, (adjustmentVersion as NSString).utf8String, -1, nil)
             } else {
                 sqlite3_bind_null(statement, 7)
             }
@@ -101,10 +101,10 @@ final class HashCacheRepository {
                     "Hash cache write failed: asset=\(localIdentifier), error=\(String(cString: sqlite3_errmsg(connection.db)))",
                     category: .database
                 )
-            } else if resourceFingerprint != nil {
-                // A fingerprint-bearing hash was computed from the current
+            } else if adjustmentVersion != nil {
+                // A versioned hash was computed from the current
                 // PhotoKit resources. It resolves the durable retry created by
-                // a prior PhotoKit change; hashes without resource evidence do
+                // a prior PhotoKit change; hashes without version evidence do
                 // not resolve pending work.
                 var pendingStatement: OpaquePointer?
                 if sqlite3_prepare_v2(
@@ -145,11 +145,13 @@ final class HashCacheRepository {
         sqlite3_finalize(statement)
     }
     
-    /// Immich SQLite imports have hashes but no trusted PhotoKit version.
+    /// Immich SQLite imports carry Immich's adjustment version when available
+    /// but never a modification date; every version comparison path checks it
+    /// against current PhotoKit state like a locally computed version.
     /// Never replace an existing (possibly JPEG+RAW) hash with import data:
     /// doing so would erase version, RAW and upload-state information.
     @discardableResult
-    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) -> Bool {
+    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String, adjustmentVersion: String?)]) -> Bool {
         guard !items.isEmpty else { return true }
         connection.ensureInitialized()
         return connection.dbQueue.sync { [weak self] () -> Bool in
@@ -165,8 +167,9 @@ final class HashCacheRepository {
             let insertSQL = """
                 INSERT OR IGNORE INTO hash_cache
                 (asset_id, sha1_hash, is_on_server, calculated_at,
-                 raw_hash, raw_on_server, has_raw, asset_modification_date)
-                VALUES (?, ?, 0, ?, NULL, 0, 0, NULL);
+                 raw_hash, raw_on_server, has_raw, asset_modification_date,
+                 asset_adjustment_version)
+                VALUES (?, ?, 0, ?, NULL, 0, 0, NULL, ?);
                 """
             // A remote receipt inferred from imported SQLite is applicable
             // only when the *current* cached checksum is the same.
@@ -195,6 +198,9 @@ final class HashCacheRepository {
                 guard sqlite3_bind_text(insert, 1, (item.localIdentifier as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_bind_text(insert, 2, (item.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_bind_double(insert, 3, now) == SQLITE_OK,
+                      (item.adjustmentVersion.map {
+                          sqlite3_bind_text(insert, 4, ($0 as NSString).utf8String, -1, nil)
+                      } ?? sqlite3_bind_null(insert, 4)) == SQLITE_OK,
                       sqlite3_step(insert) == SQLITE_DONE else {
                     logError("Hash import insert failed: \(String(cString: sqlite3_errmsg(db)))", category: .database)
                     return false
@@ -259,7 +265,8 @@ final class HashCacheRepository {
     }
 
     /// Return hashes missing either part of the PhotoKit metadata baseline.
-    /// Immich imports provide a checksum but no PhotoKit resource fingerprint.
+    /// Immich imports provide a checksum and, from Immich databases that have
+    /// `adjustment_time`, an adjustment version, but never a modification date.
     func hashCacheRowsNeedingPhotoKitBaseline() -> [(localIdentifier: String, sha1Hash: String)] {
         connection.ensureInitialized()
         return connection.dbQueue.sync { [weak self] in
@@ -270,7 +277,7 @@ final class HashCacheRepository {
                 FROM hash_cache AS h
                 LEFT JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
                 WHERE (h.asset_modification_date IS NULL
-                   OR h.asset_resource_fingerprint IS NULL)
+                   OR h.asset_adjustment_version IS NULL)
                   AND COALESCE(a.is_hidden, 0) = 0;
                 """
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -303,7 +310,7 @@ final class HashCacheRepository {
                 FROM hash_cache AS h
                 LEFT JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
                 WHERE (h.asset_modification_date IS NULL
-                   OR h.asset_resource_fingerprint IS NULL)
+                   OR h.asset_adjustment_version IS NULL)
                   AND COALESCE(a.is_hidden, 0) = 0;
                 """
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -327,7 +334,7 @@ final class HashCacheRepository {
             FROM hash_cache AS h
             LEFT JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
             WHERE (h.asset_modification_date IS NULL
-               OR h.asset_resource_fingerprint IS NULL)
+               OR h.asset_adjustment_version IS NULL)
               AND COALESCE(a.is_hidden, 0) = 0
               \(cursorPredicate)
             ORDER BY h.asset_id
@@ -378,9 +385,9 @@ final class HashCacheRepository {
     /// Only rows with the same checksum captured by the caller are updated,
     /// so concurrent hashing cannot be overwritten by a stale baseline.
     /// A row without any version evidence (imported or legacy: date AND
-    /// fingerprint both NULL) is stamped, never invalidated: absence of
+    /// adjustment version both NULL) is stamped, never invalidated: absence of
     /// evidence is not evidence of a change. Only evidence that contradicts
-    /// current PhotoKit state (stored fingerprint differs, or a stored date
+    /// current PhotoKit state (stored adjustment version differs, or a stored date
     /// disagrees) invalidates the row. Filled and invalidated counts are kept
     /// separate so an invalidation can never be logged as a successful fill.
     @discardableResult
@@ -389,7 +396,7 @@ final class HashCacheRepository {
             localIdentifier: String,
             sha1Hash: String,
             modificationDate: Date?,
-            resourceFingerprint: String
+            adjustmentVersion: String
         )]
     ) -> (filled: Int, invalidated: Int) {
         guard !updates.isEmpty else { return (0, 0) }
@@ -406,9 +413,9 @@ final class HashCacheRepository {
             let sql = """
                 UPDATE hash_cache
                 SET asset_modification_date = COALESCE(?, asset_modification_date),
-                    asset_resource_fingerprint = ?
+                    asset_adjustment_version = ?
                 WHERE asset_id = ? AND sha1_hash = ?
-                  AND (asset_modification_date IS NULL OR asset_resource_fingerprint IS NULL);
+                  AND (asset_modification_date IS NULL OR asset_adjustment_version IS NULL);
                 """
             guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
                 sqlite3_finalize(statement)
@@ -422,7 +429,7 @@ final class HashCacheRepository {
                 var existingStatement: OpaquePointer?
                 guard sqlite3_prepare_v2(
                     self.connection.db,
-                    "SELECT h.asset_modification_date, h.asset_resource_fingerprint, "
+                    "SELECT h.asset_modification_date, h.asset_adjustment_version, "
                   + "COALESCE((SELECT a.is_hidden FROM local_photo_assets a WHERE a.asset_id = h.asset_id), 0) "
                   + "FROM hash_cache h WHERE h.asset_id = ? AND h.sha1_hash = ? LIMIT 1;",
                     -1,
@@ -439,9 +446,9 @@ final class HashCacheRepository {
                 let storedDate: Date? = existingResult == SQLITE_ROW && sqlite3_column_type(existingStatement, 0) != SQLITE_NULL
                     ? Date(timeIntervalSince1970: sqlite3_column_double(existingStatement, 0))
                     : nil
-                let storedFingerprint = existingResult == SQLITE_ROW
+                let storedAdjustmentVersion = existingResult == SQLITE_ROW
                     ? sqlite3_column_text(existingStatement, 1).map { String(cString: $0) } : nil
-                let fingerprintMissing = existingResult == SQLITE_ROW && storedFingerprint == nil
+                let adjustmentVersionMissing = existingResult == SQLITE_ROW && storedAdjustmentVersion == nil
                 let isHidden = existingResult == SQLITE_ROW && sqlite3_column_int(existingStatement, 2) != 0
                 sqlite3_finalize(existingStatement)
                 // Photos hidden from the foreground grid cannot be safely
@@ -449,17 +456,17 @@ final class HashCacheRepository {
                 if isHidden { continue }
 
                 // Invalidate only on contradicted evidence: a stored
-                // fingerprint that differs, or a stored legacy date that
+                // adjustment version that differs, or a stored legacy date that
                 // disagrees with the current PhotoKit date. Rows with NO
                 // evidence at all (Immich imports, legacy upgrades: both
                 // NULL) are stamped with the current baseline instead;
                 // deleting them re-queued every imported asset for a full
                 // rehash on every launch.
-                let fingerprintChanged = storedFingerprint != nil &&
-                    storedFingerprint != update.resourceFingerprint
-                let legacyDateChanged = fingerprintMissing && storedDate != nil &&
+                let adjustmentVersionChanged = storedAdjustmentVersion != nil &&
+                    storedAdjustmentVersion != update.adjustmentVersion
+                let legacyDateChanged = adjustmentVersionMissing && storedDate != nil &&
                     storedDate?.timeIntervalSince1970 != update.modificationDate?.timeIntervalSince1970
-                if fingerprintChanged || legacyDateChanged {
+                if adjustmentVersionChanged || legacyDateChanged {
                     for sql in [
                         "DELETE FROM hash_cache WHERE asset_id = ? AND sha1_hash = ?;",
                         "DELETE FROM uploaded_assets WHERE asset_id = ?;",
@@ -498,7 +505,7 @@ final class HashCacheRepository {
                     logError("PhotoKit baseline date bind failed", category: .database)
                     return (0, 0)
                 }
-                guard sqlite3_bind_text(statement, 2, (update.resourceFingerprint as NSString).utf8String, -1, nil) == SQLITE_OK,
+                guard sqlite3_bind_text(statement, 2, (update.adjustmentVersion as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_bind_text(statement, 3, (update.localIdentifier as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_bind_text(statement, 4, (update.sha1Hash as NSString).utf8String, -1, nil) == SQLITE_OK,
                       sqlite3_step(statement) == SQLITE_DONE else {
@@ -1440,15 +1447,20 @@ final class HashCacheRepository {
                 DELETE FROM upload_jobs WHERE \(absent) AND status IN ('pending', 'failed');
                 """, nil, nil, nil) == SQLITE_OK else { return false }
 
-            // Previously fingerprinted hashes may have changed before the
+            // Previously versioned hashes may have changed before the
             // new token was taken. They must be compared against current
-            // PhotoKit resource evidence, not accepted based on old receipts.
-            // Legacy NULL fingerprints are handled by the version backfill.
+            // PhotoKit version evidence, not accepted based on old receipts.
+            // Rows missing a date or a version (legacy rows, or Immich imports
+            // carrying only an adjustment version) are compared by the
+            // version backfill instead: per-asset pending verification of a
+            // whole imported library is far slower than that batched check.
             guard sqlite3_exec(connection.db, """
                 INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
                 SELECT h.asset_id FROM hash_cache AS h
                 JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
-                WHERE a.is_hidden = 0 AND h.asset_resource_fingerprint IS NOT NULL;
+                WHERE a.is_hidden = 0
+                  AND h.asset_adjustment_version IS NOT NULL
+                  AND h.asset_modification_date IS NOT NULL;
                 """, nil, nil, nil) == SQLITE_OK else { return false }
 
             var token: OpaquePointer?
@@ -1649,9 +1661,9 @@ final class HashCacheRepository {
             // Diagnostic counters are emitted only after the change transaction commits.
             var unchangedCachedCount = 0
             var missingCacheCount = 0
-            var invalidatedResourceFingerprintCount = 0
-            var missingResourceFingerprintCount = 0
-            var unknownResourceFingerprintCount = 0
+            var invalidatedAdjustmentVersionCount = 0
+            var missingAdjustmentVersionCount = 0
+            var unknownAdjustmentVersionCount = 0
             var missingCurrentDateCount = 0
             var resolvedPendingIdentifiers = Set<String>()
             var cacheDetails: [String] = []
@@ -1672,14 +1684,14 @@ final class HashCacheRepository {
                         asset_id TEXT PRIMARY KEY,
                         is_hidden INTEGER,
                         modified_at REAL,
-                        resource_fingerprint TEXT
+                        adjustment_version TEXT
                     );
                     """),
                       execute("DELETE FROM foreground_snapshot;") else { return false }
 
                 var insert: OpaquePointer?
                 guard sqlite3_prepare_v2(db,
-                    "INSERT INTO foreground_snapshot(asset_id, is_hidden, modified_at, resource_fingerprint) VALUES (?, ?, ?, ?);",
+                    "INSERT INTO foreground_snapshot(asset_id, is_hidden, modified_at, adjustment_version) VALUES (?, ?, ?, ?);",
                     -1, &insert, nil
                 ) == SQLITE_OK else {
                     sqlite3_finalize(insert)
@@ -1696,8 +1708,8 @@ final class HashCacheRepository {
                     } else {
                         sqlite3_bind_null(insert, 3)
                     }
-                    if let fingerprint = snapshot.resourceFingerprint {
-                        sqlite3_bind_text(insert, 4, (fingerprint as NSString).utf8String, -1, nil)
+                    if let adjustmentVersion = snapshot.adjustmentVersion {
+                        sqlite3_bind_text(insert, 4, (adjustmentVersion as NSString).utf8String, -1, nil)
                     } else {
                         sqlite3_bind_null(insert, 4)
                     }
@@ -1709,17 +1721,17 @@ final class HashCacheRepository {
                 sqlite3_finalize(insert)
                 guard insertOK else { return false }
 
-                // Compare resource metadata only on visible assets. Hidden items
+                // Compare adjustment versions only on visible assets. Hidden items
                 // are retained (not rehashed) until they become visible.
                 let modifiedQuery = """
                     SELECT h.asset_id FROM hash_cache h
                     JOIN foreground_snapshot s ON s.asset_id = h.asset_id
                     WHERE s.is_hidden = 0
-                      AND s.resource_fingerprint IS NOT NULL
+                      AND s.adjustment_version IS NOT NULL
                       AND (
-                        (h.asset_resource_fingerprint IS NOT NULL AND
-                         s.resource_fingerprint != h.asset_resource_fingerprint)
-                        OR (h.asset_resource_fingerprint IS NULL AND
+                        (h.asset_adjustment_version IS NOT NULL AND
+                         s.adjustment_version != h.asset_adjustment_version)
+                        OR (h.asset_adjustment_version IS NULL AND
                             h.asset_modification_date IS NOT NULL AND
                             s.modified_at IS NOT NULL AND
                             h.asset_modification_date != s.modified_at)
@@ -1743,9 +1755,9 @@ final class HashCacheRepository {
                 }
                 sqlite3_finalize(query)
                 guard queryOK else { return false }
-                // Legacy/imported hashes without a fingerprint cannot prove
+                // Legacy/imported hashes without an adjustment version cannot prove
                 // that current resources match. Invalidate them so the next
-                // hash records trusted resource evidence.
+                // hash records trusted version evidence.
                 guard runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", modified),
                       runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified) else {
                     return false
@@ -1777,10 +1789,10 @@ final class HashCacheRepository {
                             FROM foreground_snapshot AS s
                             JOIN hash_cache AS h ON h.asset_id = s.asset_id
                             WHERE s.is_hidden = 0
-                              AND s.resource_fingerprint IS NOT NULL
+                              AND s.adjustment_version IS NOT NULL
                               AND (
-                                  s.resource_fingerprint = h.asset_resource_fingerprint
-                                  OR (h.asset_resource_fingerprint IS NULL AND
+                                  s.adjustment_version = h.asset_adjustment_version
+                                  OR (h.asset_adjustment_version IS NULL AND
                                       (h.asset_modification_date IS NULL OR
                                        h.asset_modification_date = s.modified_at))
                               )
@@ -1800,9 +1812,9 @@ final class HashCacheRepository {
             } else {
                 // PhotoKit inserts/updates are not necessarily content edits:
                 // modificationDate is a PhotoKit record timestamp, not a byte
-                // version. Compare lightweight resource metadata instead.
+                // version. Compare adjustment versions instead.
                 var modified = Set<String>()
-                let checkSQL = "SELECT asset_modification_date, asset_resource_fingerprint FROM hash_cache WHERE asset_id = ?;"
+                let checkSQL = "SELECT asset_modification_date, asset_adjustment_version FROM hash_cache WHERE asset_id = ?;"
                 var statement: OpaquePointer?
                 var updateStatement: OpaquePointer?
                 guard sqlite3_prepare_v2(db, checkSQL, -1, &statement, nil) == SQLITE_OK else {
@@ -1811,7 +1823,7 @@ final class HashCacheRepository {
                 }
                 guard sqlite3_prepare_v2(
                     db,
-                    "UPDATE hash_cache SET asset_modification_date = ?, asset_resource_fingerprint = ? WHERE asset_id = ?;",
+                    "UPDATE hash_cache SET asset_modification_date = ?, asset_adjustment_version = ? WHERE asset_id = ?;",
                     -1,
                     &updateStatement,
                     nil
@@ -1832,18 +1844,18 @@ final class HashCacheRepository {
                             let stored = sqlite3_column_double(statement, 0)
                             storedDate = Date(timeIntervalSince1970: stored)
                         }
-                        let storedFingerprint: String? = {
+                        let storedAdjustmentVersion: String? = {
                             guard let pointer = sqlite3_column_text(statement, 1) else { return nil }
                             return String(cString: pointer)
                         }()
 
-                        if let currentFingerprint = snapshot.resourceFingerprint {
-                            if let storedFingerprint {
-                                if currentFingerprint != storedFingerprint {
-                                    invalidatedResourceFingerprintCount += 1
+                        if let currentAdjustmentVersion = snapshot.adjustmentVersion {
+                            if let storedAdjustmentVersion {
+                                if currentAdjustmentVersion != storedAdjustmentVersion {
+                                    invalidatedAdjustmentVersionCount += 1
                                     modified.insert(snapshot.localIdentifier)
                                     recordCacheDetail(
-                                        "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=resource_fingerprint_changed"
+                                        "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=adjustment_version_changed"
                                     )
                                 } else {
                                     unchangedCachedCount += 1
@@ -1855,7 +1867,7 @@ final class HashCacheRepository {
                                     } else {
                                         sqlite3_bind_null(updateStatement, 1)
                                     }
-                                    sqlite3_bind_text(updateStatement, 2, (currentFingerprint as NSString).utf8String, -1, nil)
+                                    sqlite3_bind_text(updateStatement, 2, (currentAdjustmentVersion as NSString).utf8String, -1, nil)
                                     sqlite3_bind_text(updateStatement, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
                                     guard sqlite3_step(updateStatement) == SQLITE_DONE else {
                                         checkOK = false
@@ -1869,7 +1881,7 @@ final class HashCacheRepository {
                                 sqlite3_reset(updateStatement)
                                 sqlite3_clear_bindings(updateStatement)
                                 sqlite3_bind_double(updateStatement, 1, currentDate.timeIntervalSince1970)
-                                sqlite3_bind_text(updateStatement, 2, (currentFingerprint as NSString).utf8String, -1, nil)
+                                sqlite3_bind_text(updateStatement, 2, (currentAdjustmentVersion as NSString).utf8String, -1, nil)
                                 sqlite3_bind_text(updateStatement, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
                                 guard sqlite3_step(updateStatement) == SQLITE_DONE else {
                                     checkOK = false
@@ -1878,16 +1890,16 @@ final class HashCacheRepository {
                             } else {
                                 // No historical date or a different date cannot
                                 // establish byte-equivalent legacy data.
-                                missingResourceFingerprintCount += 1
+                                missingAdjustmentVersionCount += 1
                                 modified.insert(snapshot.localIdentifier)
                             }
                         } else {
-                            // PhotoKit may temporarily return no resources while
-                            // iCloud resolves an asset. Never discard a valid hash.
-                            unknownResourceFingerprintCount += 1
+                            // No current version (not requested or not resolvable).
+                            // Absence of evidence never discards a valid hash.
+                            unknownAdjustmentVersionCount += 1
                             unchangedCachedCount += 1
                             recordCacheDetail(
-                                "Foreground hash cache retained: asset=\(snapshot.localIdentifier), reason=resource_fingerprint_unavailable"
+                                "Foreground hash cache retained: asset=\(snapshot.localIdentifier), reason=adjustment_version_unavailable"
                             )
                         }
                     } else if step == SQLITE_DONE {
@@ -1988,7 +2000,7 @@ final class HashCacheRepository {
             committed = true
             if !bootstrap && !snapshots.isEmpty {
                 logInfo(
-                    "Foreground PhotoKit cache reconciliation: snapshots=\(snapshots.count), cachedUnchanged=\(unchangedCachedCount), noCache=\(missingCacheCount), invalidatedResourceFingerprint=\(invalidatedResourceFingerprintCount), missingResourceFingerprint=\(missingResourceFingerprintCount), resourceFingerprintUnknown=\(unknownResourceFingerprintCount), currentDateUnknown=\(missingCurrentDateCount)",
+                    "Foreground PhotoKit cache reconciliation: snapshots=\(snapshots.count), cachedUnchanged=\(unchangedCachedCount), noCache=\(missingCacheCount), invalidatedAdjustmentVersion=\(invalidatedAdjustmentVersionCount), missingAdjustmentVersion=\(missingAdjustmentVersionCount), adjustmentVersionUnknown=\(unknownAdjustmentVersionCount), currentDateUnknown=\(missingCurrentDateCount)",
                     category: .hash
                 )
                 for detail in snapshotDetails {
@@ -2007,8 +2019,8 @@ final class HashCacheRepository {
     /// PhotoKit resource lookup cannot invalidate any existing evidence.
     ///
     /// A cached hash/receipt (or unknown inventory membership) always requires
-    /// PhotoKit verification: iCloud may restore resource metadata without
-    /// producing a new persistent-change event.
+    /// PhotoKit verification: iCloud may restore an asset without producing a
+    /// new persistent-change event.
     /// Only call after the local inventory checkpoint is ready.
     func classifyForegroundPendingIdentifiers() -> (
         visibleWithoutEvidence: [String],
@@ -2108,17 +2120,17 @@ final class HashCacheRepository {
             ) == SQLITE_OK,
             sqlite3_prepare_v2(
                 self.connection.db,
-                "SELECT asset_resource_fingerprint, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1;",
+                "SELECT asset_adjustment_version, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1;",
                 -1, &lookup, nil
             ) == SQLITE_OK,
             sqlite3_prepare_v2(
                 self.connection.db,
-                "UPDATE hash_cache SET asset_modification_date = ?, asset_resource_fingerprint = ? WHERE asset_id = ?;",
+                "UPDATE hash_cache SET asset_modification_date = ?, asset_adjustment_version = ? WHERE asset_id = ?;",
                 -1, &update, nil
             ) == SQLITE_OK,
             sqlite3_prepare_v2(
                 self.connection.db,
-                "SELECT COUNT(*), SUM(CASE WHEN asset_resource_fingerprint = ? THEN 1 ELSE 0 END) FROM uploaded_assets WHERE asset_id = ?;",
+                "SELECT COUNT(*), SUM(CASE WHEN asset_adjustment_version = ? THEN 1 ELSE 0 END) FROM uploaded_assets WHERE asset_id = ?;",
                 -1, &receiptLookup, nil
             ) == SQLITE_OK else {
                 sqlite3_finalize(lookup)
@@ -2145,10 +2157,10 @@ final class HashCacheRepository {
                 return sqlite3_step(statement) == SQLITE_DONE
             }
 
-            func hasCurrentReceipt(assetId: String, fingerprint: String) -> Bool {
+            func hasCurrentReceipt(assetId: String, adjustmentVersion: String) -> Bool {
                 sqlite3_reset(receiptLookup)
                 sqlite3_clear_bindings(receiptLookup)
-                sqlite3_bind_text(receiptLookup, 1, (fingerprint as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(receiptLookup, 1, (adjustmentVersion as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(receiptLookup, 2, (assetId as NSString).utf8String, -1, nil)
                 guard sqlite3_step(receiptLookup) == SQLITE_ROW else { return false }
                 let receiptCount = Int(sqlite3_column_int(receiptLookup, 0))
@@ -2161,7 +2173,7 @@ final class HashCacheRepository {
                 // Previously unresolved PhotoKit IDs can appear after their
                 // change token was already committed. Update membership in the
                 // SAME transaction as pending/hash reconciliation, even when
-                // iCloud has not supplied a resource fingerprint.
+                // the snapshot has no adjustment version.
                 sqlite3_reset(inventoryUpsert)
                 sqlite3_clear_bindings(inventoryUpsert)
                 sqlite3_bind_text(
@@ -2172,7 +2184,7 @@ final class HashCacheRepository {
                 guard sqlite3_step(inventoryUpsert) == SQLITE_DONE else {
                     return Set(snapshots.map(\.localIdentifier))
                 }
-                guard let currentFingerprint = snapshot.resourceFingerprint else {
+                guard let currentAdjustmentVersion = snapshot.adjustmentVersion else {
                     retained.insert(snapshot.localIdentifier)
                     continue
                 }
@@ -2185,15 +2197,15 @@ final class HashCacheRepository {
                     return Set(snapshots.map(\.localIdentifier))
                 }
                 let hasHashCacheRow = result == SQLITE_ROW
-                let storedFingerprint: String? = hasHashCacheRow
+                let storedAdjustmentVersion: String? = hasHashCacheRow
                     ? sqlite3_column_text(lookup, 0).map { String(cString: $0) }
                     : nil
 
                 let storedDate = hasHashCacheRow && sqlite3_column_type(lookup, 1) != SQLITE_NULL
                     ? Date(timeIntervalSince1970: sqlite3_column_double(lookup, 1)) : nil
-                let legacyMatch = hasHashCacheRow && storedFingerprint == nil &&
+                let legacyMatch = hasHashCacheRow && storedAdjustmentVersion == nil &&
                     storedDate != nil && storedDate == snapshot.modificationDate
-                if storedFingerprint == currentFingerprint || legacyMatch {
+                if storedAdjustmentVersion == currentAdjustmentVersion || legacyMatch {
                     sqlite3_reset(update)
                     sqlite3_clear_bindings(update)
                     if let date = snapshot.modificationDate {
@@ -2201,7 +2213,7 @@ final class HashCacheRepository {
                     } else {
                         sqlite3_bind_null(update, 1)
                     }
-                    sqlite3_bind_text(update, 2, (currentFingerprint as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(update, 2, (currentAdjustmentVersion as NSString).utf8String, -1, nil)
                     sqlite3_bind_text(update, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
                     guard sqlite3_step(update) == SQLITE_DONE,
                           execute(
@@ -2214,12 +2226,12 @@ final class HashCacheRepository {
                     retained.insert(snapshot.localIdentifier)
                     let hasCurrentReceipt = hasCurrentReceipt(
                         assetId: snapshot.localIdentifier,
-                        fingerprint: currentFingerprint
+                        adjustmentVersion: currentAdjustmentVersion
                     )
                     if hasCurrentReceipt {
                         // A current background receipt is trusted even when
                         // foreground hash cache is absent. A legacy hash row
-                        // without a fingerprint is different: remove that
+                        // without an adjustment version is different: remove that
                         // unverified hash while preserving the receipt.
                         if hasHashCacheRow,
                            !execute(
@@ -2304,7 +2316,7 @@ final class HashCacheRepository {
 
     // MARK: - Modified Asset Invalidation
 
-    /// Deletes hashes only when lightweight PhotoKit resource metadata changed.
+    /// Deletes hashes only when the PhotoKit adjustment version changed.
     /// Unknown or temporarily unavailable metadata never forces a rehash.
     func resetCacheForModifiedAssets(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool = false) {
         guard !snapshots.isEmpty || pruneOrphans else { return }
@@ -2318,10 +2330,10 @@ final class HashCacheRepository {
     private func resetCacheForModifiedAssetsInternal(snapshots: [PhotoAssetSnapshot], pruneOrphans: Bool) {
         // Fetch version metadata in one query. modificationDate is retained for
         // upload job version headers, but never decides hash invalidation.
-        let sql = "SELECT asset_id, asset_modification_date, asset_resource_fingerprint FROM hash_cache;"
+        let sql = "SELECT asset_id, asset_modification_date, asset_adjustment_version FROM hash_cache;"
         var statement: OpaquePointer?
         var storedDates: [String: Date] = [:]
-        var storedFingerprints: [String: String] = [:]
+        var storedAdjustmentVersions: [String: String] = [:]
         var cachedIds: Set<String> = []
 
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -2332,8 +2344,8 @@ final class HashCacheRepository {
                     if sqlite3_column_type(statement, 1) != SQLITE_NULL {
                         storedDates[assetId] = Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
                     }
-                    if let fingerprint = sqlite3_column_text(statement, 2) {
-                        storedFingerprints[assetId] = String(cString: fingerprint)
+                    if let adjustmentVersion = sqlite3_column_text(statement, 2) {
+                        storedAdjustmentVersions[assetId] = String(cString: adjustmentVersion)
                     }
                 }
             }
@@ -2380,37 +2392,37 @@ final class HashCacheRepository {
         }
 
         var modifiedIds = Set<String>()
-        var baselineUpdates: [(assetId: String, modificationDate: Date?, fingerprint: String)] = []
+        var baselineUpdates: [(assetId: String, modificationDate: Date?, adjustmentVersion: String)] = []
         for snapshot in snapshots {
             // Hidden assets appear here solely for deletion safety. Preserve
             // their previous hashes until they return to the visible pipeline.
             guard !snapshot.isHidden else { continue }
             guard cachedIds.contains(snapshot.localIdentifier) else { continue }
-            guard let currentFingerprint = snapshot.resourceFingerprint else {
-                // PhotoKit may temporarily return no resources during iCloud
-                // resolution. Preserve existing hash until metadata is back.
+            guard let currentAdjustmentVersion = snapshot.adjustmentVersion else {
+                // No current version (not requested or not resolvable).
+                // Preserve the existing hash until evidence is available.
                 continue
             }
-            if let storedFingerprint = storedFingerprints[snapshot.localIdentifier] {
-                if currentFingerprint != storedFingerprint {
+            if let storedAdjustmentVersion = storedAdjustmentVersions[snapshot.localIdentifier] {
+                if currentAdjustmentVersion != storedAdjustmentVersion {
                     modifiedIds.insert(snapshot.localIdentifier)
                 } else {
-                    baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentFingerprint))
+                    baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentAdjustmentVersion))
                 }
             } else if let oldDate = storedDates[snapshot.localIdentifier] {
                 // Legacy row with a stored date: only an agreeing date proves
                 // the hash still describes current resources.
                 if let date = snapshot.modificationDate, oldDate == date {
-                    baselineUpdates.append((snapshot.localIdentifier, date, currentFingerprint))
+                    baselineUpdates.append((snapshot.localIdentifier, date, currentAdjustmentVersion))
                 } else {
                     modifiedIds.insert(snapshot.localIdentifier)
                 }
             } else {
                 // No version evidence at all (Immich import): stamp the
                 // current baseline instead of deleting, mirroring the
-                // version backfill rule. A later fingerprint mismatch
+                // version backfill rule. A later adjustment version mismatch
                 // invalidates normally.
-                baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentFingerprint))
+                baselineUpdates.append((snapshot.localIdentifier, snapshot.modificationDate, currentAdjustmentVersion))
             }
         }
 
@@ -2459,7 +2471,7 @@ final class HashCacheRepository {
             var update: OpaquePointer?
             guard sqlite3_prepare_v2(
                 connection.db,
-                "UPDATE hash_cache SET asset_modification_date = ?, asset_resource_fingerprint = ? WHERE asset_id = ?;",
+                "UPDATE hash_cache SET asset_modification_date = ?, asset_adjustment_version = ? WHERE asset_id = ?;",
                 -1,
                 &update,
                 nil
@@ -2478,7 +2490,7 @@ final class HashCacheRepository {
                 } else {
                     sqlite3_bind_null(update, 1)
                 }
-                sqlite3_bind_text(update, 2, (baseline.fingerprint as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(update, 2, (baseline.adjustmentVersion as NSString).utf8String, -1, nil)
                 sqlite3_bind_text(update, 3, (baseline.assetId as NSString).utf8String, -1, nil)
                 if sqlite3_step(update) != SQLITE_DONE {
                     failed = true

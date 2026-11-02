@@ -412,7 +412,7 @@ final class BackgroundUploadExtensionCore {
             // is idempotent, while a termination between commit and record would lose
             // the upload's durable record.
             if currentVersionSucceeded, let identity, let currentAsset {
-                let resourceFingerprint = PhotoAssetResourceFingerprint.make(for: currentAsset)
+                let adjustmentVersion = PhotoAssetAdjustmentVersion.make(for: currentAsset)
                 database.recordUploadedAsset(
                     assetId: identity.assetLocalIdentifier,
                     resourceType: identity.resourceType,
@@ -420,7 +420,7 @@ final class BackgroundUploadExtensionCore {
                     immichId: immichId ?? "unknown",
                     fileSize: 0,
                     isDuplicate: false,
-                    resourceFingerprint: resourceFingerprint
+                    adjustmentVersion: adjustmentVersion
                 )
                 SharedSettings.shared.lastBackgroundUploadAt = Date()
             }
@@ -821,7 +821,7 @@ final class BackgroundUploadExtensionCore {
                 // PhotoKit can report metadata or iCloud storage state as updates.
                 // Fetch current versions without downloading original resources.
                 var modificationDates: [String: Date] = [:]
-                var resourceFingerprints: [String: String] = [:]
+                var adjustmentVersions: [String: String] = [:]
                 if !updated.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
@@ -838,9 +838,8 @@ final class BackgroundUploadExtensionCore {
                                     if let date = asset.modificationDate {
                                         modificationDates[asset.localIdentifier] = date
                                     }
-                                    if let fingerprint = PhotoAssetResourceFingerprint.make(for: asset) {
-                                        resourceFingerprints[asset.localIdentifier] = fingerprint
-                                    }
+                                    adjustmentVersions[asset.localIdentifier] =
+                                        PhotoAssetAdjustmentVersion.make(for: asset)
                                 }
                             }
                         }
@@ -853,7 +852,7 @@ final class BackgroundUploadExtensionCore {
                     updatedAssetIds: updated,
                     deletedAssetIds: deleted,
                     updatedAssetModificationDates: modificationDates,
-                    updatedAssetResourceFingerprints: resourceFingerprints,
+                    updatedAssetAdjustmentVersions: adjustmentVersions,
                     tokenData: nextTokenData
                 ) else {
                     throw NSError(

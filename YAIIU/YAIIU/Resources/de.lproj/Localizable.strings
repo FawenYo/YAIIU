@@ -121,7 +121,8 @@
 "photoGrid.processing.title" = "Fotos werden vorbereitet";
 "photoGrid.processing.waitingDetail" = "Fotodaten werden verarbeitet. Danach wird automatisch fortgesetzt.";
 "photoGrid.processing.working" = "Fotos werden verarbeitet…";
-"photoGrid.processing.baseline" = "Foto-Metadatenindex wird erstellt %d/%d";
+"photoGrid.processing.inventory" = "Fotomediathek wird gelesen %d/%d";
+"photoGrid.processing.baseline" = "Fotoversionen werden geprüft %d/%d";
 "photoGrid.processing.comparing" = "Vergleiche %d/%d";
 "photoGrid.processing.checking" = "Wird überprüft";
 "photoGrid.processing.default" = "...";

@@ -122,7 +122,8 @@
 "photoGrid.processing.title" = "正在準備照片";
 "photoGrid.processing.waitingDetail" = "正在處理照片資料，完成後會自動繼續。";
 "photoGrid.processing.working" = "正在處理照片…";
-"photoGrid.processing.baseline" = "正在建立照片資料索引 %d/%d";
+"photoGrid.processing.inventory" = "正在讀取照片庫 %d/%d";
+"photoGrid.processing.baseline" = "正在比對照片版本 %d/%d";
 "photoGrid.processing.comparing" = "比對 %d/%d";
 "photoGrid.processing.checking" = "比對中";
 "photoGrid.processing.default" = "...";

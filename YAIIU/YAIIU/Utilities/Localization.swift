@@ -270,8 +270,12 @@ enum L10n {
         static var processingTitle: String { "photoGrid.processing.title".localized }
         static var processingWaitingDetail: String { "photoGrid.processing.waitingDetail".localized }
         static var processingWorking: String { "photoGrid.processing.working".localized }
-        static func processingBaseline(_ current: Int, _ total: Int) -> String {
-            return "photoGrid.processing.baseline".localized(with: current, total)
+        static func processingBaseline(_ progress: PhotoKitBaselineProgress) -> String {
+            let key = switch progress.stage {
+            case .inventory: "photoGrid.processing.inventory"
+            case .hashVersions: "photoGrid.processing.baseline"
+            }
+            return key.localized(with: progress.completed, progress.total)
         }
         static func processingComparing(_ current: Int, _ total: Int) -> String {
             return "photoGrid.processing.comparing".localized(with: current, total)
