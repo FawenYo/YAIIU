@@ -116,6 +116,33 @@ final class HashPipelinePolicyTests: XCTestCase {
         )
     }
 
+    func testProcessingStripRevealsOnlyAfterSustainedProcessing() {
+        XCTAssertEqual(
+            PhotoGridProcessingStripPolicy.transition(isProcessing: true, isRevealed: false),
+            .init(revealed: true, after: PhotoGridProcessingStripPolicy.revealDelay)
+        )
+        XCTAssertNil(PhotoGridProcessingStripPolicy.transition(isProcessing: true, isRevealed: true))
+    }
+
+    func testProcessingStripHidesAfterGraceOnlyWhenRevealed() {
+        XCTAssertEqual(
+            PhotoGridProcessingStripPolicy.transition(isProcessing: false, isRevealed: true),
+            .init(revealed: false, after: PhotoGridProcessingStripPolicy.hideDelay)
+        )
+        XCTAssertNil(PhotoGridProcessingStripPolicy.transition(isProcessing: false, isRevealed: false))
+    }
+
+    func testProcessingStripDelaysOutlastZeroWorkReconciliation() {
+        XCTAssertGreaterThanOrEqual(PhotoGridProcessingStripPolicy.revealDelay, .milliseconds(500))
+        XCTAssertGreaterThan(PhotoGridProcessingStripPolicy.hideDelay, .zero)
+    }
+
+    func testProcessingStripStaysOutOfBaselineProgress() {
+        XCTAssertTrue(PhotoGridProcessingStripPolicy.isVisible(isRevealed: true, baselineInProgress: false))
+        XCTAssertFalse(PhotoGridProcessingStripPolicy.isVisible(isRevealed: true, baselineInProgress: true))
+        XCTAssertFalse(PhotoGridProcessingStripPolicy.isVisible(isRevealed: false, baselineInProgress: false))
+    }
+
     func testPreparationStagesUseDedicatedProcessingScreen() {
         XCTAssertTrue(PhotoGridProcessingStage.syncingServer.showsDedicatedScreen)
         XCTAssertTrue(PhotoGridProcessingStage.readingPhotoLibrary.showsDedicatedScreen)

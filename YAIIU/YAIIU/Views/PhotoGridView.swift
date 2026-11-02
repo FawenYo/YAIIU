@@ -87,6 +87,34 @@ enum PhotoGridProcessingStage: Equatable {
     }
 }
 
+/// Keeps the compact processing strip from flashing for reconciliations that
+/// finish without work (e.g. iCloud thumbnail downloads reported as updates).
+enum PhotoGridProcessingStripPolicy {
+    struct Transition: Equatable {
+        let revealed: Bool
+        let after: Duration
+    }
+
+    static let revealDelay: Duration = .milliseconds(800)
+    // Bridges the short idle gap between back-to-back runs of genuine work.
+    static let hideDelay: Duration = .milliseconds(400)
+
+    static func transition(isProcessing: Bool, isRevealed: Bool) -> Transition? {
+        switch (isProcessing, isRevealed) {
+        case (true, false):
+            return Transition(revealed: true, after: revealDelay)
+        case (false, true):
+            return Transition(revealed: false, after: hideDelay)
+        default:
+            return nil
+        }
+    }
+
+    static func isVisible(isRevealed: Bool, baselineInProgress: Bool) -> Bool {
+        isRevealed && !baselineInProgress
+    }
+}
+
 // MARK: - Preference Keys
 
 private struct FirstRowOffsetKey: PreferenceKey {
@@ -336,6 +364,7 @@ struct PhotoGridView: View {
     @State private var isAlbumPickerPresented = false
     @State private var isLoadingAlbums = false
     @State private var foregroundWorkPreparing = false
+    @State private var isProcessingStripRevealed = false
     @State private var foregroundRefreshPending = false
     @State private var isFilterLoading = false
     @State private var albumLoadTask: Task<Void, Never>?
@@ -805,7 +834,10 @@ struct PhotoGridView: View {
     
     @ViewBuilder
     private var processingStatusView: some View {
-        if hashManager.isProcessing {
+        if PhotoGridProcessingStripPolicy.isVisible(
+            isRevealed: isProcessingStripRevealed,
+            baselineInProgress: photoLibraryManager.foregroundBaselineProgress != nil
+        ) {
             HStack(spacing: 6) {
                 ProgressView()
                     .scaleEffect(0.7)
@@ -987,9 +1019,7 @@ struct PhotoGridView: View {
                 // Keep both progress stages below the NavigationView toolbar.
                 // Filter / Select controls always retain their full toolbar row.
                 PhotoKitBaselineBanner()
-                if hashManager.isProcessing && photoLibraryManager.foregroundBaselineProgress == nil {
-                    processingStatusView
-                }
+                processingStatusView
                 if currentFilter != .all {
                     filterIndicatorView
                 }
@@ -997,6 +1027,16 @@ struct PhotoGridView: View {
                 simpleGridView
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
+            .task(id: hashManager.isProcessing) {
+                guard let transition = PhotoGridProcessingStripPolicy.transition(
+                    isProcessing: hashManager.isProcessing,
+                    isRevealed: isProcessingStripRevealed
+                ) else { return }
+                try? await Task.sleep(for: transition.after)
+                guard !Task.isCancelled else { return }
+                isProcessingStripRevealed = transition.revealed
+            }
+            .onDisappear { isProcessingStripRevealed = false }
             .onChange(of: refreshToken) { _, _ in
                 // Visible cells are rebound without onAppear after PhotoKit changes.
                 refreshCurrentVisibleDate()
