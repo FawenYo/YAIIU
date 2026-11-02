@@ -1450,12 +1450,17 @@ final class HashCacheRepository {
             // Previously versioned hashes may have changed before the
             // new token was taken. They must be compared against current
             // PhotoKit version evidence, not accepted based on old receipts.
-            // Legacy NULL adjustment versions are handled by the version backfill.
+            // Rows missing a date or a version (legacy rows, or Immich imports
+            // carrying only an adjustment version) are compared by the
+            // version backfill instead: per-asset pending verification of a
+            // whole imported library is far slower than that batched check.
             guard sqlite3_exec(connection.db, """
                 INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
                 SELECT h.asset_id FROM hash_cache AS h
                 JOIN local_photo_assets AS a ON a.asset_id = h.asset_id
-                WHERE a.is_hidden = 0 AND h.asset_adjustment_version IS NOT NULL;
+                WHERE a.is_hidden = 0
+                  AND h.asset_adjustment_version IS NOT NULL
+                  AND h.asset_modification_date IS NOT NULL;
                 """, nil, nil, nil) == SQLITE_OK else { return false }
 
             var token: OpaquePointer?

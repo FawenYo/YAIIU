@@ -1079,6 +1079,30 @@ final class ServerAssetRepositoryTests: XCTestCase {
         XCTAssertTrue(uploadRepository.isAnyResourceUploaded(localIdentifier: "edited"))
     }
 
+    func testInitialBootstrapLeavesImportedVersionsToBaselineInsteadOfPendingQueue() {
+        XCTAssertTrue(hashRepository.batchSaveHashCache(items: [
+            (localIdentifier: "imported", sha1Hash: "sha-import",
+             fileSize: 0, syncStatus: "checked", adjustmentVersion: "adj:none")
+        ]))
+        hashRepository.saveMultiResourceHashCache(
+            localIdentifier: "local", primaryHash: "sha-local",
+            rawHash: nil, hasRAW: false,
+            modificationDate: Date(timeIntervalSince1970: 40),
+            adjustmentVersion: "adj:none"
+        )
+        XCTAssertTrue(hashRepository.beginLocalPhotoInventoryBootstrap())
+        XCTAssertTrue(hashRepository.appendLocalPhotoInventoryBatch([
+            (identifier: "imported", isHidden: false),
+            (identifier: "local", isHidden: false)
+        ]))
+        XCTAssertTrue(hashRepository.commitInitialForegroundPhotoBootstrap(tokenData: Data([34])))
+        XCTAssertEqual(hashRepository.getPendingForegroundPhotoIdentifiers(), ["local"])
+        XCTAssertEqual(
+            hashRepository.hashCacheRowsNeedingPhotoKitBaseline().map(\.localIdentifier),
+            ["imported"]
+        )
+    }
+
     func testBaselineInvalidatesDifferentKnownAdjustmentVersionEvenWithoutDate() {
         hashRepository.saveMultiResourceHashCache(
             localIdentifier: "edited", primaryHash: "sha-before",
