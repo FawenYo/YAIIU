@@ -92,7 +92,7 @@ final class DatabaseManager {
         rawHash: String?,
         hasRAW: Bool,
         modificationDate: Date? = nil,
-        resourceFingerprint: String? = nil
+        adjustmentVersion: String? = nil
     ) {
         hashRepo.saveMultiResourceHashCache(
             localIdentifier: localIdentifier,
@@ -100,12 +100,12 @@ final class DatabaseManager {
             rawHash: rawHash,
             hasRAW: hasRAW,
             modificationDate: modificationDate,
-            resourceFingerprint: resourceFingerprint
+            adjustmentVersion: adjustmentVersion
         )
     }
     
     @discardableResult
-    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String)]) -> Bool {
+    func batchSaveHashCache(items: [(localIdentifier: String, sha1Hash: String, fileSize: Int64, syncStatus: String, adjustmentVersion: String?)]) -> Bool {
         hashRepo.batchSaveHashCache(items: items)
     }
     
@@ -134,7 +134,7 @@ final class DatabaseManager {
             localIdentifier: String,
             sha1Hash: String,
             modificationDate: Date?,
-            resourceFingerprint: String
+            adjustmentVersion: String
         )]
     ) -> (filled: Int, invalidated: Int) {
         hashRepo.backfillPhotoKitVersionMetadata(updates)

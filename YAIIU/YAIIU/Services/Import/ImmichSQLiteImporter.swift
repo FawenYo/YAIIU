@@ -89,13 +89,7 @@ class ImmichSQLiteImporter {
         sqlite3_finalize(statement)
         logDebug("Found \(remoteChecksums.count) remote checksums", category: .importer)
         
-        let localSql = """
-        SELECT id, name, type, checksum, width, height, is_favorite
-        FROM local_asset_entity
-        WHERE checksum IS NOT NULL AND checksum != '';
-        """
-        
-        guard sqlite3_prepare_v2(db, localSql, -1, &statement, nil) == SQLITE_OK else {
+        guard let localHashes = Self.readLocalHashes(db: db, remoteChecksums: remoteChecksums) else {
             let errorMsg = String(cString: sqlite3_errmsg(db))
             return ImportResult(
                 totalRecords: 0,
@@ -105,31 +99,9 @@ class ImmichSQLiteImporter {
                 errorMessage: "SQL preparation failed: \(errorMsg)"
             )
         }
-        
-        defer {
-            sqlite3_finalize(statement)
-        }
-        
-        var hashDataList: [(localIdentifier: String, sha1Hash: String, checksumBase64: String, isOnServer: Bool)] = []
-        var skippedCount = 0
-        
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let id = String(cString: sqlite3_column_text(statement, 0))
-            let checksum: String? = {
-                if let cString = sqlite3_column_text(statement, 3) {
-                    return String(cString: cString)
-                }
-                return nil
-            }()
-            
-            if let checksumStr = checksum, let sha1Hex = convertBase64ToHex(checksumStr) {
-                let isOnServer = remoteChecksums.contains(checksumStr)
-                hashDataList.append((localIdentifier: id, sha1Hash: sha1Hex, checksumBase64: checksumStr, isOnServer: isOnServer))
-            } else {
-                skippedCount += 1
-            }
-        }
-        
+        let hashDataList = localHashes.rows
+        let skippedCount = localHashes.skipped
+
         let totalCount = hashDataList.count
         let onServerCount = hashDataList.filter { $0.isOnServer }.count
         
@@ -152,7 +124,8 @@ class ImmichSQLiteImporter {
                 (localIdentifier: item.localIdentifier,
                  sha1Hash: item.sha1Hash,
                  fileSize: Int64(0),
-                 syncStatus: item.isOnServer ? "checked" : "pending")
+                 syncStatus: item.isOnServer ? "checked" : "pending",
+                 adjustmentVersion: item.adjustmentVersion)
             }
             // Batch import preserves existing hashes and applies the imported
             // remote status only if its checksum matches the cached one.
@@ -179,8 +152,9 @@ class ImmichSQLiteImporter {
         }
         
         logInfo("Import completed: \(importedCount) records imported, \(onServerCount) already on server, \(skippedCount) skipped", category: .importer)
-        // Imports intentionally create NULL versions. Populate the current
-        // PhotoKit baseline before the next foreground delta reconciliation.
+        // Imports have no modification date, and older Immich databases no
+        // adjustment version. Compare/populate the PhotoKit baseline before the
+        // next foreground delta reconciliation.
         PhotoLibraryManager.shared.backfillUnknownHashVersionsAfterImport()
         
         return ImportResult(
@@ -192,7 +166,77 @@ class ImmichSQLiteImporter {
         )
     }
     
-    func convertBase64ToHex(_ base64String: String) -> String? {
+    struct ImportedLocalHash {
+        let localIdentifier: String
+        let sha1Hash: String
+        let isOnServer: Bool
+        /// nil when the Immich database predates `adjustment_time` or the value is unreadable.
+        let adjustmentVersion: String?
+    }
+
+    /// Reads hashed local assets from an Immich iOS database. Returns nil when
+    /// the query cannot be prepared.
+    static func readLocalHashes(
+        db: OpaquePointer?,
+        remoteChecksums: Set<String>
+    ) -> (rows: [ImportedLocalHash], skipped: Int)? {
+        let hasAdjustmentTime = tableColumns(db: db, table: "local_asset_entity").contains("adjustment_time")
+        let sql = """
+            SELECT id, checksum, \(hasAdjustmentTime ? "adjustment_time" : "NULL")
+            FROM local_asset_entity
+            WHERE checksum IS NOT NULL AND checksum != '';
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            sqlite3_finalize(statement)
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var rows: [ImportedLocalHash] = []
+        var skipped = 0
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idPointer = sqlite3_column_text(statement, 0),
+                  let checksumPointer = sqlite3_column_text(statement, 1) else {
+                skipped += 1
+                continue
+            }
+            let checksum = String(cString: checksumPointer)
+            guard let sha1Hex = convertBase64ToHex(checksum) else {
+                skipped += 1
+                continue
+            }
+            let adjustmentVersion: String? = hasAdjustmentTime
+                ? PhotoAssetAdjustmentVersion.make(
+                    immichAdjustmentTime: sqlite3_column_text(statement, 2).map { String(cString: $0) }
+                )
+                : nil
+            rows.append(ImportedLocalHash(
+                localIdentifier: String(cString: idPointer),
+                sha1Hash: sha1Hex,
+                isOnServer: remoteChecksums.contains(checksum),
+                adjustmentVersion: adjustmentVersion
+            ))
+        }
+        return (rows, skipped)
+    }
+
+    private static func tableColumns(db: OpaquePointer?, table: String) -> Set<String> {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table));", -1, &statement, nil) == SQLITE_OK else {
+            return []
+        }
+        var columns = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = sqlite3_column_text(statement, 1) {
+                columns.insert(String(cString: name))
+            }
+        }
+        return columns
+    }
+
+    static func convertBase64ToHex(_ base64String: String) -> String? {
         guard let data = Data(base64Encoded: base64String) else {
             return nil
         }

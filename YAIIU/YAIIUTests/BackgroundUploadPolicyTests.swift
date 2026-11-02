@@ -2,6 +2,45 @@ import XCTest
 @testable import YAIIU
 
 final class BackgroundUploadPolicyTests: XCTestCase {
+    func testAdjustmentVersionUsesWholeSecondsLikeImmich() {
+        XCTAssertEqual(
+            PhotoAssetAdjustmentVersion.make(adjustmentTimestamp: Date(timeIntervalSince1970: 1_714_566_896.75)),
+            "adj:1714566896"
+        )
+        XCTAssertEqual(PhotoAssetAdjustmentVersion.make(adjustmentTimestamp: nil), "adj:none")
+    }
+
+    func testImmichAdjustmentTimeMapsToPhotoKitAdjustmentVersion() {
+        let photoKitVersion = PhotoAssetAdjustmentVersion.make(
+            adjustmentTimestamp: Date(timeIntervalSince1970: 1_714_566_896)
+        )
+        for stored in [
+            "2024-05-01T12:34:56.000Z",
+            "2024-05-01T12:34:56Z",
+            "2024-05-01T12:34:56.123456Z",
+            "2024-05-01T20:34:56.000+08:00"
+        ] {
+            XCTAssertEqual(PhotoAssetAdjustmentVersion.make(immichAdjustmentTime: stored), photoKitVersion, stored)
+        }
+        XCTAssertEqual(
+            PhotoAssetAdjustmentVersion.make(immichAdjustmentTime: nil),
+            PhotoAssetAdjustmentVersion.make(adjustmentTimestamp: nil)
+        )
+        XCTAssertNil(PhotoAssetAdjustmentVersion.make(immichAdjustmentTime: "not-a-date"))
+    }
+
+    func testModificationDateFallbackNeverMatchesAdjustmentVersion() {
+        let date = Date(timeIntervalSince1970: 1_714_566_896)
+        XCTAssertNotEqual(
+            PhotoAssetAdjustmentVersion.make(modificationDateFallback: date),
+            PhotoAssetAdjustmentVersion.make(adjustmentTimestamp: date)
+        )
+        XCTAssertNotEqual(
+            PhotoAssetAdjustmentVersion.make(modificationDateFallback: nil),
+            PhotoAssetAdjustmentVersion.make(adjustmentTimestamp: nil)
+        )
+    }
+
     func testDisallowingCellularOnlyAllowsWiFi() {
         XCTAssertTrue(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: false, interface: .wifi))
         XCTAssertFalse(BackgroundUploadPolicy.canCreateNewJobs(allowCellular: false, interface: .cellular))

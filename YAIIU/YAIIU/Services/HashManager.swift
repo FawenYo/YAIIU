@@ -911,34 +911,27 @@ class HashManager: ObservableObject {
                 category: .hash
             )
 
-            // Resource files may change while PhotoKit data is being prepared.
-            // Never persist a hash or clear pending work when selected resources
-            // no longer match current PhotoKit metadata.
-            if files.plan.resourceFingerprint != nil {
-                let options = PHFetchOptions()
-                options.includeHiddenAssets = true
-                let currentAsset = PHAsset.fetchAssets(
-                    withLocalIdentifiers: [identifier], options: options
-                ).firstObject
-                let currentSnapshot = currentAsset.map {
-                    PhotoAssetSnapshot(
-                        asset: $0,
-                        includeResourceFingerprint: true,
-                        includeResourceDiagnostics: false
+            // The asset may be edited while its resources are being hashed.
+            // Never persist a hash or clear pending work for a superseded version.
+            let options = PHFetchOptions()
+            options.includeHiddenAssets = true
+            let currentAsset = PHAsset.fetchAssets(
+                withLocalIdentifiers: [identifier], options: options
+            ).firstObject
+            let currentSnapshot = currentAsset.map {
+                PhotoAssetSnapshot(asset: $0, includeAdjustmentVersion: true)
+            }
+            guard currentSnapshot?.adjustmentVersion == files.plan.adjustmentVersion else {
+                if let currentSnapshot {
+                    DatabaseManager.shared.resetCacheForModifiedAssets(
+                        snapshots: [currentSnapshot]
                     )
                 }
-                guard currentSnapshot?.resourceFingerprint == files.plan.resourceFingerprint else {
-                    if let currentSnapshot {
-                        DatabaseManager.shared.resetCacheForModifiedAssets(
-                            snapshots: [currentSnapshot]
-                        )
-                    }
-                    logWarning(
-                        "Hash result discarded because PhotoKit resources changed during hashing: asset=\(identifier)",
-                        category: .hash
-                    )
-                    return
-                }
+                logWarning(
+                    "Hash result discarded because the PhotoKit adjustment version changed during hashing: asset=\(identifier)",
+                    category: .hash
+                )
+                return
             }
 
             // Only associate a hash with the version observed while selecting its
@@ -956,7 +949,7 @@ class HashManager: ObservableObject {
                 rawHash: result.rawHash,
                 hasRAW: result.hasRAW,
                 modificationDate: files.plan.modificationDate,
-                resourceFingerprint: files.plan.resourceFingerprint
+                adjustmentVersion: files.plan.adjustmentVersion
             )
             guard isCurrentRun(runID) else { return }
 

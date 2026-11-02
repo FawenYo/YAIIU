@@ -13,33 +13,7 @@ struct PhotoAssetResourceSnapshot: Sendable, Equatable {
     let uniformTypeIdentifier: String
     let originalFilename: String
     let fileSize: Int64?
-
-    static func makeFingerprint(
-        resources: [PhotoAssetResourceSnapshot],
-        hasAdjustments: Bool,
-        adjustmentFormatIdentifier: String?,
-        mediaType: Int,
-        mediaSubtypes: UInt64
-    ) -> String? {
-        guard !resources.isEmpty else { return nil }
-        let resourceValues = resources
-            .sorted {
-                ($0.typeDescription, $0.uniformTypeIdentifier, $0.originalFilename, $0.fileSize ?? -1)
-                    < ($1.typeDescription, $1.uniformTypeIdentifier, $1.originalFilename, $1.fileSize ?? -1)
-            }
-            .map { resource in
-                let size = resource.fileSize.map(String.init) ?? "nil"
-                return "\(resource.typeDescription)/\(resource.uniformTypeIdentifier)/\(resource.originalFilename)/\(size)"
-            }
-            .joined(separator: ";")
-        return "v1|adjustments=\(hasAdjustments)|format=\(adjustmentFormatIdentifier ?? "nil")|mediaType=\(mediaType)|mediaSubtypes=\(mediaSubtypes)|resources=\(resourceValues)"
-    }
 }
-
-// PhotoKit exposes resource metadata but no public byte-version identifier.
-// This signature intentionally suppresses metadata/iCloud-only update storms;
-// a same-metadata byte replacement cannot be distinguished without reading and
-// hashing resource bytes, which would recreate the startup cost this policy avoids.
 
 struct PhotoAssetSnapshot: Sendable {
     let localIdentifier: String
@@ -51,7 +25,7 @@ struct PhotoAssetSnapshot: Sendable {
     let adjustmentFormatIdentifier: String?
     let mediaType: Int
     let mediaSubtypes: UInt64
-    let resourceFingerprint: String?
+    let adjustmentVersion: String?
     let resources: [PhotoAssetResourceSnapshot]
 
     init(
@@ -64,7 +38,7 @@ struct PhotoAssetSnapshot: Sendable {
         adjustmentFormatIdentifier: String? = nil,
         mediaType: Int = 0,
         mediaSubtypes: UInt64 = 0,
-        resourceFingerprint: String? = nil,
+        adjustmentVersion: String? = nil,
         resources: [PhotoAssetResourceSnapshot] = []
     ) {
         self.localIdentifier = localIdentifier
@@ -76,16 +50,16 @@ struct PhotoAssetSnapshot: Sendable {
         self.adjustmentFormatIdentifier = adjustmentFormatIdentifier
         self.mediaType = mediaType
         self.mediaSubtypes = mediaSubtypes
-        self.resourceFingerprint = resourceFingerprint
+        self.adjustmentVersion = adjustmentVersion
         self.resources = resources
     }
 
     init(
         asset: PHAsset,
-        includeResourceFingerprint: Bool = false,
-        includeResourceDiagnostics: Bool = true
+        includeAdjustmentVersion: Bool = false,
+        includeResourceDiagnostics: Bool = false
     ) {
-        let resourceSnapshots = includeResourceFingerprint
+        let resourceSnapshots = includeResourceDiagnostics
             ? PHAssetResource.assetResources(for: asset).map { resource in
                 PhotoAssetResourceSnapshot(
                     typeDescription: String(describing: resource.type),
@@ -105,36 +79,9 @@ struct PhotoAssetSnapshot: Sendable {
             adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
             mediaType: asset.mediaType.rawValue,
             mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue),
-            resourceFingerprint: PhotoAssetResourceSnapshot.makeFingerprint(
-                resources: resourceSnapshots,
-                hasAdjustments: asset.hasAdjustments,
-                adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
-                mediaType: asset.mediaType.rawValue,
-                mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue)
-            ),
-            resources: includeResourceDiagnostics ? resourceSnapshots : []
-        )
-    }
-
-    static func resourceFingerprint(for asset: PHAsset) -> String? {
-        resourceFingerprint(for: asset, resources: PHAssetResource.assetResources(for: asset))
-    }
-
-    static func resourceFingerprint(for asset: PHAsset, resources: [PHAssetResource]) -> String? {
-        let resourceSnapshots = resources.map { resource in
-            PhotoAssetResourceSnapshot(
-                typeDescription: String(describing: resource.type),
-                uniformTypeIdentifier: resource.uniformTypeIdentifier,
-                originalFilename: resource.originalFilename,
-                fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
-            )
-        }
-        return PhotoAssetResourceSnapshot.makeFingerprint(
-            resources: resourceSnapshots,
-            hasAdjustments: asset.hasAdjustments,
-            adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
-            mediaType: asset.mediaType.rawValue,
-            mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue)
+            adjustmentVersion: includeAdjustmentVersion
+                ? PhotoAssetAdjustmentVersion.make(for: asset) : nil,
+            resources: resourceSnapshots
         )
     }
 
@@ -148,7 +95,7 @@ struct PhotoAssetSnapshot: Sendable {
             let size = resource.fileSize.map(String.init) ?? "nil"
             return "\(resource.typeDescription)/\(resource.uniformTypeIdentifier)/\(resource.originalFilename)/\(size)"
         }.joined(separator: ",")
-        return "Foreground PhotoKit asset metadata: asset=\(localIdentifier), storedModificationDate=\(timestamp(storedModificationDate)), currentModificationDate=\(timestamp(modificationDate)), creationDate=\(timestamp(creationDate)), favorite=\(isFavorite), hidden=\(isHidden), hasAdjustments=\(hasAdjustments), adjustmentFormatIdentifier=\(adjustmentFormatIdentifier ?? "nil"), mediaType=\(mediaType), mediaSubtypes=\(mediaSubtypes), resources=[\(resourceSummary)]"
+        return "Foreground PhotoKit asset metadata: asset=\(localIdentifier), storedModificationDate=\(timestamp(storedModificationDate)), currentModificationDate=\(timestamp(modificationDate)), creationDate=\(timestamp(creationDate)), favorite=\(isFavorite), hidden=\(isHidden), hasAdjustments=\(hasAdjustments), adjustmentFormatIdentifier=\(adjustmentFormatIdentifier ?? "nil"), mediaType=\(mediaType), mediaSubtypes=\(mediaSubtypes), adjustmentVersion=\(adjustmentVersion ?? "nil"), resources=[\(resourceSummary)]"
     }
 
     /// Do not start hashing hidden photos merely because orphan cleanup includes
@@ -798,7 +745,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             snapshots.append(PhotoAssetSnapshot(
                 asset: asset,
-                includeResourceFingerprint: true,
+                includeAdjustmentVersion: true,
                 includeResourceDiagnostics: false
             ))
         }
@@ -817,11 +764,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// startup baseline cannot race a second baseline pass.
     private var hasBackfilledUnknownHashVersions = false
 
-    /// An import can re-introduce NULL versions while the app is running.
+    /// An import can add hashes with NULL dates (and, from older Immich
+    /// databases, NULL versions) while the app is running.
     /// Replay any outstanding PhotoKit changes before binding imported hashes
     /// to dates; calling the baseline directly would hide an offline edit.
     func backfillUnknownHashVersionsAfterImport() {
-        // Imports can add unversioned hashes while a different task is
+        // Imports can add unverified hashes while a different task is
         // performing cloud verification. Reconcile/invalidate those hashes
         // under the same gate before a server check can trust them.
         // Keep this work off the importer's/UI's completion path.
@@ -894,7 +842,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 localIdentifier: String,
                 sha1Hash: String,
                 modificationDate: Date?,
-                resourceFingerprint: String
+                adjustmentVersion: String
             )] = autoreleasepool {
                 let checksums = Dictionary(uniqueKeysWithValues: batch.map {
                     ($0.localIdentifier, $0.sha1Hash)
@@ -907,19 +855,18 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     localIdentifier: String,
                     sha1Hash: String,
                     modificationDate: Date?,
-                    resourceFingerprint: String
+                    adjustmentVersion: String
                 )] = []
                 updates.reserveCapacity(batch.count)
                 PhotoLibraryEnumeration.forEach(in: assets) { asset, _ in
                     guard !asset.isHidden,
-                          let checksum = checksums[asset.localIdentifier],
-                          let fingerprint = PhotoAssetResourceFingerprint.make(for: asset)
+                          let checksum = checksums[asset.localIdentifier]
                     else { return }
                     updates.append((
                         localIdentifier: asset.localIdentifier,
                         sha1Hash: checksum,
                         modificationDate: asset.modificationDate,
-                        resourceFingerprint: fingerprint
+                        adjustmentVersion: PhotoAssetAdjustmentVersion.make(for: asset)
                     ))
                 }
                 return updates
@@ -933,7 +880,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             )
         }
         logInfo(
-            "PhotoKit hash-version baseline: needingMetadata=\(totalRows), foundFingerprint=\(matched), filled=\(filled), invalidated=\(invalidated), unresolved=\(totalRows - filled - invalidated)",
+            "PhotoKit hash-version baseline: needingMetadata=\(totalRows), foundAsset=\(matched), filled=\(filled), invalidated=\(invalidated), unresolved=\(totalRows - filled - invalidated)",
             category: .hash
         )
     }
@@ -995,7 +942,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 ofClass: PHPersistentChangeToken.self, from: tokenData
             ) else {
                 // A corrupt existing cursor may hide offline content edits:
-                // rebuild resource evidence rather than silently trusting it.
+                // rebuild version evidence rather than silently trusting it.
                 logWarning("Foreground PhotoKit checkpoint unreadable; validating all versions", category: .hash)
                 return rebuildExpiredForegroundPhotoHistory()
             }
@@ -1076,7 +1023,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                             PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
                                 snapshots.append(PhotoAssetSnapshot(
                                     asset: asset,
-                                    includeResourceFingerprint: true,
+                                    includeAdjustmentVersion: true,
                                     includeResourceDiagnostics: snapshots.count < 10
                                 ))
                             }
@@ -1209,7 +1156,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let db = DatabaseManager.shared
         // The journal has already reconciled changed assets and updated the
         // inventory. A visible pending ID without a hash or receipt has no
-        // existing resource evidence to invalidate, so it can go straight to
+        // existing version evidence to invalidate, so it can go straight to
         // the hash pipeline without another PhotoKit resource enumeration.
         // On an incomplete inventory or SQL error, retain the old full check.
         let classified = db.isLocalPhotoInventoryReady()
@@ -1260,7 +1207,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     visible.insert(asset.localIdentifier)
                     snapshots.append(PhotoAssetSnapshot(
                         asset: asset,
-                        includeResourceFingerprint: true,
+                        includeAdjustmentVersion: true,
                         includeResourceDiagnostics: false
                     ))
                 }
@@ -1330,7 +1277,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     }
 
     /// An expired token is different from a first-time upgrade: the unseen
-    /// edits must be checked against all stored resource fingerprints before
+    /// edits must be checked against all stored adjustment versions before
     /// establishing a new checkpoint.
     private func rebuildExpiredForegroundPhotoHistory() -> ForegroundPhotoWork {
         do {

@@ -4,45 +4,48 @@ import SQLite3
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-// PhotoKit exposes resource metadata but no public byte-version identifier.
-// This signature intentionally suppresses metadata/iCloud-only update storms;
-// a same-metadata byte replacement cannot be distinguished without reading and
-// hashing resource bytes, which would recreate the startup cost this policy avoids.
-enum PhotoAssetResourceFingerprint {
-    private struct ResourceMetadata {
-        let type: String
-        let uti: String
-        let filename: String
-        let fileSize: Int64?
-        let value: String
+// Same signal the Immich iOS app stores in local_asset_entity.adjustment_time.
+// PhotoKit reports favorites, album membership, iCloud state and analysis as
+// asset updates; only an adjustment change alters the media bytes we hash.
+// Sharing the signal lets imported Immich checksums keep a comparable version.
+enum PhotoAssetAdjustmentVersion {
+    private static let adjustmentTimestampKey = "adjustmentTimestamp"
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    static func make(for asset: PHAsset) -> String {
+        // Private PhotoKit property. If a future iOS removes it, fall back to
+        // modificationDate: more rehashing, but never a missed edit or a
+        // PhotoKit cursor that cannot advance.
+        guard asset.responds(to: NSSelectorFromString(adjustmentTimestampKey)) else {
+            return make(modificationDateFallback: asset.modificationDate)
+        }
+        return make(adjustmentTimestamp: asset.value(forKey: adjustmentTimestampKey) as? Date)
     }
 
-    static func make(for asset: PHAsset) -> String? {
-        let resources = PHAssetResource.assetResources(for: asset)
-        guard !resources.isEmpty else { return nil }
-        let values = resources
-            .map { resource in
-                let fileSize = (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
-                let type = String(describing: resource.type)
-                let size = fileSize.map { String($0) } ?? "nil"
-                return ResourceMetadata(
-                    type: type,
-                    uti: resource.uniformTypeIdentifier,
-                    filename: resource.originalFilename,
-                    fileSize: fileSize,
-                    value: type + "/" + resource.uniformTypeIdentifier + "/"
-                        + resource.originalFilename + "/" + size
-                )
-            }
-            .sorted {
-                if $0.type != $1.type { return $0.type < $1.type }
-                if $0.uti != $1.uti { return $0.uti < $1.uti }
-                if $0.filename != $1.filename { return $0.filename < $1.filename }
-                return ($0.fileSize ?? -1) < ($1.fileSize ?? -1)
-            }
-            .map(\.value)
-            .joined(separator: ";")
-        return "v1|adjustments=\(asset.hasAdjustments)|format=\(asset.adjustmentFormatIdentifier ?? "nil")|mediaType=\(asset.mediaType.rawValue)|mediaSubtypes=\(UInt64(asset.mediaSubtypes.rawValue))|resources=\(values)"
+    /// Whole seconds, matching Immich's `Int64(timeIntervalSince1970)`.
+    static func make(adjustmentTimestamp: Date?) -> String {
+        guard let adjustmentTimestamp else { return "adj:none" }
+        return "adj:\(Int64(adjustmentTimestamp.timeIntervalSince1970))"
+    }
+
+    static func make(modificationDateFallback date: Date?) -> String {
+        guard let date else { return "mod:none" }
+        return "mod:\(date.timeIntervalSince1970)"
+    }
+
+    /// Immich (drift) stores ISO-8601 text and NULL for unedited assets.
+    /// Returns nil when the value cannot be interpreted, leaving the row unversioned.
+    static func make(immichAdjustmentTime text: String?) -> String? {
+        guard let text else { return make(adjustmentTimestamp: nil) }
+        let wholeSeconds = text.replacingOccurrences(
+            of: #"\.\d+"#, with: "", options: .regularExpression
+        )
+        guard let date = isoFormatter.date(from: wholeSeconds) else { return nil }
+        return make(adjustmentTimestamp: date)
     }
 }
 
@@ -170,7 +173,7 @@ final class BackgroundUploadDatabase {
             )
         """)
         exec("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
-        ensureUploadedAssetFingerprintColumn()
+        ensureUploadedAssetAdjustmentVersionColumn()
 
         // Older extension builds created RAW jobs without updating has_raw. Repair
         // that durable resource-presence fact so a confirmed primary never hides a
@@ -205,13 +208,13 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    private func ensureUploadedAssetFingerprintColumn() {
+    private func ensureUploadedAssetAdjustmentVersionColumn() {
         var statement: OpaquePointer?
         var hasColumn = false
         if sqlite3_prepare_v2(db, "PRAGMA table_info(uploaded_assets);", -1, &statement, nil) == SQLITE_OK {
             while sqlite3_step(statement) == SQLITE_ROW {
                 if let columnName = sqlite3_column_text(statement, 1),
-                   String(cString: columnName) == "asset_resource_fingerprint" {
+                   String(cString: columnName) == "asset_adjustment_version" {
                     hasColumn = true
                     break
                 }
@@ -220,18 +223,18 @@ final class BackgroundUploadDatabase {
         sqlite3_finalize(statement)
 
         if !hasColumn {
-            exec("ALTER TABLE uploaded_assets ADD COLUMN asset_resource_fingerprint TEXT;")
+            exec("ALTER TABLE uploaded_assets ADD COLUMN asset_adjustment_version TEXT;")
         }
     }
 
-    private func uploadedReceiptMatchesCurrentFingerprint(
+    private func uploadedReceiptMatchesCurrentAdjustmentVersion(
         db: OpaquePointer?,
         assetId: String,
-        fingerprint: String
+        adjustmentVersion: String
     ) -> Bool {
         let sql = """
             SELECT COUNT(*),
-                   SUM(CASE WHEN asset_resource_fingerprint = ? THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN asset_adjustment_version = ? THEN 1 ELSE 0 END)
             FROM uploaded_assets
             WHERE asset_id = ?
         """
@@ -240,7 +243,7 @@ final class BackgroundUploadDatabase {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             return false
         }
-        sqlite3_bind_text(statement, 1, fingerprint, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 1, adjustmentVersion, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(statement, 2, assetId, -1, SQLITE_TRANSIENT)
         guard sqlite3_step(statement) == SQLITE_ROW else { return false }
         let receiptCount = Int(sqlite3_column_int(statement, 0))
@@ -480,12 +483,12 @@ final class BackgroundUploadDatabase {
         immichId: String,
         fileSize: Int64,
         isDuplicate: Bool,
-        resourceFingerprint: String? = nil
+        adjustmentVersion: String? = nil
     ) {
         queue.sync {
             let sql = """
                 INSERT OR REPLACE INTO uploaded_assets
-                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at, asset_resource_fingerprint)
+                (asset_id, resource_type, filename, immich_id, file_size, is_duplicate, uploaded_at, asset_adjustment_version)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """
             
@@ -501,8 +504,8 @@ final class BackgroundUploadDatabase {
             sqlite3_bind_int64(stmt, 5, fileSize)
             sqlite3_bind_int(stmt, 6, isDuplicate ? 1 : 0)
             sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
-            if let resourceFingerprint {
-                sqlite3_bind_text(stmt, 8, resourceFingerprint, -1, SQLITE_TRANSIENT)
+            if let adjustmentVersion {
+                sqlite3_bind_text(stmt, 8, adjustmentVersion, -1, SQLITE_TRANSIENT)
             } else {
                 sqlite3_bind_null(stmt, 8)
             }
@@ -850,17 +853,17 @@ final class BackgroundUploadDatabase {
         updatedAssetIds: Set<String>,
         deletedAssetIds: Set<String>,
         updatedAssetModificationDates: [String: Date],
-        updatedAssetResourceFingerprints: [String: String] = [:],
+        updatedAssetAdjustmentVersions: [String: String] = [:],
         tokenData: Data
     ) -> PhotoAssetChangeCommitSummary? {
         queue.sync {
             guard let db else { return nil }
             let unresolvedUpdatedAssetIds = updatedAssetIds
                 .subtracting(deletedAssetIds)
-                .subtracting(Set(updatedAssetResourceFingerprints.keys))
+                .subtracting(Set(updatedAssetAdjustmentVersions.keys))
             // Do not advance the PhotoKit cursor until every updated asset has
-            // resource evidence. A missing fingerprint usually means an iCloud
-            // restore or an unresolved PHAsset; replay it on the next run.
+            // version evidence. A missing adjustment version means PhotoKit could
+            // not resolve the updated PHAsset yet; replay it on the next run.
             guard unresolvedUpdatedAssetIds.isEmpty else { return nil }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
                 return nil
@@ -896,16 +899,16 @@ final class BackgroundUploadDatabase {
             }
 
             // PhotoKit marks metadata/iCloud availability updates as "updated" too.
-            // Compare resource metadata inside same transaction as cache
-            // invalidation and cursor advancement. Missing resource evidence
+            // Compare adjustment versions inside same transaction as cache
+            // invalidation and cursor advancement. Missing version evidence
             // rejects this checkpoint; legacy rows invalidate when evidence exists.
             var invalidatedUpdatedIds = deletedAssetIds
             // A receipt can exist without any foreground hash cache row.
             // These assets still need foreground reconciliation even if the
-            // uploaded receipt's resource version already matches.
+            // uploaded receipt's adjustment version already matches.
             var updatedWithoutHashIds = Set<String>()
             if !updatedAssetIds.isEmpty {
-                let sql = "SELECT asset_resource_fingerprint, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1"
+                let sql = "SELECT asset_adjustment_version, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1"
                 var versionStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, sql, -1, &versionStmt, nil) == SQLITE_OK {
                     defer { sqlite3_finalize(versionStmt) }
@@ -918,14 +921,14 @@ final class BackgroundUploadDatabase {
                         }
                         let result = sqlite3_step(versionStmt)
                         if result == SQLITE_ROW {
-                            let storedFingerprint: String? = {
+                            let storedAdjustmentVersion: String? = {
                                 guard let pointer = sqlite3_column_text(versionStmt, 0) else { return nil }
                                 return String(cString: pointer)
                             }()
-                            if let currentFingerprint = updatedAssetResourceFingerprints[assetId] {
-                                if let storedFingerprint, storedFingerprint != currentFingerprint {
+                            if let currentAdjustmentVersion = updatedAssetAdjustmentVersions[assetId] {
+                                if let storedAdjustmentVersion, storedAdjustmentVersion != currentAdjustmentVersion {
                                     invalidatedUpdatedIds.insert(assetId)
-                                } else if storedFingerprint == nil {
+                                } else if storedAdjustmentVersion == nil {
                                     let oldDate: TimeInterval? =
                                         sqlite3_column_type(versionStmt, 1) == SQLITE_NULL
                                         ? nil : sqlite3_column_double(versionStmt, 1)
@@ -933,10 +936,10 @@ final class BackgroundUploadDatabase {
                                         storedModificationTime: oldDate,
                                         currentModificationDate: updatedAssetModificationDates[assetId]
                                     ) {
-                                        guard updateResourceFingerprint(
+                                        guard updateAdjustmentVersion(
                                             db: db, assetId: assetId,
                                             modificationDate: updatedAssetModificationDates[assetId],
-                                            fingerprint: currentFingerprint
+                                            adjustmentVersion: currentAdjustmentVersion
                                         ) else { return nil }
                                     } else {
                                         // A PhotoKit update on a versionless
@@ -944,11 +947,11 @@ final class BackgroundUploadDatabase {
                                         invalidatedUpdatedIds.insert(assetId)
                                     }
                                 } else {
-                                    guard updateResourceFingerprint(
+                                    guard updateAdjustmentVersion(
                                         db: db,
                                         assetId: assetId,
                                         modificationDate: updatedAssetModificationDates[assetId],
-                                        fingerprint: currentFingerprint
+                                        adjustmentVersion: currentAdjustmentVersion
                                     ) else { return nil }
                                 }
                             }
@@ -957,12 +960,12 @@ final class BackgroundUploadDatabase {
                             // A background upload can finish after foreground
                             // invalidation and create a current receipt before
                             // the hash cache is rebuilt. Preserve only receipts
-                            // carrying the current resource fingerprint.
-                            if let currentFingerprint = updatedAssetResourceFingerprints[assetId],
-                               !uploadedReceiptMatchesCurrentFingerprint(
+                            // carrying the current adjustment version.
+                            if let currentAdjustmentVersion = updatedAssetAdjustmentVersions[assetId],
+                               !uploadedReceiptMatchesCurrentAdjustmentVersion(
                                    db: db,
                                    assetId: assetId,
-                                   fingerprint: currentFingerprint
+                                   adjustmentVersion: currentAdjustmentVersion
                                ) {
                                 invalidatedUpdatedIds.insert(assetId)
                             }
@@ -972,7 +975,7 @@ final class BackgroundUploadDatabase {
                     }
                 } else {
                     sqlite3_finalize(versionStmt)
-                    // An older host database may not have the fingerprint
+                    // An older host database may not have the adjustment version
                     // column yet. Do not advance token across that schema gap.
                     return nil
                 }
@@ -1035,7 +1038,7 @@ final class BackgroundUploadDatabase {
             // Only enqueue new assets, genuinely changed/unknown resource
             // versions, or updates without foreground hash evidence. The
             // background cursor has already verified unchanged cached hashes
-            // using PhotoKit resource fingerprints in this transaction: queuing
+            // using PhotoKit adjustment versions in this transaction: queuing
             // those updates forces thousands of redundant foreground reads.
             //
             // Never DELETE previously queued IDs here. Foreground may have
@@ -1127,13 +1130,13 @@ final class BackgroundUploadDatabase {
     }
 
     @discardableResult
-    private func updateResourceFingerprint(
+    private func updateAdjustmentVersion(
         db: OpaquePointer,
         assetId: String,
         modificationDate: Date?,
-        fingerprint: String
+        adjustmentVersion: String
     ) -> Bool {
-        let sql = "UPDATE hash_cache SET asset_modification_date = ?, asset_resource_fingerprint = ? WHERE asset_id = ?"
+        let sql = "UPDATE hash_cache SET asset_modification_date = ?, asset_adjustment_version = ? WHERE asset_id = ?"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             sqlite3_finalize(statement)
@@ -1145,7 +1148,7 @@ final class BackgroundUploadDatabase {
         } else {
             sqlite3_bind_null(statement, 1)
         }
-        sqlite3_bind_text(statement, 2, fingerprint, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(statement, 2, adjustmentVersion, -1, SQLITE_TRANSIENT)
         sqlite3_bind_text(statement, 3, assetId, -1, SQLITE_TRANSIENT)
         return sqlite3_step(statement) == SQLITE_DONE
     }
