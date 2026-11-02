@@ -39,3 +39,36 @@ struct PhotoAssetContentRevision: Equatable {
         return previousRevision != currentRevision
     }
 }
+
+/// Decides whether a PhotoKit change can affect the persisted inventory or hash
+/// cache. iCloud thumbnail downloads and other metadata updates arrive as
+/// in-place changes that keep each asset's adjustment version, and must not
+/// start a foreground reconciliation on every notification.
+enum PhotoKitInventoryChangePolicy {
+    // Bounds the synchronous hash_cache lookup on the PhotoKit callback queue.
+    static let maxInspectedChanges = 500
+
+    static func shouldInspectVersions(
+        isIncremental: Bool, insertedCount: Int, removedCount: Int, hasMoves: Bool, changedCount: Int
+    ) -> Bool {
+        isIncremental && insertedCount == 0 && removedCount == 0 && !hasMoves &&
+            changedCount > 0 && changedCount <= maxInspectedChanges
+    }
+
+    /// `storedVersions` holds only non-NULL `hash_cache.asset_adjustment_version`
+    /// values; an asset missing from it is unknown and always needs reconciliation.
+    static func requiresReconciliation(
+        isIncremental: Bool,
+        insertedCount: Int,
+        removedCount: Int,
+        hasMoves: Bool,
+        currentVersions: [String: String],
+        storedVersions: [String: String]
+    ) -> Bool {
+        guard isIncremental, insertedCount == 0, removedCount == 0, !hasMoves,
+              !currentVersions.isEmpty else { return true }
+        return currentVersions.contains { identifier, version in
+            storedVersions[identifier] != version
+        }
+    }
+}

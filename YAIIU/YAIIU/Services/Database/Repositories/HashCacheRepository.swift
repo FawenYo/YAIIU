@@ -233,6 +233,34 @@ final class HashCacheRepository {
         }
     }
     
+    /// Known (non-NULL) adjustment versions stored for the given assets.
+    func storedAdjustmentVersions(for identifiers: [String]) -> [String: String] {
+        guard !identifiers.isEmpty else { return [:] }
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return [:] }
+            var statement: OpaquePointer?
+            let sql = "SELECT asset_adjustment_version FROM hash_cache WHERE asset_id = ? AND asset_adjustment_version IS NOT NULL;"
+            guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                logError("Could not prepare stored adjustment version lookup", category: .database)
+                return [:]
+            }
+            defer { sqlite3_finalize(statement) }
+            var versions: [String: String] = [:]
+            for identifier in identifiers {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                sqlite3_bind_text(statement, 1, (identifier as NSString).utf8String, -1, nil)
+                if sqlite3_step(statement) == SQLITE_ROW,
+                   let pointer = sqlite3_column_text(statement, 0) {
+                    versions[identifier] = String(cString: pointer)
+                }
+            }
+            return versions
+        }
+    }
+
     /// Import/legacy caches can hold a valid hash but no PhotoKit version.
     /// Return only unknown-version rows; no original media is requested.
     func unversionedHashCacheRows() -> [(localIdentifier: String, sha1Hash: String)] {

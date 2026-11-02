@@ -109,6 +109,10 @@ final class DatabaseManager {
         hashRepo.batchSaveHashCache(items: items)
     }
     
+    func storedAdjustmentVersions(for identifiers: [String]) -> [String: String] {
+        hashRepo.storedAdjustmentVersions(for: identifiers)
+    }
+
     func unversionedHashCacheRows() -> [(localIdentifier: String, sha1Hash: String)] {
         hashRepo.unversionedHashCacheRows()
     }
