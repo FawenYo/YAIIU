@@ -126,13 +126,21 @@ final class HashPipelinePolicyTests: XCTestCase {
     }
 
     func testPhotoKitBaselineProgressReportsBoundedFraction() {
-        let progress = PhotoKitBaselineProgress(completed: 17_700, total: 101_731)
+        let progress = PhotoKitBaselineProgress(completed: 17_700, total: 101_731, stage: .hashVersions)
         XCTAssertEqual(progress.fraction, 17_700.0 / 101_731.0, accuracy: 0.000_001)
         XCTAssertFalse(progress.isComplete)
 
-        let completed = PhotoKitBaselineProgress(completed: 200, total: 100)
+        let completed = PhotoKitBaselineProgress(completed: 200, total: 100, stage: .hashVersions)
         XCTAssertEqual(completed.fraction, 1)
         XCTAssertTrue(completed.isComplete)
+    }
+
+    func testPhotoKitBaselineProgressDescribesEachStageDifferently() {
+        let inventory = PhotoKitBaselineProgress(completed: 3, total: 10, stage: .inventory)
+        let versions = PhotoKitBaselineProgress(completed: 3, total: 10, stage: .hashVersions)
+        XCTAssertNotEqual(L10n.PhotoGrid.processingBaseline(inventory), L10n.PhotoGrid.processingBaseline(versions))
+        XCTAssertTrue(L10n.PhotoGrid.processingBaseline(inventory).contains("3/10"))
+        XCTAssertTrue(L10n.PhotoGrid.processingBaseline(versions).contains("3/10"))
     }
 
     func testFinishedRunCannotOwnStateAfterRestart() {

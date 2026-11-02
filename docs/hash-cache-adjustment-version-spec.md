@@ -51,6 +51,9 @@ All comparisons are plain string equality, and `NULL` always means unknown:
 - Foreground journal and snapshot: `HashCacheRepository.applyForegroundPhotoChanges`, `resetCacheForModifiedAssets`, `reconcileForegroundPendingAssets`.
 - After hashing: `HashManager` discards the result when the version captured in `AssetResourcePlan.adjustmentVersion` no longer matches the current asset.
 - Baseline: `HashCacheRepository.backfillPhotoKitVersionMetadata`. A row with a stored version that differs from the current one is invalidated. A row with no evidence at all is stamped with the current version.
+- First checkpoint: `HashCacheRepository.commitInitialForegroundPhotoBootstrap` queues for per-asset PhotoKit verification only the rows that have both a version and a modification date. Rows without a date (fresh Immich imports, legacy rows) are left to the batched baseline above. Queuing a whole imported library for per-asset verification is far slower and is what made a large import hang on "Preparing".
+
+The UI reports the two first-run passes separately through `PhotoKitBaselineProgress.stage`: `.inventory` while the PhotoKit identifiers are being read, and `.hashVersions` while the baseline runs.
 
 ## Immich SQLite import
 

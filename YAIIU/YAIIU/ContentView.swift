@@ -78,7 +78,7 @@ struct PhotoKitBaselineBanner: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
                     Image(systemName: "externaldrive.badge.timemachine")
-                    Text(L10n.PhotoGrid.processingBaseline(progress.completed, progress.total))
+                    Text(L10n.PhotoGrid.processingBaseline(progress))
                         .font(.caption)
                         .monospacedDigit()
                         .lineLimit(1)

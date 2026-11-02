@@ -106,8 +106,16 @@ struct PhotoAssetSnapshot: Sendable {
 }
 
 struct PhotoKitBaselineProgress: Equatable, Sendable {
+    enum Stage: Sendable {
+        /// First-run scan of every PhotoKit identifier into the local inventory.
+        case inventory
+        /// Comparing cached (e.g. imported) hashes against current PhotoKit versions.
+        case hashVersions
+    }
+
     let completed: Int
     let total: Int
+    let stage: Stage
 
     var fraction: Double {
         guard total > 0 else { return 0 }
@@ -796,7 +804,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let totalRows = db.countHashCacheRowsNeedingPhotoKitBaseline()
         guard totalRows > 0 else { return }
         publishForegroundBaselineProgress(
-            PhotoKitBaselineProgress(completed: 0, total: totalRows)
+            PhotoKitBaselineProgress(completed: 0, total: totalRows, stage: .hashVersions)
         )
         defer {
             publishForegroundBaselineProgress(nil)
@@ -831,7 +839,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
             if batch.isEmpty {
                 publishForegroundBaselineProgress(
-                    PhotoKitBaselineProgress(completed: completed, total: totalRows)
+                    PhotoKitBaselineProgress(completed: completed, total: totalRows, stage: .hashVersions)
                 )
                 continue
             }
@@ -876,7 +884,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             filled += result.filled
             invalidated += result.invalidated
             publishForegroundBaselineProgress(
-                PhotoKitBaselineProgress(completed: completed, total: totalRows)
+                PhotoKitBaselineProgress(completed: completed, total: totalRows, stage: .hashVersions)
             )
         }
         logInfo(
@@ -1248,7 +1256,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let assets = PHAsset.fetchAssets(with: options)
         let db = DatabaseManager.shared
         guard db.beginLocalPhotoInventoryBootstrap() else { return false }
-        publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: 0, total: assets.count))
+        publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: 0, total: assets.count, stage: .inventory))
         defer { publishForegroundBaselineProgress(nil) }
         var processed = 0
         var batch: [(identifier: String, isHidden: Bool)] = []
@@ -1262,13 +1270,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             if batch.count == 300 {
                 if !db.appendLocalPhotoInventoryBatch(batch) { succeeded = false }
                 batch.removeAll(keepingCapacity: true)
-                publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: processed, total: assets.count))
+                publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: processed, total: assets.count, stage: .inventory))
             }
         }
         guard completed, succeeded,
               PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
               db.appendLocalPhotoInventoryBatch(batch) else { return false }
-        publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: assets.count, total: assets.count))
+        publishForegroundBaselineProgress(PhotoKitBaselineProgress(completed: assets.count, total: assets.count, stage: .inventory))
 
         // The caller must first replay the old token (including events that
         // arrived during this enumeration) before committing readiness.

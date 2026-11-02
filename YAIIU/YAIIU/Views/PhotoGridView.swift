@@ -861,7 +861,7 @@ struct PhotoGridView: View {
 
     private func getProcessingDetailText() -> String {
         if let progress = photoLibraryManager.foregroundBaselineProgress {
-            return L10n.PhotoGrid.processingBaseline(progress.completed, progress.total)
+            return L10n.PhotoGrid.processingBaseline(progress)
         }
         return L10n.PhotoGrid.processingReadingPhotoLibrary
     }

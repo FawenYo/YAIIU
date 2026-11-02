@@ -121,7 +121,8 @@
 "photoGrid.processing.title" = "사진 준비 중";
 "photoGrid.processing.waitingDetail" = "사진 데이터를 처리하고 있습니다. 완료되면 자동으로 계속됩니다.";
 "photoGrid.processing.working" = "사진 처리 중…";
-"photoGrid.processing.baseline" = "사진 메타데이터 색인 생성 중 %d/%d";
+"photoGrid.processing.inventory" = "사진 보관함 읽는 중 %d/%d";
+"photoGrid.processing.baseline" = "사진 버전 확인 중 %d/%d";
 "photoGrid.processing.comparing" = "비교 중 %d/%d";
 "photoGrid.processing.checking" = "확인 중";
 "photoGrid.processing.default" = "...";

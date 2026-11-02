@@ -121,7 +121,8 @@
 "photoGrid.processing.title" = "写真を準備中";
 "photoGrid.processing.waitingDetail" = "写真データを処理しています。完了すると自動的に続行します。";
 "photoGrid.processing.working" = "写真を処理中…";
-"photoGrid.processing.baseline" = "写真メタデータのインデックスを作成中 %d/%d";
+"photoGrid.processing.inventory" = "写真ライブラリを読み込み中 %d/%d";
+"photoGrid.processing.baseline" = "写真のバージョンを確認中 %d/%d";
 "photoGrid.processing.comparing" = "比較中 %d/%d";
 "photoGrid.processing.checking" = "確認中";
 "photoGrid.processing.default" = "...";

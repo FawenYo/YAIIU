@@ -121,7 +121,8 @@
 "photoGrid.processing.title" = "Preparando fotos";
 "photoGrid.processing.waitingDetail" = "Se están procesando los datos de las fotos. La aplicación continuará automáticamente.";
 "photoGrid.processing.working" = "Procesando fotos…";
-"photoGrid.processing.baseline" = "Creando el índice de metadatos de fotos %d/%d";
+"photoGrid.processing.inventory" = "Leyendo la fototeca %d/%d";
+"photoGrid.processing.baseline" = "Comprobando versiones de fotos %d/%d";
 "photoGrid.processing.comparing" = "Comparando %d/%d";
 "photoGrid.processing.checking" = "Comprobando";
 "photoGrid.processing.default" = "...";
