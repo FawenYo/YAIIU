@@ -152,4 +152,75 @@ final class PhotoLibraryIndexGenerationTests: XCTestCase {
             currentIdentifier: "B", currentRevision: rev
         ))
     }
+
+    // MARK: - PhotoKitInventoryChangePolicy
+
+    func testUnchangedAdjustmentVersionsSkipInventoryReconciliation() {
+        XCTAssertFalse(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false,
+            currentVersions: ["a": "adj:none", "b": "adj:1700000000"],
+            storedVersions: ["a": "adj:none", "b": "adj:1700000000"]
+        ))
+    }
+
+    func testChangedAdjustmentVersionRequiresReconciliation() {
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false,
+            currentVersions: ["a": "adj:none", "b": "adj:1700000001"],
+            storedVersions: ["a": "adj:none", "b": "adj:1700000000"]
+        ))
+    }
+
+    func testAssetWithoutStoredVersionRequiresReconciliation() {
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false,
+            currentVersions: ["a": "adj:none", "b": "adj:none"],
+            storedVersions: ["a": "adj:none"]
+        ))
+    }
+
+    func testChangedAssetsWithoutCurrentVersionsRequireReconciliation() {
+        // A changedObjects set that could not be inspected is never assumed unchanged.
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false,
+            currentVersions: [:],
+            storedVersions: [:]
+        ))
+    }
+
+    func testStructuralChangesAlwaysRequireReconciliation() {
+        let versions = ["a": "adj:none"]
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: false, insertedCount: 0, removedCount: 0, hasMoves: false,
+            currentVersions: versions, storedVersions: versions
+        ))
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: true, insertedCount: 1, removedCount: 0, hasMoves: false,
+            currentVersions: versions, storedVersions: versions
+        ))
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: true, insertedCount: 0, removedCount: 1, hasMoves: false,
+            currentVersions: versions, storedVersions: versions
+        ))
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.requiresReconciliation(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: true,
+            currentVersions: versions, storedVersions: versions
+        ))
+    }
+
+    func testVersionInspectionIsLimitedToContentOnlyChanges() {
+        XCTAssertTrue(PhotoKitInventoryChangePolicy.shouldInspectVersions(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false, changedCount: 3
+        ))
+        XCTAssertFalse(PhotoKitInventoryChangePolicy.shouldInspectVersions(
+            isIncremental: true, insertedCount: 1, removedCount: 0, hasMoves: false, changedCount: 3
+        ))
+        XCTAssertFalse(PhotoKitInventoryChangePolicy.shouldInspectVersions(
+            isIncremental: false, insertedCount: 0, removedCount: 0, hasMoves: false, changedCount: 3
+        ))
+        XCTAssertFalse(PhotoKitInventoryChangePolicy.shouldInspectVersions(
+            isIncremental: true, insertedCount: 0, removedCount: 0, hasMoves: false,
+            changedCount: PhotoKitInventoryChangePolicy.maxInspectedChanges + 1
+        ))
+    }
 }

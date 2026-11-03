@@ -366,10 +366,19 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // changedObjects, however, and must still invalidate their thumbnails.
         let changedIndexes = changes.changedIndexes
         var fallbackChangedIdentifiers: Set<String> = []
+        var fallbackChangedVersions: [String: String] = [:]
         if hasIncrementalChanges && (changedIndexes?.isEmpty ?? true) {
             autoreleasepool {
-                for asset in changes.changedObjects {
+                let changedObjects = changes.changedObjects
+                let inspectVersions = PhotoKitInventoryChangePolicy.shouldInspectVersions(
+                    isIncremental: hasIncrementalChanges, insertedCount: insertedCount,
+                    removedCount: removedCount, hasMoves: hasMoves, changedCount: changedObjects.count
+                )
+                for asset in changedObjects {
                     fallbackChangedIdentifiers.insert(asset.localIdentifier)
+                    if inspectVersions {
+                        fallbackChangedVersions[asset.localIdentifier] = PhotoAssetAdjustmentVersion.make(for: asset)
+                    }
                 }
             }
         }
@@ -393,14 +402,39 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // Prefer a pooled indexed lookup; fallback identifiers were gathered
         // above only when PhotoKit did not provide any changed positions.
         var changedIdentifiers = fallbackChangedIdentifiers
+        var changedVersions = fallbackChangedVersions
         if hasIncrementalChanges, let changedIndexes, !changedIndexes.isEmpty {
+            let inspectVersions = PhotoKitInventoryChangePolicy.shouldInspectVersions(
+                isIncremental: hasIncrementalChanges, insertedCount: insertedCount,
+                removedCount: removedCount, hasMoves: hasMoves, changedCount: changedIndexes.count
+            )
             PhotoLibraryEnumeration.forEach(
                 indices: changedIndexes, objectAt: { updatedResult.object(at: $0) }
             ) { asset, _ in
                 changedIdentifiers.insert(asset.localIdentifier)
+                if inspectVersions {
+                    changedVersions[asset.localIdentifier] = PhotoAssetAdjustmentVersion.make(for: asset)
+                }
             }
         }
         let identifiersToInvalidate = changedIdentifiers
+        let requiresInventoryReconciliation: Bool
+        if !changedVersions.isEmpty,
+           let storedVersions = Self.storedAdjustmentVersions(for: Array(changedVersions.keys)) {
+            requiresInventoryReconciliation = PhotoKitInventoryChangePolicy.requiresReconciliation(
+                isIncremental: hasIncrementalChanges, insertedCount: insertedCount,
+                removedCount: removedCount, hasMoves: hasMoves,
+                currentVersions: changedVersions, storedVersions: storedVersions
+            )
+        } else {
+            requiresInventoryReconciliation = true
+        }
+        if !requiresInventoryReconciliation {
+            logDebug(
+                "PhotoKit metadata-only update skipped inventory reconciliation: changed=\(changedVersions.count)",
+                category: .hash
+            )
+        }
 
         // Content-only replacements retain the identifier order. Reuse a ready
         // snapshot; structural changes and unfinished snapshots need a scan.
@@ -428,7 +462,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             let snapshotIsReady = self.orderedIdentifiersGeneration == self.assetFetchGeneration
             // Publish invalidation before changing the grid fetch generation.
             // Consumers must not display SQLite badge data from the old cursor.
-            self.inventoryChangeRevision &+= 1
+            // Metadata-only updates leave that data valid.
+            if requiresInventoryReconciliation {
+                self.inventoryChangeRevision &+= 1
+            }
             self.indexGeneration.recordChange(
                 isIncremental: hasIncrementalChanges,
                 insertedCount: insertedCount, removedCount: removedCount, hasMoves: hasMoves
@@ -462,6 +499,42 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
             self.libraryRevision &+= 1
         }
+    }
+
+    private final class AdjustmentVersionLookup: @unchecked Sendable {
+        var versions: [String: String] = [:]
+    }
+
+    private static let adjustmentVersionLookupQueue = DispatchQueue(
+        label: "PhotoLibraryManager.adjustmentVersionLookup", qos: .utility
+    )
+    private static let adjustmentVersionLookupLock = NSLock()
+    private static var adjustmentVersionLookupInFlight = false
+
+    /// Returns nil when the database is busy (e.g. a long baseline transaction)
+    /// so PhotoKit notifications are never held behind it; callers then
+    /// reconcile as if the versions had changed. At most one lookup waits on
+    /// the database at a time.
+    private static func storedAdjustmentVersions(for identifiers: [String]) -> [String: String]? {
+        adjustmentVersionLookupLock.lock()
+        guard !adjustmentVersionLookupInFlight else {
+            adjustmentVersionLookupLock.unlock()
+            return nil
+        }
+        adjustmentVersionLookupInFlight = true
+        adjustmentVersionLookupLock.unlock()
+
+        let lookup = AdjustmentVersionLookup()
+        let finished = DispatchSemaphore(value: 0)
+        adjustmentVersionLookupQueue.async {
+            lookup.versions = DatabaseManager.shared.storedAdjustmentVersions(for: identifiers)
+            adjustmentVersionLookupLock.lock()
+            adjustmentVersionLookupInFlight = false
+            adjustmentVersionLookupLock.unlock()
+            finished.signal()
+        }
+        guard finished.wait(timeout: .now() + .milliseconds(50)) == .success else { return nil }
+        return lookup.versions
     }
 
     /// Enumerate user-accessible albums without retaining PhotoKit collection objects in SwiftUI.
