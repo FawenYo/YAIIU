@@ -825,6 +825,7 @@ final class BackgroundUploadExtensionCore {
                 if !updated.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
+                    options.wantsIncrementalChangeDetails = false
                     let identifiers = Array(updated)
                     for start in stride(from: 0, to: identifiers.count, by: 300) {
                         autoreleasepool {
