@@ -2542,17 +2542,6 @@ final class HashCacheRepository {
         logInfo("Pruned \(missingIds.count) absent PhotoKit assets and invalidated \(modifiedIds.count) modified assets", category: .hash)
     }
 
-    // MARK: - Clear
-    
-    func clearHashCache() {
-        connection.ensureInitialized()
-        
-        connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
-            self.connection.executeStatement("DELETE FROM hash_cache;")
-        }
-    }
-    
     // MARK: - Orphan Record Cleanup
     
     func deleteHashCacheRecord(localIdentifier: String) {
