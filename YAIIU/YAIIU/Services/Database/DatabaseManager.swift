@@ -288,10 +288,6 @@ final class DatabaseManager {
         hashRepo.getHashCacheStatsAsync(completion: completion)
     }
     
-    func clearHashCache() {
-        hashRepo.clearHashCache()
-    }
-    
     func deleteHashCacheRecord(localIdentifier: String) {
         hashRepo.deleteHashCacheRecord(localIdentifier: localIdentifier)
     }

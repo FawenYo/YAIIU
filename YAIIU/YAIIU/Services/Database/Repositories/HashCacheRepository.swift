@@ -1700,7 +1700,7 @@ final class HashCacheRepository {
                 if cacheDetails.count < 10 { cacheDetails.append(message) }
             }
             func recordSnapshotDetail(_ message: String) {
-                if snapshotDetails.count < 10 { snapshotDetails.append(message) }
+                if snapshotDetails.count < PhotoAssetSnapshot.diagnosticDetailLimit { snapshotDetails.append(message) }
             }
 
             // Bootstrap reconciles old hashes/receipts/queue entries using the
@@ -1940,7 +1940,9 @@ final class HashCacheRepository {
                     if snapshot.modificationDate == nil {
                         missingCurrentDateCount += 1
                     }
-                    recordSnapshotDetail(snapshot.diagnosticSummary(storedModificationDate: storedDate))
+                    if snapshotDetails.count < PhotoAssetSnapshot.diagnosticDetailLimit {
+                        recordSnapshotDetail(snapshot.diagnosticSummary(storedModificationDate: storedDate))
+                    }
                 }
                 sqlite3_finalize(statement)
                 sqlite3_finalize(updateStatement)
@@ -2540,17 +2542,6 @@ final class HashCacheRepository {
         logInfo("Pruned \(missingIds.count) absent PhotoKit assets and invalidated \(modifiedIds.count) modified assets", category: .hash)
     }
 
-    // MARK: - Clear
-    
-    func clearHashCache() {
-        connection.ensureInitialized()
-        
-        connection.dbQueue.sync { [weak self] in
-            guard let self = self else { return }
-            self.connection.executeStatement("DELETE FROM hash_cache;")
-        }
-    }
-    
     // MARK: - Orphan Record Cleanup
     
     func deleteHashCacheRecord(localIdentifier: String) {

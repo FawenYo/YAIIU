@@ -54,33 +54,58 @@ struct PhotoAssetSnapshot: Sendable {
         self.resources = resources
     }
 
+    /// Lean snapshot with only the fields reconciliation consumes.
+    init(asset: PHAsset, includeAdjustmentVersion: Bool = false) {
+        self.init(
+            asset: asset,
+            isHidden: asset.isHidden,
+            adjustmentVersion: includeAdjustmentVersion
+                ? PhotoAssetAdjustmentVersion.make(for: asset) : nil,
+            includeDiagnostics: false
+        )
+    }
+
+    /// Upper bound on detailed per-asset metadata log lines per replay window.
+    static let diagnosticDetailLimit = 10
+
+    /// Snapshot consumers need only identifier, hidden state and versions.
+    /// Other PHAsset properties are read only when `includeDiagnostics` is true:
+    /// `adjustmentFormatIdentifier` alone costs ~1.5ms per asset on device
+    /// because PhotoKit loads it lazily.
     init(
         asset: PHAsset,
-        includeAdjustmentVersion: Bool = false,
-        includeResourceDiagnostics: Bool = false
+        isHidden: Bool,
+        adjustmentVersion: String?,
+        includeDiagnostics: Bool
     ) {
-        let resourceSnapshots = includeResourceDiagnostics
-            ? PHAssetResource.assetResources(for: asset).map { resource in
-                PhotoAssetResourceSnapshot(
-                    typeDescription: String(describing: resource.type),
-                    uniformTypeIdentifier: resource.uniformTypeIdentifier,
-                    originalFilename: resource.originalFilename,
-                    fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
-                )
-            }
-            : []
+        guard includeDiagnostics else {
+            self.init(
+                localIdentifier: asset.localIdentifier,
+                modificationDate: asset.modificationDate,
+                isHidden: isHidden,
+                adjustmentVersion: adjustmentVersion
+            )
+            return
+        }
+        let resourceSnapshots = PHAssetResource.assetResources(for: asset).map { resource in
+            PhotoAssetResourceSnapshot(
+                typeDescription: String(describing: resource.type),
+                uniformTypeIdentifier: resource.uniformTypeIdentifier,
+                originalFilename: resource.originalFilename,
+                fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            )
+        }
         self.init(
             localIdentifier: asset.localIdentifier,
             modificationDate: asset.modificationDate,
-            isHidden: asset.isHidden,
+            isHidden: isHidden,
             creationDate: asset.creationDate,
             isFavorite: asset.isFavorite,
             hasAdjustments: asset.hasAdjustments,
             adjustmentFormatIdentifier: asset.adjustmentFormatIdentifier,
             mediaType: asset.mediaType.rawValue,
             mediaSubtypes: UInt64(asset.mediaSubtypes.rawValue),
-            adjustmentVersion: includeAdjustmentVersion
-                ? PhotoAssetAdjustmentVersion.make(for: asset) : nil,
+            adjustmentVersion: adjustmentVersion,
             resources: resourceSnapshots
         )
     }
@@ -826,8 +851,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             snapshots.append(PhotoAssetSnapshot(
                 asset: asset,
-                includeAdjustmentVersion: true,
-                includeResourceDiagnostics: false
+                includeAdjustmentVersion: true
             ))
         }
         return snapshots
@@ -889,6 +913,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
         let options = PHFetchOptions()
         options.includeHiddenAssets = true
+        options.wantsIncrementalChangeDetails = false
         let batchSize = 300
         var cursor: String?
         var completed = 0
@@ -1058,6 +1083,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 var totalSQLiteElapsed: TimeInterval = 0
                 var totalDetailsElapsed: TimeInterval = 0
                 var totalTokenArchiveElapsed: TimeInterval = 0
+                var totalAdjustmentVersionElapsed: CFTimeInterval = 0
+                var totalSnapshotElapsed: CFTimeInterval = 0
+                var totalDiagnosticSnapshotsElapsed: CFTimeInterval = 0
+                var totalFetchElapsed: CFTimeInterval = 0
+                var totalIdentifierSetElapsed: CFTimeInterval = 0
+                var totalJournalIterateElapsed: CFTimeInterval = 0
                 var unresolvedLookups = 0
                 let replayStartedAt = Date()
 
@@ -1085,9 +1116,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     let startedAt = Date()
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
+                    options.wantsIncrementalChangeDetails = false
                     let identifiers = Array(window.affectedIdentifiers)
                     var snapshots: [PhotoAssetSnapshot] = []
                     snapshots.reserveCapacity(identifiers.count)
+                    var windowAdjustmentVersionElapsed: CFTimeInterval = 0
+                    var windowSnapshotElapsed: CFTimeInterval = 0
+                    var windowDiagnosticSnapshotsElapsed: CFTimeInterval = 0
+                    var diagnosticSnapshotCount = 0
                     // A single persistent-change batch can contain thousands of
                     // IDs even when the logical journal window is capped at 512.
                     // Bound native PHFetchResult allocations without splitting
@@ -1102,16 +1138,42 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                                 options: options
                             )
                             PhotoLibraryEnumeration.forEach(in: fetched) { asset, _ in
+                                let versionStartedAt = CFAbsoluteTimeGetCurrent()
+                                let adjustmentVersion = PhotoAssetAdjustmentVersion.make(for: asset)
+                                let snapshotStartedAt = CFAbsoluteTimeGetCurrent()
+                                windowAdjustmentVersionElapsed += snapshotStartedAt - versionStartedAt
+                                // Match the first visible snapshots that
+                                // applyForegroundPhotoChanges logs in detail.
+                                let isHidden = asset.isHidden
+                                let includeDiagnostics = !isHidden &&
+                                    diagnosticSnapshotCount < PhotoAssetSnapshot.diagnosticDetailLimit
+                                if includeDiagnostics { diagnosticSnapshotCount += 1 }
                                 snapshots.append(PhotoAssetSnapshot(
                                     asset: asset,
-                                    includeAdjustmentVersion: true,
-                                    includeResourceDiagnostics: snapshots.count < 10
+                                    isHidden: isHidden,
+                                    adjustmentVersion: adjustmentVersion,
+                                    includeDiagnostics: includeDiagnostics
                                 ))
+                                let snapshotElapsed = CFAbsoluteTimeGetCurrent() - snapshotStartedAt
+                                if includeDiagnostics {
+                                    windowDiagnosticSnapshotsElapsed += snapshotElapsed
+                                } else {
+                                    windowSnapshotElapsed += snapshotElapsed
+                                }
                             }
                         }
                     }
                     let photoKitElapsed = Date().timeIntervalSince(startedAt)
                     totalPhotoKitElapsed += photoKitElapsed
+                    totalAdjustmentVersionElapsed += windowAdjustmentVersionElapsed
+                    totalSnapshotElapsed += windowSnapshotElapsed
+                    totalDiagnosticSnapshotsElapsed += windowDiagnosticSnapshotsElapsed
+                    let windowFetchElapsed = max(
+                        0,
+                        photoKitElapsed - windowAdjustmentVersionElapsed
+                            - windowSnapshotElapsed - windowDiagnosticSnapshotsElapsed
+                    )
+                    totalFetchElapsed += windowFetchElapsed
                     fetchedSnapshotCount += snapshots.count
                     unresolvedLookups += max(0, identifiers.count - snapshots.count)
                     guard db.applyForegroundPhotoChanges(
@@ -1131,8 +1193,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         logInfo(
                             "Foreground PhotoKit window: events=\(window.changeCount), " +
                             "changedIDs=\(identifiers.count), fetched=\(snapshots.count), " +
-                            "photoKit=\(String(format: "%.1f", photoKitElapsed))s, " +
-                            "sqlite=\(String(format: "%.1f", totalElapsed - photoKitElapsed))s",
+                            "photoKit=\(String(format: "%.3f", photoKitElapsed))s " +
+                            "(fetch=\(String(format: "%.3f", windowFetchElapsed))s, " +
+                            "adjustmentVersion=\(String(format: "%.3f", windowAdjustmentVersionElapsed))s, " +
+                            "snapshot=\(String(format: "%.3f", windowSnapshotElapsed))s, " +
+                            "diagnosticSnapshots=\(String(format: "%.3f", windowDiagnosticSnapshotsElapsed))s), " +
+                            "sqlite=\(String(format: "%.3f", totalElapsed - photoKitElapsed))s",
                             category: .hash
                         )
                     }
@@ -1140,14 +1206,23 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     return true
                 }
 
-                for change in changes {
+                var changeIterator = changes.makeIterator()
+                while true {
+                    let iterateStartedAt = CFAbsoluteTimeGetCurrent()
+                    let nextChange = changeIterator.next()
+                    totalJournalIterateElapsed += CFAbsoluteTimeGetCurrent() - iterateStartedAt
+                    guard let change = nextChange else { break }
                     let detailsStartedAt = Date()
                     let details = try change.changeDetails(for: .asset)
                     totalDetailsElapsed += Date().timeIntervalSince(detailsStartedAt)
+                    // Each property access bridges a fresh Swift Set from PhotoKit;
+                    // read every identifier set exactly once per change.
+                    let identifierSetStartedAt = CFAbsoluteTimeGetCurrent()
+                    let inserted = details.insertedLocalIdentifiers
+                    let updated = details.updatedLocalIdentifiers
                     let deleted = details.deletedLocalIdentifiers
-                    let affected = details.insertedLocalIdentifiers
-                        .union(details.updatedLocalIdentifiers)
-                        .subtracting(deleted)
+                    totalIdentifierSetElapsed += CFAbsoluteTimeGetCurrent() - identifierSetStartedAt
+                    let affected = inserted.union(updated).subtracting(deleted)
 
                     // A deletion is a barrier: never merge an earlier update
                     // with a later deletion/reinsertion of the same identifier.
@@ -1158,23 +1233,23 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     }
 
                     window.append(affected: affected, deleted: deleted, token: change.changeToken)
-                    uniqueUpdatedIdentifiers.formUnion(details.updatedLocalIdentifiers)
+                    uniqueUpdatedIdentifiers.formUnion(updated)
 
                     processedBatches += 1
                     touchedAssets += affected.count + deleted.count
-                    insertedCount += details.insertedLocalIdentifiers.count
-                    updatedCount += details.updatedLocalIdentifiers.count
+                    insertedCount += inserted.count
+                    updatedCount += updated.count
                     deletedCount += deleted.count
                     if affected.isEmpty && deleted.isEmpty {
                         emptyAssetBatches += 1
                     }
 
-                    for identifier in details.insertedLocalIdentifiers {
+                    for identifier in inserted {
                         guard sampleIdentifiersLogged < 10 else { break }
                         logDebug("Foreground PhotoKit inserted: asset=\(identifier)", category: .hash)
                         sampleIdentifiersLogged += 1
                     }
-                    for identifier in details.updatedLocalIdentifiers {
+                    for identifier in updated {
                         guard sampleIdentifiersLogged < 10 else { break }
                         logDebug("Foreground PhotoKit updated: asset=\(identifier)", category: .hash)
                         sampleIdentifiersLogged += 1
@@ -1195,8 +1270,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
                 }
                 if processedBatches > 0 {
+                    let replayElapsed = Date().timeIntervalSince(replayStartedAt)
+                    let unattributedElapsed = max(
+                        0,
+                        replayElapsed - totalJournalIterateElapsed - totalDetailsElapsed - totalIdentifierSetElapsed
+                            - totalTokenArchiveElapsed - totalPhotoKitElapsed - totalSQLiteElapsed
+                    )
                     logInfo(
-                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)); emptyAssetBatches=\(emptyAssetBatches), uniqueUpdated=\(uniqueUpdatedIdentifiers.count), repeatedUpdateEvents=\(updatedCount - uniqueUpdatedIdentifiers.count), resourceSnapshots=\(fetchedSnapshotCount), unresolvedLookups=\(unresolvedLookups), sqliteWindows=\(committedWindows), journalFetch=\(String(format: "%.1f", fetchElapsed))s, changeDetails=\(String(format: "%.1f", totalDetailsElapsed))s, tokenArchive=\(String(format: "%.1f", totalTokenArchiveElapsed))s, photoKit=\(String(format: "%.1f", totalPhotoKitElapsed))s, sqlite=\(String(format: "%.1f", totalSQLiteElapsed))s, elapsed=\(String(format: "%.1f", Date().timeIntervalSince(replayStartedAt)))s",
+                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)); emptyAssetBatches=\(emptyAssetBatches), uniqueUpdated=\(uniqueUpdatedIdentifiers.count), repeatedUpdateEvents=\(updatedCount - uniqueUpdatedIdentifiers.count), resourceSnapshots=\(fetchedSnapshotCount), unresolvedLookups=\(unresolvedLookups), sqliteWindows=\(committedWindows), journalFetch=\(String(format: "%.3f", fetchElapsed))s, journalIterate=\(String(format: "%.3f", totalJournalIterateElapsed))s, changeDetails=\(String(format: "%.3f", totalDetailsElapsed))s, identifierSets=\(String(format: "%.3f", totalIdentifierSetElapsed))s, tokenArchive=\(String(format: "%.3f", totalTokenArchiveElapsed))s, photoKit=\(String(format: "%.3f", totalPhotoKitElapsed))s (fetch=\(String(format: "%.3f", totalFetchElapsed))s, adjustmentVersion=\(String(format: "%.3f", totalAdjustmentVersionElapsed))s, snapshot=\(String(format: "%.3f", totalSnapshotElapsed))s, diagnosticSnapshots=\(String(format: "%.3f", totalDiagnosticSnapshotsElapsed))s), sqlite=\(String(format: "%.3f", totalSQLiteElapsed))s, unattributed=\(String(format: "%.3f", unattributedElapsed))s, elapsed=\(String(format: "%.3f", replayElapsed))s",
                         category: .hash
                     )
                 }
@@ -1288,8 +1369,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     visible.insert(asset.localIdentifier)
                     snapshots.append(PhotoAssetSnapshot(
                         asset: asset,
-                        includeAdjustmentVersion: true,
-                        includeResourceDiagnostics: false
+                        includeAdjustmentVersion: true
                     ))
                 }
             }

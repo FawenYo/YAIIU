@@ -558,15 +558,10 @@ class HashManager: ObservableObject {
     @MainActor
     private func startBackgroundProcessing(
         identifiers: [String],
-        snapshotsToInvalidate: [PhotoAssetSnapshot]?,
-        shouldClearCache: Bool = false
+        snapshotsToInvalidate: [PhotoAssetSnapshot]?
     ) {
         guard !isStopping && !isHashingActive && !isCheckingActive else { return }
         guard let runID = HashPipelinePolicy.admitIfIdle(using: runState, performSideEffects: { _ in
-            if shouldClearCache {
-                DatabaseManager.shared.clearHashCache()
-                syncStatusCache.removeAll()
-            }
             if let snapshotsToInvalidate {
                 DatabaseManager.shared.resetCacheForModifiedAssets(
                     snapshots: snapshotsToInvalidate,
@@ -1186,15 +1181,5 @@ class HashManager: ObservableObject {
                 continuation.resume()
             }
         }
-    }
-    
-    @MainActor
-    func forceReprocess(assets: [PHAsset]) {
-        let snapshots = assets.map { PhotoAssetSnapshot(asset: $0) }
-        startBackgroundProcessing(
-            identifiers: snapshots.map { $0.localIdentifier },
-            snapshotsToInvalidate: snapshots,
-            shouldClearCache: true
-        )
     }
 }
