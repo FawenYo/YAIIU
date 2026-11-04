@@ -1940,7 +1940,9 @@ final class HashCacheRepository {
                     if snapshot.modificationDate == nil {
                         missingCurrentDateCount += 1
                     }
-                    recordSnapshotDetail(snapshot.diagnosticSummary(storedModificationDate: storedDate))
+                    if snapshotDetails.count < PhotoAssetSnapshot.diagnosticDetailLimit {
+                        recordSnapshotDetail(snapshot.diagnosticSummary(storedModificationDate: storedDate))
+                    }
                 }
                 sqlite3_finalize(statement)
                 sqlite3_finalize(updateStatement)

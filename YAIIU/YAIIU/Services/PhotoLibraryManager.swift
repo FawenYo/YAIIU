@@ -54,67 +54,51 @@ struct PhotoAssetSnapshot: Sendable {
         self.resources = resources
     }
 
-    init(
-        asset: PHAsset,
-        includeAdjustmentVersion: Bool = false,
-        includeResourceDiagnostics: Bool = false
-    ) {
+    /// Lean snapshot with only the fields reconciliation consumes.
+    init(asset: PHAsset, includeAdjustmentVersion: Bool = false) {
         self.init(
-            fullMetadataOf: asset,
+            asset: asset,
+            isHidden: asset.isHidden,
             adjustmentVersion: includeAdjustmentVersion
                 ? PhotoAssetAdjustmentVersion.make(for: asset) : nil,
-            includeResourceDiagnostics: includeResourceDiagnostics
+            includeDiagnostics: false
         )
     }
 
     /// Upper bound on detailed per-asset metadata log lines per replay window.
     static let diagnosticDetailLimit = 10
 
-    /// Replay reconciliation needs only identifier, hidden state and versions;
-    /// the remaining properties are diagnostic-only and are read only when
-    /// `includeDiagnostics` is true. `adjustmentFormatIdentifier` alone costs
-    /// ~1.5ms per asset on device because PhotoKit loads it lazily.
+    /// Snapshot consumers need only identifier, hidden state and versions.
+    /// Other PHAsset properties are read only when `includeDiagnostics` is true:
+    /// `adjustmentFormatIdentifier` alone costs ~1.5ms per asset on device
+    /// because PhotoKit loads it lazily.
     init(
         asset: PHAsset,
         isHidden: Bool,
         adjustmentVersion: String?,
         includeDiagnostics: Bool
     ) {
-        if includeDiagnostics {
-            self.init(
-                fullMetadataOf: asset,
-                adjustmentVersion: adjustmentVersion,
-                includeResourceDiagnostics: true
-            )
-        } else {
+        guard includeDiagnostics else {
             self.init(
                 localIdentifier: asset.localIdentifier,
                 modificationDate: asset.modificationDate,
                 isHidden: isHidden,
                 adjustmentVersion: adjustmentVersion
             )
+            return
         }
-    }
-
-    private init(
-        fullMetadataOf asset: PHAsset,
-        adjustmentVersion: String?,
-        includeResourceDiagnostics: Bool
-    ) {
-        let resourceSnapshots = includeResourceDiagnostics
-            ? PHAssetResource.assetResources(for: asset).map { resource in
-                PhotoAssetResourceSnapshot(
-                    typeDescription: String(describing: resource.type),
-                    uniformTypeIdentifier: resource.uniformTypeIdentifier,
-                    originalFilename: resource.originalFilename,
-                    fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
-                )
-            }
-            : []
+        let resourceSnapshots = PHAssetResource.assetResources(for: asset).map { resource in
+            PhotoAssetResourceSnapshot(
+                typeDescription: String(describing: resource.type),
+                uniformTypeIdentifier: resource.uniformTypeIdentifier,
+                originalFilename: resource.originalFilename,
+                fileSize: (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value
+            )
+        }
         self.init(
             localIdentifier: asset.localIdentifier,
             modificationDate: asset.modificationDate,
-            isHidden: asset.isHidden,
+            isHidden: isHidden,
             creationDate: asset.creationDate,
             isFavorite: asset.isFavorite,
             hasAdjustments: asset.hasAdjustments,
@@ -867,8 +851,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
             snapshots.append(PhotoAssetSnapshot(
                 asset: asset,
-                includeAdjustmentVersion: true,
-                includeResourceDiagnostics: false
+                includeAdjustmentVersion: true
             ))
         }
         return snapshots
@@ -1386,8 +1369,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     visible.insert(asset.localIdentifier)
                     snapshots.append(PhotoAssetSnapshot(
                         asset: asset,
-                        includeAdjustmentVersion: true,
-                        includeResourceDiagnostics: false
+                        includeAdjustmentVersion: true
                     ))
                 }
             }
