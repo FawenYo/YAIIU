@@ -1700,7 +1700,7 @@ final class HashCacheRepository {
                 if cacheDetails.count < 10 { cacheDetails.append(message) }
             }
             func recordSnapshotDetail(_ message: String) {
-                if snapshotDetails.count < 10 { snapshotDetails.append(message) }
+                if snapshotDetails.count < PhotoAssetSnapshot.diagnosticDetailLimit { snapshotDetails.append(message) }
             }
 
             // Bootstrap reconciles old hashes/receipts/queue entries using the
