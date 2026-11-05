@@ -144,3 +144,29 @@ final class PhotoLibraryEnumerationTests: XCTestCase {
         XCTAssertTrue(completed)
     }
 }
+
+final class BoundedQueueLookupTests: XCTestCase {
+    func testReturnsResultWhenWorkFinishesBeforeTimeout() {
+        let queue = DispatchQueue(label: "bounded-lookup-test", qos: .utility)
+
+        let result = BoundedQueueLookup.run(on: queue, timeout: .seconds(2)) { 42 }
+
+        XCTAssertEqual(result, 42)
+    }
+
+    func testReturnsNilWhenWorkOutlivesTimeoutAndStillRunsWork() {
+        let queue = DispatchQueue(label: "bounded-lookup-test", qos: .utility)
+        let release = DispatchSemaphore(value: 0)
+        let finished = expectation(description: "work still completes")
+
+        let result = BoundedQueueLookup.run(on: queue, timeout: .milliseconds(20)) { () -> Int in
+            release.wait()
+            finished.fulfill()
+            return 1
+        }
+
+        XCTAssertNil(result)
+        release.signal()
+        wait(for: [finished], timeout: 2)
+    }
+}

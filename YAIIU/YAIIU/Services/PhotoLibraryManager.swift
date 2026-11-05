@@ -526,10 +526,6 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
     }
 
-    private final class AdjustmentVersionLookup: @unchecked Sendable {
-        var versions: [String: String] = [:]
-    }
-
     private static let adjustmentVersionLookupQueue = DispatchQueue(
         label: "PhotoLibraryManager.adjustmentVersionLookup", qos: .utility
     )
@@ -549,17 +545,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         adjustmentVersionLookupInFlight = true
         adjustmentVersionLookupLock.unlock()
 
-        let lookup = AdjustmentVersionLookup()
-        let finished = DispatchSemaphore(value: 0)
-        adjustmentVersionLookupQueue.async {
-            lookup.versions = DatabaseManager.shared.storedAdjustmentVersions(for: identifiers)
+        return BoundedQueueLookup.run(on: adjustmentVersionLookupQueue, timeout: .milliseconds(50)) {
+            let versions = DatabaseManager.shared.storedAdjustmentVersions(for: identifiers)
             adjustmentVersionLookupLock.lock()
             adjustmentVersionLookupInFlight = false
             adjustmentVersionLookupLock.unlock()
-            finished.signal()
+            return versions
         }
-        guard finished.wait(timeout: .now() + .milliseconds(50)) == .success else { return nil }
-        return lookup.versions
     }
 
     /// Enumerate user-accessible albums without retaining PhotoKit collection objects in SwiftUI.
@@ -1659,5 +1651,32 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     
     func getFilename(for resource: PHAssetResource) -> String {
         return resource.resolvedFilename()
+    }
+}
+
+/// Runs `work` on `queue` and waits at most `timeout` for its result. Waiting
+/// on a `DispatchWorkItem` donates the caller's QoS to the item, unlike a
+/// semaphore, so the waited-on work runs at the caller's priority instead of
+/// causing an inversion. On timeout the work still runs to completion; its
+/// result is discarded.
+enum BoundedQueueLookup {
+    private final class ResultBox<T>: @unchecked Sendable {
+        var value: T?
+    }
+
+    static func run<T>(
+        on queue: DispatchQueue,
+        timeout: DispatchTimeInterval,
+        _ work: @escaping () -> T
+    ) -> T? {
+        let box = ResultBox<T>()
+        let item = DispatchWorkItem {
+            box.value = work()
+        }
+        queue.async(execute: item)
+        // A successful wait orders the item's write before this read; after a
+        // timeout the box is never read.
+        guard item.wait(timeout: .now() + timeout) == .success else { return nil }
+        return box.value
     }
 }
