@@ -108,16 +108,6 @@ final class ResourceBudget: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Reconciles a held reservation with the actual amount consumed. Never
-    /// blocks: temp files are already on disk, so overdrawn availability just
-    /// delays the next admission until the extra is released.
-    func adjust(from old: Int64, to new: Int64) {
-        lock.lock()
-        available += old - new
-        drainLocked()
-        lock.unlock()
-    }
-
     /// Caller holds the lock. Admits the queue head only (strict FIFO).
     private func drainLocked() {
         while let first = waiters.first {
@@ -133,38 +123,11 @@ final class ResourceBudget: @unchecked Sendable {
 }
 
 enum HashPipelinePolicy {
-    /// Keep PhotoKit writes below the previous six-request fan-out. Even though
-    /// hashing itself uses fixed-size buffers, writeData can put substantial
-    /// pressure on framework and file-cache memory when many originals arrive
-    /// at once.
-    static let photoKitDownloadWindow = 3
-
-    /// Bounds the whole producer/consumer pipeline, not just active downloads.
-    /// With three hash workers, six outstanding items still allow downloads to
-    /// stay ahead without accumulating an arbitrarily deep prepared-file queue.
-    static let outstandingWorkLimit: Int64 = 6
-
-    /// Keep prepared temp-file backlog well below the old 1.5 GB ceiling that
-    /// was observed immediately before repeated iOS memory warnings.
-    static let diskBudgetBytes: Int64 = 512 * 1024 * 1024
-
-    /// Proactively pace PhotoKit instead of waiting for a memory warning.
-    /// Recent device logs showed warnings near ~58 MiB/s sustained resource
-    /// delivery, while post-warning serialization still arrived too late to
-    /// recover. Start conservatively at 24 MiB/s and tune upward only after
-    /// long runs stay below memory pressure.
-    static let photoKitTargetBytesPerSecond: Int64 = 24 * 1024 * 1024
-    static let photoKitUnknownResourceChargeBytes: Int64 = 64 * 1024 * 1024
-
-    static func photoKitRateLimitChargeBytes(
-        estimatedBytes: Int64,
-        hasUnknownResourceSize: Bool
-    ) -> Int64 {
-        if hasUnknownResourceSize {
-            return max(estimatedBytes, photoKitUnknownResourceChargeBytes)
-        }
-        return max(estimatedBytes, 1)
-    }
+    /// Concurrent PhotoKit `requestData` requests. Streamed hashing holds only
+    /// in-flight chunks, so memory is bounded by this count rather than by
+    /// delivery throughput; three overlaps iCloud downloads without saturating
+    /// PhotoKit's daemons.
+    static let photoKitRequestWindow = 3
 
     /// Runs operations with at most `limit` in flight (FIFO order, bounded
     /// window: one completion admits the next element).
@@ -273,50 +236,10 @@ enum HashPipelinePolicy {
     }
 }
 
-/// Long-term admission pacing for PhotoKit writes. This controls how quickly
-/// new assets may enter `writeData` while still allowing an in-flight write
-/// to overlap the next one when it naturally takes longer than the spacing.
-final class PhotoKitRateLimiter: @unchecked Sendable {
-    private let lock = NSLock()
-    private let bytesPerSecond: Double
-    private var nextAdmissionUptime: TimeInterval = 0
-
-    init(bytesPerSecond: Int64) {
-        self.bytesPerSecond = Double(max(1, bytesPerSecond))
-    }
-
-    func waitForAdmission(bytes: Int64) async -> Bool {
-        let now = ProcessInfo.processInfo.systemUptime
-        let spacing = Double(max(1, bytes)) / bytesPerSecond
-
-        lock.lock()
-        let scheduled = max(now, nextAdmissionUptime)
-        nextAdmissionUptime = scheduled + spacing
-        lock.unlock()
-
-        let delay = scheduled - now
-        guard delay > 0 else { return !Task.isCancelled }
-
-        logDebug(
-            "PhotoKit rate limit: delaying next asset by \(String(format: "%.2f", delay))s for \(bytes) estimated bytes",
-            category: .hash
-        )
-
-        do {
-            try await Task.sleep(
-                nanoseconds: UInt64(delay * 1_000_000_000)
-            )
-            return !Task.isCancelled
-        } catch {
-            return false
-        }
-    }
-}
-
 /// Leaves the normal hash pipeline fast, but applies emergency backpressure
 /// after iOS reports memory pressure. Once tripped for a run, new PhotoKit
-/// writes pause briefly and then serialize so framework/native caches get time
-/// to drain instead of continuing at full throughput toward Jetsam.
+/// requests pause briefly and then serialize so framework/native caches get
+/// time to drain instead of continuing at full throughput toward Jetsam.
 final class HashMemoryPressureThrottle: @unchecked Sendable {
     private let lock = NSLock()
     private let serializedGate = ResourceBudget(limit: 1)
@@ -383,6 +306,70 @@ final class HashMemoryPressureThrottle: @unchecked Sendable {
     }
 }
 
+/// Whole-run hashing totals. Per-asset timings mix iCloud download latency
+/// with local work, so delivery strategies are compared on run throughput.
+final class HashRunStats: @unchecked Sendable {
+    struct Summary {
+        let hashedAssets: Int
+        let failedAssets: Int
+        let bytes: Int64
+        let elapsed: TimeInterval
+
+        var mebibytesPerSecond: Double {
+            elapsed > 0 ? Double(bytes) / (1024 * 1024) / elapsed : 0
+        }
+    }
+
+    /// Large libraries rarely finish in one profiling session, so throughput
+    /// is also reported periodically during the run.
+    static let progressInterval = 50
+
+    private let lock = NSLock()
+    private let startedAt: TimeInterval
+    private var hashedAssets = 0
+    private var failedAssets = 0
+    private var bytes: Int64 = 0
+
+    init(startedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        self.startedAt = startedAt
+    }
+
+    /// Returns a summary each time the hashed count reaches a multiple of
+    /// `progressInterval`.
+    @discardableResult
+    func recordHashed(
+        bytes: Int64,
+        now: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Summary? {
+        lock.lock()
+        defer { lock.unlock() }
+        hashedAssets += 1
+        self.bytes += bytes
+        return hashedAssets % Self.progressInterval == 0 ? summaryLocked(now: now) : nil
+    }
+
+    func recordFailed() {
+        lock.lock()
+        failedAssets += 1
+        lock.unlock()
+    }
+
+    func summary(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Summary {
+        lock.lock()
+        defer { lock.unlock() }
+        return summaryLocked(now: now)
+    }
+
+    private func summaryLocked(now: TimeInterval) -> Summary {
+        Summary(
+            hashedAssets: hashedAssets,
+            failedAssets: failedAssets,
+            bytes: bytes,
+            elapsed: max(0, now - startedAt)
+        )
+    }
+}
+
 class HashManager: ObservableObject {
     static let shared = HashManager()
     
@@ -418,10 +405,11 @@ class HashManager: ObservableObject {
     
     /// Number of concurrent server checks
     private let checkConcurrency = 5
-    private static let hashDiskBudget = ResourceBudget(limit: HashPipelinePolicy.diskBudgetBytes)
-    /// Assets hashed concurrently. Hashing reads with a fixed buffer, so this
-    /// only caps CPU/IO overlap, not memory.
-    private static let hashConcurrency = 3
+    /// Process-wide so cancelled requests from a stopped run, which hold their
+    /// slot until PhotoKit completes, still count against a replacement run.
+    private static let photoKitRequestSlots = ResourceBudget(
+        limit: Int64(HashPipelinePolicy.photoKitRequestWindow)
+    )
     /// Batch size for server checks
     private let checkBatchSize = 10
     /// Batch size for iCloud ID lookups
@@ -432,9 +420,6 @@ class HashManager: ObservableObject {
     private var checkTask: Task<Void, Never>?
     private var matchingTask: Task<Void, Never>?
     private let runState = HashPipelinePolicy.RunState()
-    private let photoKitRateLimiter = PhotoKitRateLimiter(
-        bytesPerSecond: HashPipelinePolicy.photoKitTargetBytesPerSecond
-    )
     private let memoryPressureThrottle = HashMemoryPressureThrottle()
     private var memoryWarningObserver: NSObjectProtocol?
 
@@ -664,48 +649,25 @@ class HashManager: ObservableObject {
                 self.processingQueue.removeAll(keepingCapacity: false)
             }
 
-            let budget = Self.hashDiskBudget
-            let hashGate = ResourceBudget(limit: Int64(Self.hashConcurrency))
-            let outstandingGate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
-            let registry = PreparedWorkRegistry()
-            var streamContinuation: AsyncStream<PreparedHashWork>.Continuation!
-            // Unbounded handoff is safe because the outstanding-work gate and
-            // byte budget cap how many prepared works can exist at once. A
-            // dropping policy would lose handoffs and leak reservations.
-            let pending = AsyncStream<PreparedHashWork>(bufferingPolicy: .unbounded) { continuation in
-                streamContinuation = continuation
+            logInfo("Hash run started: assets=\(identifiersToProcess.count)", category: .hash)
+            let stats = HashRunStats()
+            await HashPipelinePolicy.processConcurrently(
+                identifiersToProcess,
+                limit: HashPipelinePolicy.photoKitRequestWindow
+            ) { [weak self] identifier in
+                await self?.hashItem(identifier: identifier, stats: stats, runID: runID)
             }
 
-            // Producer and consumer are both children of hashTask so cancelling
-            // the run propagates to in-flight downloads, not just hashing.
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else {
-                        streamContinuation.finish()
-                        return
-                    }
-                    await self.downloadHashItems(
-                        identifiers: identifiersToProcess,
-                        budget: budget,
-                        outstandingGate: outstandingGate,
-                        registry: registry,
-                        runID: runID,
-                        continuation: streamContinuation
-                    )
-                }
-                group.addTask { [weak self] in
-                    await self?.consumeHashStream(pending, gate: hashGate, runID: runID)
-                }
-                await group.waitForAll()
-            }
-            // A cancelled iterator discards buffered elements; guarantee their
-            // temp files and reservations are released.
-            registry.sweep()
+            let summary = stats.summary()
+            logInfo(
+                "Hash run finished: hashed=\(summary.hashedAssets), failed=\(summary.failedAssets), bytes=\(summary.bytes), elapsed=\(String(format: "%.1f", summary.elapsed))s, throughput=\(String(format: "%.2f", summary.mebibytesPerSecond))MiB/s, cancelled=\(Task.isCancelled || self.shouldStop)",
+                category: .hash
+            )
 
             // Only the still-current run may clear emergency pressure mode.
-            // A stopped/stale run can have uncancellable PhotoKit writes draining
-            // while a replacement run starts; keeping the throttle global prevents
-            // that replacement from immediately restoring three-way writeData.
+            // A stopped/stale run can have PhotoKit requests draining while a
+            // replacement run starts; keeping the throttle global prevents that
+            // replacement from immediately restoring concurrent requests.
             if self.isCurrentRun(runID) {
                 self.memoryPressureThrottle.reset()
             }
@@ -721,71 +683,10 @@ class HashManager: ObservableObject {
         }
     }
 
-    /// Downloads planned resources within the budget and publishes prepared
-    /// temp files to `continuation`; also owns per-asset status UI.
-    private func downloadHashItems(
-        identifiers: [String],
-        budget: ResourceBudget,
-        outstandingGate: ResourceBudget,
-        registry: PreparedWorkRegistry,
-        runID: UUID,
-        continuation: AsyncStream<PreparedHashWork>.Continuation
-    ) async {
-        await withTaskGroup(of: Void.self) { group in
-            let limit = HashPipelinePolicy.photoKitDownloadWindow
-            var index = 0
-            var inFlight = 0
-
-            func addNext() {
-                guard index < identifiers.count, inFlight < limit else { return }
-                let identifier = identifiers[index]
-                index += 1
-                inFlight += 1
-                group.addTask { [weak self] in
-                    guard let self else { return }
-                    await self.downloadHashItem(
-                        identifier: identifier,
-                        budget: budget,
-                        outstandingGate: outstandingGate,
-                        registry: registry,
-                        runID: runID,
-                        continuation: continuation
-                    )
-                }
-            }
-
-            while inFlight < limit, index < identifiers.count { addNext() }
-
-            while inFlight > 0 {
-                _ = await group.next()
-                inFlight -= 1
-                guard !Task.isCancelled else {
-                    group.cancelAll()
-                    continue
-                }
-                addNext()
-            }
-        }
-        continuation.finish()
-    }
-
-    private func downloadHashItem(
-        identifier: String,
-        budget: ResourceBudget,
-        outstandingGate: ResourceBudget,
-        registry: PreparedWorkRegistry,
-        runID: UUID,
-        continuation: AsyncStream<PreparedHashWork>.Continuation
-    ) async {
+    /// Streams one asset's resources through SHA1 and records the result.
+    /// A PhotoKit request slot is held only while bytes are being delivered.
+    private func hashItem(identifier: String, stats: HashRunStats, runID: UUID) async {
         guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
-        guard await outstandingGate.acquire(1) else { return }
-
-        var ownsOutstandingSlot = true
-        defer {
-            if ownsOutstandingSlot {
-                outstandingGate.release(1)
-            }
-        }
 
         await MainActor.run {
             guard self.isCurrentRun(runID) else { return }
@@ -798,178 +699,121 @@ class HashManager: ObservableObject {
 
         guard let asset = fetchResult.firstObject,
               let resources = AssetResourceSelector.select(for: asset) else {
-            await MainActor.run {
-                guard self.isCurrentRun(runID) else { return }
-                self.syncStatusCache[identifier] = .error
-                self.processedAssetsCount += 1
-                self.objectWillChange.send()
-            }
+            stats.recordFailed()
+            await markHashFailed(identifier, runID: runID)
             return
         }
 
-        // Keep PhotoKit's estimated size for proactive rate limiting, but not
-        // for temp-file budget reservations: it is not an upper bound on
-        // delivery or native PhotoKit memory usage. Serializing prepared work
-        // leaves headroom for the rest of the app even on large libraries.
-        let rateLimitCharge = HashPipelinePolicy.photoKitRateLimitChargeBytes(
-            estimatedBytes: resources.plan.estimatedBytes,
-            hasUnknownResourceSize: resources.plan.hasUnknownResourceSize
-        )
-        guard await photoKitRateLimiter.waitForAdmission(bytes: rateLimitCharge) else { return }
-
-        let reservation = HashPipelinePolicy.diskBudgetBytes
-        guard await budget.acquire(reservation) else { return }
-
+        let slots = Self.photoKitRequestSlots
+        guard await slots.acquire(1) else { return }
         guard let pressurePermitHeld = await memoryPressureThrottle.acquireIfNeeded() else {
-            budget.release(reservation)
+            slots.release(1)
             return
         }
 
-        let files: AssetTempFiles
+        let hashStartedAt = Date()
+        let result: MultiResourceHashResult
         do {
-            files = try await HashService.shared.prepare(resources)
+            result = try await HashService.shared.streamHash(resources)
             memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
+            slots.release(1)
         } catch {
             memoryPressureThrottle.releaseIfNeeded(pressurePermitHeld)
-            budget.release(reservation)
-            if !Task.isCancelled {
-                logError("Resource download failed: asset=\(identifier), error=\(error.localizedDescription)", category: .hash)
-                await MainActor.run {
-                    guard self.isCurrentRun(runID) else { return }
-                    self.syncStatusCache[identifier] = .error
-                    self.processedAssetsCount += 1
-                    self.objectWillChange.send()
-                }
-            }
+            slots.release(1)
+            guard !Task.isCancelled else { return }
+            stats.recordFailed()
+            logError("Hash failed: asset=\(identifier), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s, error=\(error.localizedDescription)", category: .hash)
+            await markHashFailed(identifier, runID: runID)
             return
         }
 
-        let charged = max(reservation, files.actualBytes)
-        budget.adjust(from: reservation, to: charged)
-
-        // Hand the files to the consumer; the registry entry lets the run sweep
-        // them if the cancelled stream discards the buffered handoff. The
-        // reservation stays charged until the consumer completes the work.
-        let work = PreparedHashWork(files: files, reservedBytes: charged, budget: budget)
-        registry.record(work)
-        work.onCompletion { [weak registry, weak work] in
-            outstandingGate.release(1)
-            guard let work else { return }
-            registry?.remove(work)
-        }
-        ownsOutstandingSlot = false
-        continuation.yield(work)
-    }
-
-    /// Consumer: keeps `hashConcurrency` assets hashing at a time; each item's
-    /// disk reservation is released after its files are deleted.
-    private func consumeHashStream(
-        _ stream: AsyncStream<PreparedHashWork>,
-        gate: ResourceBudget,
-        runID: UUID
-    ) async {
-        // Discard completed child tasks as they finish instead of retaining a
-        // run-sized TaskGroup history while processing a large library.
-        await withDiscardingTaskGroup { group in
-            for await work in stream {
-                guard await gate.acquire(1) else {
-                    work.complete()
-                    for await orphan in stream { orphan.complete() }
-                    break
-                }
-                group.addTask { [weak self] in
-                    defer { gate.release(1) }
-                    guard let self else {
-                        work.complete()
-                        return
-                    }
-                    await self.hashPreparedAsset(work, runID: runID)
-                }
-            }
-        }
-    }
-
-    /// Hashes one prepared asset, records status/progress, and releases its
-    /// disk reservation once the temp files are gone.
-    private func hashPreparedAsset(_ work: PreparedHashWork, runID: UUID) async {
-        let files = work.files
-        defer { work.complete() }
-        let identifier = files.plan.localIdentifier
-        let hashStartedAt = Date()
-        guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
-
-        do {
-            let result = try await HashService.shared.hash(files)
-            guard isCurrentRun(runID), !shouldStop else { return }
-            logDebug(
-                "Hash finished: asset=\(identifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s",
+        // Counts delivered bytes for throughput, including results later
+        // discarded because the asset was edited during hashing.
+        let progress = stats.recordHashed(bytes: result.primaryFileSize + (result.rawFileSize ?? 0))
+        guard isCurrentRun(runID), !shouldStop else { return }
+        if let progress {
+            logInfo(
+                "Hash run progress: hashed=\(progress.hashedAssets), failed=\(progress.failedAssets), bytes=\(progress.bytes), elapsed=\(String(format: "%.1f", progress.elapsed))s, throughput=\(String(format: "%.2f", progress.mebibytesPerSecond))MiB/s",
                 category: .hash
             )
+        }
+        logDebug(
+            "Hash finished: asset=\(identifier), primaryBytes=\(result.primaryFileSize), rawBytes=\(result.rawFileSize ?? 0), hasRAW=\(result.hasRAW), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s",
+            category: .hash
+        )
 
-            // The asset may be edited while its resources are being hashed.
-            // Never persist a hash or clear pending work for a superseded version.
-            let options = PHFetchOptions()
-            options.includeHiddenAssets = true
-            let currentAsset = PHAsset.fetchAssets(
-                withLocalIdentifiers: [identifier], options: options
-            ).firstObject
-            let currentSnapshot = currentAsset.map {
-                PhotoAssetSnapshot(asset: $0, includeAdjustmentVersion: true)
-            }
-            guard currentSnapshot?.adjustmentVersion == files.plan.adjustmentVersion else {
-                if let currentSnapshot {
-                    DatabaseManager.shared.resetCacheForModifiedAssets(
-                        snapshots: [currentSnapshot]
-                    )
-                }
-                logWarning(
-                    "Hash result discarded because the PhotoKit adjustment version changed during hashing: asset=\(identifier)",
-                    category: .hash
-                )
-                return
-            }
+        await persistHashResult(result, plan: resources.plan, runID: runID)
+    }
 
-            // Only associate a hash with the version observed while selecting its
-            // source resources. A date read after hashing could describe an edit
-            // made after the temporary files were captured.
-            if files.plan.modificationDate == nil {
-                logWarning(
-                    "Hash cache version unavailable at resource selection: asset=\(identifier); a later PhotoKit update may require rehashing",
-                    category: .hash
+    private func persistHashResult(
+        _ result: MultiResourceHashResult,
+        plan: AssetResourcePlan,
+        runID: UUID
+    ) async {
+        let identifier = plan.localIdentifier
+
+        // The asset may be edited while its resources are being hashed.
+        // Never persist a hash or clear pending work for a superseded version.
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = true
+        let currentAsset = PHAsset.fetchAssets(
+            withLocalIdentifiers: [identifier], options: options
+        ).firstObject
+        let currentSnapshot = currentAsset.map {
+            PhotoAssetSnapshot(asset: $0, includeAdjustmentVersion: true)
+        }
+        guard currentSnapshot?.adjustmentVersion == plan.adjustmentVersion else {
+            if let currentSnapshot {
+                DatabaseManager.shared.resetCacheForModifiedAssets(
+                    snapshots: [currentSnapshot]
                 )
             }
-            DatabaseManager.shared.saveMultiResourceHashCache(
-                localIdentifier: result.localIdentifier,
-                primaryHash: result.primaryHash,
-                rawHash: result.rawHash,
-                hasRAW: result.hasRAW,
-                modificationDate: files.plan.modificationDate,
-                adjustmentVersion: files.plan.adjustmentVersion
+            logWarning(
+                "Hash result discarded because the PhotoKit adjustment version changed during hashing: asset=\(identifier)",
+                category: .hash
             )
-            guard isCurrentRun(runID) else { return }
+            return
+        }
 
-            await MainActor.run {
-                guard self.isCurrentRun(runID) else { return }
-                self.processedAssetsCount += 1
-                self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
-                self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
-                self.syncStatusCache[identifier] = .pending
-                self.objectWillChange.send()
-            }
-        } catch {
-            guard !Task.isCancelled else { return }
-            logError("Hash failed: asset=\(identifier), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(hashStartedAt)))s, error=\(error.localizedDescription)", category: .hash)
-            await MainActor.run {
-                guard self.isCurrentRun(runID) else { return }
-                self.processedAssetsCount += 1
-                self.syncStatusCache[identifier] = .error
-                self.objectWillChange.send()
-            }
+        // Only associate a hash with the version observed while selecting its
+        // source resources. A date read after hashing could describe an edit
+        // made after the bytes were delivered.
+        if plan.modificationDate == nil {
+            logWarning(
+                "Hash cache version unavailable at resource selection: asset=\(identifier); a later PhotoKit update may require rehashing",
+                category: .hash
+            )
+        }
+        DatabaseManager.shared.saveMultiResourceHashCache(
+            localIdentifier: result.localIdentifier,
+            primaryHash: result.primaryHash,
+            rawHash: result.rawHash,
+            hasRAW: result.hasRAW,
+            modificationDate: plan.modificationDate,
+            adjustmentVersion: plan.adjustmentVersion
+        )
+        guard isCurrentRun(runID) else { return }
+
+        await MainActor.run {
+            guard self.isCurrentRun(runID) else { return }
+            self.processedAssetsCount += 1
+            self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
+            self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
+            self.syncStatusCache[identifier] = .pending
+            self.objectWillChange.send()
         }
     }
 
-    
-    private func startServerCheck(runID: UUID) {
+    private func markHashFailed(_ identifier: String, runID: UUID) async {
+        await MainActor.run {
+            guard self.isCurrentRun(runID) else { return }
+            self.syncStatusCache[identifier] = .error
+            self.processedAssetsCount += 1
+            self.objectWillChange.send()
+        }
+    }
+
+        private func startServerCheck(runID: UUID) {
         guard isCurrentRun(runID), !shouldStop else {
             finishProcessing(runID: runID)
             return
@@ -1146,9 +990,9 @@ class HashManager: ObservableObject {
         let tasks = [hashTask, checkTask, matchingTask].compactMap { $0 }
         tasks.forEach { $0.cancel() }
 
-        // PhotoKit writes cannot be cancelled. Let their detached run cleanup
-        // finish later while immediately retiring this run from the UI. The
-        // shared disk budget keeps a replacement run behind those writes.
+        // Cancelled PhotoKit requests finish draining asynchronously. Retire
+        // this run from the UI immediately; the process-wide request slots
+        // keep a replacement run behind requests that are still draining.
         isProcessing = false
         isHashingActive = false
         isCheckingActive = false

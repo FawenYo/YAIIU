@@ -318,7 +318,7 @@ final class HashPipelinePolicyTests: XCTestCase {
             return runIDs
         }
 
-        guard let winner = winners.only else {
+        guard winners.count == 1, let winner = winners.first else {
             return XCTFail("Expected exactly one run to start, got \(winners.count)")
         }
         XCTAssertTrue(state.owns(winner))
@@ -350,41 +350,6 @@ final class HashPipelinePolicyTests: XCTestCase {
         XCTAssertTrue(state.owns(finalRunID))
         XCTAssertTrue(state.finish(finalRunID))
         XCTAssertFalse(state.owns(finalRunID))
-    }
-
-    func testPhotoKitRateLimitUsesKnownEstimate() {
-        let estimate: Int64 = 42 * 1024 * 1024
-        XCTAssertEqual(
-            HashPipelinePolicy.photoKitRateLimitChargeBytes(
-                estimatedBytes: estimate,
-                hasUnknownResourceSize: false
-            ),
-            estimate
-        )
-    }
-
-    func testPhotoKitRateLimitUsesConservativeUnknownCharge() {
-        XCTAssertEqual(
-            HashPipelinePolicy.photoKitRateLimitChargeBytes(
-                estimatedBytes: 0,
-                hasUnknownResourceSize: true
-            ),
-            HashPipelinePolicy.photoKitUnknownResourceChargeBytes
-        )
-
-        let knownPortion: Int64 = 96 * 1024 * 1024
-        XCTAssertEqual(
-            HashPipelinePolicy.photoKitRateLimitChargeBytes(
-                estimatedBytes: knownPortion,
-                hasUnknownResourceSize: true
-            ),
-            knownPortion
-        )
-    }
-
-    func testPhotoKitRateLimitIsBelowObservedWarningThroughput() {
-        XCTAssertEqual(HashPipelinePolicy.photoKitTargetBytesPerSecond, 24 * 1024 * 1024)
-        XCTAssertLessThan(HashPipelinePolicy.photoKitTargetBytesPerSecond, 58 * 1024 * 1024)
     }
 
     func testMemoryPressureThrottleUsesFastPathBeforeWarning() async {
@@ -449,56 +414,171 @@ final class HashPipelinePolicyTests: XCTestCase {
         }
     }
 
-    func testHashPipelineMemoryPressureLimits() {
-        XCTAssertEqual(HashPipelinePolicy.photoKitDownloadWindow, 3)
-        XCTAssertEqual(HashPipelinePolicy.outstandingWorkLimit, 6)
-        XCTAssertEqual(HashPipelinePolicy.diskBudgetBytes, 512 * 1024 * 1024)
-    }
+    func testPhotoKitRequestSlotsAdmitUpToRequestWindow() async {
+        let slots = ResourceBudget(limit: Int64(HashPipelinePolicy.photoKitRequestWindow))
 
-    func testOutstandingWorkGateBlocksPastConfiguredLimit() async {
-        let gate = ResourceBudget(limit: HashPipelinePolicy.outstandingWorkLimit)
-
-        for _ in 0..<Int(HashPipelinePolicy.outstandingWorkLimit) {
-            let acquired = await gate.acquire(1)
-            XCTAssertTrue(acquired)
+        for _ in 0..<HashPipelinePolicy.photoKitRequestWindow {
+            let admitted = await slots.acquire(1)
+            XCTAssertTrue(admitted)
         }
 
-        let probe = ConcurrencyProbe()
-        let waiter = Task {
-            if await gate.acquire(1) {
-                await probe.bump()
-                gate.release(1)
+        let waiter = Task { await slots.acquire(1) }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        waiter.cancel()
+        let extraAdmitted = await waiter.value
+        XCTAssertFalse(extraAdmitted)
+    }
+
+    func testHashRunStatsSummarizesThroughput() {
+        let stats = HashRunStats(startedAt: 100)
+        stats.recordHashed(bytes: 1024 * 1024)
+        stats.recordHashed(bytes: 3 * 1024 * 1024)
+        stats.recordFailed()
+
+        let summary = stats.summary(now: 102)
+
+        XCTAssertEqual(summary.hashedAssets, 2)
+        XCTAssertEqual(summary.failedAssets, 1)
+        XCTAssertEqual(summary.bytes, 4 * 1024 * 1024)
+        XCTAssertEqual(summary.elapsed, 2, accuracy: 0.0001)
+        XCTAssertEqual(summary.mebibytesPerSecond, 2, accuracy: 0.0001)
+    }
+
+    func testHashRunStatsReportsProgressEveryInterval() {
+        let stats = HashRunStats(startedAt: 100)
+        var reports: [Int] = []
+
+        for _ in 0..<(HashRunStats.progressInterval * 2 + 1) {
+            if let progress = stats.recordHashed(bytes: 1) {
+                reports.append(progress.hashedAssets)
             }
         }
 
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        let admittedWhileFull = await probe.totalCount
-        XCTAssertEqual(admittedWhileFull, 0, "producer must wait while all outstanding-work slots are occupied")
+        XCTAssertEqual(reports, [HashRunStats.progressInterval, HashRunStats.progressInterval * 2])
+    }
 
-        gate.release(1)
-        await waiter.value
-        let admittedAfterRelease = await probe.totalCount
-        XCTAssertEqual(admittedAfterRelease, 1)
+    func testHashRunStatsReportsZeroThroughputWithoutElapsedTime() {
+        let stats = HashRunStats(startedAt: 100)
+        stats.recordHashed(bytes: 1024)
 
-        for _ in 1..<Int(HashPipelinePolicy.outstandingWorkLimit) {
-            gate.release(1)
+        XCTAssertEqual(stats.summary(now: 100).mebibytesPerSecond, 0)
+    }
+
+    func testStreamingHashMatchesFileHasherForSameBytes() async throws {
+        let first = Data(repeating: 0x11, count: 700_000)
+        let second = Data(repeating: 0x22, count: 300_001)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stream-hash-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try (first + second).write(to: url)
+        let expected = try FileHasher.sha1Hex(ofFileAt: url, shouldCancel: { false })
+
+        let request = StreamingHashRequest()
+        let result = try await withCheckedThrowingContinuation { continuation in
+            guard request.install(continuation) else { return }
+            request.receive(first)
+            request.receive(second)
+            request.finish(error: nil)
+        }
+
+        XCTAssertEqual(result.hash, expected.hash)
+        XCTAssertEqual(result.size, expected.size)
+    }
+
+    func testStreamingHashPropagatesDeliveryError() async {
+        struct DeliveryError: Error {}
+        let request = StreamingHashRequest()
+
+        do {
+            _ = try await withCheckedThrowingContinuation { continuation in
+                guard request.install(continuation) else { return }
+                request.receive(Data("abc".utf8))
+                request.finish(error: DeliveryError())
+            }
+            XCTFail("Expected delivery error")
+        } catch {
+            XCTAssertTrue(error is DeliveryError)
         }
     }
 
-    func testWholeBudgetReservationSerializesPreparedAssets() async {
-        let reservation = HashPipelinePolicy.diskBudgetBytes
-        let budget = ResourceBudget(limit: reservation)
-        let firstAcquired = await budget.acquire(reservation)
-        XCTAssertTrue(firstAcquired)
+    func testStreamingHashCancelledBeforeInstallThrowsAndCancelsLateRequest() async {
+        let request = StreamingHashRequest()
+        request.cancel()
 
-        // A second asset must not enter PhotoKit while the first prepared
-        // asset still owns its full-budget reservation.
-        let waiter = Task { await budget.acquire(reservation) }
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        waiter.cancel()
-        let secondAcquired = await waiter.value
-        XCTAssertFalse(secondAcquired)
-        budget.release(reservation)
+        do {
+            _ = try await withCheckedThrowingContinuation { continuation in
+                _ = request.install(continuation)
+            }
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+
+        var cancelledRequest = false
+        request.attachCancellation { cancelledRequest = true }
+        XCTAssertTrue(cancelledRequest)
+    }
+
+    func testStreamingHashCancellationWaitsForCompletionAndIgnoresLateDelivery() async {
+        let request = StreamingHashRequest()
+        var cancelCount = 0
+        var resumedBeforeCompletion = true
+
+        do {
+            _ = try await withCheckedThrowingContinuation { continuation in
+                guard request.install(continuation) else { return }
+                request.attachCancellation { cancelCount += 1 }
+                request.receive(Data("abc".utf8))
+                request.cancel()
+                request.receive(Data("late".utf8))
+                request.cancel()
+                resumedBeforeCompletion = false
+                request.finish(error: nil)
+            }
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(cancelCount, 1)
+        XCTAssertFalse(resumedBeforeCompletion)
+    }
+
+    func testStreamingHashCancelBeforeAttachCancelsRequestImmediately() async {
+        let request = StreamingHashRequest()
+        var cancelledRequest = false
+
+        do {
+            _ = try await withCheckedThrowingContinuation { continuation in
+                guard request.install(continuation) else { return }
+                request.cancel()
+                request.attachCancellation { cancelledRequest = true }
+                request.finish(error: nil)
+            }
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertTrue(cancelledRequest)
+    }
+
+    func testStreamingHashCancellationOverridesDeliveryError() async {
+        struct DeliveryError: Error {}
+        let request = StreamingHashRequest()
+
+        do {
+            _ = try await withCheckedThrowingContinuation { continuation in
+                guard request.install(continuation) else { return }
+                request.cancel()
+                request.finish(error: DeliveryError())
+            }
+            XCTFail("Expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testHashPipelineRequestWindow() {
+        XCTAssertEqual(HashPipelinePolicy.photoKitRequestWindow, 3)
     }
 
     func testBudgetBlocksWhenExhaustedThenAdmitsOnRelease() async {
@@ -603,33 +683,6 @@ final class HashPipelinePolicyTests: XCTestCase {
         budget.release(5)
         let next = await budget.acquire(5)
         XCTAssertTrue(next)
-    }
-
-    func testAdjustReconcilesReservation() async {
-        let budget = ResourceBudget(limit: 10)
-        let held = await budget.acquire(2)
-        XCTAssertTrue(held)
-        // Actual usage larger than reserved: availability may go negative and
-        // the surplus is charged against later releases.
-        budget.adjust(from: 2, to: 9)
-        let probe = ConcurrencyProbe()
-        let waiter = Task {
-            if await budget.acquire(3) { await probe.bump() }
-        }
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        let markedEarly = await probe.totalCount
-        XCTAssertEqual(markedEarly, 0)
-
-        budget.release(9)
-        await waiter.value
-        let markedFinal = await probe.totalCount
-        XCTAssertEqual(markedFinal, 1)
-    }
-}
-
-private extension Collection {
-    var only: Element? {
-        count == 1 ? first : nil
     }
 }
 

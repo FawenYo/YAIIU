@@ -1,23 +1,22 @@
 import Foundation
 import Photos
 
-/// Delivers original photo-library bytes through a temp file instead of the
-/// `requestData` chunk stream.
+/// Delivers original photo-library bytes through a temp file for uploads, which
+/// need a re-readable body for URLSession retries. Hashing streams through
+/// `ResourceStreamHasher` instead.
 ///
-/// PhotoKit's `requestData` retains copies of every delivered chunk inside
-/// PhotoLibraryServicesCore and never releases them (verified via Instruments:
-/// ~10 MB pinned per hashed asset, app jetsam-killed after a few hundred
-/// photos). `writeData(for:toFile:...)` writes the same bytes straight to a
-/// caller-owned file, so peak memory stays constant at the read buffer size.
 /// The file is byte-identical to the concatenated `requestData` chunks, so
-/// checksums computed this way match existing hash-cache entries.
+/// checksums computed from it match hash-cache entries. An earlier iOS release
+/// was observed retaining ~10 MB per asset inside PhotoLibraryServicesCore when
+/// using `requestData`; on iOS 27.0.1 streamed hashing stayed flat in memory,
+/// including a 185 MB video.
 enum ResourceFileAccess {
 
     /// Writes the resource's original data to a fresh temp file and returns its
     /// URL. The caller owns the file and must delete it when done.
     ///
     /// `writeData` has no public cancellation API; cancellation is reported
-    /// after PhotoKit finishes so callers keep disk reservations charged.
+    /// after PhotoKit finishes so callers keep their admission until then.
     static func tempFile(for resource: PHAssetResource) async throws -> URL {
         let manager = PHAssetResourceManager.default()
         let options = PHAssetResourceRequestOptions()
@@ -124,6 +123,130 @@ enum ResourceFileAccess {
         func fileSize(at url: URL) -> Int {
             ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0
         }
+    }
+}
+
+/// Exactly-once state for one streamed `requestData` hash. Like the `writeData`
+/// path, cancellation stops hashing but keeps the continuation pending until
+/// PhotoKit reports completion, so callers hold their admission until the
+/// request has actually drained.
+final class StreamingHashRequest: @unchecked Sendable {
+    private let lock = NSLock()
+    private let sha1 = StreamingSHA1()
+    private var continuation: CheckedContinuation<(hash: String, size: Int), Error>?
+    private var cancelRequest: (() -> Void)?
+    private var isCancelled = false
+    private var isFinished = false
+
+    /// Returns false when already cancelled; the continuation is resumed here.
+    func install(_ continuation: CheckedContinuation<(hash: String, size: Int), Error>) -> Bool {
+        lock.lock()
+        if isCancelled {
+            isFinished = true
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return false
+        }
+        self.continuation = continuation
+        lock.unlock()
+        return true
+    }
+
+    /// Runs `cancel` immediately when cancellation already happened.
+    func attachCancellation(_ cancel: @escaping () -> Void) {
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            cancel()
+            return
+        }
+        cancelRequest = cancel
+        lock.unlock()
+    }
+
+    func receive(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isCancelled, !isFinished else { return }
+        sha1.update(data: chunk)
+    }
+
+    func finish(error: Error?) {
+        lock.lock()
+        guard !isFinished, let continuation else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        self.continuation = nil
+        let cancelled = isCancelled
+        let result = !cancelled && error == nil ? (sha1.finalize(), sha1.totalSize) : nil
+        lock.unlock()
+
+        if cancelled {
+            continuation.resume(throwing: CancellationError())
+        } else if let error {
+            continuation.resume(throwing: error)
+        } else if let result {
+            continuation.resume(returning: result)
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !isCancelled else {
+            lock.unlock()
+            return
+        }
+        isCancelled = true
+        let cancelRequest = self.cancelRequest
+        self.cancelRequest = nil
+        lock.unlock()
+
+        cancelRequest?()
+    }
+}
+
+/// Hashes a resource from `requestData` chunks without writing a temp file.
+enum ResourceStreamHasher {
+    static func sha1Hex(of resource: PHAssetResource) async throws -> (hash: String, size: Int) {
+        let manager = PHAssetResourceManager.default()
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+
+        let request = StreamingHashRequest()
+        let startedAt = Date()
+
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard request.install(continuation) else { return }
+                let requestID = manager.requestData(
+                    for: resource,
+                    options: options,
+                    dataReceivedHandler: { chunk in
+                        // Drain anything autoreleased while consuming a chunk so
+                        // profiling isolates retention inside PhotoKit itself.
+                        autoreleasepool {
+                            request.receive(chunk)
+                        }
+                    },
+                    completionHandler: { error in
+                        request.finish(error: error)
+                    }
+                )
+                request.attachCancellation {
+                    manager.cancelDataRequest(requestID)
+                }
+            }
+        } onCancel: {
+            request.cancel()
+        }
+
+        logDebug(
+            "Resource stream hashed: type=\(String(describing: resource.type)), bytes=\(result.size), elapsed=\(String(format: "%.2f", Date().timeIntervalSince(startedAt)))s",
+            category: .hash
+        )
+        return result
     }
 }
 
