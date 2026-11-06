@@ -75,9 +75,18 @@ class ServerAssetSyncService {
 
     /// Converts a Base64-encoded checksum to lowercase hexadecimal string.
     /// Immich server returns checksums in Base64 format, but iOS app calculates SHA1 in hex format.
-    private func convertBase64ToHex(_ base64String: String) -> String? {
+    static func convertBase64ToHex(_ base64String: String) -> String? {
         guard let data = Data(base64Encoded: base64String) else { return nil }
-        return data.map { String(format: "%02x", $0) }.joined()
+        // String(format:) allocates an autoreleased NSString per byte, which
+        // accumulates across a full sync of every server asset.
+        let digits = Array("0123456789abcdef".utf8)
+        var hex = [UInt8]()
+        hex.reserveCapacity(data.count * 2)
+        for byte in data {
+            hex.append(digits[Int(byte >> 4)])
+            hex.append(digits[Int(byte & 0x0f)])
+        }
+        return String(decoding: hex, as: UTF8.self)
     }
 
     static let shared = ServerAssetSyncService()
@@ -257,30 +266,36 @@ class ServerAssetSyncService {
             )
         }
 
-        let allAssets = streamResult.assets
+        let fetchedCount = streamResult.assets.count
+        let streamAcks = streamResult.acks
         logInfo(
-            "Streams returned assets=\(allAssets.count), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
+            "Streams returned assets=\(fetchedCount), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
                 + "metadataDeletes=\(metadataResult.iCloudIdDeletes.count)",
             category: .sync
         )
 
         reportProgress(
-            SyncProgress(phase: .processingAssets, fetchedCount: allAssets.count, message: ""),
+            SyncProgress(phase: .processingAssets, fetchedCount: fetchedCount, message: ""),
             handler: progressHandler
         )
 
-        let activeAssets = allAssets.filter { !$0.isDeleted }
-        let deletedIds = allAssets.filter { $0.isDeleted }.map { $0.id }
         let syncType = lastAck == nil ? "full" : "delta"
 
-        let serverAssetRecords = activeAssets.compactMap { asset -> ServerAssetRecord? in
-            guard let serverChecksum = convertBase64ToHex(asset.checksum) else {
+        var deletedIds: [String] = []
+        var serverAssetRecords: [ServerAssetRecord] = []
+        serverAssetRecords.reserveCapacity(fetchedCount)
+        for asset in streamResult.assets {
+            if asset.isDeleted {
+                deletedIds.append(asset.id)
+                continue
+            }
+            guard let serverChecksum = Self.convertBase64ToHex(asset.checksum) else {
                 logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
-                return nil
+                continue
             }
             let sourceChecksum = metadataResult.sourceChecksumUpserts[asset.id]
                 ?? (syncType == "delta" ? dbManager.getServerAssetByImmichId(asset.id)?.sourceChecksum : nil)
-            return ServerAssetRecord(
+            serverAssetRecords.append(ServerAssetRecord(
                 immichId: asset.id,
                 checksum: serverChecksum,
                 sourceChecksum: sourceChecksum,
@@ -289,11 +304,11 @@ class ServerAssetSyncService {
                 updatedAt: asset.fileCreatedAt,
                 iCloudId: metadataResult.iCloudIdUpserts[asset.id],
                 ownerId: asset.ownerId
-            )
+            ))
         }
 
         reportProgress(
-            SyncProgress(phase: .savingToDatabase, fetchedCount: allAssets.count, message: ""),
+            SyncProgress(phase: .savingToDatabase, fetchedCount: fetchedCount, message: ""),
             handler: progressHandler
         )
 
@@ -368,7 +383,7 @@ class ServerAssetSyncService {
             throw SyncError.syncFailed(reason: "Failed to persist source checksum updates")
         }
 
-        let acks = Array(Set(streamResult.acks + metadataResult.acks)).sorted()
+        let acks = Array(Set(streamAcks + metadataResult.acks)).sorted()
         let newAck = acks.last
         guard dbManager.saveSyncMetadata(
             lastSyncTime: Date(),

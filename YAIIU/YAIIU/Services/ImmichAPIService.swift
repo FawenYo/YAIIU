@@ -796,19 +796,19 @@ class ImmichAPIService: NSObject {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw ImmichAPIError.invalidResponse
             }
 
             guard httpResponse.statusCode == 200 else {
-                let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                let errorMessage = try await Self.errorMessage(from: bytes)
                 logError("Asset stream failed: HTTP \(httpResponse.statusCode) - \(errorMessage)", category: .api)
                 throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
 
-            let result = Self.parseAssetStream(data)
+            let result = try await Self.parseAssetStream(bytes)
             logInfo(
                 "Asset stream returned \(result.assets.count) assets and \(result.acks.count) checkpoints",
                 category: .api
@@ -875,7 +875,7 @@ class ImmichAPIService: NSObject {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 logError("Invalid response from sync stream", category: .api)
@@ -883,12 +883,12 @@ class ImmichAPIService: NSObject {
             }
 
             guard httpResponse.statusCode == 200 else {
-                let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+                let errorMessage = try await Self.errorMessage(from: bytes)
                 logError("Sync stream failed: HTTP \(httpResponse.statusCode) - \(errorMessage)", category: .api)
                 throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
 
-            let result = Self.parseAssetMetadataStream(data)
+            let result = try await Self.parseAssetMetadataStream(bytes)
             logInfo(
                 "Sync stream returned \(result.iCloudIdUpserts.count) iCloudId upserts, "
                     + "\(result.iCloudIdDeletes.count) deletes, and \(result.acks.count) checkpoints",
@@ -904,15 +904,53 @@ class ImmichAPIService: NSObject {
     }
 
     static func parseAssetMetadataStream(_ data: Data) -> AssetMetadataStreamResult {
-        var iCloudIdUpserts: [String: String] = [:]
-        var sourceChecksumUpserts: [String: String] = [:]
-        var iCloudIdDeletes: Set<String> = []
-        var acksByType: [String: String] = [:]
-        var state: SyncStreamResultState = .data
+        var parser = AssetMetadataStreamParser()
+        forEachStreamObject(in: data, description: "Asset metadata stream") { parser.consume($0) }
+        return parser.result
+    }
 
-        for object in streamObjects(from: data, description: "Asset metadata stream") {
+    static func parseAssetMetadataStream<Bytes: AsyncSequence>(
+        _ bytes: Bytes
+    ) async throws -> AssetMetadataStreamResult where Bytes.Element == UInt8 {
+        var parser = AssetMetadataStreamParser()
+        try await forEachStreamObject(in: bytes, description: "Asset metadata stream") { parser.consume($0) }
+        return parser.result
+    }
+
+    static func parseAssetStream(_ data: Data) -> AssetStreamResult {
+        var parser = AssetStreamParser()
+        forEachStreamObject(in: data, description: "Asset stream") { parser.consume($0) }
+        return parser.result
+    }
+
+    static func parseAssetStream<Bytes: AsyncSequence>(
+        _ bytes: Bytes
+    ) async throws -> AssetStreamResult where Bytes.Element == UInt8 {
+        var parser = AssetStreamParser()
+        try await forEachStreamObject(in: bytes, description: "Asset stream") { parser.consume($0) }
+        return parser.result
+    }
+
+    private struct AssetMetadataStreamParser {
+        private var iCloudIdUpserts: [String: String] = [:]
+        private var sourceChecksumUpserts: [String: String] = [:]
+        private var iCloudIdDeletes: Set<String> = []
+        private var acksByType: [String: String] = [:]
+        private var state: SyncStreamResultState = .data
+
+        var result: AssetMetadataStreamResult {
+            AssetMetadataStreamResult(
+                iCloudIdUpserts: iCloudIdUpserts,
+                sourceChecksumUpserts: sourceChecksumUpserts,
+                iCloudIdDeletes: iCloudIdDeletes,
+                acksByType: acksByType,
+                state: state
+            )
+        }
+
+        mutating func consume(_ object: [String: Any]) {
             guard let type = object["type"] as? String else {
-                continue
+                return
             }
 
             switch type {
@@ -922,11 +960,11 @@ class ImmichAPIService: NSObject {
                       let key = eventData["key"] as? String,
                       let value = eventData["value"] as? [String: Any]
                 else {
-                    continue
+                    return
                 }
                 guard key == RemoteAssetMetadataItem.mobileAppKey else {
                     collectLatestAck(from: object, into: &acksByType)
-                    continue
+                    return
                 }
                 if let iCloudId = value["iCloudId"] as? String, !iCloudId.isEmpty {
                     iCloudIdUpserts[assetId] = iCloudId
@@ -937,7 +975,7 @@ class ImmichAPIService: NSObject {
                     sourceChecksumUpserts[assetId] = sourceChecksum.lowercased()
                 }
                 guard iCloudIdUpserts[assetId] != nil || sourceChecksumUpserts[assetId] != nil else {
-                    continue
+                    return
                 }
                 collectLatestAck(from: object, into: &acksByType)
             case "AssetMetadataDeleteV1":
@@ -945,11 +983,11 @@ class ImmichAPIService: NSObject {
                       let assetId = eventData["assetId"] as? String,
                       let key = eventData["key"] as? String
                 else {
-                    continue
+                    return
                 }
                 guard key == RemoteAssetMetadataItem.mobileAppKey else {
                     collectLatestAck(from: object, into: &acksByType)
-                    continue
+                    return
                 }
                 iCloudIdDeletes.insert(assetId)
                 iCloudIdUpserts.removeValue(forKey: assetId)
@@ -964,24 +1002,20 @@ class ImmichAPIService: NSObject {
                 break
             }
         }
-
-        return AssetMetadataStreamResult(
-            iCloudIdUpserts: iCloudIdUpserts,
-            sourceChecksumUpserts: sourceChecksumUpserts,
-            iCloudIdDeletes: iCloudIdDeletes,
-            acksByType: acksByType,
-            state: state
-        )
     }
 
-    static func parseAssetStream(_ data: Data) -> AssetStreamResult {
-        var assets: [StreamAsset] = []
-        var acksByType: [String: String] = [:]
-        var state: SyncStreamResultState = .data
+    private struct AssetStreamParser {
+        private var assets: [StreamAsset] = []
+        private var acksByType: [String: String] = [:]
+        private var state: SyncStreamResultState = .data
 
-        for object in streamObjects(from: data, description: "Asset stream") {
+        var result: AssetStreamResult {
+            AssetStreamResult(assets: assets, acksByType: acksByType, state: state)
+        }
+
+        mutating func consume(_ object: [String: Any]) {
             guard let type = object["type"] as? String else {
-                continue
+                return
             }
 
             switch type {
@@ -992,7 +1026,7 @@ class ImmichAPIService: NSObject {
                       let ownerId = entityData["ownerId"] as? String,
                       !ownerId.isEmpty
                 else {
-                    continue
+                    return
                 }
                 assets.append(StreamAsset(
                     id: id,
@@ -1008,7 +1042,7 @@ class ImmichAPIService: NSObject {
                 guard let entityData = object["data"] as? [String: Any],
                       let assetId = entityData["assetId"] as? String
                 else {
-                    continue
+                    return
                 }
                 assets.append(StreamAsset.deleted(id: assetId))
                 collectLatestAck(from: object, into: &acksByType)
@@ -1022,17 +1056,64 @@ class ImmichAPIService: NSObject {
                 break
             }
         }
-
-        return AssetStreamResult(assets: assets, acksByType: acksByType, state: state)
     }
 
-    private static func streamObjects(from data: Data, description: String) -> [[String: Any]] {
-        data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true).compactMap { line in
+    private static func errorMessage(from bytes: URLSession.AsyncBytes) async throws -> String {
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+        }
+        return String(data: data, encoding: .utf8) ?? "Unknown error"
+    }
+
+    private static func forEachStreamObject(
+        in data: Data,
+        description: String,
+        _ body: ([String: Any]) -> Void
+    ) {
+        for line in data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
+            consumeStreamLine(line, description: description, body)
+        }
+    }
+
+    /// Parses NDJSON as bytes arrive so neither the response body nor every
+    /// decoded line is resident at once; only the current line is buffered.
+    private static func forEachStreamObject<Bytes: AsyncSequence>(
+        in bytes: Bytes,
+        description: String,
+        _ body: ([String: Any]) -> Void
+    ) async throws where Bytes.Element == UInt8 {
+        var line: [UInt8] = []
+        line.reserveCapacity(4096)
+        for try await byte in bytes {
+            if byte == UInt8(ascii: "\n") {
+                if !line.isEmpty {
+                    consumeStreamLine(line, description: description, body)
+                    line.removeAll(keepingCapacity: true)
+                }
+            } else {
+                line.append(byte)
+            }
+        }
+        if !line.isEmpty {
+            consumeStreamLine(line, description: description, body)
+        }
+    }
+
+    private static func consumeStreamLine<Line: Sequence>(
+        _ line: Line,
+        description: String,
+        _ body: ([String: Any]) -> Void
+    ) where Line.Element == UInt8 {
+        // JSONSerialization returns autoreleased Foundation objects; drain them
+        // per line or a large stream retains every decoded event until return.
+        autoreleasepool {
             do {
-                return try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any]
+                if let object = try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] {
+                    body(object)
+                }
             } catch {
                 logError("\(description) JSON deserialization failed: \(error.localizedDescription)", category: .api)
-                return nil
             }
         }
     }

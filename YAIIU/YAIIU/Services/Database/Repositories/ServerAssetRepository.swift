@@ -47,48 +47,52 @@ final class ServerAssetRepository {
             let syncTime = Date().timeIntervalSince1970
 
             for asset in assets {
-                sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
+                // Bridged NSString utf8String buffers are autoreleased; without a
+                // per-row pool a full sync retains one per bound column until return.
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
 
-                if let sourceChecksum = asset.sourceChecksum {
-                    sqlite3_bind_text(statement, 3, (sourceChecksum as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 3)
+                    if let sourceChecksum = asset.sourceChecksum {
+                        sqlite3_bind_text(statement, 3, (sourceChecksum as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 3)
+                    }
+
+                    if let filename = asset.originalFilename {
+                        sqlite3_bind_text(statement, 4, (filename as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 4)
+                    }
+
+                    if let type = asset.assetType {
+                        sqlite3_bind_text(statement, 5, (type as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 5)
+                    }
+
+                    if let updatedAt = asset.updatedAt {
+                        sqlite3_bind_text(statement, 6, (updatedAt as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 6)
+                    }
+
+                    sqlite3_bind_double(statement, 7, syncTime)
+
+                    if let iCloudId = asset.iCloudId {
+                        sqlite3_bind_text(statement, 8, (iCloudId as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 8)
+                    }
+
+                    if let ownerId = asset.ownerId {
+                        sqlite3_bind_text(statement, 9, (ownerId as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 9)
+                    }
+                    return sqlite3_step(statement) == SQLITE_DONE
                 }
-
-                if let filename = asset.originalFilename {
-                    sqlite3_bind_text(statement, 4, (filename as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 4)
-                }
-
-                if let type = asset.assetType {
-                    sqlite3_bind_text(statement, 5, (type as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 5)
-                }
-
-                if let updatedAt = asset.updatedAt {
-                    sqlite3_bind_text(statement, 6, (updatedAt as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 6)
-                }
-
-                sqlite3_bind_double(statement, 7, syncTime)
-
-                if let iCloudId = asset.iCloudId {
-                    sqlite3_bind_text(statement, 8, (iCloudId as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 8)
-                }
-
-                if let ownerId = asset.ownerId {
-                    sqlite3_bind_text(statement, 9, (ownerId as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 9)
-                }
-
-                if sqlite3_step(statement) != SQLITE_DONE {
+                if !stepped {
                     failed = true
                     logError("Failed to save server asset: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -136,9 +140,12 @@ final class ServerAssetRepository {
             }
 
             for (immichId, iCloudId) in iCloudIdsByImmichId {
-                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
+                    return sqlite3_step(statement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to update iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -185,8 +192,11 @@ final class ServerAssetRepository {
             }
 
             for immichId in immichIds {
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                    return sqlite3_step(statement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to clear iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -236,9 +246,12 @@ final class ServerAssetRepository {
             }
 
             for (immichId, sourceChecksum) in sourceChecksumsByImmichId {
-                sqlite3_bind_text(statement, 1, (sourceChecksum as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (sourceChecksum as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
+                    return sqlite3_step(statement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to update source checksum: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -328,8 +341,11 @@ final class ServerAssetRepository {
 
             var failed = false
             for immichId in immichIds {
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                    return sqlite3_step(statement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to delete server asset: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -355,8 +371,11 @@ final class ServerAssetRepository {
             for id in immichIds {
                 sqlite3_reset(receiptStatement)
                 sqlite3_clear_bindings(receiptStatement)
-                sqlite3_bind_text(receiptStatement, 1, (id as NSString).utf8String, -1, nil)
-                if sqlite3_step(receiptStatement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(receiptStatement, 1, (id as NSString).utf8String, -1, nil)
+                    return sqlite3_step(receiptStatement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     break
                 }

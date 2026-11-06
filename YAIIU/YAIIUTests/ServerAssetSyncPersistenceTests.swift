@@ -216,6 +216,19 @@ final class ServerAssetSyncPersistenceTests: XCTestCase {
             }
         }
     }
+
+    func testBase64ChecksumConvertsToLowercaseHex() {
+        let bytes: [UInt8] = [0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xab, 0xcd, 0xef, 0xff]
+            + (0..<10).map { UInt8($0 * 25) }
+        let expected = bytes.map { String(format: "%02x", $0) }.joined()
+
+        XCTAssertEqual(
+            ServerAssetSyncService.convertBase64ToHex(Data(bytes).base64EncodedString()),
+            expected
+        )
+        XCTAssertEqual(ServerAssetSyncService.convertBase64ToHex(""), "")
+        XCTAssertNil(ServerAssetSyncService.convertBase64ToHex("not base64!"))
+    }
 }
 
 private final class OperationRecorder: @unchecked Sendable {
