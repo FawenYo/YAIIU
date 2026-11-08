@@ -47,48 +47,52 @@ final class ServerAssetRepository {
             let syncTime = Date().timeIntervalSince1970
 
             for asset in assets {
-                sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
+                // Bridged NSString utf8String buffers are autoreleased; without a
+                // per-row pool a full sync retains one per bound column until return.
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (asset.immichId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 2, (asset.checksum as NSString).utf8String, -1, nil)
 
-                if let sourceChecksum = asset.sourceChecksum {
-                    sqlite3_bind_text(statement, 3, (sourceChecksum as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 3)
+                    if let sourceChecksum = asset.sourceChecksum {
+                        sqlite3_bind_text(statement, 3, (sourceChecksum as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 3)
+                    }
+
+                    if let filename = asset.originalFilename {
+                        sqlite3_bind_text(statement, 4, (filename as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 4)
+                    }
+
+                    if let type = asset.assetType {
+                        sqlite3_bind_text(statement, 5, (type as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 5)
+                    }
+
+                    if let updatedAt = asset.updatedAt {
+                        sqlite3_bind_text(statement, 6, (updatedAt as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 6)
+                    }
+
+                    sqlite3_bind_double(statement, 7, syncTime)
+
+                    if let iCloudId = asset.iCloudId {
+                        sqlite3_bind_text(statement, 8, (iCloudId as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 8)
+                    }
+
+                    if let ownerId = asset.ownerId {
+                        sqlite3_bind_text(statement, 9, (ownerId as NSString).utf8String, -1, nil)
+                    } else {
+                        sqlite3_bind_null(statement, 9)
+                    }
+                    return sqlite3_step(statement) == SQLITE_DONE
                 }
-
-                if let filename = asset.originalFilename {
-                    sqlite3_bind_text(statement, 4, (filename as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 4)
-                }
-
-                if let type = asset.assetType {
-                    sqlite3_bind_text(statement, 5, (type as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 5)
-                }
-
-                if let updatedAt = asset.updatedAt {
-                    sqlite3_bind_text(statement, 6, (updatedAt as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 6)
-                }
-
-                sqlite3_bind_double(statement, 7, syncTime)
-
-                if let iCloudId = asset.iCloudId {
-                    sqlite3_bind_text(statement, 8, (iCloudId as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 8)
-                }
-
-                if let ownerId = asset.ownerId {
-                    sqlite3_bind_text(statement, 9, (ownerId as NSString).utf8String, -1, nil)
-                } else {
-                    sqlite3_bind_null(statement, 9)
-                }
-
-                if sqlite3_step(statement) != SQLITE_DONE {
+                if !stepped {
                     failed = true
                     logError("Failed to save server asset: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -99,7 +103,7 @@ final class ServerAssetRepository {
             }
             sqlite3_finalize(statement)
 
-            if failed {
+            if failed || !self.mergePendingMetadata() {
                 self.connection.rollbackTransaction()
                 return false
             }
@@ -114,6 +118,70 @@ final class ServerAssetRepository {
         }
     }
     
+    /// Applies staged metadata to rows that now exist, then drops it. Staged
+    /// values are newer than the AssetV2 upsert, which never carries metadata.
+    private func mergePendingMetadata() -> Bool {
+        let statements = [
+            """
+            UPDATE server_assets_cache SET
+                icloud_id = COALESCE(
+                    (SELECT p.icloud_id FROM server_asset_metadata_pending p
+                     WHERE p.immich_id = server_assets_cache.immich_id),
+                    icloud_id),
+                source_checksum = COALESCE(
+                    (SELECT p.source_checksum FROM server_asset_metadata_pending p
+                     WHERE p.immich_id = server_assets_cache.immich_id),
+                    source_checksum)
+            WHERE immich_id IN (SELECT immich_id FROM server_asset_metadata_pending);
+            """,
+            """
+            DELETE FROM server_asset_metadata_pending
+            WHERE immich_id IN (SELECT immich_id FROM server_assets_cache);
+            """,
+        ]
+        for sql in statements where sqlite3_exec(connection.db, sql, nil, nil, nil) != SQLITE_OK {
+            logError("Failed to merge pending server metadata: \(connection.lastErrorMessage)", category: .database)
+            return false
+        }
+        return true
+    }
+
+    /// Source checksums staged for assets that are not cached yet. Callers
+    /// invalidate them before `saveServerAssets` merges them into the cache.
+    func pendingSourceChecksums(for immichIds: [String]) -> [String] {
+        guard !immichIds.isEmpty else { return [] }
+        connection.ensureInitialized()
+        var result: [String] = []
+        let chunkSize = 500
+        for chunkStart in stride(from: 0, to: immichIds.count, by: chunkSize) {
+            let chunk = Array(immichIds[chunkStart..<min(chunkStart + chunkSize, immichIds.count)])
+            connection.dbQueue.sync { [weak self] in
+                guard let self else { return }
+                let values = Array(repeating: "(?)", count: chunk.count).joined(separator: ",")
+                let sql = """
+                SELECT source_checksum FROM server_asset_metadata_pending
+                WHERE immich_id IN (VALUES \(values)) AND source_checksum IS NOT NULL;
+                """
+                var statement: OpaquePointer?
+                defer { sqlite3_finalize(statement) }
+                guard sqlite3_prepare_v2(self.connection.db, sql, -1, &statement, nil) == SQLITE_OK else {
+                    logError("Failed to prepare pending checksum lookup: \(self.connection.lastErrorMessage)", category: .database)
+                    return
+                }
+                let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                for (index, immichId) in chunk.enumerated() {
+                    _ = immichId.withCString { value in
+                        sqlite3_bind_text(statement, Int32(index + 1), value, -1, transient)
+                    }
+                }
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    result.append(String(cString: sqlite3_column_text(statement, 0)))
+                }
+            }
+        }
+        return result
+    }
+
     @discardableResult
     func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool {
         guard !iCloudIdsByImmichId.isEmpty else { return true }
@@ -134,11 +202,30 @@ final class ServerAssetRepository {
                 logError("Failed to prepare iCloud ID updates: \(self.connection.lastErrorMessage)", category: .database)
                 return false
             }
+            // No cached row yet: stage the value so saveServerAssets can merge it.
+            var pendingStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, "INSERT INTO server_asset_metadata_pending (immich_id, icloud_id) VALUES (?, ?) ON CONFLICT(immich_id) DO UPDATE SET icloud_id = excluded.icloud_id;", -1, &pendingStatement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare pending metadata staging: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
 
             for (immichId, iCloudId) in iCloudIdsByImmichId {
-                sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (iCloudId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { return false }
+                    guard sqlite3_changes(self.connection.db) == 0 else { return true }
+                    defer {
+                        sqlite3_reset(pendingStatement)
+                        sqlite3_clear_bindings(pendingStatement)
+                    }
+                    sqlite3_bind_text(pendingStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(pendingStatement, 2, (iCloudId as NSString).utf8String, -1, nil)
+                    return sqlite3_step(pendingStatement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to update iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -148,6 +235,7 @@ final class ServerAssetRepository {
             }
 
             sqlite3_finalize(statement)
+            sqlite3_finalize(pendingStatement)
             if failed {
                 self.connection.rollbackTransaction()
                 return false
@@ -183,10 +271,28 @@ final class ServerAssetRepository {
                 logError("Failed to prepare iCloud ID deletes: \(self.connection.lastErrorMessage)", category: .database)
                 return false
             }
+            // No cached row yet: stage the value so saveServerAssets can merge it.
+            var pendingStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, "UPDATE server_asset_metadata_pending SET icloud_id = NULL WHERE immich_id = ?;", -1, &pendingStatement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare pending metadata staging: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
 
             for immichId in immichIds {
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { return false }
+                    guard sqlite3_changes(self.connection.db) == 0 else { return true }
+                    defer {
+                        sqlite3_reset(pendingStatement)
+                        sqlite3_clear_bindings(pendingStatement)
+                    }
+                    sqlite3_bind_text(pendingStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                    return sqlite3_step(pendingStatement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to clear iCloud ID: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -196,6 +302,7 @@ final class ServerAssetRepository {
             }
 
             sqlite3_finalize(statement)
+            sqlite3_finalize(pendingStatement)
             if failed {
                 self.connection.rollbackTransaction()
                 return false
@@ -211,9 +318,8 @@ final class ServerAssetRepository {
         }
     }
 
-    /// Attach source checksums delivered by AssetMetadataV1 events for rows
-    /// already in the cache. Rows missing from the cache are skipped; their
-    /// checksum arrives with the AssetV2 event instead.
+    /// Attach source checksums delivered by AssetMetadataV1 events. Values for
+    /// rows missing from the cache are staged in `server_asset_metadata_pending`.
     @discardableResult
     func updateSourceChecksums(_ sourceChecksumsByImmichId: [String: String]) -> Bool {
         guard !sourceChecksumsByImmichId.isEmpty else { return true }
@@ -234,11 +340,30 @@ final class ServerAssetRepository {
                 logError("Failed to prepare source checksum updates: \(self.connection.lastErrorMessage)", category: .database)
                 return false
             }
+            // No cached row yet: stage the value so saveServerAssets can merge it.
+            var pendingStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, "INSERT INTO server_asset_metadata_pending (immich_id, source_checksum) VALUES (?, ?) ON CONFLICT(immich_id) DO UPDATE SET source_checksum = excluded.source_checksum;", -1, &pendingStatement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare pending metadata staging: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
 
             for (immichId, sourceChecksum) in sourceChecksumsByImmichId {
-                sqlite3_bind_text(statement, 1, (sourceChecksum as NSString).utf8String, -1, nil)
-                sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(statement, 1, (sourceChecksum as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 2, (immichId as NSString).utf8String, -1, nil)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { return false }
+                    guard sqlite3_changes(self.connection.db) == 0 else { return true }
+                    defer {
+                        sqlite3_reset(pendingStatement)
+                        sqlite3_clear_bindings(pendingStatement)
+                    }
+                    sqlite3_bind_text(pendingStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(pendingStatement, 2, (sourceChecksum as NSString).utf8String, -1, nil)
+                    return sqlite3_step(pendingStatement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to update source checksum: \(self.connection.lastErrorMessage)", category: .database)
                     break
@@ -248,6 +373,7 @@ final class ServerAssetRepository {
             }
 
             sqlite3_finalize(statement)
+            sqlite3_finalize(pendingStatement)
             if failed {
                 self.connection.rollbackTransaction()
                 return false
@@ -306,7 +432,11 @@ final class ServerAssetRepository {
     // MARK: - Delete Methods
     
     @discardableResult
-    func deleteServerAssets(_ immichIds: [String]) -> Bool {
+    /// `retainingMetadata` is for trashed assets: their iCloud ID and source
+    /// checksum move to `server_asset_metadata_pending` so a restore (an AssetV2
+    /// upsert, with no metadata event) gets them back. A permanent delete drops
+    /// any staged metadata for the asset.
+    func deleteServerAssets(_ immichIds: [String], retainingMetadata: Bool = false) -> Bool {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return false }
             guard !immichIds.isEmpty else { return true }
@@ -326,18 +456,44 @@ final class ServerAssetRepository {
                 return false
             }
 
+            let metadataSql = retainingMetadata
+                ? """
+                INSERT INTO server_asset_metadata_pending (immich_id, icloud_id, source_checksum)
+                SELECT immich_id, icloud_id, source_checksum FROM server_assets_cache
+                WHERE immich_id = ? AND (icloud_id IS NOT NULL OR source_checksum IS NOT NULL)
+                ON CONFLICT(immich_id) DO UPDATE SET
+                    icloud_id = excluded.icloud_id,
+                    source_checksum = excluded.source_checksum;
+                """
+                : "DELETE FROM server_asset_metadata_pending WHERE immich_id = ?;"
+            var metadataStatement: OpaquePointer?
+            guard sqlite3_prepare_v2(self.connection.db, metadataSql, -1, &metadataStatement, nil) == SQLITE_OK else {
+                sqlite3_finalize(statement)
+                self.connection.rollbackTransaction()
+                logError("Failed to prepare pending metadata update: \(self.connection.lastErrorMessage)", category: .database)
+                return false
+            }
+
             var failed = false
             for immichId in immichIds {
-                sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
-                if sqlite3_step(statement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(metadataStatement, 1, (immichId as NSString).utf8String, -1, nil)
+                    sqlite3_bind_text(statement, 1, (immichId as NSString).utf8String, -1, nil)
+                    return sqlite3_step(metadataStatement) == SQLITE_DONE
+                        && sqlite3_step(statement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     logError("Failed to delete server asset: \(self.connection.lastErrorMessage)", category: .database)
                     break
                 }
+                sqlite3_reset(metadataStatement)
+                sqlite3_clear_bindings(metadataStatement)
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
             }
             sqlite3_finalize(statement)
+            sqlite3_finalize(metadataStatement)
 
             if failed {
                 self.connection.rollbackTransaction()
@@ -355,8 +511,11 @@ final class ServerAssetRepository {
             for id in immichIds {
                 sqlite3_reset(receiptStatement)
                 sqlite3_clear_bindings(receiptStatement)
-                sqlite3_bind_text(receiptStatement, 1, (id as NSString).utf8String, -1, nil)
-                if sqlite3_step(receiptStatement) != SQLITE_DONE {
+                let stepped = autoreleasepool { () -> Bool in
+                    sqlite3_bind_text(receiptStatement, 1, (id as NSString).utf8String, -1, nil)
+                    return sqlite3_step(receiptStatement) == SQLITE_DONE
+                }
+                if !stepped {
                     failed = true
                     break
                 }
@@ -634,7 +793,11 @@ final class ServerAssetRepository {
                 return false
             }
 
-            let statements = ["DELETE FROM server_assets_cache;", "DELETE FROM sync_metadata;"]
+            let statements = [
+                "DELETE FROM server_assets_cache;",
+                "DELETE FROM server_asset_metadata_pending;",
+                "DELETE FROM sync_metadata;",
+            ]
             for sql in statements where sqlite3_exec(self.connection.db, sql, nil, nil, nil) != SQLITE_OK {
                 logError("Failed to clear server cache: \(self.connection.lastErrorMessage)", category: .database)
                 self.connection.rollbackTransaction()

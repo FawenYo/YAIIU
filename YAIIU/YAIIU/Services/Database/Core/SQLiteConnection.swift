@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 12
+    private static let schemaVersion = 13
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -106,6 +106,7 @@ final class SQLiteConnection {
         createBackgroundUploadQueueTable()
         createBackgroundUploadStateTable()
         createLocalPhotoInventoryTables()
+        createPendingServerAssetMetadataTable()
         createIndexes()
     }
     
@@ -247,6 +248,20 @@ final class SQLiteConnection {
     }
     
     /// A persistent PhotoKit membership snapshot, independent of hash cache.
+    /// Version 13: holds mobile-app metadata whose asset row is not cached yet
+    /// (the asset was created after the asset stream was read, or is in the
+    /// trash). `ServerAssetRepository.saveServerAssets` merges it when the row
+    /// arrives; without it the metadata would be acked and never resent.
+    private func createPendingServerAssetMetadataTable() {
+        executeStatement("""
+        CREATE TABLE IF NOT EXISTS server_asset_metadata_pending (
+            immich_id TEXT PRIMARY KEY NOT NULL,
+            icloud_id TEXT,
+            source_checksum TEXT
+        );
+        """)
+    }
+
     private func createLocalPhotoInventoryTables() {
         executeStatement("""
             CREATE TABLE IF NOT EXISTS local_photo_assets (
@@ -319,6 +334,7 @@ final class SQLiteConnection {
             if currentVersion < 10 { migrateToV10() }
             if currentVersion < 11 { migrateToV11() }
             if currentVersion < 12 { createLocalPhotoInventoryTables() }
+            if currentVersion < 13 { createPendingServerAssetMetadataTable() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -545,12 +561,14 @@ final class SQLiteConnection {
         let uploadedAssetColumns = tableColumns("uploaded_assets")
         let inventoryColumns = tableColumns("local_photo_assets")
         let inventoryStateColumns = tableColumns("local_photo_inventory_state")
+        let pendingMetadataColumns = tableColumns("server_asset_metadata_pending")
         return ["last_ack", "server_url"].allSatisfy(syncMetadataColumns.contains)
             && serverAssetColumns.contains("source_checksum")
             && hashCacheColumns.contains("asset_adjustment_version")
             && uploadedAssetColumns.contains("asset_adjustment_version")
             && ["asset_id", "is_hidden"].allSatisfy(inventoryColumns.contains)
             && ["id", "is_ready"].allSatisfy(inventoryStateColumns.contains)
+            && ["immich_id", "icloud_id", "source_checksum"].allSatisfy(pendingMetadataColumns.contains)
             && ["asset_id", "enqueued_at"].allSatisfy(backgroundUploadQueueColumns.contains)
             && ["bootstrap_token_data", "destination_identity", "updated_at"].allSatisfy(backgroundUploadStateColumns.contains)
     }

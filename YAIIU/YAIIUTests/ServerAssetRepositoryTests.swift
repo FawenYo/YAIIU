@@ -31,6 +31,64 @@ final class ServerAssetRepositoryTests: XCTestCase {
         super.tearDown()
     }
 
+    func testMetadataForMissingRowIsStagedAndMergedOnSave() {
+        let source = "0123456789abcdef0123456789abcdef01234567"
+        XCTAssertTrue(repository.updateICloudIds(["asset-1": "cloud-1"]))
+        XCTAssertTrue(repository.updateSourceChecksums(["asset-1": source]))
+        XCTAssertNil(repository.getServerAssetByImmichId("asset-1"))
+        XCTAssertEqual(repository.pendingSourceChecksums(for: ["asset-1", "other"]), [source])
+
+        XCTAssertTrue(repository.saveServerAssets([ServerAssetRecord(immichId: "asset-1", checksum: "server")]))
+
+        let saved = repository.getServerAssetByImmichId("asset-1")
+        XCTAssertEqual(saved?.iCloudId, "cloud-1")
+        XCTAssertEqual(saved?.sourceChecksum, source)
+        XCTAssertTrue(repository.pendingSourceChecksums(for: ["asset-1"]).isEmpty)
+    }
+
+    func testMetadataForCachedRowIsNotStaged() {
+        XCTAssertTrue(repository.saveServerAssets([ServerAssetRecord(immichId: "asset-1", checksum: "server")]))
+        XCTAssertTrue(repository.updateSourceChecksums(["asset-1": "source"]))
+
+        XCTAssertEqual(repository.getServerAssetByImmichId("asset-1")?.sourceChecksum, "source")
+        XCTAssertTrue(repository.pendingSourceChecksums(for: ["asset-1"]).isEmpty)
+    }
+
+    func testClearingStagedICloudIdKeepsItOffTheMergedRow() {
+        XCTAssertTrue(repository.updateICloudIds(["asset-1": "cloud-1"]))
+        XCTAssertTrue(repository.clearICloudIds(for: ["asset-1"]))
+
+        XCTAssertTrue(repository.saveServerAssets([ServerAssetRecord(immichId: "asset-1", checksum: "server")]))
+
+        XCTAssertNil(repository.getServerAssetByImmichId("asset-1")?.iCloudId)
+    }
+
+    func testTrashRetainsMetadataForRestoreAndPermanentDeleteDropsIt() {
+        XCTAssertTrue(repository.saveServerAssets([
+            ServerAssetRecord(immichId: "trashed", checksum: "a", sourceChecksum: "source-a", iCloudId: "cloud-a"),
+            ServerAssetRecord(immichId: "purged", checksum: "b", sourceChecksum: "source-b"),
+        ]))
+
+        XCTAssertTrue(repository.deleteServerAssets(["trashed"], retainingMetadata: true))
+        XCTAssertTrue(repository.deleteServerAssets(["purged"], retainingMetadata: true))
+        XCTAssertTrue(repository.deleteServerAssets(["purged"], retainingMetadata: false))
+        XCTAssertEqual(repository.pendingSourceChecksums(for: ["trashed", "purged"]), ["source-a"])
+
+        XCTAssertTrue(repository.saveServerAssets([ServerAssetRecord(immichId: "trashed", checksum: "a")]))
+
+        let restored = repository.getServerAssetByImmichId("trashed")
+        XCTAssertEqual(restored?.iCloudId, "cloud-a")
+        XCTAssertEqual(restored?.sourceChecksum, "source-a")
+    }
+
+    func testClearingServerCacheDropsStagedMetadata() {
+        XCTAssertTrue(repository.updateSourceChecksums(["asset-1": "source"]))
+
+        XCTAssertTrue(repository.clearServerAssetsCache())
+
+        XCTAssertTrue(repository.pendingSourceChecksums(for: ["asset-1"]).isEmpty)
+    }
+
     func testPhotoAssetSnapshotDiagnosticSummaryIncludesStableMetadata() {
         let snapshot = PhotoAssetSnapshot(
             localIdentifier: "asset-1",
