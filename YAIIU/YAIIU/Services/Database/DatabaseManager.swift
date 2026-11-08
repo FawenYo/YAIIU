@@ -368,8 +368,12 @@ final class DatabaseManager {
     }
     
     @discardableResult
-    func deleteServerAssets(_ immichIds: [String]) -> Bool {
-        serverRepo.deleteServerAssets(immichIds)
+    func deleteServerAssets(_ immichIds: [String], retainingMetadata: Bool) -> Bool {
+        serverRepo.deleteServerAssets(immichIds, retainingMetadata: retainingMetadata)
+    }
+
+    func pendingSourceChecksums(for immichIds: [String]) -> [String] {
+        serverRepo.pendingSourceChecksums(for: immichIds)
     }
     
     func isAssetOnServer(checksum: String) -> Bool {

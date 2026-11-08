@@ -18,8 +18,16 @@ struct SyncProgress {
 
 protocol ServerAssetSyncAPI {
     func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo
-    func fetchAssetMetadataStream(serverURL: String, apiKey: String) async throws -> AssetMetadataStreamResult
-    func fetchAssetStream(serverURL: String, apiKey: String) async throws -> AssetStreamResult
+    func streamAssets(
+        serverURL: String,
+        apiKey: String,
+        onBatch: ([StreamAsset]) throws -> Void
+    ) async throws -> SyncStreamSummary
+    func streamAssetMetadata(
+        serverURL: String,
+        apiKey: String,
+        onBatch: (AssetMetadataChanges) throws -> Void
+    ) async throws -> SyncStreamSummary
     func sendSyncAck(acks: [String], serverURL: String, apiKey: String) async throws
 }
 
@@ -30,10 +38,11 @@ protocol ServerAssetSyncStore {
     func getSyncMetadata() -> SyncMetadata?
     func clearServerAssetsCache() -> Bool
     func saveServerAssets(_ assets: [ServerAssetRecord], syncType: String) -> Bool
-    func deleteServerAssets(_ immichIds: [String]) -> Bool
+    func deleteServerAssets(_ immichIds: [String], retainingMetadata: Bool) -> Bool
     func updateICloudIds(_ iCloudIdsByImmichId: [String: String]) -> Bool
     func clearICloudIds(for immichIds: Set<String>) -> Bool
     func updateSourceChecksums(_ sourceChecksumsByImmichId: [String: String]) -> Bool
+    func pendingSourceChecksums(for immichIds: [String]) -> [String]
     func saveSyncMetadata(lastSyncTime: Date, syncType: String, userId: String, serverURL: String, totalAssets: Int, lastAck: String?) -> Bool
     func getServerAssetsCacheCount() -> Int
     func backfillImmichIdsFromServerCache() -> Int
@@ -210,6 +219,10 @@ class ServerAssetSyncService {
         DispatchQueue.main.async { handler(progress) }
     }
 
+    /// Applies server changes batch by batch while the sync streams download,
+    /// so memory is bounded by `ImmichAPIService.syncBatchSize`, not by library size.
+    /// Checkpoints are acknowledged only after every batch and the sync metadata persist;
+    /// an interrupted sync leaves `lastAck` unchanged and the next run replays it.
     private func performSync(
         serverURL: String,
         apiKey: String,
@@ -229,82 +242,42 @@ class ServerAssetSyncService {
             && (syncMetadata?.serverURL == nil
                 || syncMetadata?.serverURL.map(Self.canonicalServerURL) == normalizedServerURL)
         let lastAck = cacheMatchesSession ? syncMetadata?.lastAck : nil
+        let syncType = lastAck == nil ? "full" : "delta"
 
         reportProgress(SyncProgress(phase: .fetchingAssets, fetchedCount: 0, message: ""), handler: progressHandler)
 
-        let metadataResult = try await apiService.fetchAssetMetadataStream(
-            serverURL: serverURL,
-            apiKey: apiKey
-        )
-        let streamResult = try await apiService.fetchAssetStream(
-            serverURL: serverURL,
-            apiKey: apiKey
-        )
-
-        let resetAcks = [metadataResult.resetAck, streamResult.resetAck].compactMap { $0 }
-        if !resetAcks.isEmpty {
-            guard resetRetryRemaining else {
-                throw SyncError.repeatedServerReset
-            }
-
+        // A full sync rebuilds the cache from the stream. Invalidate before any
+        // cache mutation so a crash can never strand an old negative match.
+        if syncType == "full" {
             guard dbManager.invalidateHashChecksForServerChanges(checksums: [], fullReset: true) else {
-                throw SyncError.syncFailed(reason: "Failed to invalidate hash checks before reset")
+                throw SyncError.syncFailed(reason: "Failed to persist hash verification invalidations")
             }
             guard clearCache() else {
-                throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
+                throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
             }
-            try await apiService.sendSyncAck(
-                acks: Array(Set(resetAcks)).sorted(),
-                serverURL: serverURL,
-                apiKey: apiKey
+        }
+
+        var fetchedCount = 0
+        var upsertedCount = 0
+        var deletedCount = 0
+        let assetSummary = try await apiService.streamAssets(serverURL: serverURL, apiKey: apiKey) { batch in
+            let applied = try persistAssetBatch(batch, syncType: syncType)
+            fetchedCount += batch.count
+            upsertedCount += applied.upserted
+            deletedCount += applied.deleted
+            reportProgress(
+                SyncProgress(phase: .fetchingAssets, fetchedCount: fetchedCount, message: ""),
+                handler: progressHandler
             )
-            return try await performSync(
+        }
+        if let resetAck = assetSummary.resetAck {
+            return try await restartAfterServerReset(
+                resetAck: resetAck,
                 serverURL: serverURL,
                 apiKey: apiKey,
                 progressHandler: progressHandler,
-                resetRetryRemaining: false
+                resetRetryRemaining: resetRetryRemaining
             )
-        }
-
-        let fetchedCount = streamResult.assets.count
-        let streamAcks = streamResult.acks
-        logInfo(
-            "Streams returned assets=\(fetchedCount), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
-                + "metadataDeletes=\(metadataResult.iCloudIdDeletes.count)",
-            category: .sync
-        )
-
-        reportProgress(
-            SyncProgress(phase: .processingAssets, fetchedCount: fetchedCount, message: ""),
-            handler: progressHandler
-        )
-
-        let syncType = lastAck == nil ? "full" : "delta"
-
-        var deletedIds: [String] = []
-        var serverAssetRecords: [ServerAssetRecord] = []
-        serverAssetRecords.reserveCapacity(fetchedCount)
-        for asset in streamResult.assets {
-            if asset.isDeleted {
-                deletedIds.append(asset.id)
-                continue
-            }
-            guard let serverChecksum = Self.convertBase64ToHex(asset.checksum) else {
-                logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
-                continue
-            }
-            let sourceChecksum = metadataResult.sourceChecksumUpserts[asset.id]
-                ?? (syncType == "delta" ? dbManager.getServerAssetByImmichId(asset.id)?.sourceChecksum : nil)
-            serverAssetRecords.append(ServerAssetRecord(
-                immichId: asset.id,
-                checksum: serverChecksum,
-                sourceChecksum: sourceChecksum,
-                originalFilename: asset.originalFileName,
-                assetType: asset.type,
-                updatedAt: asset.fileCreatedAt,
-                iCloudId: metadataResult.iCloudIdUpserts[asset.id],
-                ownerId: asset.ownerId
-            ))
         }
 
         reportProgress(
@@ -312,78 +285,27 @@ class ServerAssetSyncService {
             handler: progressHandler
         )
 
-
-        // Invalidate before mutating cache or sending ACK. Replayed events are
-        // idempotent; a crash must never permanently trust an old negative match.
-        var affectedChecksums = Set<String>()
-        if syncType == "delta" {
-            func addChecksums(_ asset: ServerAssetRecord?) {
-                guard let asset else { return }
-                affectedChecksums.insert(asset.checksum)
-                if let sourceChecksum = asset.sourceChecksum {
-                    affectedChecksums.insert(sourceChecksum)
-                }
-            }
-            // A metadata-only iCloud ID update does not change resource bytes.
-            // Invalidate checksums only when an AssetV2 record or source
-            // checksum actually changes, or when an asset is deleted.
-            for asset in serverAssetRecords {
-                let existing = dbManager.getServerAssetByImmichId(asset.immichId)
-                if existing?.checksum != asset.checksum ||
-                    existing?.sourceChecksum != asset.sourceChecksum {
-                    addChecksums(existing)
-                    addChecksums(asset)
-                }
-            }
-            for id in deletedIds {
-                addChecksums(dbManager.getServerAssetByImmichId(id))
-            }
-            for (id, newChecksum) in metadataResult.sourceChecksumUpserts {
-                let existing = dbManager.getServerAssetByImmichId(id)
-                if existing?.sourceChecksum != newChecksum {
-                    addChecksums(existing)
-                    affectedChecksums.insert(newChecksum)
-                }
-            }
-            logInfo(
-                "Server delta checksum invalidation: resourceEvents=\(serverAssetRecords.count), "
-                    + "metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
-                    + "affectedChecksums=\(affectedChecksums.count)",
-                category: .sync
+        // Metadata runs after assets so its UPDATEs find the rows they target.
+        // Events for assets the asset stream did not deliver (uploaded after it
+        // was read, or trashed) are staged and merged when the row arrives.
+        var metadataUpserts = 0
+        var metadataDeletes = 0
+        let metadataSummary = try await apiService.streamAssetMetadata(serverURL: serverURL, apiKey: apiKey) { changes in
+            try persistMetadataBatch(changes, syncType: syncType)
+            metadataUpserts += changes.iCloudIdUpserts.count
+            metadataDeletes += changes.iCloudIdDeletes.count
+        }
+        if let resetAck = metadataSummary.resetAck {
+            return try await restartAfterServerReset(
+                resetAck: resetAck,
+                serverURL: serverURL,
+                apiKey: apiKey,
+                progressHandler: progressHandler,
+                resetRetryRemaining: resetRetryRemaining
             )
         }
-        guard dbManager.invalidateHashChecksForServerChanges(
-            checksums: Array(affectedChecksums),
-            fullReset: syncType == "full"
-        ) else {
-            throw SyncError.syncFailed(reason: "Failed to persist hash verification invalidations")
-        }
 
-        if syncType == "full", !clearCache() {
-            throw SyncError.syncFailed(reason: "Failed to clear server cache before full sync")
-        }
-
-        if !serverAssetRecords.isEmpty,
-           !dbManager.saveServerAssets(serverAssetRecords, syncType: syncType) {
-            throw SyncError.syncFailed(reason: "Failed to persist server asset upserts")
-        }
-
-        if !deletedIds.isEmpty,
-           !dbManager.deleteServerAssets(deletedIds) {
-            throw SyncError.syncFailed(reason: "Failed to persist server asset deletions")
-        }
-
-        guard dbManager.updateICloudIds(metadataResult.iCloudIdUpserts) else {
-            throw SyncError.syncFailed(reason: "Failed to persist iCloud ID updates")
-        }
-        guard dbManager.clearICloudIds(for: metadataResult.iCloudIdDeletes) else {
-            throw SyncError.syncFailed(reason: "Failed to persist iCloud ID deletions")
-        }
-        guard dbManager.updateSourceChecksums(metadataResult.sourceChecksumUpserts) else {
-            throw SyncError.syncFailed(reason: "Failed to persist source checksum updates")
-        }
-
-        let acks = Array(Set(streamAcks + metadataResult.acks)).sorted()
+        let acks = Array(Set(assetSummary.acks + metadataSummary.acks)).sorted()
         let newAck = acks.last
         guard dbManager.saveSyncMetadata(
             lastSyncTime: Date(),
@@ -403,20 +325,161 @@ class ServerAssetSyncService {
         let backfilledCount = dbManager.backfillImmichIdsFromServerCache()
         let total = dbManager.getServerAssetsCacheCount()
         logInfo(
-            "Sync completed: type=\(syncType), total=\(total), assetUpserts=\(serverAssetRecords.count), "
-                + "backfilled=\(backfilledCount), assetDeletes=\(deletedIds.count), metadataUpserts=\(metadataResult.iCloudIdUpserts.count), "
-                + "metadataDeletes=\(metadataResult.iCloudIdDeletes.count), acks=\(acks.count)",
+            "Sync completed: type=\(syncType), total=\(total), fetched=\(fetchedCount), assetUpserts=\(upsertedCount), "
+                + "backfilled=\(backfilledCount), assetDeletes=\(deletedCount), metadataUpserts=\(metadataUpserts), "
+                + "metadataDeletes=\(metadataDeletes), acks=\(acks.count)",
             category: .sync
         )
 
         return SyncResult(
             syncType: syncType,
             totalAssets: total,
-            upsertedCount: serverAssetRecords.count,
+            upsertedCount: upsertedCount,
             backfilledCount: backfilledCount,
-            deletedCount: deletedIds.count,
+            deletedCount: deletedCount,
             needsFullSync: false
         )
+    }
+
+    /// Batches already written before a reset are discarded by the cache clear.
+    private func restartAfterServerReset(
+        resetAck: String,
+        serverURL: String,
+        apiKey: String,
+        progressHandler: ((SyncProgress) -> Void)?,
+        resetRetryRemaining: Bool
+    ) async throws -> SyncResult {
+        guard resetRetryRemaining else {
+            throw SyncError.repeatedServerReset
+        }
+        guard dbManager.invalidateHashChecksForServerChanges(checksums: [], fullReset: true) else {
+            throw SyncError.syncFailed(reason: "Failed to invalidate hash checks before reset")
+        }
+        guard clearCache() else {
+            throw SyncError.syncFailed(reason: "Failed to clear server cache before reset retry")
+        }
+        try await apiService.sendSyncAck(acks: [resetAck], serverURL: serverURL, apiKey: apiKey)
+        return try await performSync(
+            serverURL: serverURL,
+            apiKey: apiKey,
+            progressHandler: progressHandler,
+            resetRetryRemaining: false
+        )
+    }
+
+    private func persistAssetBatch(
+        _ batch: [StreamAsset],
+        syncType: String
+    ) throws -> (upserted: Int, deleted: Int) {
+        let isDelta = syncType == "delta"
+        var trashedIds: [String] = []
+        var purgedIds: [String] = []
+        var records: [ServerAssetRecord] = []
+        records.reserveCapacity(batch.count)
+        var affectedChecksums = Set<String>()
+
+        func addChecksums(_ asset: ServerAssetRecord?) {
+            guard let asset else { return }
+            affectedChecksums.insert(asset.checksum)
+            if let sourceChecksum = asset.sourceChecksum {
+                affectedChecksums.insert(sourceChecksum)
+            }
+        }
+
+        for asset in batch {
+            if asset.isDeleted {
+                if asset.deleteEvent {
+                    purgedIds.append(asset.id)
+                } else {
+                    trashedIds.append(asset.id)
+                }
+                if isDelta {
+                    addChecksums(dbManager.getServerAssetByImmichId(asset.id))
+                }
+                continue
+            }
+            guard let serverChecksum = Self.convertBase64ToHex(asset.checksum) else {
+                logWarning("Failed to convert checksum for asset \(asset.id): \(asset.checksum)", category: .sync)
+                continue
+            }
+            let existing = isDelta ? dbManager.getServerAssetByImmichId(asset.id) : nil
+            // iCloud IDs and source checksums come from the metadata stream (this
+            // sync's, or one staged earlier); the upsert's COALESCE keeps cached values.
+            let record = ServerAssetRecord(
+                immichId: asset.id,
+                checksum: serverChecksum,
+                sourceChecksum: existing?.sourceChecksum,
+                originalFilename: asset.originalFileName,
+                assetType: asset.type,
+                updatedAt: asset.fileCreatedAt,
+                iCloudId: nil,
+                ownerId: asset.ownerId
+            )
+            if isDelta, existing?.checksum != record.checksum {
+                addChecksums(existing)
+                addChecksums(record)
+            }
+            records.append(record)
+        }
+
+        if isDelta {
+            // Saving merges metadata staged by an earlier sync, which can attach
+            // a source checksum the hash cache has already judged as absent.
+            affectedChecksums.formUnion(dbManager.pendingSourceChecksums(for: records.map(\.immichId)))
+            guard dbManager.invalidateHashChecksForServerChanges(
+                checksums: Array(affectedChecksums),
+                fullReset: false
+            ) else {
+                throw SyncError.syncFailed(reason: "Failed to persist hash verification invalidations")
+            }
+        }
+
+        if !records.isEmpty, !dbManager.saveServerAssets(records, syncType: syncType) {
+            throw SyncError.syncFailed(reason: "Failed to persist server asset upserts")
+        }
+        if !trashedIds.isEmpty, !dbManager.deleteServerAssets(trashedIds, retainingMetadata: true) {
+            throw SyncError.syncFailed(reason: "Failed to persist server asset deletions")
+        }
+        if !purgedIds.isEmpty, !dbManager.deleteServerAssets(purgedIds, retainingMetadata: false) {
+            throw SyncError.syncFailed(reason: "Failed to persist server asset deletions")
+        }
+        return (records.count, trashedIds.count + purgedIds.count)
+    }
+
+    private func persistMetadataBatch(_ changes: AssetMetadataChanges, syncType: String) throws {
+        // A metadata-only iCloud ID update does not change resource bytes;
+        // only a changed source checksum invalidates hash verification.
+        if syncType == "delta" {
+            var affectedChecksums = Set<String>()
+            for (id, newChecksum) in changes.sourceChecksumUpserts {
+                let existing = dbManager.getServerAssetByImmichId(id)
+                if existing?.sourceChecksum != newChecksum {
+                    if let existing {
+                        affectedChecksums.insert(existing.checksum)
+                        if let sourceChecksum = existing.sourceChecksum {
+                            affectedChecksums.insert(sourceChecksum)
+                        }
+                    }
+                    affectedChecksums.insert(newChecksum)
+                }
+            }
+            guard dbManager.invalidateHashChecksForServerChanges(
+                checksums: Array(affectedChecksums),
+                fullReset: false
+            ) else {
+                throw SyncError.syncFailed(reason: "Failed to persist hash verification invalidations")
+            }
+        }
+
+        guard dbManager.updateICloudIds(changes.iCloudIdUpserts) else {
+            throw SyncError.syncFailed(reason: "Failed to persist iCloud ID updates")
+        }
+        guard dbManager.clearICloudIds(for: changes.iCloudIdDeletes) else {
+            throw SyncError.syncFailed(reason: "Failed to persist iCloud ID deletions")
+        }
+        guard dbManager.updateSourceChecksums(changes.sourceChecksumUpserts) else {
+            throw SyncError.syncFailed(reason: "Failed to persist source checksum updates")
+        }
     }
 
 }
