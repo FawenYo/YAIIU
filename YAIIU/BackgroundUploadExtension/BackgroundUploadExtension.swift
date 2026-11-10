@@ -812,7 +812,12 @@ final class BackgroundUploadExtensionCore {
             var foregroundCandidates = 0
             var foregroundSkipped = 0
 
-            for change in changes {
+            var expectedTokenData: Data? = tokenData
+            let allowsForegroundLockstep =
+                PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+            var foregroundCursorAdvances = 0
+
+            ingestion: for change in changes {
                 guard !isCancelled else { return .cancelled }
                 let details = try change.changeDetails(for: .asset)
                 let inserted = details.insertedLocalIdentifiers
@@ -820,27 +825,29 @@ final class BackgroundUploadExtensionCore {
                 let updated = details.updatedLocalIdentifiers
                 // PhotoKit can report metadata or iCloud storage state as updates.
                 // Fetch current versions without downloading original resources.
-                var modificationDates: [String: Date] = [:]
-                var adjustmentVersions: [String: String] = [:]
-                if !updated.isEmpty {
+                // Inserted assets are included so a lockstep commit can also
+                // record their hidden state in the foreground inventory.
+                var assetStates: [String: PhotoAssetChangeState] = [:]
+                let changed = Array(inserted.union(updated).subtracting(deleted))
+                if !changed.isEmpty {
                     let options = PHFetchOptions()
                     options.includeHiddenAssets = true
                     options.wantsIncrementalChangeDetails = false
-                    let identifiers = Array(updated)
-                    for start in stride(from: 0, to: identifiers.count, by: 300) {
+                    for start in stride(from: 0, to: changed.count, by: 300) {
                         autoreleasepool {
-                            let end = min(start + 300, identifiers.count)
+                            let end = min(start + 300, changed.count)
                             let assets = PHAsset.fetchAssets(
-                                withLocalIdentifiers: Array(identifiers[start..<end]),
+                                withLocalIdentifiers: Array(changed[start..<end]),
                                 options: options
                             )
                             assets.enumerateObjects { asset, _, _ in
                                 autoreleasepool {
-                                    if let date = asset.modificationDate {
-                                        modificationDates[asset.localIdentifier] = date
-                                    }
-                                    adjustmentVersions[asset.localIdentifier] =
-                                        PhotoAssetAdjustmentVersion.make(for: asset)
+                                    assetStates[asset.localIdentifier] = PhotoAssetChangeState(
+                                        localIdentifier: asset.localIdentifier,
+                                        isHidden: asset.isHidden,
+                                        modificationDate: asset.modificationDate,
+                                        adjustmentVersion: PhotoAssetAdjustmentVersion.make(for: asset)
+                                    )
                                 }
                             }
                         }
@@ -848,14 +855,25 @@ final class BackgroundUploadExtensionCore {
                 }
                 let nextTokenData = try archiveChangeToken(change.changeToken)
 
-                guard let summary = database.commitPersistentChange(
+                let result = database.commitPersistentChange(
                     insertedAssetIds: inserted,
                     updatedAssetIds: updated,
                     deletedAssetIds: deleted,
-                    updatedAssetModificationDates: modificationDates,
-                    updatedAssetAdjustmentVersions: adjustmentVersions,
-                    tokenData: nextTokenData
-                ) else {
+                    assetStates: assetStates,
+                    expectedTokenData: expectedTokenData,
+                    tokenData: nextTokenData,
+                    allowsForegroundLockstep: allowsForegroundLockstep
+                )
+                let summary: PhotoAssetChangeCommitSummary
+                switch result {
+                case .committed(let committed):
+                    summary = committed
+                case .cursorMoved:
+                    // The app replayed this range in lockstep and already applied
+                    // the background effects. Resume from its cursor next run.
+                    log("Persistent change cursor advanced by the app; stopping this ingestion pass")
+                    break ingestion
+                case .failed:
                     throw NSError(
                         domain: "com.fawenyo.yaiiu.background-upload",
                         code: 1,
@@ -865,6 +883,7 @@ final class BackgroundUploadExtensionCore {
                         ]
                     )
                 }
+                expectedTokenData = nextTokenData
 
                 changeCount += 1
                 insertedCount += inserted.count
@@ -874,10 +893,11 @@ final class BackgroundUploadExtensionCore {
                 invalidatedVersionCount += summary.invalidatedVersions
                 foregroundCandidates += summary.foregroundCandidatesQueued
                 foregroundSkipped += summary.foregroundVerifiedSkipped
+                if summary.advancedForegroundCursor { foregroundCursorAdvances += 1 }
             }
 
             if changeCount > 0 {
-                log("Persistent changes: \(changeCount) batch(es), \(insertedCount) inserted, \(updatedCount) updated (\(retainedVersionCount) cached versions retained, \(invalidatedVersionCount) invalidated/unknown), \(deletedCount) deleted; foreground pending candidates=\(foregroundCandidates), verified updates skipped=\(foregroundSkipped)")
+                log("Persistent changes: \(changeCount) batch(es), \(insertedCount) inserted, \(updatedCount) updated (\(retainedVersionCount) cached versions retained, \(invalidatedVersionCount) invalidated/unknown), \(deletedCount) deleted; foreground pending candidates=\(foregroundCandidates), verified updates skipped=\(foregroundSkipped), foreground cursor advanced=\(foregroundCursorAdvances)")
             }
             return isCancelled ? .cancelled : .ready
         } catch let error as NSError

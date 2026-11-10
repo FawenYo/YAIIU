@@ -52,6 +52,8 @@
 		BC7F35292EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */; };
 		BC7F352A2EFED8F200747537 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC7F35252EFED8F200747537 /* SharedSettings.swift */; };
         BU0000010000000000000001 /* BackgroundUploadPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BU0000020000000000000001 /* BackgroundUploadPolicy.swift */; };
+        PJ0000010000000000000001 /* PhotoChangeJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = PJ0000020000000000000001 /* PhotoChangeJournal.swift */; };
+        PJ0000030000000000000001 /* PhotoChangeJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = PJ0000020000000000000001 /* PhotoChangeJournal.swift */; };
         TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */; };
 		TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000170000000000000001 /* HashPipelinePolicyTests.swift */; };
 		PT0000010000000000000001 /* PhotoLibraryEnumerationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */; };
@@ -73,6 +75,7 @@
 		CI0000010000000000000001 /* CloudIdSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CI0000020000000000000001 /* CloudIdSyncService.swift */; };
 		LS0000010000000000000001 /* LanguageSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LS0000020000000000000001 /* LanguageSettingsView.swift */; };
 		TS0000010000000000000001 /* SyncStreamParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000030000000000000001 /* SyncStreamParserTests.swift */; };
+		PJ0000040000000000000001 /* PhotoChangeCursorLockstepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PJ0000050000000000000001 /* PhotoChangeCursorLockstepTests.swift */; };
 		TS0000100000000000000001 /* ServerAssetRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000110000000000000001 /* ServerAssetRepositoryTests.swift */; };
 		TS0000120000000000000001 /* ServerAssetSyncPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */; };
 		AU0000010000000000000001 /* AuthenticationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */; };
@@ -165,6 +168,7 @@
 		BC7F35242EFED8F200747537 /* BackgroundUploadDatabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadDatabase.swift; sourceTree = "<group>"; };
 		BC7F35252EFED8F200747537 /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
         BU0000020000000000000001 /* BackgroundUploadPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadPolicy.swift; sourceTree = "<group>"; };
+        PJ0000020000000000000001 /* PhotoChangeJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoChangeJournal.swift; sourceTree = "<group>"; };
         TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadPolicyTests.swift; sourceTree = "<group>"; };
 		TS0000170000000000000001 /* HashPipelinePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HashPipelinePolicyTests.swift; sourceTree = "<group>"; };
 		PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryEnumerationTests.swift; sourceTree = "<group>"; };
@@ -196,6 +200,7 @@
 		IP0000050000000000000001 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		IP0000060000000000000001 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		TS0000030000000000000001 /* SyncStreamParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStreamParserTests.swift; sourceTree = "<group>"; };
+		PJ0000050000000000000001 /* PhotoChangeCursorLockstepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoChangeCursorLockstepTests.swift; sourceTree = "<group>"; };
 		TS0000110000000000000001 /* ServerAssetRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetRepositoryTests.swift; sourceTree = "<group>"; };
 		TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAssetSyncPersistenceTests.swift; sourceTree = "<group>"; };
 		AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationPersistenceTests.swift; sourceTree = "<group>"; };
@@ -371,6 +376,7 @@
 				RF0000020000000000000001 /* PHAssetResource+ResolvedFilename.swift */,
 				BC7F35252EFED8F200747537 /* SharedSettings.swift */,
                 BU0000020000000000000001 /* BackgroundUploadPolicy.swift */,
+                PJ0000020000000000000001 /* PhotoChangeJournal.swift */,
 				BC7F352C2EFED90000747537 /* SharedLogTypes.swift */,
 			);
 			path = Shared;
@@ -434,6 +440,7 @@
 			isa = PBXGroup;
 			children = (
 				TS0000030000000000000001 /* SyncStreamParserTests.swift */,
+				PJ0000050000000000000001 /* PhotoChangeCursorLockstepTests.swift */,
 				TS0000110000000000000001 /* ServerAssetRepositoryTests.swift */,
 				TS0000130000000000000001 /* ServerAssetSyncPersistenceTests.swift */,
 				AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */,
@@ -621,6 +628,7 @@
 				BC7F35272EFED8F200747537 /* BackgroundUploadDatabase.swift in Sources */,
 				BC7F35282EFED8F200747537 /* SharedSettings.swift in Sources */,
                 BU0000010000000000000001 /* BackgroundUploadPolicy.swift in Sources */,
+                PJ0000010000000000000001 /* PhotoChangeJournal.swift in Sources */,
 				BC7F352B2EFED90000747537 /* SharedLogTypes.swift in Sources */,
 				RF0000010000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */,
 				2A0000320000000000000001 /* ImmichSQLiteImporter.swift in Sources */,
@@ -652,6 +660,7 @@
 				BC7F352D2EFED90000747537 /* SharedLogTypes.swift in Sources */,
 				RF0000030000000000000001 /* PHAssetResource+ResolvedFilename.swift in Sources */,
                 BU0000030000000000000001 /* BackgroundUploadPolicy.swift in Sources */,
+                PJ0000030000000000000001 /* PhotoChangeJournal.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -660,6 +669,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				TS0000010000000000000001 /* SyncStreamParserTests.swift in Sources */,
+				PJ0000040000000000000001 /* PhotoChangeCursorLockstepTests.swift in Sources */,
 				TS0000100000000000000001 /* ServerAssetRepositoryTests.swift in Sources */,
 				TS0000120000000000000001 /* ServerAssetSyncPersistenceTests.swift in Sources */,
 				AU0000010000000000000001 /* AuthenticationPersistenceTests.swift in Sources */,
