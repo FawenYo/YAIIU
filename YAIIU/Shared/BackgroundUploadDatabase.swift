@@ -181,7 +181,8 @@ final class BackgroundUploadDatabase {
         // failed RAW retry.
         exec("""
             UPDATE hash_cache SET has_raw = 1
-            WHERE asset_id IN (
+            WHERE COALESCE(has_raw, 0) != 1
+              AND asset_id IN (
                 SELECT DISTINCT asset_id FROM upload_jobs WHERE resource_type = 'raw'
             )
         """)

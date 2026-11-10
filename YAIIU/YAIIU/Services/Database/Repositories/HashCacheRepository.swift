@@ -68,6 +68,8 @@ final class HashCacheRepository {
         VALUES (?, ?, 0, ?, ?, 0, ?, ?, ?);
         """
 
+        // One commit for the hash write and pending cleanup instead of two fsyncs.
+        let inTransaction = adjustmentVersion != nil && connection.beginTransaction()
         var statement: OpaquePointer?
 
         if sqlite3_prepare_v2(connection.db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -143,6 +145,13 @@ final class HashCacheRepository {
         }
 
         sqlite3_finalize(statement)
+        if inTransaction && !connection.commitTransaction() {
+            logError(
+                "Hash cache commit failed: asset=\(localIdentifier), error=\(String(cString: sqlite3_errmsg(connection.db)))",
+                category: .database
+            )
+            connection.rollbackTransaction()
+        }
     }
     
     /// Immich SQLite imports carry Immich's adjustment version when available
@@ -353,7 +362,7 @@ final class HashCacheRepository {
     }
 
     /// Keep the cursor predicate separate from the first-page query so
-    /// SQLite can seek into idx_hash_asset rather than scanning prior pages.
+    /// SQLite can seek into the asset_id UNIQUE index rather than scanning prior pages.
     static func photoKitBaselinePageSQL(hasCursor: Bool) -> String {
         let cursorPredicate = hasCursor ? "AND h.asset_id > ?1" : ""
         let limitParameter = hasCursor ? "?2" : "?1"
@@ -1213,8 +1222,10 @@ final class HashCacheRepository {
             guard self.connection.beginTransaction() else { return false }
             var invalidatedCount = 0
 
-            let batches: [[String]] = fullReset ? [[]] : stride(from: 0, to: unique.count, by: 200).map {
-                Array(unique[$0..<min($0 + 200, unique.count)])
+            // sha1_hash/raw_hash are unindexed, so each batch is a full scan; 4000
+            // (8000 bound params) keeps a typical sync batch to one scan.
+            let batches: [[String]] = fullReset ? [[]] : stride(from: 0, to: unique.count, by: 4000).map {
+                Array(unique[$0..<min($0 + 4000, unique.count)])
             }
             for batch in batches {
                 let sql: String

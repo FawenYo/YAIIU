@@ -1500,6 +1500,7 @@ class UploadTaskDelegate {
     var responseData = Data()
     var onBytesSent: (() -> Void)?
     var bytesSentCallbackFired = false
+    var lastReportedPercent = -1
     var makeBodyStream: (() -> InputStream?)?
     var cleanup: (() -> Void)?
 
@@ -1550,9 +1551,13 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
         guard totalBytesExpectedToSend > 0 else { return }
     
         let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
-    
-        DispatchQueue.main.async {
-            delegate.progressHandler?(progress)
+        // Coalesce per-chunk callbacks into whole-percent main-thread hops.
+        let percent = Int(progress * 100)
+        if percent != delegate.lastReportedPercent {
+            delegate.lastReportedPercent = percent
+            DispatchQueue.main.async {
+                delegate.progressHandler?(progress)
+            }
         }
 
         if !delegate.bytesSentCallbackFired && totalBytesExpectedToSend > 0 && totalBytesSent >= totalBytesExpectedToSend {

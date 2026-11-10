@@ -19,13 +19,17 @@ public enum LogLevel: String, CaseIterable, Comparable, Sendable {
         }
     }
     
-    public static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {
-        let order: [LogLevel] = [.debug, .info, .warning, .error]
-        guard let lhsIndex = order.firstIndex(of: lhs),
-              let rhsIndex = order.firstIndex(of: rhs) else {
-            return false
+    private var rank: Int {
+        switch self {
+        case .debug: return 0
+        case .info: return 1
+        case .warning: return 2
+        case .error: return 3
         }
-        return lhsIndex < rhsIndex
+    }
+    
+    public static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {
+        lhs.rank < rhs.rank
     }
     
     /// Initialize from single-character abbreviation (D, I, W, E)
@@ -74,6 +78,8 @@ public enum LogFormatter {
     /// Captures: (1) timestamp, (2) level char, (3) category, (4) message
     public static let unifiedLogPattern = #"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) \[([DIWE])\] \[([^\]]+)\] (.+)$"#
     
+    private static let unifiedLogRegex = try! NSRegularExpression(pattern: unifiedLogPattern)
+    
     /// Format a date to log timestamp string.
     public static func formatTimestamp(_ date: Date) -> String {
         return timestampFormatter.string(from: date)
@@ -99,8 +105,7 @@ public enum LogFormatter {
     /// Parse a log line into components.
     /// Returns nil if the line doesn't match the expected format.
     public static func parseLogLine(_ line: String) -> ParsedLogEntry? {
-        guard let regex = try? NSRegularExpression(pattern: unifiedLogPattern, options: []),
-              let match = regex.firstMatch(in: line, options: [], range: NSRange(line.startIndex..., in: line)),
+        guard let match = unifiedLogRegex.firstMatch(in: line, options: [], range: NSRange(line.startIndex..., in: line)),
               let timestampRange = Range(match.range(at: 1), in: line),
               let levelRange = Range(match.range(at: 2), in: line),
               let categoryRange = Range(match.range(at: 3), in: line),
@@ -147,10 +152,12 @@ public struct ParsedLogEntry: Sendable {
 // MARK: - Log File Writer
 
 /// Handles appending log entries to files in a thread-safe manner.
+/// Keeps one handle open per writer.
 public final class LogFileWriter: @unchecked Sendable {
     
     private let fileURL: URL
     private let queue: DispatchQueue
+    private var handle: FileHandle?
     
     public init(fileURL: URL, queueLabel: String = "com.fawenyo.yaiiu.logwriter") {
         self.fileURL = fileURL
@@ -175,23 +182,11 @@ public final class LogFileWriter: @unchecked Sendable {
     
     /// Append a raw line to the log file.
     public func appendLine(_ line: String) {
-        let data = (line + "\n").data(using: .utf8)
-        
-        queue.async { [fileURL] in
-            guard let data = data else { return }
-            
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                guard let handle = try? FileHandle(forWritingTo: fileURL) else { return }
-                defer { try? handle.close() }
-                handle.seekToEndOfFile()
-                handle.write(data)
-            } else {
-                try? data.write(to: fileURL)
-            }
-        }
+        let data = Data((line + "\n").utf8)
+        queue.async { [self] in write(data) }
     }
     
-    /// Append synchronously (blocks until write completes).
+    /// Append synchronously (blocks until write(2) completes, so the line survives a process kill).
     public func appendSync(
         timestamp: Date = Date(),
         level: LogLevel,
@@ -204,16 +199,65 @@ public final class LogFileWriter: @unchecked Sendable {
             category: category,
             message: message
         )
-        
-        guard let data = (entry + "\n").data(using: .utf8) else { return }
-        
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            guard let handle = try? FileHandle(forWritingTo: fileURL) else { return }
-            defer { try? handle.close() }
-            handle.seekToEndOfFile()
-            handle.write(data)
-        } else {
-            try? data.write(to: fileURL)
+        let data = Data((entry + "\n").utf8)
+        queue.sync { write(data) }
+    }
+    
+    /// Delete the file after all previously queued writes.
+    public func removeFile() {
+        queue.async { [self] in
+            closeHandle()
+            try? FileManager.default.removeItem(at: fileURL)
         }
+    }
+    
+    /// Read at most the last `maxBytes` of a file, dropping a leading partial line.
+    public static func readTail(of url: URL, maxBytes: UInt64) -> Data? {
+        guard let reader = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? reader.close() }
+        guard let size = try? reader.seekToEnd() else { return nil }
+        let offset = size > maxBytes ? size - maxBytes : 0
+        guard (try? reader.seek(toOffset: offset)) != nil,
+              let data = try? reader.readToEnd() else { return nil }
+        guard offset > 0 else { return data }
+        guard let newline = data.firstIndex(of: UInt8(ascii: "\n")) else { return Data() }
+        return data[data.index(after: newline)...]
+    }
+    
+    // MARK: - Private (queue only)
+    
+    private func write(_ data: Data) {
+        if let current = handle, isUnlinked(current) {
+            // Another process (or clearLogs) deleted the file; start a new one.
+            closeHandle()
+        }
+        if handle == nil {
+            openHandle()
+        }
+        guard let handle else { return }
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            closeHandle()
+        }
+    }
+    
+    private func openHandle() {
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+        }
+        guard let newHandle = try? FileHandle(forWritingTo: fileURL),
+              (try? newHandle.seekToEnd()) != nil else { return }
+        handle = newHandle
+    }
+    
+    private func closeHandle() {
+        try? handle?.close()
+        handle = nil
+    }
+    
+    private func isUnlinked(_ handle: FileHandle) -> Bool {
+        var info = stat()
+        return fstat(handle.fileDescriptor, &info) == 0 && info.st_nlink == 0
     }
 }

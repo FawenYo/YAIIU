@@ -80,14 +80,24 @@ class LogService {
     private var logEntries: [LogEntry] = []
     private let logQueue = DispatchQueue(label: "com.fawenyo.yaiiu.logservice", qos: .utility)
     private let maxLogEntries = 10000
+    // Trim in chunks so appends past the cap do not memmove the whole array each time.
+    private let logEntriesTrimSlack = 1000
+    private let loadTailBytes: UInt64 = 2 * 1024 * 1024
     private let logFileName = "yaiiu.log"
     private let appGroupID = "group.com.fawenyo.yaiiu"
     private let backgroundLogFileName = "background_upload.log"
+    private lazy var fileWriter = LogFileWriter(fileURL: logFileURL, queueLabel: "com.fawenyo.yaiiu.logservice.file")
+    
+    private static let legacyLogRegex = try! NSRegularExpression(pattern: #"^\[([^\]]+)\] (.+)$"#)
+    private static let legacyTimestampFormatter = ISO8601DateFormatter()
     
     var minimumLogLevel: LogLevel = .debug
     
     private init() {
-        loadLogsFromDisk()
+        // First item on logQueue, so later appends land after the loaded history.
+        logQueue.async { [weak self] in
+            self?.loadLogsFromDisk()
+        }
     }
     
     // MARK: - Logging Methods
@@ -136,13 +146,11 @@ class LogService {
     private func storeLogEntry(_ entry: LogEntry) {
         logEntries.append(entry)
         
-        // Trim old entries if needed
-        if logEntries.count > maxLogEntries {
+        if logEntries.count > maxLogEntries + logEntriesTrimSlack {
             logEntries.removeFirst(logEntries.count - maxLogEntries)
         }
         
-        // Append to file
-        appendToLogFile(entry)
+        fileWriter.appendLine(entry.formattedEntry)
     }
     
     // MARK: - File Operations
@@ -152,45 +160,13 @@ class LogService {
         return documentsDirectory.appendingPathComponent(logFileName)
     }
     
-    private func appendToLogFile(_ entry: LogEntry) {
-        let logLine = entry.formattedEntry + "\n"
-        let fileURL = logFileURL
-        
-        do {
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                let fileHandle = try FileHandle(forWritingTo: fileURL)
-                fileHandle.seekToEndOfFile()
-                if let data = logLine.data(using: .utf8) {
-                    fileHandle.write(data)
-                }
-                fileHandle.closeFile()
-            } else {
-                try logLine.write(to: fileURL, atomically: true, encoding: .utf8)
-            }
-        } catch {
-            print("Failed to write to log file: \(error)")
-        }
-    }
-    
     private func loadLogsFromDisk() {
-        let fileURL = logFileURL
-        
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
-        
-        do {
-            let content = try String(contentsOf: fileURL, encoding: .utf8)
-            let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
-            
-            // Parse last maxLogEntries lines
-            let recentLines = lines.suffix(maxLogEntries)
-            
-            for line in recentLines {
-                if let entry = parseLogLine(line) {
-                    logEntries.append(entry)
-                }
+        guard let data = LogFileWriter.readTail(of: logFileURL, maxBytes: loadTailBytes) else { return }
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+        for line in lines.suffix(maxLogEntries) {
+            if let entry = parseLogLine(String(line)) {
+                logEntries.append(entry)
             }
-        } catch {
-            print("Failed to load logs from disk: \(error)")
         }
     }
     
@@ -259,9 +235,7 @@ class LogService {
         logQueue.async { [weak self] in
             guard let self = self else { return }
             self.logEntries.removeAll()
-            
-            let fileURL = self.logFileURL
-            try? FileManager.default.removeItem(at: fileURL)
+            self.fileWriter.removeFile()
         }
         
         // Also clear background upload logs
@@ -304,24 +278,25 @@ class LogService {
         return containerURL.appendingPathComponent(backgroundLogFileName)
     }
     
-    /// Read and parse background upload logs from App Group shared container
-    private func loadBackgroundLogs() -> [LogEntry] {
+    /// Read and parse background upload logs from App Group shared container.
+    /// With a limit, only the newest `limit` entries at or above `level` are parsed.
+    private func loadBackgroundLogs(level: LogLevel?, limit: Int?) -> [LogEntry] {
         guard let logURL = backgroundLogFileURL,
-              FileManager.default.fileExists(atPath: logURL.path),
-              let content = try? String(contentsOf: logURL, encoding: .utf8) else {
+              let data = try? Data(contentsOf: logURL, options: .mappedIfSafe) else {
             return []
         }
         
         var entries: [LogEntry] = []
-        let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
         
-        for line in lines {
-            if let entry = parseBackgroundLogLine(line) {
-                entries.append(entry)
-            }
+        for line in lines.reversed() {
+            if let limit = limit, entries.count >= limit { break }
+            guard let entry = parseBackgroundLogLine(String(line)) else { continue }
+            if let level = level, let entryLevel = LogLevel(rawValue: entry.level), entryLevel < level { continue }
+            entries.append(entry)
         }
         
-        return entries
+        return entries.reversed()
     }
     
     /// Parse background upload log line.
@@ -339,10 +314,7 @@ class LogService {
     
     /// Parse legacy log format: "[2024-01-01T12:00:00Z] Message"
     private func parseLegacyLogLine(_ line: String) -> LogEntry? {
-        let legacyPattern = #"^\[([^\]]+)\] (.+)$"#
-        
-        guard let regex = try? NSRegularExpression(pattern: legacyPattern, options: []),
-              let match = regex.firstMatch(in: line, options: [], range: NSRange(line.startIndex..., in: line)),
+        guard let match = Self.legacyLogRegex.firstMatch(in: line, options: [], range: NSRange(line.startIndex..., in: line)),
               let timestampRange = Range(match.range(at: 1), in: line),
               let messageRange = Range(match.range(at: 2), in: line) else {
             return nil
@@ -351,8 +323,7 @@ class LogService {
         let timestampStr = String(line[timestampRange])
         let message = String(line[messageRange])
         
-        let isoFormatter = ISO8601DateFormatter()
-        guard let timestamp = isoFormatter.date(from: timestampStr) else {
+        guard let timestamp = Self.legacyTimestampFormatter.date(from: timestampStr) else {
             return nil
         }
         
@@ -378,8 +349,7 @@ class LogService {
         }
         
         // Get background upload logs
-        let backgroundLogs = loadBackgroundLogs()
-        allEntries.append(contentsOf: backgroundLogs)
+        allEntries.append(contentsOf: loadBackgroundLogs(level: level, limit: limit))
         
         // Sort by timestamp
         allEntries.sort { $0.timestamp < $1.timestamp }
@@ -411,12 +381,17 @@ class LogService {
         let mainCount = logQueue.sync { logEntries.count }
         
         guard let logURL = backgroundLogFileURL,
-              FileManager.default.fileExists(atPath: logURL.path),
-              let content = try? String(contentsOf: logURL, encoding: .utf8) else {
+              let data = try? Data(contentsOf: logURL, options: .mappedIfSafe) else {
             return mainCount
         }
         
-        let backgroundCount = content.components(separatedBy: "\n").filter { !$0.isEmpty }.count
+        let newline = UInt8(ascii: "\n")
+        var backgroundCount = data.withUnsafeBytes { bytes in
+            bytes.reduce(0) { $1 == newline ? $0 + 1 : $0 }
+        }
+        if let last = data.last, last != newline {
+            backgroundCount += 1
+        }
         return mainCount + backgroundCount
     }
     
