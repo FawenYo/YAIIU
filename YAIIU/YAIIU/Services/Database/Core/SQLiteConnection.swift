@@ -209,8 +209,8 @@ final class SQLiteConnection {
         executeStatement(sql)
     }
 
-    /// Separate foreground cursor: the upload extension independently advances
-    /// `change_tokens`, so sharing that cursor could silently skip foreground work.
+    /// Separate foreground cursor: `change_tokens` can be reset or advanced by the
+    /// extension alone. The two are advanced together only while in lockstep.
     private func createForegroundPhotoStateTables() {
         executeStatement("""
             CREATE TABLE IF NOT EXISTS foreground_photo_change_state (
@@ -613,6 +613,13 @@ final class SQLiteConnection {
     @discardableResult
     func beginTransaction() -> Bool {
         sqlite3_exec(db, "BEGIN TRANSACTION;", nil, nil, nil) == SQLITE_OK
+    }
+
+    /// Takes the write lock up front, so a read inside the transaction cannot be
+    /// invalidated by another process before this transaction writes.
+    @discardableResult
+    func beginImmediateTransaction() -> Bool {
+        sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION;", nil, nil, nil) == SQLITE_OK
     }
 
     @discardableResult

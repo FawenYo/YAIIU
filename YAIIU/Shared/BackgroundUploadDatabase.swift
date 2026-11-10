@@ -84,6 +84,7 @@ struct PhotoAssetChangeCommitSummary {
     let invalidatedVersions: Int
     let foregroundCandidatesQueued: Int
     let foregroundVerifiedSkipped: Int
+    var advancedForegroundCursor = false
 }
 
 final class BackgroundUploadDatabase {
@@ -227,30 +228,6 @@ final class BackgroundUploadDatabase {
         }
     }
 
-    private func uploadedReceiptMatchesCurrentAdjustmentVersion(
-        db: OpaquePointer?,
-        assetId: String,
-        adjustmentVersion: String
-    ) -> Bool {
-        let sql = """
-            SELECT COUNT(*),
-                   SUM(CASE WHEN asset_adjustment_version = ? THEN 1 ELSE 0 END)
-            FROM uploaded_assets
-            WHERE asset_id = ?
-        """
-        var statement: OpaquePointer?
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            return false
-        }
-        sqlite3_bind_text(statement, 1, adjustmentVersion, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(statement, 2, assetId, -1, SQLITE_TRANSIENT)
-        guard sqlite3_step(statement) == SQLITE_ROW else { return false }
-        let receiptCount = Int(sqlite3_column_int(statement, 0))
-        let matchingCount = Int(sqlite3_column_int(statement, 1))
-        return receiptCount > 0 && matchingCount == receiptCount
-    }
-    
     // MARK: - Upload Jobs
     
     func createOrUpdateJob(assetId: String, resourceType: String, filename: String, status: UploadJobStatus = .pending) {
@@ -848,25 +825,36 @@ final class BackgroundUploadDatabase {
     /// Atomically persists a Photos persistent-change checkpoint with the asset IDs
     /// discovered before that checkpoint. This guarantees that advancing the token
     /// can never strand assets if the extension is terminated immediately afterward.
+    ///
+    /// `expectedTokenData` is the checkpoint this change was read after (nil when no
+    /// row exists yet). When the foreground cursor holds the same bytes, the change
+    /// also applies the foreground effects and advances both cursors together.
+    /// Pass `allowsForegroundLockstep: false` under Limited Photos access: the
+    /// app never advances its cursor on a partial library view, so neither may
+    /// the extension.
     func commitPersistentChange(
         insertedAssetIds: Set<String>,
         updatedAssetIds: Set<String>,
         deletedAssetIds: Set<String>,
-        updatedAssetModificationDates: [String: Date],
-        updatedAssetAdjustmentVersions: [String: String] = [:],
-        tokenData: Data
-    ) -> PhotoAssetChangeCommitSummary? {
-        queue.sync {
-            guard let db else { return nil }
-            let unresolvedUpdatedAssetIds = updatedAssetIds
-                .subtracting(deletedAssetIds)
-                .subtracting(Set(updatedAssetAdjustmentVersions.keys))
+        assetStates: [String: PhotoAssetChangeState],
+        expectedTokenData: Data?,
+        tokenData: Data,
+        allowsForegroundLockstep: Bool
+    ) -> PhotoAssetChangeCommitResult {
+        let range = PhotoChangeJournalRange(
+            insertedIdentifiers: insertedAssetIds,
+            updatedIdentifiers: updatedAssetIds,
+            deletedIdentifiers: deletedAssetIds,
+            states: assetStates
+        )
+        return queue.sync {
+            guard let db else { return .failed }
             // Do not advance the PhotoKit cursor until every updated asset has
             // version evidence. A missing adjustment version means PhotoKit could
             // not resolve the updated PHAsset yet; replay it on the next run.
-            guard unresolvedUpdatedAssetIds.isEmpty else { return nil }
+            guard range.hasVersionEvidenceForEveryUpdate else { return .failed }
             guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION", nil, nil, nil) == SQLITE_OK else {
-                return nil
+                return .failed
             }
 
             var committed = false
@@ -876,282 +864,34 @@ final class BackgroundUploadDatabase {
                 }
             }
 
-            let now = Date().timeIntervalSince1970
-            let insertSql = """
-                INSERT OR IGNORE INTO background_upload_queue (asset_id, enqueued_at)
-                VALUES (?, ?)
-            """
-            var insertStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, insertSql, -1, &insertStmt, nil) == SQLITE_OK else {
-                sqlite3_finalize(insertStmt)
-                return nil
-            }
-            defer { sqlite3_finalize(insertStmt) }
-            let effectiveDeletedAssetIds = deletedAssetIds
-            for assetId in insertedAssetIds.union(updatedAssetIds).subtracting(effectiveDeletedAssetIds) {
-                sqlite3_reset(insertStmt)
-                sqlite3_clear_bindings(insertStmt)
-                guard sqlite3_bind_text(insertStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                      sqlite3_bind_double(insertStmt, 2, now) == SQLITE_OK,
-                      sqlite3_step(insertStmt) == SQLITE_DONE else {
-                    return nil
-                }
-            }
+            guard let cursors = PhotoChangeJournal.readCursors(db: db) else { return .failed }
+            guard cursors.background == expectedTokenData else { return .cursorMoved }
+            let lockstep = allowsForegroundLockstep && cursors.inLockstep(at: expectedTokenData)
 
-            // PhotoKit marks metadata/iCloud availability updates as "updated" too.
-            // Compare adjustment versions inside same transaction as cache
-            // invalidation and cursor advancement. Missing version evidence
-            // rejects this checkpoint; legacy rows invalidate when evidence exists.
-            var invalidatedUpdatedIds = deletedAssetIds
-            // A receipt can exist without any foreground hash cache row.
-            // These assets still need foreground reconciliation even if the
-            // uploaded receipt's adjustment version already matches.
-            var updatedWithoutHashIds = Set<String>()
-            if !updatedAssetIds.isEmpty {
-                let sql = "SELECT asset_adjustment_version, asset_modification_date FROM hash_cache WHERE asset_id = ? LIMIT 1"
-                var versionStmt: OpaquePointer?
-                if sqlite3_prepare_v2(db, sql, -1, &versionStmt, nil) == SQLITE_OK {
-                    defer { sqlite3_finalize(versionStmt) }
-
-                    for assetId in updatedAssetIds {
-                        sqlite3_reset(versionStmt)
-                        sqlite3_clear_bindings(versionStmt)
-                        guard sqlite3_bind_text(versionStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-                            return nil
-                        }
-                        let result = sqlite3_step(versionStmt)
-                        if result == SQLITE_ROW {
-                            let storedAdjustmentVersion: String? = {
-                                guard let pointer = sqlite3_column_text(versionStmt, 0) else { return nil }
-                                return String(cString: pointer)
-                            }()
-                            if let currentAdjustmentVersion = updatedAssetAdjustmentVersions[assetId] {
-                                if let storedAdjustmentVersion, storedAdjustmentVersion != currentAdjustmentVersion {
-                                    invalidatedUpdatedIds.insert(assetId)
-                                } else if storedAdjustmentVersion == nil {
-                                    let oldDate: TimeInterval? =
-                                        sqlite3_column_type(versionStmt, 1) == SQLITE_NULL
-                                        ? nil : sqlite3_column_double(versionStmt, 1)
-                                    if PhotoAssetVersionPolicy.canReuseCachedHash(
-                                        storedModificationTime: oldDate,
-                                        currentModificationDate: updatedAssetModificationDates[assetId]
-                                    ) {
-                                        guard updateAdjustmentVersion(
-                                            db: db, assetId: assetId,
-                                            modificationDate: updatedAssetModificationDates[assetId],
-                                            adjustmentVersion: currentAdjustmentVersion
-                                        ) else { return nil }
-                                    } else {
-                                        // A PhotoKit update on a versionless
-                                        // legacy asset requires a fresh checksum.
-                                        invalidatedUpdatedIds.insert(assetId)
-                                    }
-                                } else {
-                                    guard updateAdjustmentVersion(
-                                        db: db,
-                                        assetId: assetId,
-                                        modificationDate: updatedAssetModificationDates[assetId],
-                                        adjustmentVersion: currentAdjustmentVersion
-                                    ) else { return nil }
-                                }
-                            }
-                        } else if result == SQLITE_DONE {
-                            updatedWithoutHashIds.insert(assetId)
-                            // A background upload can finish after foreground
-                            // invalidation and create a current receipt before
-                            // the hash cache is rebuilt. Preserve only receipts
-                            // carrying the current adjustment version.
-                            if let currentAdjustmentVersion = updatedAssetAdjustmentVersions[assetId],
-                               !uploadedReceiptMatchesCurrentAdjustmentVersion(
-                                   db: db,
-                                   assetId: assetId,
-                                   adjustmentVersion: currentAdjustmentVersion
-                               ) {
-                                invalidatedUpdatedIds.insert(assetId)
-                            }
-                        } else {
-                            return nil
-                        }
-                    }
-                } else {
-                    sqlite3_finalize(versionStmt)
-                    // An older host database may not have the adjustment version
-                    // column yet. Do not advance token across that schema gap.
-                    return nil
-                }
+            guard var summary = PhotoChangeJournal.applyBackgroundEffects(db: db, range: range) else {
+                return .failed
             }
-
-            // Only real/unknown version changes invalidate hashes, upload receipts,
-            // and completed jobs. Active jobs are still handled by PhotoKit.
-            let invalidationStatements = [
-                "DELETE FROM uploaded_assets WHERE asset_id = ?",
-                "DELETE FROM hash_cache WHERE asset_id = ?",
-                "DELETE FROM upload_jobs WHERE asset_id = ? AND status = 'completed'",
-            ]
-            for sql in invalidationStatements {
-                var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-                    sqlite3_finalize(stmt)
-                    return nil
-                }
-                for assetId in invalidatedUpdatedIds {
-                    sqlite3_reset(stmt)
-                    sqlite3_clear_bindings(stmt)
-                    guard sqlite3_bind_text(stmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                          sqlite3_step(stmt) == SQLITE_DONE else {
-                        sqlite3_finalize(stmt)
-                        return nil
-                    }
-                }
-                sqlite3_finalize(stmt)
+            if lockstep {
+                let states = range.affectedIdentifiers.sorted().compactMap { assetStates[$0] }
+                guard PhotoChangeJournal.applyForegroundEffects(
+                    db: db,
+                    states: states,
+                    pendingIdentifiers: range.affectedIdentifiers,
+                    deletedIdentifiers: deletedAssetIds
+                ) != nil,
+                PhotoChangeJournal.writeForegroundCursor(db: db, tokenData: tokenData)
+                else { return .failed }
             }
-
-            // The foreground may have invalidated an old upload receipt,
-            // rehashed the changed asset, and saved a matching current version
-            // before this extension processes its PhotoKit token. A completed
-            // job without its resource receipt is stale even when hash dates now
-            // match: remove it so createOrUpdateJob can track its replacement.
-            let staleJobSQL = """
-                DELETE FROM upload_jobs
-                WHERE asset_id = ? AND status = 'completed'
-                  AND NOT EXISTS (
-                      SELECT 1 FROM uploaded_assets AS receipt
-                      WHERE receipt.asset_id = upload_jobs.asset_id
-                        AND receipt.resource_type = upload_jobs.resource_type
-                  )
-            """
-            var staleJobStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, staleJobSQL, -1, &staleJobStmt, nil) == SQLITE_OK else {
-                sqlite3_finalize(staleJobStmt)
-                return nil
-            }
-            defer { sqlite3_finalize(staleJobStmt) }
-            for assetId in updatedAssetIds {
-                sqlite3_reset(staleJobStmt)
-                sqlite3_clear_bindings(staleJobStmt)
-                guard sqlite3_bind_text(staleJobStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                      sqlite3_step(staleJobStmt) == SQLITE_DONE else {
-                    return nil
-                }
-            }
-
-            // Only enqueue new assets, genuinely changed/unknown resource
-            // versions, or updates without foreground hash evidence. The
-            // background cursor has already verified unchanged cached hashes
-            // using PhotoKit adjustment versions in this transaction: queuing
-            // those updates forces thousands of redundant foreground reads.
-            //
-            // Never DELETE previously queued IDs here. Foreground may have
-            // queued newer work while the extension was checking an older event.
-            let foregroundCandidates = insertedAssetIds
-                .union(invalidatedUpdatedIds)
-                .union(updatedWithoutHashIds)
-                .subtracting(effectiveDeletedAssetIds)
-            let foregroundVerifiedSkipped = updatedAssetIds
-                .subtracting(effectiveDeletedAssetIds)
-                .subtracting(foregroundCandidates)
-            let foregroundSQL = """
-                INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id)
-                VALUES (?)
-            """
-            var foregroundStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, foregroundSQL, -1, &foregroundStmt, nil) == SQLITE_OK else {
-                sqlite3_finalize(foregroundStmt)
-                return nil
-            }
-            defer { sqlite3_finalize(foregroundStmt) }
-            for assetId in foregroundCandidates {
-                sqlite3_reset(foregroundStmt)
-                sqlite3_clear_bindings(foregroundStmt)
-                guard sqlite3_bind_text(foregroundStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                      sqlite3_step(foregroundStmt) == SQLITE_DONE else { return nil }
-            }
-
-            let foregroundDeleteSQL = "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?"
-            var foregroundDeleteStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, foregroundDeleteSQL, -1, &foregroundDeleteStmt, nil) == SQLITE_OK else {
-                sqlite3_finalize(foregroundDeleteStmt)
-                return nil
-            }
-            defer { sqlite3_finalize(foregroundDeleteStmt) }
-            for assetId in effectiveDeletedAssetIds {
-                sqlite3_reset(foregroundDeleteStmt)
-                sqlite3_clear_bindings(foregroundDeleteStmt)
-                guard sqlite3_bind_text(foregroundDeleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                      sqlite3_step(foregroundDeleteStmt) == SQLITE_DONE else { return nil }
-            }
-
-            let deleteSql = "DELETE FROM background_upload_queue WHERE asset_id = ?"
-            var deleteStmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, deleteSql, -1, &deleteStmt, nil) == SQLITE_OK else {
-                sqlite3_finalize(deleteStmt)
-                return nil
-            }
-            defer { sqlite3_finalize(deleteStmt) }
-            for assetId in effectiveDeletedAssetIds {
-                sqlite3_reset(deleteStmt)
-                sqlite3_clear_bindings(deleteStmt)
-                guard sqlite3_bind_text(deleteStmt, 1, assetId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                      sqlite3_step(deleteStmt) == SQLITE_DONE else {
-                    return nil
-                }
-            }
-
-            let tokenSql = """
-                INSERT OR REPLACE INTO change_tokens (id, token_data, updated_at)
-                VALUES (1, ?, ?)
-            """
-            var tokenStmt: OpaquePointer?
-            defer { sqlite3_finalize(tokenStmt) }
-            guard sqlite3_prepare_v2(db, tokenSql, -1, &tokenStmt, nil) == SQLITE_OK else {
-                return nil
-            }
-            guard sqlite3_bind_blob(
-                tokenStmt,
-                1,
-                (tokenData as NSData).bytes,
-                Int32(tokenData.count),
-                SQLITE_TRANSIENT
-            ) == SQLITE_OK,
-            sqlite3_bind_double(tokenStmt, 2, now) == SQLITE_OK,
-            sqlite3_step(tokenStmt) == SQLITE_DONE else { return nil }
-
-            guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
-                return nil
+            guard PhotoChangeJournal.writeBackgroundCursor(db: db, tokenData: tokenData),
+                  sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                return .failed
             }
             committed = true
-            return PhotoAssetChangeCommitSummary(
-                retainedVersions: updatedAssetIds.count - invalidatedUpdatedIds.count,
-                invalidatedVersions: invalidatedUpdatedIds.count,
-                foregroundCandidatesQueued: foregroundCandidates.count,
-                foregroundVerifiedSkipped: foregroundVerifiedSkipped.count
-            )
+            summary.advancedForegroundCursor = lockstep
+            return .committed(summary)
         }
     }
 
-    @discardableResult
-    private func updateAdjustmentVersion(
-        db: OpaquePointer,
-        assetId: String,
-        modificationDate: Date?,
-        adjustmentVersion: String
-    ) -> Bool {
-        let sql = "UPDATE hash_cache SET asset_modification_date = ?, asset_adjustment_version = ? WHERE asset_id = ?"
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            sqlite3_finalize(statement)
-            return false
-        }
-        defer { sqlite3_finalize(statement) }
-        if let modificationDate {
-            sqlite3_bind_double(statement, 1, modificationDate.timeIntervalSince1970)
-        } else {
-            sqlite3_bind_null(statement, 1)
-        }
-        sqlite3_bind_text(statement, 2, adjustmentVersion, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(statement, 3, assetId, -1, SQLITE_TRANSIENT)
-        return sqlite3_step(statement) == SQLITE_DONE
-    }
 
     func getQueuedAssetIds(limit: Int) throws -> [String] {
         try queue.sync {

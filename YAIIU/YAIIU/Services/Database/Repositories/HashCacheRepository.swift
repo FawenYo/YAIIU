@@ -1628,8 +1628,8 @@ final class HashCacheRepository {
     
     // MARK: - Foreground PhotoKit Persistent Changes
 
-    /// Deliberately separate from the background extension's `change_tokens`.
-    /// Neither consumer may advance the other's cursor.
+    /// Separate from the extension's `change_tokens`. Either process advances
+    /// both cursors only while they are in lockstep; see `PhotoChangeJournal`.
     func loadForegroundPhotoToken() -> Data? {
         connection.ensureInitialized()
         return connection.dbQueue.sync { [weak self] in
@@ -1639,6 +1639,23 @@ final class HashCacheRepository {
             guard sqlite3_prepare_v2(
                 self.connection.db,
                 "SELECT token_data FROM foreground_photo_change_state WHERE id = 1;",
+                -1, &statement, nil
+            ) == SQLITE_OK, sqlite3_step(statement) == SQLITE_ROW,
+                  let bytes = sqlite3_column_blob(statement, 0) else { return nil }
+            return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+        }
+    }
+
+    /// The upload extension's PhotoKit cursor, read only to detect lockstep.
+    func loadBackgroundPhotoToken() -> Data? {
+        connection.ensureInitialized()
+        return connection.dbQueue.sync { [weak self] in
+            guard let self else { return nil }
+            var statement: OpaquePointer?
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_prepare_v2(
+                self.connection.db,
+                "SELECT token_data FROM change_tokens WHERE id = 1;",
                 -1, &statement, nil
             ) == SQLITE_OK, sqlite3_step(statement) == SQLITE_ROW,
                   let bytes = sqlite3_column_blob(statement, 0) else { return nil }
@@ -1657,11 +1674,77 @@ final class HashCacheRepository {
         tokenData: Data,
         bootstrap: Bool
     ) -> Bool {
+        if case .committed = commitForegroundPhotoChanges(
+            snapshots: snapshots,
+            pendingIdentifiers: pendingIdentifiers,
+            deletedIdentifiers: deletedIdentifiers,
+            tokenData: tokenData,
+            mode: bootstrap ? .bootstrap : .delta(journal: nil)
+        ) {
+            return true
+        }
+        return false
+    }
+
+    /// Commits one coalesced PhotoKit journal window from `expectedTokenData` to
+    /// `tokenData`. Returns `.cursorMoved` when the extension already advanced
+    /// the foreground cursor; the caller restarts from the stored token. While
+    /// both cursors are in lockstep the window also applies the extension's
+    /// effects and advances `change_tokens`, so the extension skips the range.
+    func commitForegroundPhotoJournalWindow(
+        range: PhotoChangeJournalRange,
+        snapshots: [PhotoAssetSnapshot],
+        expectedTokenData: Data,
+        tokenData: Data
+    ) -> ForegroundPhotoCommitResult {
+        commitForegroundPhotoChanges(
+            snapshots: snapshots,
+            pendingIdentifiers: range.affectedIdentifiers,
+            deletedIdentifiers: range.deletedIdentifiers,
+            tokenData: tokenData,
+            mode: .delta(journal: (range, expectedTokenData))
+        )
+    }
+
+    /// Rebuilds foreground state from a full snapshot and adopts the extension's
+    /// cursor bytes verbatim. The snapshot is taken after `backgroundTokenData`
+    /// was written, so replaying from it is redundant but never skips work.
+    /// Fails with `.cursorMoved` if the extension advanced in the meantime.
+    func realignForegroundPhotoChanges(
+        snapshots: [PhotoAssetSnapshot],
+        pendingIdentifiers: Set<String>,
+        backgroundTokenData: Data
+    ) -> ForegroundPhotoCommitResult {
+        commitForegroundPhotoChanges(
+            snapshots: snapshots,
+            pendingIdentifiers: pendingIdentifiers,
+            deletedIdentifiers: [],
+            tokenData: backgroundTokenData,
+            mode: .realign
+        )
+    }
+
+    private enum ForegroundPhotoCommitMode {
+        case bootstrap
+        case realign
+        /// `journal` is nil only for callers that own the cursor outright.
+        case delta(journal: (range: PhotoChangeJournalRange, expectedTokenData: Data)?)
+    }
+
+    private func commitForegroundPhotoChanges(
+        snapshots: [PhotoAssetSnapshot],
+        pendingIdentifiers: Set<String>,
+        deletedIdentifiers: Set<String>,
+        tokenData: Data,
+        mode: ForegroundPhotoCommitMode
+    ) -> ForegroundPhotoCommitResult {
         connection.ensureInitialized()
         return connection.dbQueue.sync { [weak self] in
-            guard let self else { return false }
-            let db = self.connection.db
-            guard self.connection.beginTransaction() else { return false }
+            guard let self else { return .failed }
+            guard let db = self.connection.db else { return .failed }
+            // IMMEDIATE: the cursor comparison below must not be invalidated by
+            // a write from the extension before this transaction writes.
+            guard self.connection.beginImmediateTransaction() else { return .failed }
             var committed = false
             defer { if !committed { self.connection.rollbackTransaction() } }
 
@@ -1686,27 +1769,33 @@ final class HashCacheRepository {
                 return true
             }
 
-            // Diagnostic counters are emitted only after the change transaction commits.
-            var unchangedCachedCount = 0
-            var missingCacheCount = 0
-            var invalidatedAdjustmentVersionCount = 0
-            var missingAdjustmentVersionCount = 0
-            var unknownAdjustmentVersionCount = 0
-            var missingCurrentDateCount = 0
-            var resolvedPendingIdentifiers = Set<String>()
-            var cacheDetails: [String] = []
-            var snapshotDetails: [String] = []
-            func recordCacheDetail(_ message: String) {
-                if cacheDetails.count < 10 { cacheDetails.append(message) }
-            }
-            func recordSnapshotDetail(_ message: String) {
-                if snapshotDetails.count < PhotoAssetSnapshot.diagnosticDetailLimit { snapshotDetails.append(message) }
+            var advanceBackgroundCursor = false
+            switch mode {
+            case .bootstrap:
+                break
+            case .realign:
+                guard let cursors = PhotoChangeJournal.readCursors(db: db) else { return .failed }
+                guard cursors.background == tokenData else { return .cursorMoved }
+            case .delta(let journal):
+                if let journal {
+                    guard let cursors = PhotoChangeJournal.readCursors(db: db) else { return .failed }
+                    guard cursors.foreground == journal.expectedTokenData else { return .cursorMoved }
+                    // The extension never advances past an update it cannot
+                    // version; such a window advances only the foreground cursor.
+                    advanceBackgroundCursor = cursors.inLockstep(at: journal.expectedTokenData)
+                        && journal.range.hasVersionEvidenceForEveryUpdate
+                }
             }
 
-            // Bootstrap reconciles old hashes/receipts/queue entries using the
-            // authoritative full-library snapshot (including hidden assets).
-            // The token is sampled BEFORE enumerating, so later changes replay.
-            if bootstrap {
+            var backgroundSummary: PhotoAssetChangeCommitSummary?
+            var counters: ForegroundPhotoEffectCounters?
+            var snapshotDetails: [String] = []
+
+            switch mode {
+            case .bootstrap, .realign:
+                // Reconcile old hashes/receipts/queue entries using the
+                // authoritative full-library snapshot (including hidden assets).
+                // The token is sampled BEFORE enumerating, so later changes replay.
                 guard execute("""
                     CREATE TEMP TABLE IF NOT EXISTS foreground_snapshot (
                         asset_id TEXT PRIMARY KEY,
@@ -1715,7 +1804,7 @@ final class HashCacheRepository {
                         adjustment_version TEXT
                     );
                     """),
-                      execute("DELETE FROM foreground_snapshot;") else { return false }
+                      execute("DELETE FROM foreground_snapshot;") else { return .failed }
 
                 var insert: OpaquePointer?
                 guard sqlite3_prepare_v2(db,
@@ -1723,7 +1812,7 @@ final class HashCacheRepository {
                     -1, &insert, nil
                 ) == SQLITE_OK else {
                     sqlite3_finalize(insert)
-                    return false
+                    return .failed
                 }
                 var insertOK = true
                 for snapshot in snapshots {
@@ -1747,7 +1836,7 @@ final class HashCacheRepository {
                     }
                 }
                 sqlite3_finalize(insert)
-                guard insertOK else { return false }
+                guard insertOK else { return .failed }
 
                 // Compare adjustment versions only on visible assets. Hidden items
                 // are retained (not rehashed) until they become visible.
@@ -1768,7 +1857,7 @@ final class HashCacheRepository {
                 var query: OpaquePointer?
                 guard sqlite3_prepare_v2(db, modifiedQuery, -1, &query, nil) == SQLITE_OK else {
                     sqlite3_finalize(query)
-                    return false
+                    return .failed
                 }
                 var modified = Set<String>()
                 var queryOK = true
@@ -1782,13 +1871,13 @@ final class HashCacheRepository {
                     else { queryOK = false; break }
                 }
                 sqlite3_finalize(query)
-                guard queryOK else { return false }
+                guard queryOK else { return .failed }
                 // Legacy/imported hashes without an adjustment version cannot prove
                 // that current resources match. Invalidate them so the next
                 // hash records trusted version evidence.
                 guard runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", modified),
                       runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified) else {
-                    return false
+                    return .failed
                 }
 
                 let missingFromSnapshot =
@@ -1835,212 +1924,69 @@ final class HashCacheRepository {
                       execute("""
                         INSERT OR REPLACE INTO local_photo_inventory_state(id, is_ready)
                         VALUES (1, 1);
-                        """) else { return false }
+                        """) else { return .failed }
 
-            } else {
-                // PhotoKit inserts/updates are not necessarily content edits:
-                // modificationDate is a PhotoKit record timestamp, not a byte
-                // version. Compare adjustment versions instead.
-                var modified = Set<String>()
-                let checkSQL = "SELECT asset_modification_date, asset_adjustment_version FROM hash_cache WHERE asset_id = ?;"
-                var statement: OpaquePointer?
-                var updateStatement: OpaquePointer?
-                guard sqlite3_prepare_v2(db, checkSQL, -1, &statement, nil) == SQLITE_OK else {
-                    sqlite3_finalize(statement)
-                    return false
-                }
-                guard sqlite3_prepare_v2(
-                    db,
-                    "UPDATE hash_cache SET asset_modification_date = ?, asset_adjustment_version = ? WHERE asset_id = ?;",
-                    -1,
-                    &updateStatement,
-                    nil
-                ) == SQLITE_OK else {
-                    sqlite3_finalize(statement)
-                    sqlite3_finalize(updateStatement)
-                    return false
-                }
-                var checkOK = true
-                for snapshot in snapshots where !snapshot.isHidden {
-                    var storedDate: Date?
-                    sqlite3_reset(statement)
-                    sqlite3_clear_bindings(statement)
-                    sqlite3_bind_text(statement, 1, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
-                    let step = sqlite3_step(statement)
-                    if step == SQLITE_ROW {
-                        if sqlite3_column_type(statement, 0) != SQLITE_NULL {
-                            let stored = sqlite3_column_double(statement, 0)
-                            storedDate = Date(timeIntervalSince1970: stored)
-                        }
-                        let storedAdjustmentVersion: String? = {
-                            guard let pointer = sqlite3_column_text(statement, 1) else { return nil }
-                            return String(cString: pointer)
-                        }()
-
-                        if let currentAdjustmentVersion = snapshot.adjustmentVersion {
-                            if let storedAdjustmentVersion {
-                                if currentAdjustmentVersion != storedAdjustmentVersion {
-                                    invalidatedAdjustmentVersionCount += 1
-                                    modified.insert(snapshot.localIdentifier)
-                                    recordCacheDetail(
-                                        "Foreground hash cache invalidated: asset=\(snapshot.localIdentifier), reason=adjustment_version_changed"
-                                    )
-                                } else {
-                                    unchangedCachedCount += 1
-                                    resolvedPendingIdentifiers.insert(snapshot.localIdentifier)
-                                    sqlite3_reset(updateStatement)
-                                    sqlite3_clear_bindings(updateStatement)
-                                    if let date = snapshot.modificationDate {
-                                        sqlite3_bind_double(updateStatement, 1, date.timeIntervalSince1970)
-                                    } else {
-                                        sqlite3_bind_null(updateStatement, 1)
-                                    }
-                                    sqlite3_bind_text(updateStatement, 2, (currentAdjustmentVersion as NSString).utf8String, -1, nil)
-                                    sqlite3_bind_text(updateStatement, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
-                                    guard sqlite3_step(updateStatement) == SQLITE_DONE else {
-                                        checkOK = false
-                                        break
-                                    }
-                                }
-                            } else if let storedDate, let currentDate = snapshot.modificationDate,
-                                      storedDate == currentDate {
-                                unchangedCachedCount += 1
-                                resolvedPendingIdentifiers.insert(snapshot.localIdentifier)
-                                sqlite3_reset(updateStatement)
-                                sqlite3_clear_bindings(updateStatement)
-                                sqlite3_bind_double(updateStatement, 1, currentDate.timeIntervalSince1970)
-                                sqlite3_bind_text(updateStatement, 2, (currentAdjustmentVersion as NSString).utf8String, -1, nil)
-                                sqlite3_bind_text(updateStatement, 3, (snapshot.localIdentifier as NSString).utf8String, -1, nil)
-                                guard sqlite3_step(updateStatement) == SQLITE_DONE else {
-                                    checkOK = false
-                                    break
-                                }
-                            } else {
-                                // No historical date or a different date cannot
-                                // establish byte-equivalent legacy data.
-                                missingAdjustmentVersionCount += 1
-                                modified.insert(snapshot.localIdentifier)
-                            }
-                        } else {
-                            // No current version (not requested or not resolvable).
-                            // Absence of evidence never discards a valid hash.
-                            unknownAdjustmentVersionCount += 1
-                            unchangedCachedCount += 1
-                            recordCacheDetail(
-                                "Foreground hash cache retained: asset=\(snapshot.localIdentifier), reason=adjustment_version_unavailable"
-                            )
-                        }
-                    } else if step == SQLITE_DONE {
-                        missingCacheCount += 1
-                        recordCacheDetail("Foreground PhotoKit asset has no prior hash cache: asset=\(snapshot.localIdentifier)")
+            case .delta(let journal):
+                if advanceBackgroundCursor, let journal {
+                    // Background effects first: their version invalidation is
+                    // what the foreground comparison below must observe. A
+                    // failure there must not cost the foreground its own window:
+                    // undo it and leave the extension cursor for the extension.
+                    guard execute("SAVEPOINT background_effects;") else { return .failed }
+                    if let summary = PhotoChangeJournal.applyBackgroundEffects(db: db, range: journal.range) {
+                        backgroundSummary = summary
+                        guard execute("RELEASE background_effects;") else { return .failed }
                     } else {
-                        checkOK = false
-                        break
-                    }
-                    if snapshot.modificationDate == nil {
-                        missingCurrentDateCount += 1
-                    }
-                    if snapshotDetails.count < PhotoAssetSnapshot.diagnosticDetailLimit {
-                        recordSnapshotDetail(snapshot.diagnosticSummary(storedModificationDate: storedDate))
+                        guard execute("ROLLBACK TO background_effects;"),
+                              execute("RELEASE background_effects;") else { return .failed }
+                        advanceBackgroundCursor = false
+                        logWarning("Foreground PhotoKit window could not apply extension effects; advancing only the foreground cursor", category: .hash)
                     }
                 }
-                sqlite3_finalize(statement)
-                sqlite3_finalize(updateStatement)
-                guard checkOK,
-                      runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", modified),
-                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", modified) else {
-                    return false
+                let states = snapshots.map {
+                    PhotoAssetChangeState(
+                        localIdentifier: $0.localIdentifier,
+                        isHidden: $0.isHidden,
+                        modificationDate: $0.modificationDate,
+                        adjustmentVersion: $0.adjustmentVersion
+                    )
                 }
-                let hiddenIDs = Set(snapshots.filter(\.isHidden).map(\.localIdentifier))
-                guard runIDs(
-                    "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
-                    hiddenIDs
-                ) else { return false }
-                let toEnqueue = pendingIdentifiers.subtracting(hiddenIDs).subtracting(deletedIdentifiers)
-                guard runIDs(
-                    "INSERT OR IGNORE INTO foreground_photo_pending_assets(asset_id) VALUES (?);",
-                    toEnqueue
-                ) else { return false }
-                guard runIDs(
-                    "DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;",
-                    resolvedPendingIdentifiers.subtracting(modified)
-                ) else { return false }
-
-                // Only explicit persistent deletions are authoritative here,
-                // never a temporarily unresolvable PHAsset fetch result.
-                guard runIDs("DELETE FROM hash_cache WHERE asset_id = ?;", deletedIdentifiers),
-                      runIDs("DELETE FROM uploaded_assets WHERE asset_id = ?;", deletedIdentifiers),
-                      runIDs("DELETE FROM foreground_photo_pending_assets WHERE asset_id = ?;", deletedIdentifiers),
-                      runIDs("DELETE FROM background_upload_queue WHERE asset_id = ?;", deletedIdentifiers),
-                      runIDs("""
-                        DELETE FROM upload_jobs WHERE asset_id = ?
-                        AND status IN ('pending', 'failed');
-                        """, deletedIdentifiers) else { return false }
-
-                // Keep inaccessible assets until an explicit deletion event.
-                // Hidden changes and additions update the persistent inventory.
-                var inventoryUpsert: OpaquePointer?
-                guard sqlite3_prepare_v2(
-                    db,
-                    "INSERT OR REPLACE INTO local_photo_assets(asset_id, is_hidden) VALUES (?, ?);",
-                    -1, &inventoryUpsert, nil
-                ) == SQLITE_OK else {
-                    sqlite3_finalize(inventoryUpsert)
-                    return false
-                }
-                let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-                var inventoryOK = true
-                for snapshot in snapshots where !deletedIdentifiers.contains(snapshot.localIdentifier) {
-                    sqlite3_reset(inventoryUpsert)
-                    sqlite3_clear_bindings(inventoryUpsert)
-                    if sqlite3_bind_text(
-                        inventoryUpsert, 1, (snapshot.localIdentifier as NSString).utf8String,
-                        -1, transient
-                    ) != SQLITE_OK
-                        || sqlite3_bind_int(inventoryUpsert, 2, snapshot.isHidden ? 1 : 0) != SQLITE_OK
-                        || sqlite3_step(inventoryUpsert) != SQLITE_DONE {
-                        inventoryOK = false
-                        break
+                guard let applied = PhotoChangeJournal.applyForegroundEffects(
+                    db: db,
+                    states: states,
+                    pendingIdentifiers: pendingIdentifiers,
+                    deletedIdentifiers: deletedIdentifiers,
+                    visitVisibleState: { index, storedDate in
+                        guard snapshotDetails.count < PhotoAssetSnapshot.diagnosticDetailLimit else { return }
+                        snapshotDetails.append(snapshots[index].diagnosticSummary(storedModificationDate: storedDate))
                     }
-                }
-                sqlite3_finalize(inventoryUpsert)
-                guard inventoryOK,
-                      runIDs("DELETE FROM local_photo_assets WHERE asset_id = ?;", deletedIdentifiers)
-                else { return false }
+                ) else { return .failed }
+                counters = applied
             }
 
-            // The extension's cursor is untouched, even though the SQLite
-            // database and durable upload queue are shared through App Group.
-            var tokenStatement: OpaquePointer?
-            guard sqlite3_prepare_v2(
-                db,
-                "INSERT OR REPLACE INTO foreground_photo_change_state(id, token_data) VALUES (1, ?);",
-                -1, &tokenStatement, nil
-            ) == SQLITE_OK else {
-                sqlite3_finalize(tokenStatement)
-                return false
-            }
-            let bindResult = tokenData.withUnsafeBytes { bytes in
-                sqlite3_bind_blob(tokenStatement, 1, bytes.baseAddress, Int32(bytes.count),
-                                  unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-            }
-            let tokenOK = bindResult == SQLITE_OK && sqlite3_step(tokenStatement) == SQLITE_DONE
-            sqlite3_finalize(tokenStatement)
-            guard tokenOK, self.connection.commitTransaction() else { return false }
+            guard PhotoChangeJournal.writeForegroundCursor(db: db, tokenData: tokenData),
+                  !advanceBackgroundCursor || PhotoChangeJournal.writeBackgroundCursor(db: db, tokenData: tokenData),
+                  self.connection.commitTransaction() else { return .failed }
             committed = true
-            if !bootstrap && !snapshots.isEmpty {
+            if let counters, !snapshots.isEmpty {
                 logInfo(
-                    "Foreground PhotoKit cache reconciliation: snapshots=\(snapshots.count), cachedUnchanged=\(unchangedCachedCount), noCache=\(missingCacheCount), invalidatedAdjustmentVersion=\(invalidatedAdjustmentVersionCount), missingAdjustmentVersion=\(missingAdjustmentVersionCount), adjustmentVersionUnknown=\(unknownAdjustmentVersionCount), currentDateUnknown=\(missingCurrentDateCount)",
+                    "Foreground PhotoKit cache reconciliation: snapshots=\(snapshots.count), cachedUnchanged=\(counters.unchangedCached), noCache=\(counters.missingCache), invalidatedAdjustmentVersion=\(counters.invalidatedAdjustmentVersion), missingAdjustmentVersion=\(counters.missingAdjustmentVersion), adjustmentVersionUnknown=\(counters.unknownAdjustmentVersion), currentDateUnknown=\(counters.missingCurrentDate)",
                     category: .hash
                 )
                 for detail in snapshotDetails {
                     logDebug(detail, category: .hash)
                 }
-                for detail in cacheDetails {
+                for detail in counters.cacheDetails {
                     logDebug(detail, category: .hash)
                 }
             }
-            return true
+            if let backgroundSummary {
+                logInfo(
+                    "Foreground PhotoKit window advanced background cursor: retained=\(backgroundSummary.retainedVersions), invalidated=\(backgroundSummary.invalidatedVersions)",
+                    category: .hash
+                )
+            }
+            return .committed(advancedBackgroundCursor: advanceBackgroundCursor)
         }
     }
 
@@ -2586,4 +2532,11 @@ final class HashCacheRepository {
             sqlite3_finalize(statement)
         }
     }
+}
+
+enum ForegroundPhotoCommitResult: Equatable {
+    case committed(advancedBackgroundCursor: Bool)
+    /// The extension advanced the cursor first; restart from the stored token.
+    case cursorMoved
+    case failed
 }

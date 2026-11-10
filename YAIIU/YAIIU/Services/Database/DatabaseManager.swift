@@ -319,6 +319,36 @@ final class DatabaseManager {
         )
     }
 
+    func commitForegroundPhotoJournalWindow(
+        range: PhotoChangeJournalRange,
+        snapshots: [PhotoAssetSnapshot],
+        expectedTokenData: Data,
+        tokenData: Data
+    ) -> ForegroundPhotoCommitResult {
+        hashRepo.commitForegroundPhotoJournalWindow(
+            range: range,
+            snapshots: snapshots,
+            expectedTokenData: expectedTokenData,
+            tokenData: tokenData
+        )
+    }
+
+    func realignForegroundPhotoChanges(
+        snapshots: [PhotoAssetSnapshot],
+        pendingIdentifiers: Set<String>,
+        backgroundTokenData: Data
+    ) -> ForegroundPhotoCommitResult {
+        hashRepo.realignForegroundPhotoChanges(
+            snapshots: snapshots,
+            pendingIdentifiers: pendingIdentifiers,
+            backgroundTokenData: backgroundTokenData
+        )
+    }
+
+    func loadBackgroundPhotoToken() -> Data? {
+        hashRepo.loadBackgroundPhotoToken()
+    }
+
     func classifyForegroundPendingIdentifiers() -> (
         visibleWithoutEvidence: [String],
         hidden: Set<String>,

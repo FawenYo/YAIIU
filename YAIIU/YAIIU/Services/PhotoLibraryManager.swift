@@ -164,6 +164,8 @@ struct ForegroundPhotoChangeBatch {
     static let maxChangedIdentifiers = 4096
 
     private(set) var affectedIdentifiers = Set<String>()
+    /// Subset of `affectedIdentifiers` reported as updated (not only inserted).
+    private(set) var updatedIdentifiers = Set<String>()
     private(set) var deletedIdentifiers = Set<String>()
     // Production retains the latest immutable PhotoKit checkpoint in memory
     // and archives it only at the atomic SQLite window boundary.
@@ -203,21 +205,44 @@ struct ForegroundPhotoChangeBatch {
 
     private mutating func appendIdentifiers(
         affected: Set<String>,
+        updated: Set<String>,
         deleted: Set<String>
     ) {
         affectedIdentifiers.formUnion(affected)
+        updatedIdentifiers.formUnion(updated.intersection(affected))
         deletedIdentifiers.formUnion(deleted)
         changeCount += 1
+    }
+
+    /// The window as a journal range. Barrier flushes keep an identifier from
+    /// being both affected and deleted within one window.
+    func journalRange(snapshots: [PhotoAssetSnapshot]) -> PhotoChangeJournalRange {
+        var states: [String: PhotoAssetChangeState] = [:]
+        for snapshot in snapshots {
+            states[snapshot.localIdentifier] = PhotoAssetChangeState(
+                localIdentifier: snapshot.localIdentifier,
+                isHidden: snapshot.isHidden,
+                modificationDate: snapshot.modificationDate,
+                adjustmentVersion: snapshot.adjustmentVersion
+            )
+        }
+        return PhotoChangeJournalRange(
+            insertedIdentifiers: affectedIdentifiers.subtracting(updatedIdentifiers),
+            updatedIdentifiers: updatedIdentifiers,
+            deletedIdentifiers: deletedIdentifiers,
+            states: states
+        )
     }
 
     // Used by the real PhotoKit replay; archiving on each incoming event
     // unnecessarily serializes thousands of empty or repeated changes.
     mutating func append(
         affected: Set<String>,
+        updated: Set<String>,
         deleted: Set<String>,
         token: PHPersistentChangeToken
     ) {
-        appendIdentifiers(affected: affected, deleted: deleted)
+        appendIdentifiers(affected: affected, updated: updated, deleted: deleted)
         changeToken = token
         tokenData = nil
     }
@@ -226,10 +251,11 @@ struct ForegroundPhotoChangeBatch {
     // opaque system PhotoKit token.
     mutating func append(
         affected: Set<String>,
+        updated: Set<String> = [],
         deleted: Set<String>,
         tokenData: Data
     ) {
-        appendIdentifiers(affected: affected, deleted: deleted)
+        appendIdentifiers(affected: affected, updated: updated, deleted: deleted)
         self.tokenData = tokenData
         changeToken = nil
     }
@@ -1013,7 +1039,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
     }
 
-    private func prepareForegroundPhotoWorkLocked() -> ForegroundPhotoWork {
+    /// Bounds restarts when the extension keeps advancing the shared cursor
+    /// while this replay runs; it applies the foreground effects itself then.
+    private static let maxCursorMoveRestarts = 3
+
+    private func prepareForegroundPhotoWorkLocked(
+        allowRealign: Bool = true,
+        cursorMoveRestarts: Int = 0
+    ) -> ForegroundPhotoWork {
             let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
             guard authorization == .authorized || authorization == .limited else {
                 return .unavailable
@@ -1032,7 +1065,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 // Keep old evidence and build the cheap ID-only inventory.
                 let work = bootstrapForegroundPhotoWork()
                 if case .incremental = work {
-                    return prepareForegroundPhotoWorkLocked()
+                    // Leave realignment to a later launch: its full version
+                    // comparison should follow this launch's version backfill.
+                    return prepareForegroundPhotoWorkLocked(allowRealign: false)
                 }
                 return work
             }
@@ -1043,6 +1078,13 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 // rebuild version evidence rather than silently trusting it.
                 logWarning("Foreground PhotoKit checkpoint unreadable; validating all versions", category: .hash)
                 return rebuildExpiredForegroundPhotoHistory()
+            }
+
+            if allowRealign,
+               let backgroundTokenData = db.loadBackgroundPhotoToken(),
+               backgroundTokenData != tokenData,
+               let realigned = realignForegroundCursor(to: backgroundTokenData) {
+                return realigned
             }
 
             // Existing installations have a cursor but no complete local ID
@@ -1087,8 +1129,11 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 // Apply a bounded window using PhotoKit's latest PHAsset state.
                 // Keeping the cursor in the same SQLite transaction as pending
                 // identifiers prevents crashes from skipping unprocessed assets.
-                func flushWindow() -> Bool {
-                    guard window.hasPending else { return true }
+                var expectedTokenData = tokenData
+                var backgroundCursorWindows = 0
+
+                func flushWindow() -> ForegroundPhotoCommitResult {
+                    guard window.hasPending else { return .committed(advancedBackgroundCursor: false) }
                     // Encode only the last token in this window. If encoding
                     // fails, do not advance the durable cursor past uncommitted
                     // work; the caller falls back to the safe full scan.
@@ -1097,12 +1142,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     do {
                         guard let encoded = try window.serializedTokenData() else {
                             logError("Foreground PhotoKit window has no checkpoint token", category: .hash)
-                            return false
+                            return .failed
                         }
                         tokenData = encoded
                     } catch {
                         logError("Failed to encode foreground PhotoKit checkpoint: \(error.localizedDescription)", category: .hash)
-                        return false
+                        return .failed
                     }
                     totalTokenArchiveElapsed += Date().timeIntervalSince(tokenStartedAt)
                     let startedAt = Date()
@@ -1168,16 +1213,22 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     totalFetchElapsed += windowFetchElapsed
                     fetchedSnapshotCount += snapshots.count
                     unresolvedLookups += max(0, identifiers.count - snapshots.count)
-                    guard db.applyForegroundPhotoChanges(
+                    let result = db.commitForegroundPhotoJournalWindow(
+                        range: window.journalRange(snapshots: snapshots),
                         snapshots: snapshots,
-                        pendingIdentifiers: window.affectedIdentifiers,
-                        deletedIdentifiers: window.deletedIdentifiers,
-                        tokenData: tokenData,
-                        bootstrap: false
-                    ) else {
+                        expectedTokenData: expectedTokenData,
+                        tokenData: tokenData
+                    )
+                    switch result {
+                    case .committed(let advancedBackgroundCursor):
+                        if advancedBackgroundCursor { backgroundCursorWindows += 1 }
+                    case .cursorMoved:
+                        return result
+                    case .failed:
                         logError("Failed to atomically persist foreground PhotoKit delta", category: .database)
-                        return false
+                        return result
                     }
+                    expectedTokenData = tokenData
                     committedWindows += 1
                     let totalElapsed = Date().timeIntervalSince(startedAt)
                     totalSQLiteElapsed += max(0, totalElapsed - photoKitElapsed)
@@ -1195,7 +1246,27 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         )
                     }
                     window.reset()
-                    return true
+                    return result
+                }
+
+                // nil once the window is durable; otherwise the work to return.
+                func finish(_ result: ForegroundPhotoCommitResult) -> ForegroundPhotoWork? {
+                    switch result {
+                    case .committed:
+                        return nil
+                    case .cursorMoved:
+                        guard cursorMoveRestarts < Self.maxCursorMoveRestarts else {
+                            logInfo("Foreground PhotoKit cursor keeps moving; leaving the journal tail to the extension, which applies foreground effects in lockstep", category: .hash)
+                            return .incremental(visibleForegroundPendingIdentifiers())
+                        }
+                        logInfo("Foreground PhotoKit cursor advanced by extension; restarting replay", category: .hash)
+                        return prepareForegroundPhotoWorkLocked(
+                            allowRealign: false, cursorMoveRestarts: cursorMoveRestarts + 1
+                        )
+                    case .failed:
+                        _ = db.invalidateLocalPhotoInventory()
+                        return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+                    }
                 }
 
                 var changeIterator = changes.makeIterator()
@@ -1218,13 +1289,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
                     // A deletion is a barrier: never merge an earlier update
                     // with a later deletion/reinsertion of the same identifier.
-                    if window.requiresFlushBefore(adding: affected, deleting: deleted)
-                        && !flushWindow() {
-                        _ = db.invalidateLocalPhotoInventory()
-                        return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+                    if window.requiresFlushBefore(adding: affected, deleting: deleted),
+                       let work = finish(flushWindow()) {
+                        return work
                     }
 
-                    window.append(affected: affected, deleted: deleted, token: change.changeToken)
+                    window.append(affected: affected, updated: updated, deleted: deleted, token: change.changeToken)
                     uniqueUpdatedIdentifiers.formUnion(updated)
 
                     processedBatches += 1
@@ -1250,16 +1320,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     // Empty-asset events and unrelated deletions only advance
                     // the in-memory checkpoint. A conflicting delete/reinsert
                     // has already triggered its own ordering-barrier flush.
-                    if window.shouldFlush {
-                        guard flushWindow() else {
-                            _ = db.invalidateLocalPhotoInventory()
-                            return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
-                        }
+                    if window.shouldFlush, let work = finish(flushWindow()) {
+                        return work
                     }
                 }
-                guard flushWindow() else {
-                    _ = db.invalidateLocalPhotoInventory()
-                    return .fallbackSnapshot(allAssetSnapshots(includingHidden: true))
+                if let work = finish(flushWindow()) {
+                    return work
                 }
                 if processedBatches > 0 {
                     let replayElapsed = Date().timeIntervalSince(replayStartedAt)
@@ -1269,7 +1335,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                             - totalTokenArchiveElapsed - totalPhotoKitElapsed - totalSQLiteElapsed
                     )
                     logInfo(
-                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)); emptyAssetBatches=\(emptyAssetBatches), uniqueUpdated=\(uniqueUpdatedIdentifiers.count), repeatedUpdateEvents=\(updatedCount - uniqueUpdatedIdentifiers.count), resourceSnapshots=\(fetchedSnapshotCount), unresolvedLookups=\(unresolvedLookups), sqliteWindows=\(committedWindows), journalFetch=\(String(format: "%.3f", fetchElapsed))s, journalIterate=\(String(format: "%.3f", totalJournalIterateElapsed))s, changeDetails=\(String(format: "%.3f", totalDetailsElapsed))s, identifierSets=\(String(format: "%.3f", totalIdentifierSetElapsed))s, tokenArchive=\(String(format: "%.3f", totalTokenArchiveElapsed))s, photoKit=\(String(format: "%.3f", totalPhotoKitElapsed))s (fetch=\(String(format: "%.3f", totalFetchElapsed))s, adjustmentVersion=\(String(format: "%.3f", totalAdjustmentVersionElapsed))s, snapshot=\(String(format: "%.3f", totalSnapshotElapsed))s, diagnosticSnapshots=\(String(format: "%.3f", totalDiagnosticSnapshotsElapsed))s), sqlite=\(String(format: "%.3f", totalSQLiteElapsed))s, unattributed=\(String(format: "%.3f", unattributedElapsed))s, elapsed=\(String(format: "%.3f", replayElapsed))s",
+                        "Foreground PhotoKit delta: \(processedBatches) batch(es), \(touchedAssets) changed assets (inserted=\(insertedCount), updated=\(updatedCount), deleted=\(deletedCount)); emptyAssetBatches=\(emptyAssetBatches), uniqueUpdated=\(uniqueUpdatedIdentifiers.count), repeatedUpdateEvents=\(updatedCount - uniqueUpdatedIdentifiers.count), resourceSnapshots=\(fetchedSnapshotCount), unresolvedLookups=\(unresolvedLookups), sqliteWindows=\(committedWindows), backgroundCursorWindows=\(backgroundCursorWindows), journalFetch=\(String(format: "%.3f", fetchElapsed))s, journalIterate=\(String(format: "%.3f", totalJournalIterateElapsed))s, changeDetails=\(String(format: "%.3f", totalDetailsElapsed))s, identifierSets=\(String(format: "%.3f", totalIdentifierSetElapsed))s, tokenArchive=\(String(format: "%.3f", totalTokenArchiveElapsed))s, photoKit=\(String(format: "%.3f", totalPhotoKitElapsed))s (fetch=\(String(format: "%.3f", totalFetchElapsed))s, adjustmentVersion=\(String(format: "%.3f", totalAdjustmentVersionElapsed))s, snapshot=\(String(format: "%.3f", totalSnapshotElapsed))s, diagnosticSnapshots=\(String(format: "%.3f", totalDiagnosticSnapshotsElapsed))s), sqlite=\(String(format: "%.3f", totalSQLiteElapsed))s, unattributed=\(String(format: "%.3f", unattributedElapsed))s, elapsed=\(String(format: "%.3f", replayElapsed))s",
                         category: .hash
                     )
                 }
@@ -1427,6 +1493,42 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // arrived during this enumeration) before committing readiness.
         logInfo("Local PhotoKit inventory baseline staged: assets=\(assets.count)", category: .hash)
         return true
+    }
+
+    /// Adopts the extension's cursor so later commits from either process advance
+    /// both cursors (see `PhotoChangeJournal`). A full snapshot rebuilds
+    /// foreground state at that position, which costs one library enumeration
+    /// instead of replaying journal history the extension has already ingested.
+    /// Returns nil when the cursor cannot be adopted now; the caller then
+    /// replays its own cursor.
+    private func realignForegroundCursor(to backgroundTokenData: Data) -> ForegroundPhotoWork? {
+        guard let token = try? NSKeyedUnarchiver.unarchivedObject(
+            ofClass: PHPersistentChangeToken.self, from: backgroundTokenData
+        ) else { return nil }
+        // An expired extension cursor is rebuilt by the extension itself.
+        guard (try? PHPhotoLibrary.shared().fetchPersistentChanges(since: token)) != nil else {
+            return nil
+        }
+        let startedAt = Date()
+        let snapshots = allAssetSnapshots(includingHidden: true)
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else { return nil }
+        let result = DatabaseManager.shared.realignForegroundPhotoChanges(
+            snapshots: snapshots,
+            pendingIdentifiers: Set(PhotoAssetSnapshot.visibleIdentifiers(in: snapshots)),
+            backgroundTokenData: backgroundTokenData
+        )
+        let elapsed = String(format: "%.3f", Date().timeIntervalSince(startedAt))
+        switch result {
+        case .committed:
+            logInfo("Foreground PhotoKit cursor realigned with extension: assets=\(snapshots.count), elapsed=\(elapsed)s", category: .hash)
+            return prepareForegroundPhotoWorkLocked(allowRealign: false)
+        case .cursorMoved:
+            logInfo("Foreground PhotoKit realign skipped: extension cursor moved during snapshot", category: .hash)
+            return nil
+        case .failed:
+            logWarning("Foreground PhotoKit realign failed; replaying own cursor", category: .hash)
+            return nil
+        }
     }
 
     /// An expired token is different from a first-time upgrade: the unseen

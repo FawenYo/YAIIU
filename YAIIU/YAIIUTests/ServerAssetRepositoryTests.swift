@@ -1276,7 +1276,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             filename: "old.jpg", immichId: "remote"
         )
         let ext = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let result = ext.commitPersistentChange(
+        let result = ext.commitChange(
             insertedAssetIds: [], updatedAssetIds: ["legacy"], deletedAssetIds: [],
             updatedAssetModificationDates: ["legacy": Date(timeIntervalSince1970: 100)],
             updatedAssetAdjustmentVersions: ["legacy": "version-v1"],
@@ -2274,7 +2274,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """)
 
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
             updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 100)],
             updatedAssetAdjustmentVersions: [id: "resource-v1"],
@@ -2309,7 +2309,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             ($0, Date(timeIntervalSince1970: 120))
         })
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: Set(ids), deletedAssetIds: [],
             updatedAssetModificationDates: dates,
             updatedAssetAdjustmentVersions: versions,
@@ -2332,7 +2332,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         )
         execute("INSERT INTO foreground_photo_pending_assets(asset_id) VALUES ('foreground-newer-pending');")
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
             updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 120)],
             updatedAssetAdjustmentVersions: [id: "stable-resource"],
@@ -2356,7 +2356,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             filename: "a.jpg", immichId: "remote-id"
         )
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
             updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 100.5)],
             updatedAssetAdjustmentVersions: [id: "resource-v2"],
@@ -2447,7 +2447,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         """)
 
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: Set(ids), deletedAssetIds: [],
             updatedAssetModificationDates: [
                 "edited": Date(timeIntervalSince1970: 120),
@@ -2498,7 +2498,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             localIdentifier: id, resourceType: "jpeg", filename: "image.jpg", immichId: "remote"
         )
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        XCTAssertNotNil(background.commitPersistentChange(
+        XCTAssertNotNil(background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [], deletedAssetIds: [],
             updatedAssetModificationDates: [:], tokenData: Data([1])
         ))
@@ -2508,7 +2508,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             BEGIN SELECT RAISE(ABORT, 'forced failure'); END;
         """)
 
-        XCTAssertNil(background.commitPersistentChange(
+        XCTAssertNil(background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
             updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 120)],
             updatedAssetAdjustmentVersions: [id: "resource-v2"],
@@ -2534,7 +2534,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
             VALUES ('foreground-rehashed', 'jpeg', 'image.jpg', 'completed', 0, 0);
         """)
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
             updatedAssetModificationDates: [id: Date(timeIntervalSince1970: 120)],
             updatedAssetAdjustmentVersions: [id: "resource-v1"],
@@ -2556,7 +2556,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         execute("ALTER TABLE hash_cache DROP COLUMN asset_modification_date;")
         execute("ALTER TABLE hash_cache DROP COLUMN asset_adjustment_version;")
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: ["legacy"], deletedAssetIds: [],
             updatedAssetModificationDates: ["legacy": Date(timeIntervalSince1970: 100)],
             updatedAssetAdjustmentVersions: ["legacy": "resource-v1"],
@@ -2583,7 +2583,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         execute("INSERT INTO background_upload_queue(asset_id, enqueued_at) VALUES ('updated-then-deleted', 1);")
 
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [],
             updatedAssetModificationDates: [:],
             updatedAssetAdjustmentVersions: [:],
@@ -2612,7 +2612,7 @@ final class ServerAssetRepositoryTests: XCTestCase {
         execute("INSERT INTO background_upload_queue(asset_id, enqueued_at) VALUES ('explicitly-deleted', 1);")
 
         let background = BackgroundUploadDatabase(testingDatabasePath: databaseURL.path)
-        let summary = background.commitPersistentChange(
+        let summary = background.commitChange(
             insertedAssetIds: [], updatedAssetIds: [id], deletedAssetIds: [id],
             updatedAssetModificationDates: [:],
             updatedAssetAdjustmentVersions: [:],
@@ -2758,5 +2758,35 @@ final class ServerAssetRepositoryTests: XCTestCase {
             iCloudId: iCloudId,
             ownerId: "owner-1"
         )
+    }
+}
+
+private extension BackgroundUploadDatabase {
+    /// Commits one change on top of whatever cursor is stored, with visible
+    /// asset states built from the given dates and versions.
+    func commitChange(
+        insertedAssetIds: Set<String>,
+        updatedAssetIds: Set<String>,
+        deletedAssetIds: Set<String>,
+        updatedAssetModificationDates: [String: Date],
+        updatedAssetAdjustmentVersions: [String: String] = [:],
+        tokenData: Data
+    ) -> PhotoAssetChangeCommitSummary? {
+        var states: [String: PhotoAssetChangeState] = [:]
+        for (id, version) in updatedAssetAdjustmentVersions {
+            states[id] = PhotoAssetChangeState(
+                localIdentifier: id, isHidden: false,
+                modificationDate: updatedAssetModificationDates[id], adjustmentVersion: version
+            )
+        }
+        return commitPersistentChange(
+            insertedAssetIds: insertedAssetIds,
+            updatedAssetIds: updatedAssetIds,
+            deletedAssetIds: deletedAssetIds,
+            assetStates: states,
+            expectedTokenData: loadChangeToken(),
+            tokenData: tokenData,
+            allowsForegroundLockstep: true
+        ).summary
     }
 }
