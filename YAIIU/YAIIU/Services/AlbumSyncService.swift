@@ -228,14 +228,17 @@ actor AlbumSyncService {
                     let title = (localAlbum.localizedTitle ?? "Untitled Album")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     let matchingAlbums = remoteAlbumsByName[title] ?? []
+                    // Prefer an album already mapped by another local album so same-named albums converge.
+                    let existingAlbum = matchingAlbums.first { mappings.values.contains($0.id) }
+                        ?? matchingAlbums.first
 
-                    if matchingAlbums.count == 1, let existingAlbum = matchingAlbums.first {
+                    if let existingAlbum {
                         mappings[localAlbum.localIdentifier] = existingAlbum.id
                         UserDefaults.standard.set(mappings, forKey: mappingKey)
                         remoteAlbum = existingAlbum
                         reusedCount += 1
                         logInfo(
-                            "Reusing existing Immich album \(existingAlbum.id) for Apple Photos album \(title)",
+                            "Reusing existing Immich album \(existingAlbum.id) for Apple Photos album \(title) (\(matchingAlbums.count) same-named on server)",
                             category: .sync
                         )
                     } else {
