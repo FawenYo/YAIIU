@@ -169,26 +169,30 @@ class ServerAssetSyncService {
                 return
             }
 
-            defer { self.syncQueue.sync { self.isSyncing = false } }
-
             // Hold this gate across the complete stream transaction (including
             // reset retries) so no hash check can read intermediate cache rows.
             await ServerAssetVerificationGate.shared.acquire()
-            defer { Task { await ServerAssetVerificationGate.shared.release() } }
 
+            let outcome: Result<SyncResult, Error>
             do {
-                let result = try await self.performSync(
+                outcome = .success(try await self.performSync(
                     serverURL: serverURL,
                     apiKey: apiKey,
                     progressHandler: progressHandler
-                )
-                await MainActor.run { completion(.success(result)) }
-                if result.upsertedCount > 0 || result.backfilledCount > 0 {
-                    Task { await AlbumSyncService.shared.syncIfEnabled() }
-                }
+                ))
             } catch {
                 logError("Sync failed: \(error.localizedDescription)", category: .sync)
-                await MainActor.run { completion(.failure(error)) }
+                outcome = .failure(error)
+            }
+
+            // Release before reporting so a caller may start the next sync from its completion.
+            await ServerAssetVerificationGate.shared.release()
+            self.syncQueue.sync { self.isSyncing = false }
+
+            await MainActor.run { completion(outcome) }
+            if case .success(let result) = outcome,
+               result.upsertedCount > 0 || result.backfilledCount > 0 {
+                Task { await AlbumSyncService.shared.syncIfEnabled() }
             }
         }
     }
