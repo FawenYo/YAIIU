@@ -704,15 +704,13 @@ struct PhotoGridView: View {
         }
         // The count must track the same source as the per-photo icons
         // (syncStatusCache). finishProcessing() flips isProcessing before the
-        // authoritative DB reload lands, so reacting to the cache itself ensures
-        // the count converges to the final state instead of a mid-flight snapshot.
-        // During hashing the cache mutates per asset, so coalesce the bursts into
-        // a single recompute after activity settles to avoid main-thread churn.
-        // Use the same publisher the per-photo icons subscribe to (onReceive),
-        // not onChange(of:). onChange only fires when SwiftUI's diff sees a new
-        // value during body re-eval, which can be skipped; onReceive fires on
-        // every publish, so the count tracks the icons exactly.
-        .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { _ in
+        // authoritative DB reload lands, so reacting to the cache replacement
+        // ensures the count converges to the final state instead of a
+        // mid-flight snapshot. Hash-phase per-asset transitions never change
+        // uploaded membership, so only count-affecting changes are observed.
+        // Use onReceive, not onChange(of:): onChange only fires when SwiftUI's
+        // diff sees a new value during body re-eval, which can be skipped.
+        .onReceive(hashManager.$countAffectingStatusGeneration.receive(on: RunLoop.main)) { _ in
             cachedNotUploadedCount = nil
             syncStatusGeneration &+= 1
             scheduleCountRefresh()
@@ -1059,14 +1057,14 @@ struct PhotoGridView: View {
     
     @State private var currentVisibleDate: String = ""
     @State private var visibleDisplayIndices: Set<Int> = []
-    @State private var firstRowTopOffset: CGFloat = 0
+    @State private var isScrolledPastFirstRow = false
     
     /// Navigation title: hidden in selection mode, shows date when scrolled, default title otherwise
     private var navigationTitle: String {
         if isSelectionMode {
             return ""
         }
-        if firstRowTopOffset < 0, !currentVisibleDate.isEmpty {
+        if isScrolledPastFirstRow, !currentVisibleDate.isEmpty {
             return currentVisibleDate
         }
         return L10n.PhotoGrid.title
@@ -1117,7 +1115,11 @@ struct PhotoGridView: View {
                 )
         }
         .onPreferenceChange(FirstRowOffsetKey.self) { offset in
-            firstRowTopOffset = offset
+            // Fires every scroll frame; only the threshold crossing affects the body.
+            let isScrolled = offset < 0
+            if isScrolledPastFirstRow != isScrolled {
+                isScrolledPastFirstRow = isScrolled
+            }
         }
     }
     
@@ -1687,15 +1689,23 @@ struct PhotoGridView: View {
                 self.cachedNotUploadedGeneration = manager.assetFetchGeneration
 
                 if self.currentFilter == .notUploaded {
-                    if self.showingPhotoDetail && self.filteredIndices != notUploadedIndices {
+                    let indicesChanged = self.filteredIndices != notUploadedIndices
+                    // Reloading every visible cell is only needed when positions
+                    // or the fetch they index into actually changed.
+                    let needsRebind = indicesChanged || self.filteredFetchResult !== result
+                    if self.showingPhotoDetail && indicesChanged {
                         self.showingPhotoDetail = false
                     }
-                    self.filteredIndices = notUploadedIndices
+                    if indicesChanged {
+                        self.filteredIndices = notUploadedIndices
+                    }
                     self.filteredFetchResult = result
                     self.fetchStorage.filteredIndexGeneration = manager.assetIndexGeneration
                     self.filteredIndicesGeneration = manager.assetFetchGeneration
                     self.isFilterLoading = false
-                    self.refreshToken = UUID()
+                    if needsRebind {
+                        self.refreshToken = UUID()
+                    }
                 }
             }
         }
@@ -1811,7 +1821,7 @@ struct PhotoGridView: View {
         // Reset scroll tracking state
         visibleDisplayIndices.removeAll()
         currentVisibleDate = ""
-        firstRowTopOffset = 0
+        isScrolledPastFirstRow = false
         
         refreshToken = UUID()
         // Preserve the original intentional scroll reset on manual refresh,
@@ -1945,20 +1955,37 @@ struct PhotoGridView: View {
         // The visible indices belong to the retained fetch, not necessarily
         // the manager's newest PhotoKit generation.
         let visibleIndices: [Int]? = currentFilter == .all ? nil : filteredIndices
+        // The in-memory identifier snapshot avoids PhotoKit object faulting,
+        // but is only position-compatible with the fetch it was built from.
+        let manager = photoLibraryManager
+        let identifiers: [String]? =
+            fetchResult === manager.fetchResult &&
+            manager.orderedIdentifiersGeneration == manager.assetFetchGeneration &&
+            manager.orderedLocalIdentifiers.count == fetchResult.count
+            ? manager.orderedLocalIdentifiers : nil
 
         isSelectingAll = true
         selectionTask?.cancel()
-        selectionTask = Task(priority: .userInitiated) {
+        // Task { } would inherit MainActor; enumerating a large library blocks the UI.
+        selectionTask = Task.detached(priority: .userInitiated) { [self] in
             var ids = Set<String>()
+            func include(_ id: String) {
+                if (statusCache[id] ?? .pending) != .uploaded {
+                    ids.insert(id)
+                }
+            }
             if let visibleIndices {
                 ids.reserveCapacity(visibleIndices.count)
                 for index in visibleIndices {
                     if Task.isCancelled { return }
                     guard index >= 0, index < fetchResult.count else { continue }
-                    let id = fetchResult.object(at: index).localIdentifier
-                    if (statusCache[id] ?? .pending) != .uploaded {
-                        ids.insert(id)
-                    }
+                    include(identifiers?[index] ?? fetchResult.object(at: index).localIdentifier)
+                }
+            } else if let identifiers {
+                ids.reserveCapacity(identifiers.count / 4)
+                for id in identifiers {
+                    if Task.isCancelled { return }
+                    include(id)
                 }
             } else {
                 ids.reserveCapacity(fetchResult.count / 4)
@@ -1967,9 +1994,7 @@ struct PhotoGridView: View {
                         stop.pointee = true
                         return
                     }
-                    if (statusCache[asset.localIdentifier] ?? .pending) != .uploaded {
-                        ids.insert(asset.localIdentifier)
-                    }
+                    include(asset.localIdentifier)
                 }
             }
 

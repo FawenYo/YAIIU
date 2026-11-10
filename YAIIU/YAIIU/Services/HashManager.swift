@@ -380,6 +380,9 @@ class HashManager: ObservableObject {
     @Published var statusMessage: String = ""
     
     @Published var syncStatusCache: [String: PhotoSyncStatus] = [:]
+    /// Bumped only when `syncStatusCache` may change uploaded membership.
+    /// Hash-phase transitions (processing/pending/error) do not.
+    @Published private(set) var countAffectingStatusGeneration = 0
     /// An empty dictionary before the initial SQLite read is not a valid count source.
     @Published private(set) var isSyncStatusCacheReady = false
     /// A first SQLite snapshot may be displayed as provisional filtering
@@ -423,6 +426,13 @@ class HashManager: ObservableObject {
     private let memoryPressureThrottle = HashMemoryPressureThrottle()
     private var memoryWarningObserver: NSObjectProtocol?
 
+    /// Per-asset hash statuses and progress are coalesced: every write to the
+    /// published map copies it and re-renders every observing cell.
+    private var bufferedStatuses: [String: PhotoSyncStatus] = [:]
+    private var bufferedProcessedCount: Int?
+    private var bufferRunID: UUID?
+    private var statusFlushTask: Task<Void, Never>?
+
     @MainActor
     private lazy var statusRefresh = CoalescingRefresh<[String: PhotoSyncStatus]>(
         load: { completion in
@@ -433,7 +443,7 @@ class HashManager: ObservableObject {
             // Publish only the initial snapshot during active processing;
             // later refreshes must not overwrite new hash/receipt updates.
             if !self.hasLoadedSyncStatusCache {
-                self.syncStatusCache = statusMap
+                self.replaceSyncStatusCache(statusMap)
                 self.hasLoadedSyncStatusCache = true
             }
             guard !self.isProcessing else { return }
@@ -481,7 +491,7 @@ class HashManager: ObservableObject {
             suppressProvisionalStatusUntilNewRunCompletes = true
             hasLoadedSyncStatusCache = false
             isSyncStatusCacheReady = false
-            syncStatusCache.removeAll()
+            replaceSyncStatusCache([:])
             pendingICloudIdUpdates.removeAll()
             if hasActivePipeline { stopProcessing() }
         }
@@ -523,8 +533,64 @@ class HashManager: ObservableObject {
     private func applyStatusSnapshot(_ statusMap: [String: PhotoSyncStatus]) {
         hasLoadedSyncStatusCache = true
         isSyncStatusCacheReady = true
-        guard statusMap != syncStatusCache else { return }
+        guard statusMap != syncStatusCache else {
+            bufferedStatuses.removeAll()
+            return
+        }
+        replaceSyncStatusCache(statusMap)
+    }
+
+    /// Wholesale replacements are authoritative: buffered per-asset statuses
+    /// must not be merged on top of them.
+    private func replaceSyncStatusCache(_ statusMap: [String: PhotoSyncStatus]) {
+        bufferedStatuses.removeAll()
         syncStatusCache = statusMap
+        countAffectingStatusGeneration &+= 1
+    }
+
+    private func bufferHashUpdate(_ status: PhotoSyncStatus, for identifier: String, runID: UUID, processed: Bool) {
+        guard isCurrentRun(runID) else { return }
+        if bufferRunID != runID {
+            discardBufferedHashUpdates()
+            bufferRunID = runID
+        }
+        bufferedStatuses[identifier] = status
+        if processed {
+            bufferedProcessedCount = (bufferedProcessedCount ?? processedAssetsCount) + 1
+        }
+        guard statusFlushTask == nil else { return }
+        statusFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushHashUpdates()
+        }
+    }
+
+    private func flushHashUpdates() {
+        let runID = bufferRunID
+        let statuses = bufferedStatuses
+        let processed = bufferedProcessedCount
+        discardBufferedHashUpdates()
+        guard let runID, isCurrentRun(runID) else { return }
+        if !statuses.isEmpty {
+            let cache = syncStatusCache
+            let replacesUploaded = statuses.keys.contains { cache[$0] == .uploaded }
+            syncStatusCache.merge(statuses) { $1 }
+            if replacesUploaded { countAffectingStatusGeneration &+= 1 }
+        }
+        if let processed {
+            processedAssetsCount = processed
+            processingProgress = Double(processed) / Double(totalAssetsToProcess)
+            statusMessage = "Analyzing photos (\(processed)/\(totalAssetsToProcess))..."
+        }
+    }
+
+    private func discardBufferedHashUpdates() {
+        statusFlushTask?.cancel()
+        statusFlushTask = nil
+        bufferedStatuses.removeAll()
+        bufferedProcessedCount = nil
+        bufferRunID = nil
     }
     
     @MainActor
@@ -673,6 +739,7 @@ class HashManager: ObservableObject {
             }
 
             await MainActor.run {
+                self.flushHashUpdates()
                 if self.isCurrentRun(runID), !self.shouldStop, !Task.isCancelled {
                     self.statusMessage = "Checking cloud status..."
                     self.startServerCheck(runID: runID)
@@ -689,9 +756,7 @@ class HashManager: ObservableObject {
         guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
 
         await MainActor.run {
-            guard self.isCurrentRun(runID) else { return }
-            self.syncStatusCache[identifier] = .processing
-            self.objectWillChange.send()
+            self.bufferHashUpdate(.processing, for: identifier, runID: runID, processed: false)
         }
 
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
@@ -795,21 +860,13 @@ class HashManager: ObservableObject {
         guard isCurrentRun(runID) else { return }
 
         await MainActor.run {
-            guard self.isCurrentRun(runID) else { return }
-            self.processedAssetsCount += 1
-            self.processingProgress = Double(self.processedAssetsCount) / Double(self.totalAssetsToProcess)
-            self.statusMessage = "Analyzing photos (\(self.processedAssetsCount)/\(self.totalAssetsToProcess))..."
-            self.syncStatusCache[identifier] = .pending
-            self.objectWillChange.send()
+            self.bufferHashUpdate(.pending, for: identifier, runID: runID, processed: true)
         }
     }
 
     private func markHashFailed(_ identifier: String, runID: UUID) async {
         await MainActor.run {
-            guard self.isCurrentRun(runID) else { return }
-            self.syncStatusCache[identifier] = .error
-            self.processedAssetsCount += 1
-            self.objectWillChange.send()
+            self.bufferHashUpdate(.error, for: identifier, runID: runID, processed: true)
         }
     }
 
@@ -964,6 +1021,8 @@ class HashManager: ObservableObject {
     }
 
     private func finishProcessing(runID: UUID, shouldSyncAlbums: Bool = false) {
+        // Publish this run's last buffered statuses before it stops being current.
+        flushHashUpdates()
         guard runState.finish(runID) else { return }
         if shouldSyncAlbums {
             Task { await AlbumSyncService.shared.syncIfEnabled() }
@@ -983,6 +1042,7 @@ class HashManager: ObservableObject {
     
     @MainActor
     func stopProcessing() {
+        flushHashUpdates()
         guard runState.beginStopping() else { return }
 
         shouldStop = true
