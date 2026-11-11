@@ -22,7 +22,7 @@ final class PhotoGridFetchStorage<Fetch: AnyObject> {
             cachedNotUploadedStatusGeneration == statusGeneration
     }
 
-    /// A cell may outlive its indexed fetch in LazyVGrid. Expire that binding
+    /// A cell may outlive its indexed fetch. Expire that binding
     /// instead of keeping the fetch alive or resolving its index in a new fetch.
     struct Snapshot {
         private(set) weak var value: Fetch?
