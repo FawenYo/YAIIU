@@ -165,6 +165,15 @@ final class ZoomableScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRec
         
         // Skip redundant updates for same image when bounds unchanged
         if imageView.image === image && lastLayoutBounds == bounds.size { return }
+
+        // A sharper copy of the displayed photo (zoom upgrade) must keep the
+        // user's current zoom and position instead of resetting the layout.
+        if imageView.image != nil, lastLayoutBounds == bounds.size, currentImageSize.height > 0,
+           abs(currentImageSize.width / currentImageSize.height - image.size.width / image.size.height) < 0.01 {
+            currentImageSize = image.size
+            imageView.image = image
+            return
+        }
         
         currentImageSize = image.size
         imageView.image = image
@@ -740,6 +749,8 @@ struct PhotoDetailView: View {
     @State private var scale: CGFloat = 1.0
     @State private var dragProgress: CGFloat = 0
     @State private var imageRequestID: PHImageRequestID?
+    /// The zoom-quality image is requested only once the user zooms in.
+    @State private var didRequestZoomResolution = false
     @State private var imageLoadGeneration = 0
     @State private var assetContentGeneration = 0
     @State private var imageLoadFailed: Bool = false
@@ -770,9 +781,15 @@ struct PhotoDetailView: View {
         case dismiss
     }
     
-    /// Downsample large originals to a safe display/zoom preview size.
+    /// Downsample large originals to a safe zoom preview size.
     /// Requesting PHImageManagerMaximumSize can decode 40–50MP RAW photos at once.
     private static let maxDisplayImageDimension: CGFloat = 4096
+    /// Unzoomed viewing needs only the screen's pixel size; a 4096 px decode is
+    /// ~50 MB per photo and dominated detail-view memory while swiping.
+    private static var screenImageDimension: CGFloat {
+        let bounds = UIScreen.main.bounds
+        return max(bounds.width, bounds.height) * UIScreen.main.scale
+    }
 
     private let dismissThreshold: CGFloat = 150
     private let horizontalSwipeThreshold: CGFloat = 80
@@ -1164,6 +1181,12 @@ struct PhotoDetailView: View {
                     handleUIKitDragEnded(translation: translation, velocity: velocity)
                 }
             )
+            .onChange(of: scale) { _, newScale in
+                guard newScale > 1.05, !didRequestZoomResolution,
+                      max(asset.pixelWidth, asset.pixelHeight) > Int(Self.screenImageDimension) else { return }
+                didRequestZoomResolution = true
+                loadFullImage(for: asset, maxDimension: Self.maxDisplayImageDimension)
+            }
             
             if shouldUseGeometryEffect {
                 zoomableView
@@ -1178,7 +1201,7 @@ struct PhotoDetailView: View {
                     imageRequestID = nil
                 }
                 imageLoadFailed = false
-                loadFullImage(for: asset)
+                loadFullImage(for: asset, maxDimension: Self.screenImageDimension)
             } label: {
                 VStack(spacing: 8) {
                     Image(systemName: "arrow.clockwise")
@@ -1438,7 +1461,9 @@ struct PhotoDetailView: View {
             .padding(.vertical, 10)
             .padding(.horizontal, 16)
             
-            if let loc = location {
+            // MapKit allocates a Metal renderer and tile caches per instance; build
+            // it only while the panel is on screen, not for every swiped photo.
+            if let loc = location, isInfoPanelVisible {
                 LocationMapView(coordinate: loc.coordinate, locationName: locationName)
                     .frame(height: 140)
                     .clipShape(
@@ -1517,7 +1542,8 @@ struct PhotoDetailView: View {
             loadVideoThumbnail(for: asset)
             loadVideo(for: asset)
         } else {
-            loadFullImage(for: asset)
+            didRequestZoomResolution = false
+            loadFullImage(for: asset, maxDimension: Self.screenImageDimension)
         }
         loadMetadata(for: asset)
     }
@@ -1561,7 +1587,10 @@ struct PhotoDetailView: View {
     
     // MARK: - Data Loading
     
-    private func loadFullImage(for asset: PHAsset) {
+    private func loadFullImage(for asset: PHAsset, maxDimension: CGFloat) {
+        if let requestID = imageRequestID {
+            PHImageManager.default().cancelImageRequest(requestID)
+        }
         imageLoadGeneration &+= 1
         let requestGeneration = imageLoadGeneration
         let options = PHImageRequestOptions()
@@ -1573,8 +1602,8 @@ struct PhotoDetailView: View {
         // A bounded PhotoKit image is sufficient for a sharp screen/zoom preview.
         // The original file remains untouched for uploads and metadata extraction.
         let targetSize = CGSize(
-            width: max(1, min(CGFloat(asset.pixelWidth), Self.maxDisplayImageDimension)),
-            height: max(1, min(CGFloat(asset.pixelHeight), Self.maxDisplayImageDimension))
+            width: max(1, min(CGFloat(asset.pixelWidth), maxDimension)),
+            height: max(1, min(CGFloat(asset.pixelHeight), maxDimension))
         )
 
         imageRequestID = PHImageManager.default().requestImage(
