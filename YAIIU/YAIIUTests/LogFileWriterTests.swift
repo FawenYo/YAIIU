@@ -38,4 +38,10 @@ final class LogFileWriterTests: XCTestCase {
         let tail = try XCTUnwrap(LogFileWriter.readTail(of: fileURL, maxBytes: 10))
         XCTAssertEqual(String(decoding: tail, as: UTF8.self), "charlie\n")
     }
+
+    func testReadTailKeepsFirstLineStartingExactlyAtOffset() throws {
+        try Data("alpha\nbravo\ncharlie\n".utf8).write(to: fileURL)
+        let tail = try XCTUnwrap(LogFileWriter.readTail(of: fileURL, maxBytes: 14))
+        XCTAssertEqual(String(decoding: tail, as: UTF8.self), "bravo\ncharlie\n")
+    }
 }

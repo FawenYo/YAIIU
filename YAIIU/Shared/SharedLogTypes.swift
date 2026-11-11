@@ -216,11 +216,15 @@ public final class LogFileWriter: @unchecked Sendable {
         guard let reader = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? reader.close() }
         guard let size = try? reader.seekToEnd() else { return nil }
-        let offset = size > maxBytes ? size - maxBytes : 0
-        guard (try? reader.seek(toOffset: offset)) != nil,
-              let data = try? reader.readToEnd() else { return nil }
-        guard offset > 0 else { return data }
-        guard let newline = data.firstIndex(of: UInt8(ascii: "\n")) else { return Data() }
+        guard size > maxBytes else {
+            guard (try? reader.seek(toOffset: 0)) != nil else { return nil }
+            return try? reader.readToEnd()
+        }
+        // Read one byte before the tail: the first line is partial only when
+        // that byte is not a newline.
+        guard (try? reader.seek(toOffset: size - maxBytes - 1)) != nil,
+              let data = try? reader.readToEnd(),
+              let newline = data.firstIndex(of: UInt8(ascii: "\n")) else { return Data() }
         return data[data.index(after: newline)...]
     }
     
