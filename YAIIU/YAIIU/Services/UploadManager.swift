@@ -84,7 +84,7 @@ private struct UploadPreparation: @unchecked Sendable {
     let isFavorite: Bool
     let createdAt: Date
     let modifiedAt: Date
-    let timezone: TimeZone
+    let timezone: TimeZone?
     let iCloudId: String?
     let latitude: Double?
     let longitude: Double?
@@ -419,10 +419,6 @@ class UploadManager: ObservableObject {
                         await MainActor.run {
                             item.progress = 1.0
                         }
-
-                        DatabaseManager.shared.getUploadedCountAsync { [weak self] count in
-                            self?.uploadedCount = count
-                        }
                     } else {
                         failCount += 1
                     }
@@ -432,6 +428,9 @@ class UploadManager: ObservableObject {
         
         logInfo("Upload queue processing complete: \(successCount) succeeded, \(failCount) failed", category: .upload)
         if successCount > 0 {
+            DatabaseManager.shared.getUploadedCountAsync { [weak self] count in
+                self?.uploadedCount = count
+            }
             Task {
                 guard !settingsManager.activeServerURL.isEmpty, !settingsManager.apiKey.isEmpty else { return }
                 let serverSyncSucceeded = await withCheckedContinuation { continuation in
@@ -476,7 +475,14 @@ class UploadManager: ObservableObject {
         let localIdentifier = item.localIdentifier
         let metadata = await Task.detached(priority: .userInitiated) {
             let resources = PhotoLibraryManager.shared.getUploadableResources(for: asset)
-            let timezone = await Self.getTimezone(for: asset)
+            // Timezone only affects EXIF rewrites of JPEG/PNG; skip geocoding otherwise.
+            let needsTimezone = resources.contains {
+                ImageTimezoneMetadata.canRewrite(
+                    filename: PhotoLibraryManager.shared.getFilename(for: $0),
+                    mimeType: PhotoLibraryManager.shared.getMimeType(for: $0)
+                )
+            }
+            let timezone = needsTimezone ? await Self.getTimezone(for: asset) : nil
             return UploadPreparation(
                 resources: resources,
                 isFavorite: asset.isFavorite,
@@ -555,7 +561,8 @@ class UploadManager: ObservableObject {
                             progressHandler: { progress in
                                 let baseProgress = Double(currentIndex) / Double(totalResources)
                                 let resourceProgress = progress / Double(totalResources)
-                                Task { @MainActor in
+                                // URLSession progress is delivered via DispatchQueue.main by ImmichAPIService.
+                                MainActor.assumeIsolated {
                                     item.progress = baseProgress + resourceProgress
                                 }
                             },

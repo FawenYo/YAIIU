@@ -11,7 +11,7 @@ final class SQLiteConnection {
     private var isInitialized = false
     private let initLock = NSLock()
     
-    private static let schemaVersion = 13
+    private static let schemaVersion = 14
     
     private init(databasePath: String? = nil) {
         dbQueue.async { [weak self] in
@@ -280,12 +280,9 @@ final class SQLiteConnection {
     private func createIndexes() {
         executeStatement("CREATE INDEX IF NOT EXISTS idx_jobs_status ON upload_jobs(status)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_background_upload_queue_enqueued_at ON background_upload_queue(enqueued_at)")
-        executeStatement("CREATE INDEX IF NOT EXISTS idx_jobs_asset ON upload_jobs(asset_id)")
-        executeStatement("CREATE INDEX IF NOT EXISTS idx_uploaded_asset ON uploaded_assets(asset_id)")
+        executeStatement("CREATE INDEX IF NOT EXISTS idx_uploaded_immich_id ON uploaded_assets(immich_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_checksum ON server_assets_cache(checksum)")
-        executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_immich_id ON server_assets_cache(immich_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_icloud_id ON server_assets_cache(icloud_id)")
-        executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_asset ON hash_cache(asset_id)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_hash_on_server ON hash_cache(is_on_server)")
         executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_source_checksum ON server_assets_cache(source_checksum)")
     }
@@ -335,6 +332,7 @@ final class SQLiteConnection {
             if currentVersion < 11 { migrateToV11() }
             if currentVersion < 12 { createLocalPhotoInventoryTables() }
             if currentVersion < 13 { createPendingServerAssetMetadataTable() }
+            if currentVersion < 14 { migrateToV14() }
 
             guard hasSchemaColumnsForCurrentVersion() else {
                 logError("Database migration incomplete; retaining schema version \(currentVersion)", category: .database)
@@ -549,6 +547,17 @@ final class SQLiteConnection {
             return
         }
         executeStatement("ALTER TABLE uploaded_assets ADD COLUMN asset_adjustment_version TEXT;")
+    }
+
+    /// Migration to version 14: index uploaded_assets.immich_id for server-deletion
+    /// cleanup, and drop indexes duplicating UNIQUE-constraint autoindexes.
+    private func migrateToV14() {
+        logInfo("Migrating database to version 14: index cleanup", category: .database)
+        executeStatement("CREATE INDEX IF NOT EXISTS idx_uploaded_immich_id ON uploaded_assets(immich_id)")
+        executeStatement("DROP INDEX IF EXISTS idx_hash_asset")
+        executeStatement("DROP INDEX IF EXISTS idx_server_cache_immich_id")
+        executeStatement("DROP INDEX IF EXISTS idx_uploaded_asset")
+        executeStatement("DROP INDEX IF EXISTS idx_jobs_asset")
     }
 
 

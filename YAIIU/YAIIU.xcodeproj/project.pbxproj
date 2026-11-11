@@ -84,6 +84,7 @@
 		SR0000010000000000000001 /* CoalescingRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = SR0000020000000000000001 /* CoalescingRefresh.swift */; };
 		FC0000010000000000000001 /* FavoriteChangeDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC0000020000000000000001 /* FavoriteChangeDetector.swift */; };
 		ST0000010000000000000001 /* CoalescingRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ST0000020000000000000001 /* CoalescingRefreshTests.swift */; };
+		LW0000010000000000000001 /* LogFileWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = LW0000020000000000000001 /* LogFileWriterTests.swift */; };
 		FT0000010000000000000001 /* FavoriteChangeDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FT0000020000000000000001 /* FavoriteChangeDetectorTests.swift */; };
 		SC0000010000000000000001 /* PhotoLibraryStatusCount.swift in Sources */ = {isa = PBXBuildFile; fileRef = SC0000020000000000000001 /* PhotoLibraryStatusCount.swift */; };
 		CT0000010000000000000001 /* PhotoLibraryStatusCountTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CT0000020000000000000001 /* PhotoLibraryStatusCountTests.swift */; };
@@ -210,6 +211,7 @@
 		SR0000020000000000000001 /* CoalescingRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoalescingRefresh.swift; sourceTree = "<group>"; };
 		FC0000020000000000000001 /* FavoriteChangeDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteChangeDetector.swift; sourceTree = "<group>"; };
 		ST0000020000000000000001 /* CoalescingRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoalescingRefreshTests.swift; sourceTree = "<group>"; };
+		LW0000020000000000000001 /* LogFileWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogFileWriterTests.swift; sourceTree = "<group>"; };
 		FT0000020000000000000001 /* FavoriteChangeDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteChangeDetectorTests.swift; sourceTree = "<group>"; };
 		SC0000020000000000000001 /* PhotoLibraryStatusCount.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryStatusCount.swift; sourceTree = "<group>"; };
 		CT0000020000000000000001 /* PhotoLibraryStatusCountTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoLibraryStatusCountTests.swift; sourceTree = "<group>"; };
@@ -452,6 +454,7 @@
 				CT0000020000000000000001 /* PhotoLibraryStatusCountTests.swift */,
 				FT0000020000000000000001 /* FavoriteChangeDetectorTests.swift */,
 				ST0000020000000000000001 /* CoalescingRefreshTests.swift */,
+				LW0000020000000000000001 /* LogFileWriterTests.swift */,
 				PU0000020000000000000001 /* PhotoGridFetchStorageTests.swift */,
 				PV0000020000000000000001 /* PhotoLibraryIndexGenerationTests.swift */,
 				TZ0000040000000000000001 /* ImageTimezoneMetadataTests.swift */,
@@ -681,6 +684,7 @@
 				CT0000010000000000000001 /* PhotoLibraryStatusCountTests.swift in Sources */,
 				FT0000010000000000000001 /* FavoriteChangeDetectorTests.swift in Sources */,
 				ST0000010000000000000001 /* CoalescingRefreshTests.swift in Sources */,
+				LW0000010000000000000001 /* LogFileWriterTests.swift in Sources */,
 				PU0000010000000000000001 /* PhotoGridFetchStorageTests.swift in Sources */,
 				PV0000010000000000000001 /* PhotoLibraryIndexGenerationTests.swift in Sources */,
 				TZ0000030000000000000001 /* ImageTimezoneMetadataTests.swift in Sources */,
