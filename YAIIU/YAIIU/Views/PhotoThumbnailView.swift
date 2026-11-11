@@ -131,9 +131,8 @@ struct PhotoThumbnailView: View {
     
     @State private var thumbnail: UIImage?
     @State private var hasRAW: Bool = false
-    @State private var isFavorite: Bool = false
-    @State private var videoDuration: TimeInterval = 0
-    @State private var isVideo: Bool = false
+    /// Fast-format placeholder request, cancelled when the cell leaves or reloads.
+    @State private var fastRequestID: PHImageRequestID?
     @State private var rawCheckOperation: Operation?
     @State private var thumbnailLoadRevision = 0
     @State private var isViewActive: Bool = false
@@ -203,11 +202,13 @@ struct PhotoThumbnailView: View {
                 VStack {
                     Spacer()
                     HStack(spacing: 4) {
-                        if isVideo {
+                        // Read from the asset: metadata-only PhotoKit changes (favorite
+                        // toggles) rebind a fresh PHAsset without reloading the thumbnail.
+                        if asset.mediaType == .video {
                             HStack(spacing: 2) {
                                 Image(systemName: "play.fill")
                                     .font(.caption2)
-                                Text(formatDuration(videoDuration))
+                                Text(formatDuration(asset.duration))
                                     .font(.caption2)
                             }
                             .foregroundColor(.white)
@@ -217,7 +218,7 @@ struct PhotoThumbnailView: View {
                             .cornerRadius(4)
                         }
                         
-                        if isFavorite {
+                        if asset.isFavorite {
                             Image(systemName: "heart.fill")
                                 .font(.system(size: 16))
                                 .foregroundColor(.white)
@@ -291,6 +292,7 @@ struct PhotoThumbnailView: View {
             rawCheckOperation?.cancel()
             rawCheckOperation = nil
             cancelThumbnailRequest(targetSize: targetSize)
+            cancelFastRequest()
             // Release the decoded UIImage as soon as the cell disappears;
             // NSCache (with its own memory budget) handles revisits instead.
             thumbnail = nil
@@ -392,9 +394,8 @@ struct PhotoThumbnailView: View {
     private func loadAssetInfo() {
         thumbnailLoadRevision &+= 1
         let revision = thumbnailLoadRevision
-        isVideo = asset.mediaType == .video
-        videoDuration = asset.duration
-        isFavorite = asset.isFavorite
+        cancelThumbnailRequest(targetSize: targetSize)
+        cancelFastRequest()
 
         qualityTask?.cancel()
         rawCheckOperation?.cancel()
@@ -409,7 +410,7 @@ struct PhotoThumbnailView: View {
         if let cachedThumbnail {
             thumbnail = cachedThumbnail
         } else if thumbnail == nil {
-            cache.requestFastThumbnail(for: asset, targetSize: targetSize) { [self] image in
+            fastRequestID = cache.requestFastThumbnail(for: asset, targetSize: targetSize) { [self] image in
                 guard self.isViewActive, self.thumbnailLoadRevision == revision,
                       self.thumbnail == nil, let image else { return }
                 self.thumbnail = image
@@ -447,6 +448,12 @@ struct PhotoThumbnailView: View {
         guard let token = thumbnailRequestToken else { return }
         thumbnailRequestToken = nil
         ThumbnailCache.shared.cancelThumbnail(token, for: asset.localIdentifier, targetSize: targetSize)
+    }
+
+    private func cancelFastRequest() {
+        guard let requestID = fastRequestID else { return }
+        fastRequestID = nil
+        ThumbnailCache.shared.cancelFastThumbnail(requestID)
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {

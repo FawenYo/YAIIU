@@ -144,16 +144,20 @@ final class ThumbnailCache {
 
     /// A local-only, fast-format placeholder: never downloads and never decodes
     /// a large derivative, so cells that are flung past stay cheap.
-    func requestFastThumbnail(for asset: PHAsset, targetSize: CGSize, completion: @escaping (UIImage?) -> Void) {
+    func requestFastThumbnail(for asset: PHAsset, targetSize: CGSize, completion: @escaping (UIImage?) -> Void) -> PHImageRequestID {
         let options = PHImageRequestOptions()
         options.deliveryMode = .fastFormat
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = false
-        cachingImageManager.requestImage(
+        return cachingImageManager.requestImage(
             for: asset, targetSize: targetSize, contentMode: .aspectFill, options: options
         ) { image, _ in
             DispatchQueue.main.async { completion(image) }
         }
+    }
+
+    func cancelFastThumbnail(_ requestID: PHImageRequestID) {
+        cachingImageManager.cancelImageRequest(requestID)
     }
 
     /// Returns a token identifying this caller's wait, or nil on a cache hit.

@@ -321,7 +321,7 @@ private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
         let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
         collectionView.alwaysBounceVertical = true
-        collectionView.register(UICollectionViewCell.self, forCellWithReuseIdentifier: Coordinator.reuseIdentifier)
+        collectionView.register(PhotoGridCell.self, forCellWithReuseIdentifier: Coordinator.reuseIdentifier)
         collectionView.dataSource = context.coordinator
         collectionView.delegate = context.coordinator
 
@@ -338,6 +338,7 @@ private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
         let coordinator = context.coordinator
         let previous = coordinator.parent
         coordinator.parent = self
+        coordinator.inputsVersion &+= 1
         coordinator.applyDragHandlers()
 
         if resetToken != previous.resetToken {
@@ -354,9 +355,10 @@ private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
             collectionView.reloadData()
         } else {
             // Rebind visible cells to the latest SwiftUI inputs; cell views react
-            // to index/refresh changes themselves.
+            // to index/refresh changes themselves. Prefetched off-screen cells are
+            // rebound in willDisplay.
             for indexPath in collectionView.indexPathsForVisibleItems {
-                if let cell = collectionView.cellForItem(at: indexPath) {
+                if let cell = collectionView.cellForItem(at: indexPath) as? PhotoGridCell {
                     coordinator.configure(cell, item: indexPath.item)
                 }
             }
@@ -369,6 +371,8 @@ private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
         var parent: PhotoGridCollectionView
         let dragSelection = DragSelectionGesture()
         private var isScrolledPastTop = false
+        /// Bumped on every SwiftUI update; cells record the version they were built from.
+        var inputsVersion = 0
 
         init(parent: PhotoGridCollectionView) {
             self.parent = parent
@@ -381,12 +385,13 @@ private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
             dragSelection.onEnded = parent.onDragEnded
         }
 
-        func configure(_ cell: UICollectionViewCell, item: Int) {
+        func configure(_ cell: PhotoGridCell, item: Int) {
             // Identity per item gives each reuse fresh SwiftUI state and lifecycle.
             cell.contentConfiguration = UIHostingConfiguration {
                 parent.cell(item).id(item)
             }
             .margins(.all, 0)
+            cell.configuredVersion = inputsVersion
         }
 
         func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -395,8 +400,16 @@ private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: Self.reuseIdentifier, for: indexPath)
-            configure(cell, item: indexPath.item)
+            if let cell = cell as? PhotoGridCell {
+                configure(cell, item: indexPath.item)
+            }
             return cell
+        }
+
+        func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+            // Cell prefetching can configure a cell before a later update changed its inputs.
+            guard let cell = cell as? PhotoGridCell, cell.configuredVersion != inputsVersion else { return }
+            configure(cell, item: indexPath.item)
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -413,6 +426,10 @@ private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
             }
         }
     }
+}
+
+private final class PhotoGridCell: UICollectionViewCell {
+    var configuredVersion = -1
 }
 
 // MARK: - Date Formatting
