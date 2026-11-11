@@ -814,22 +814,33 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         identifierScanTask?.cancel()
         let expectedCount = result.count
         let task = Task.detached(priority: .utility) { () -> [String]? in
-            // Enumerating a PHFetchResult caches every fetched batch inside it
-            // (~150 MB for a 100k library). Scan a private result that is released
-            // afterwards instead of filling the grid's long-lived one.
-            let options = Self.libraryFetchOptions()
-            options.wantsIncrementalChangeDetails = false
-            let scanResult = PHAsset.fetchAssets(with: options)
-            // A change not yet delivered to the grid would misalign positions.
-            guard scanResult.count == expectedCount else { return nil }
+            // A PHFetchResult caches every batch it has served (~150 MB for a 100k
+            // library). Read fixed windows, each from a fresh fetch released right
+            // after, so at most one window's batches are alive at once.
+            let chunkSize = 10_000
             var identifiers: [String] = []
             identifiers.reserveCapacity(expectedCount)
-            let completed = PhotoLibraryEnumeration.forEach(
-                in: scanResult, shouldStop: { Task.isCancelled }
-            ) { asset, _ in
-                identifiers.append(asset.localIdentifier)
+            var start = 0
+            while start < expectedCount {
+                if Task.isCancelled { return nil }
+                let completed: Bool = autoreleasepool {
+                    let options = Self.libraryFetchOptions()
+                    options.wantsIncrementalChangeDetails = false
+                    let scanResult = PHAsset.fetchAssets(with: options)
+                    // A change not yet delivered to the grid would misalign positions.
+                    guard scanResult.count == expectedCount else { return false }
+                    return PhotoLibraryEnumeration.forEach(
+                        indices: start..<min(start + chunkSize, expectedCount),
+                        objectAt: { scanResult.object(at: $0) },
+                        shouldStop: { Task.isCancelled }
+                    ) { asset, _ in
+                        identifiers.append(asset.localIdentifier)
+                    }
+                }
+                guard completed else { return nil }
+                start += chunkSize
             }
-            return completed ? identifiers : nil
+            return identifiers
         }
         identifierScanTask = task
         return task
