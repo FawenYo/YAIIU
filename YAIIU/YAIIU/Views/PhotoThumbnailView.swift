@@ -137,6 +137,12 @@ struct PhotoThumbnailView: View {
     @State private var rawCheckOperation: Operation?
     @State private var thumbnailLoadRevision = 0
     @State private var isViewActive: Bool = false
+    @State private var qualityTask: Task<Void, Never>?
+    @State private var thumbnailRequestToken: UUID?
+
+    /// Full-quality decodes and RAW lookups start only for cells that stay on
+    /// screen this long; fast scrolling shows local placeholders instead.
+    private static let qualityRequestDelay: UInt64 = 150_000_000
     
     init(asset: PHAsset, isSelected: Bool, isSelectionMode: Bool, isUploaded: Bool) {
         self.asset = asset
@@ -187,10 +193,11 @@ struct PhotoThumbnailView: View {
     }
     
     var body: some View {
-        GeometryReader { geometry in
+        // The grid sizes each cell; a per-cell GeometryReader only added layout passes.
+        Group {
             ZStack(alignment: .topTrailing) {
                 // Thumbnail Image
-                thumbnailImage(geometry: geometry)
+                thumbnailImage
                 
                 // Bottom-left badges: video duration and favorite indicator
                 VStack {
@@ -267,7 +274,6 @@ struct PhotoThumbnailView: View {
                 if isSelected {
                     Rectangle()
                         .fill(Color.blue.opacity(0.3))
-                        .frame(width: geometry.size.width, height: geometry.size.height)
                 }
             }
             // Constrain tap area to visible bounds (aspectRatio .fill may overflow)
@@ -280,16 +286,17 @@ struct PhotoThumbnailView: View {
         .onDisappear {
             isViewActive = false
             thumbnailLoadRevision &+= 1
+            qualityTask?.cancel()
+            qualityTask = nil
             rawCheckOperation?.cancel()
             rawCheckOperation = nil
-            ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier, targetSize: targetSize)
-            // LazyVGrid can retain @State for rows far outside the viewport.
+            cancelThumbnailRequest(targetSize: targetSize)
             // Release the decoded UIImage as soon as the cell disappears;
             // NSCache (with its own memory budget) handles revisits instead.
             thumbnail = nil
         }
         .onChange(of: targetSize) { oldSize, _ in
-            ThumbnailCache.shared.cancelThumbnail(for: asset.localIdentifier, targetSize: oldSize)
+            cancelThumbnailRequest(targetSize: oldSize)
             if isViewActive { loadAssetInfo() }
         }
         .onChange(of: editGeneration) { _, newGeneration in
@@ -350,12 +357,15 @@ struct PhotoThumbnailView: View {
     
     /// Returns the thumbnail image view with optional matched geometry effect
     @ViewBuilder
-    private func thumbnailImage(geometry: GeometryProxy) -> some View {
+    private var thumbnailImage: some View {
         if let thumbnail = thumbnail {
-            let imageView = Image(uiImage: thumbnail)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: geometry.size.width, height: geometry.size.height)
+            let imageView = Color.clear
+                .overlay {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                }
+                .clipped()
             
             // Apply matched geometry effect if namespace is provided
             // Use isSource parameter to control which view is the source of the geometry
@@ -372,12 +382,10 @@ struct PhotoThumbnailView: View {
                 imageView
             }
         } else {
+            // A static placeholder: one animating spinner per loading cell was
+            // measurable main-thread work during fast scrolling.
             Rectangle()
                 .fill(Color.gray.opacity(0.3))
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .overlay(
-                    ProgressView()
-                )
         }
     }
     
@@ -388,6 +396,7 @@ struct PhotoThumbnailView: View {
         videoDuration = asset.duration
         isFavorite = asset.isFavorite
 
+        qualityTask?.cancel()
         rawCheckOperation?.cancel()
         rawCheckOperation = nil
 
@@ -395,21 +404,49 @@ struct PhotoThumbnailView: View {
         let cachedRAW = RAWFormatChecker.shared.getCachedRAWStatus(for: assetIdentifier)
         hasRAW = cachedRAW ?? false
 
-        ThumbnailCache.shared.getThumbnail(for: asset, targetSize: targetSize) { [self] image in
-            guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
-            if let image {
+        let cache = ThumbnailCache.shared
+        let cachedThumbnail = cache.cachedThumbnail(for: assetIdentifier, targetSize: targetSize)
+        if let cachedThumbnail {
+            thumbnail = cachedThumbnail
+        } else if thumbnail == nil {
+            cache.requestFastThumbnail(for: asset, targetSize: targetSize) { [self] image in
+                guard self.isViewActive, self.thumbnailLoadRevision == revision,
+                      self.thumbnail == nil, let image else { return }
                 self.thumbnail = image
             }
         }
+        guard cachedThumbnail == nil || cachedRAW == nil else { return }
 
-        if cachedRAW == nil {
-            rawCheckOperation = RAWFormatChecker.shared.checkRAWStatus(
-                for: assetIdentifier
-            ) { [self] hasRAWResource in
-                guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
-                self.hasRAW = hasRAWResource
+        let asset = asset
+        let targetSize = targetSize
+        qualityTask = Task { @MainActor [self] in
+            try? await Task.sleep(nanoseconds: Self.qualityRequestDelay)
+            guard !Task.isCancelled, self.isViewActive, self.thumbnailLoadRevision == revision else { return }
+
+            if cachedThumbnail == nil {
+                self.thumbnailRequestToken = cache.getThumbnail(for: asset, targetSize: targetSize) { [self] image in
+                    guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
+                    if let image {
+                        self.thumbnail = image
+                    }
+                }
+            }
+
+            if cachedRAW == nil {
+                self.rawCheckOperation = RAWFormatChecker.shared.checkRAWStatus(
+                    for: assetIdentifier
+                ) { [self] hasRAWResource in
+                    guard self.isViewActive, self.thumbnailLoadRevision == revision else { return }
+                    self.hasRAW = hasRAWResource
+                }
             }
         }
+    }
+
+    private func cancelThumbnailRequest(targetSize: CGSize) {
+        guard let token = thumbnailRequestToken else { return }
+        thumbnailRequestToken = nil
+        ThumbnailCache.shared.cancelThumbnail(token, for: asset.localIdentifier, targetSize: targetSize)
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
