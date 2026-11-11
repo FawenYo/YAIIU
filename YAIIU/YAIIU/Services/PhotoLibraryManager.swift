@@ -747,10 +747,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // immediately via lazy `asset(at:)` access. Enumerating every identifier for a
         // large library takes several seconds and must not block the first paint.
         let result = await Task.detached(priority: .userInitiated) {
-            let fetchOptions = PHFetchOptions()
-            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-            fetchOptions.includeHiddenAssets = false
-            return PHAsset.fetchAssets(with: fetchOptions)
+            PHAsset.fetchAssets(with: Self.libraryFetchOptions())
         }.value
 
         indexGeneration.recordReload()
@@ -803,14 +800,32 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
     }
 
+    /// The grid's library fetch. Identifier scans use the same options so their
+    /// positions match the displayed fetch result.
+    nonisolated private static func libraryFetchOptions() -> PHFetchOptions {
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        fetchOptions.includeHiddenAssets = false
+        return fetchOptions
+    }
+
     @MainActor
     private func startIdentifierScan(for result: PHFetchResult<PHAsset>) -> Task<[String]?, Never> {
         identifierScanTask?.cancel()
+        let expectedCount = result.count
         let task = Task.detached(priority: .utility) { () -> [String]? in
+            // Enumerating a PHFetchResult caches every fetched batch inside it
+            // (~150 MB for a 100k library). Scan a private result that is released
+            // afterwards instead of filling the grid's long-lived one.
+            let options = Self.libraryFetchOptions()
+            options.wantsIncrementalChangeDetails = false
+            let scanResult = PHAsset.fetchAssets(with: options)
+            // A change not yet delivered to the grid would misalign positions.
+            guard scanResult.count == expectedCount else { return nil }
             var identifiers: [String] = []
-            identifiers.reserveCapacity(result.count)
+            identifiers.reserveCapacity(expectedCount)
             let completed = PhotoLibraryEnumeration.forEach(
-                in: result, shouldStop: { Task.isCancelled }
+                in: scanResult, shouldStop: { Task.isCancelled }
             ) { asset, _ in
                 identifiers.append(asset.localIdentifier)
             }
