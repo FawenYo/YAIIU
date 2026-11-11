@@ -1702,8 +1702,10 @@ struct PhotoGridView: View {
             if !requiresIndices || snapshotGeneration != generation {
                 guard let count = sqlCount else { return }
                 await MainActor.run {
+                    // The badge counts library-wide rows, so a content-only fetch
+                    // replacement (same positions) must not discard it.
                     guard !Task.isCancelled, version == self.countComputeVersion,
-                          manager.assetFetchGeneration == generation,
+                          manager.assetIndexGeneration == indexGeneration,
                           self.syncStatusGeneration == statusGeneration,
                           self.canPresentNotUploadedCount else { return }
                     // This count cannot be used as a PhotoKit display index.

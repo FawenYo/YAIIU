@@ -1553,6 +1553,11 @@ struct PhotoDetailView: View {
             loadFullImage(for: asset, maxDimension: Self.screenImageDimension)
         }
         loadMetadata(for: asset)
+        // Navigation closes the panel, but a reload with the panel open must
+        // still fetch the new asset's place and EXIF details.
+        if isInfoPanelVisible {
+            loadPanelDetails(for: asset)
+        }
     }
     
     private func cleanupCurrentAsset() {
@@ -1631,6 +1636,11 @@ struct PhotoDetailView: View {
                 if let image {
                     self.fullImage = image
                 } else if !isDegraded {
+                    guard self.fullImage == nil else {
+                        // A failed zoom upgrade keeps the preview; zooming again retries.
+                        self.didRequestZoomResolution = false
+                        return
+                    }
                     self.imageLoadFailed = true
                     logWarning("Unable to load photo preview: \(errorDescription)", category: .app)
                 }

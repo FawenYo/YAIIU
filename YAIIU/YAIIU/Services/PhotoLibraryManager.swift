@@ -823,14 +823,19 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             var start = 0
             while start < expectedCount {
                 if Task.isCancelled { return nil }
+                let end = min(start + chunkSize, expectedCount)
                 let completed: Bool = autoreleasepool {
                     let options = Self.libraryFetchOptions()
                     options.wantsIncrementalChangeDetails = false
                     let scanResult = PHAsset.fetchAssets(with: options)
-                    // A change not yet delivered to the grid would misalign positions.
-                    guard scanResult.count == expectedCount else { return false }
+                    // A change not yet delivered to the grid would misalign positions:
+                    // require the same count and the same assets at the window edges.
+                    guard scanResult.count == expectedCount,
+                          scanResult.object(at: start).localIdentifier == result.object(at: start).localIdentifier,
+                          scanResult.object(at: end - 1).localIdentifier == result.object(at: end - 1).localIdentifier
+                    else { return false }
                     return PhotoLibraryEnumeration.forEach(
-                        indices: start..<min(start + chunkSize, expectedCount),
+                        indices: start..<end,
                         objectAt: { scanResult.object(at: $0) },
                         shouldStop: { Task.isCancelled }
                     ) { asset, _ in
