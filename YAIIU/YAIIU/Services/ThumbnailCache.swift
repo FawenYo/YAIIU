@@ -19,8 +19,14 @@ final class ThumbnailCache {
     
     private let cache = NSCache<NSString, UIImage>()
     private let cachingImageManager = PHCachingImageManager()
+    /// Full-quality cell requests bypass the caching manager: it answered them
+    /// with its preheated low-quality image marked as final, leaving cells blurry.
+    private let fullQualityManager = PHImageManager.default()
+    /// Preheat start/stop calls are synchronous PhotoKit work; keep them off the
+    /// main thread, which is saturated by grid layout during fast scrolling.
+    private let preheatQueue = DispatchQueue(label: "com.fawenyo.yaiiu.thumbnail-preheat", qos: .userInitiated)
     
-    private var pendingRequests: [String: [(UIImage?) -> Void]] = [:]
+    private var pendingRequests: [String: [(token: UUID, callback: (UIImage?) -> Void)]] = [:]
     private var activeRequestIDs: [String: PHImageRequestID] = [:]
     /// A revision changes the cache key without clearing unrelated photos.
     /// Old in-flight PhotoKit results can only populate their obsolete key.
@@ -109,7 +115,7 @@ final class ThumbnailCache {
         for key in pendingKeys { pendingRequests.removeValue(forKey: key) }
         os_unfair_lock_unlock(&pendingLock)
         for requestID in requestIDs {
-            cachingImageManager.cancelImageRequest(requestID)
+            fullQualityManager.cancelImageRequest(requestID)
         }
     }
 
@@ -126,48 +132,94 @@ final class ThumbnailCache {
         os_unfair_lock_unlock(&pendingLock)
 
         for requestID in requestIDs {
-            cachingImageManager.cancelImageRequest(requestID)
+            fullQualityManager.cancelImageRequest(requestID)
         }
         cache.removeAllObjects()
-        cachingImageManager.stopCachingImagesForAllAssets()
+        preheatQueue.async { [cachingImageManager] in cachingImageManager.stopCachingImagesForAllAssets() }
     }
 
+    func cachedThumbnail(for localIdentifier: String, targetSize: CGSize) -> UIImage? {
+        cache.object(forKey: key(for: localIdentifier, targetSize: targetSize) as NSString)
+    }
+
+    /// A local-only, fast-format placeholder: never downloads and never decodes
+    /// a large derivative, so cells that are flung past stay cheap.
+    func requestFastThumbnail(for asset: PHAsset, targetSize: CGSize, completion: @escaping (UIImage?) -> Void) -> PHImageRequestID {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .fastFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = false
+        return cachingImageManager.requestImage(
+            for: asset, targetSize: targetSize, contentMode: .aspectFill, options: options
+        ) { image, _ in
+            DispatchQueue.main.async { completion(image) }
+        }
+    }
+
+    func cancelFastThumbnail(_ requestID: PHImageRequestID) {
+        cachingImageManager.cancelImageRequest(requestID)
+    }
+
+    /// Returns a token identifying this caller's wait, or nil on a cache hit.
+    /// Several views can wait on one PhotoKit request for the same photo
+    /// (a recycled and a newly configured cell); each cancels only its own wait.
+    @discardableResult
     func getThumbnail(
         for asset: PHAsset,
         targetSize: CGSize = ThumbnailCache.defaultTargetSize,
         completion: @escaping (UIImage?) -> Void
-    ) {
+    ) -> UUID? {
         let cacheKey = key(for: asset.localIdentifier, targetSize: targetSize) as NSString
         
         if let cachedImage = cache.object(forKey: cacheKey) {
             DispatchQueue.main.async {
                 completion(cachedImage)
             }
-            return
+            return nil
         }
         
         let keyString = cacheKey as String
+        let token = UUID()
         
         os_unfair_lock_lock(&pendingLock)
-        if var existingCallbacks = pendingRequests[keyString] {
-            existingCallbacks.append(completion)
-            pendingRequests[keyString] = existingCallbacks
+        if pendingRequests[keyString] != nil {
+            pendingRequests[keyString]?.append((token, completion))
             os_unfair_lock_unlock(&pendingLock)
-            return
+            return token
         }
-        pendingRequests[keyString] = [completion]
+        pendingRequests[keyString] = [(token, completion)]
         os_unfair_lock_unlock(&pendingLock)
         
+        startRequest(for: asset, targetSize: targetSize, cacheKey: cacheKey)
+        return token
+    }
+
+    /// Preheating stays local-only so offscreen iCloud items are never downloaded.
+    private static let preheatOptions: PHImageRequestOptions = {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic
+        options.isNetworkAccessAllowed = false
+        options.resizeMode = .exact
+        return options
+    }()
+
+    /// Visible cells allow the network: without it PhotoKit can report a small
+    /// local thumbnail of an iCloud-only photo as the final result.
+    private static let visibleRequestOptions: PHImageRequestOptions = {
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.isNetworkAccessAllowed = true
         options.resizeMode = .exact
-        
-        let requestID = cachingImageManager.requestImage(
+        return options
+    }()
+
+    private func startRequest(for asset: PHAsset, targetSize: CGSize, cacheKey: NSString) {
+        let keyString = cacheKey as String
+        let requestID = fullQualityManager.requestImage(
             for: asset,
             targetSize: targetSize,
             contentMode: .aspectFill,
-            options: options
+            options: Self.visibleRequestOptions
         ) { [weak self] image, info in
             guard let self = self,
                   self.key(for: asset.localIdentifier, targetSize: targetSize) == keyString else { return }
@@ -200,9 +252,9 @@ final class ThumbnailCache {
                 os_unfair_lock_lock(&self.pendingLock)
                 let callbacks: [(UIImage?) -> Void]
                 if isDegraded {
-                    callbacks = self.pendingRequests[keyString] ?? []
+                    callbacks = (self.pendingRequests[keyString] ?? []).map(\.callback)
                 } else {
-                    callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
+                    callbacks = (self.pendingRequests.removeValue(forKey: keyString) ?? []).map(\.callback)
                     self.activeRequestIDs.removeValue(forKey: keyString)
                 }
                 os_unfair_lock_unlock(&self.pendingLock)
@@ -214,7 +266,7 @@ final class ThumbnailCache {
                 }
             } else if !isDegraded {
                 os_unfair_lock_lock(&self.pendingLock)
-                let callbacks = self.pendingRequests.removeValue(forKey: keyString) ?? []
+                let callbacks = (self.pendingRequests.removeValue(forKey: keyString) ?? []).map(\.callback)
                 self.activeRequestIDs.removeValue(forKey: keyString)
                 os_unfair_lock_unlock(&self.pendingLock)
                 
@@ -239,77 +291,72 @@ final class ThumbnailCache {
         // Covers either invalidation or view cancellation between
         // requestImage() and request-ID registration.
         if !stillPending {
-            cachingImageManager.cancelImageRequest(requestID)
+            fullQualityManager.cancelImageRequest(requestID)
         }
     }
     
-    func cancelThumbnail(for assetIdentifier: String, targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
-        // A view can disappear after the asset revision changed. Cancel any
+    func cancelThumbnail(_ token: UUID, for assetIdentifier: String, targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
+        // A view can disappear after the asset revision changed. Look in any
         // revision of its requested size, not just the current cache key.
         let prefix = "\(assetIdentifier)_r"
         let suffix = "_\(Int(targetSize.width))x\(Int(targetSize.height))"
+        var requestIDs: [PHImageRequestID] = []
         os_unfair_lock_lock(&pendingLock)
-        let keys = activeRequestIDs.keys.filter {
-            $0.hasPrefix(prefix) && $0.hasSuffix(suffix)
+        for key in Array(pendingRequests.keys) where key.hasPrefix(prefix) && key.hasSuffix(suffix) {
+            pendingRequests[key]?.removeAll { $0.token == token }
+            // Cancel PhotoKit work only once no other view is waiting for it.
+            if pendingRequests[key]?.isEmpty == true {
+                pendingRequests.removeValue(forKey: key)
+                if let requestID = activeRequestIDs.removeValue(forKey: key) {
+                    requestIDs.append(requestID)
+                }
+            }
         }
-        let requestIDs = keys.compactMap { activeRequestIDs.removeValue(forKey: $0) }
-        let pendingKeys = pendingRequests.keys.filter {
-            $0.hasPrefix(prefix) && $0.hasSuffix(suffix)
-        }
-        for key in pendingKeys { pendingRequests.removeValue(forKey: key) }
         os_unfair_lock_unlock(&pendingLock)
         for requestID in requestIDs {
-            cachingImageManager.cancelImageRequest(requestID)
+            fullQualityManager.cancelImageRequest(requestID)
         }
     }
     
     /// Prefetch thumbnails for better scrolling performance
     func prefetchThumbnails(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
-        let uncachedAssets = assets.filter { asset in
-            let cacheKey = key(for: asset.localIdentifier, targetSize: targetSize) as NSString
-            return cache.object(forKey: cacheKey) == nil
+        preheatQueue.async { [self] in
+            let uncachedAssets = assets.filter { asset in
+                let cacheKey = key(for: asset.localIdentifier, targetSize: targetSize) as NSString
+                return cache.object(forKey: cacheKey) == nil
+            }
+            guard !uncachedAssets.isEmpty else { return }
+
+            // Never download offscreen iCloud items while preheating.
+            cachingImageManager.startCachingImages(
+                for: uncachedAssets,
+                targetSize: targetSize,
+                contentMode: .aspectFill,
+                options: Self.preheatOptions
+            )
         }
-        
-        guard !uncachedAssets.isEmpty else { return }
-        
-        let options = PHImageRequestOptions()
-        // Match the visible cell's quality and resize request so preheating
-        // does not decode a second fast-format variant for the same asset.
-        // Keep networking disabled to avoid downloading offscreen iCloud items.
-        options.deliveryMode = .opportunistic
-        options.isNetworkAccessAllowed = false
-        options.resizeMode = .exact
-        
-        cachingImageManager.startCachingImages(
-            for: uncachedAssets,
-            targetSize: targetSize,
-            contentMode: .aspectFill,
-            options: options
-        )
     }
     
     /// Stop prefetching thumbnails
     func stopPrefetching(for assets: [PHAsset], targetSize: CGSize = ThumbnailCache.defaultTargetSize) {
-        let options = PHImageRequestOptions()
-        // Match the visible cell's quality and resize request so preheating
-        // does not decode a second fast-format variant for the same asset.
-        // Keep networking disabled to avoid downloading offscreen iCloud items.
-        options.deliveryMode = .opportunistic
-        options.isNetworkAccessAllowed = false
-        options.resizeMode = .exact
-        
-        cachingImageManager.stopCachingImages(
-            for: assets,
-            targetSize: targetSize,
-            contentMode: .aspectFill,
-            options: options
-        )
+        preheatQueue.async { [self] in
+            cachingImageManager.stopCachingImages(
+                for: assets,
+                targetSize: targetSize,
+                contentMode: .aspectFill,
+                options: Self.preheatOptions
+            )
+        }
+    }
+
+    func stopAllPrefetching() {
+        preheatQueue.async { [cachingImageManager] in cachingImageManager.stopCachingImagesForAllAssets() }
     }
     
     /// Clear all cached thumbnails
     func clearCache() {
         cache.removeAllObjects()
-        cachingImageManager.stopCachingImagesForAllAssets()
+        preheatQueue.async { [cachingImageManager] in cachingImageManager.stopCachingImagesForAllAssets() }
     }
     
     /// Keep legacy callers invalidating every cached resolution of this asset.

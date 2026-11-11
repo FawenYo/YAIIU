@@ -115,15 +115,6 @@ enum PhotoGridProcessingStripPolicy {
     }
 }
 
-// MARK: - Preference Keys
-
-private struct FirstRowOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 // MARK: - Drag Selection State
 
 private final class DragSelectionState: ObservableObject {
@@ -141,169 +132,304 @@ private final class DragSelectionState: ObservableObject {
     }
 }
 
-// MARK: - ScrollViewGestureInjector
+// MARK: - Drag-to-Select Gesture
 
-/// Injects a horizontal `UIPanGestureRecognizer` on the parent `UIScrollView`
-/// for drag-to-select. Disables scrolling while the gesture is active.
-private struct ScrollViewGestureInjector: UIViewRepresentable {
-    let isEnabled: Bool
-    let onBegan: (CGPoint) -> Void
-    let onChanged: (CGPoint) -> Void
-    let onEnded: () -> Void
+/// A horizontal pan on the grid's collection view for drag-to-select.
+/// Disables scrolling while active and auto-scrolls near the edges.
+private final class DragSelectionGesture: NSObject, UIGestureRecognizerDelegate {
+    var isEnabled = false
+    var onBegan: ((Int) -> Void)?
+    var onChanged: ((Int) -> Void)?
+    var onEnded: (() -> Void)?
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
-        view.isUserInteractionEnabled = false
-        return view
+    private weak var collectionView: UICollectionView?
+    private var pan: UIPanGestureRecognizer?
+
+    private var displayLink: CADisplayLink?
+    private var autoScrollSpeed: CGFloat = 0
+    private let edgeInset: CGFloat = 60
+    private let maxScrollSpeed: CGFloat = 800
+
+    deinit {
+        displayLink?.invalidate()
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.isEnabled = isEnabled
-        context.coordinator.onBegan = onBegan
-        context.coordinator.onChanged = onChanged
-        context.coordinator.onEnded = onEnded
-        context.coordinator.installIfNeeded(on: uiView)
+    func install(on collectionView: UICollectionView) {
+        let gesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        gesture.delegate = self
+        collectionView.addGestureRecognizer(gesture)
+        pan = gesture
+        self.collectionView = collectionView
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    private func item(at point: CGPoint) -> Int? {
+        collectionView?.indexPathForItem(at: point)?.item
+    }
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var isEnabled = false
-        var onBegan: ((CGPoint) -> Void)?
-        var onChanged: ((CGPoint) -> Void)?
-        var onEnded: (() -> Void)?
+    private func startAutoScroll() {
+        guard displayLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(autoScrollTick(_:)))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
 
-        private weak var installedScrollView: UIScrollView?
-        private var pan: UIPanGestureRecognizer?
-        private var scrollWasEnabled = true
+    private func stopAutoScroll() {
+        displayLink?.invalidate()
+        displayLink = nil
+        autoScrollSpeed = 0
+    }
 
-        private var displayLink: CADisplayLink?
-        private var autoScrollSpeed: CGFloat = 0
-        private let edgeInset: CGFloat = 60
-        private let maxScrollSpeed: CGFloat = 800
+    /// `pt` is in the scroll view's frame coordinate space.
+    private func updateAutoScroll(frameRelativeTouch pt: CGPoint) {
+        guard let scrollView = collectionView else { return }
+        let frameHeight = scrollView.frame.height
 
-        deinit {
+        if pt.y < edgeInset {
+            let ratio = min(1, max(0, (edgeInset - pt.y) / edgeInset))
+            autoScrollSpeed = -maxScrollSpeed * ratio
+            startAutoScroll()
+        } else if pt.y > frameHeight - edgeInset {
+            let ratio = min(1, max(0, (pt.y - (frameHeight - edgeInset)) / edgeInset))
+            autoScrollSpeed = maxScrollSpeed * ratio
+            startAutoScroll()
+        } else {
             stopAutoScroll()
         }
+    }
 
-        func installIfNeeded(on marker: UIView) {
-            guard installedScrollView == nil || installedScrollView?.window == nil else { return }
-
-            var candidate: UIView? = marker.superview
-            while let v = candidate {
-                if let sv = v as? UIScrollView {
-                    install(on: sv)
-                    return
-                }
-                candidate = v.superview
-            }
+    @objc private func autoScrollTick(_ link: CADisplayLink) {
+        guard let scrollView = collectionView,
+              let gesture = pan,
+              gesture.state == .changed || gesture.state == .began else {
+            stopAutoScroll()
+            return
         }
 
-        private func install(on scrollView: UIScrollView) {
-            if let old = pan {
-                old.view?.removeGestureRecognizer(old)
-            }
-            let gesture = UIPanGestureRecognizer(
-                target: self,
-                action: #selector(handlePan(_:))
-            )
-            gesture.delegate = self
-            scrollView.addGestureRecognizer(gesture)
-            pan = gesture
-            installedScrollView = scrollView
-        }
+        let dt = CGFloat(link.targetTimestamp - link.timestamp)
+        var offset = scrollView.contentOffset
+        let inset = scrollView.adjustedContentInset
 
-        private func startAutoScroll() {
-            guard displayLink == nil else { return }
-            let link = CADisplayLink(target: self, selector: #selector(autoScrollTick(_:)))
-            link.add(to: .main, forMode: .common)
-            displayLink = link
-        }
+        offset.y += autoScrollSpeed * dt
+        let minY = -inset.top
+        let maxY = max(minY, scrollView.contentSize.height - scrollView.bounds.height + inset.bottom)
+        offset.y = min(max(offset.y, minY), maxY)
+        scrollView.contentOffset = offset
 
-        private func stopAutoScroll() {
-            displayLink?.invalidate()
-            displayLink = nil
-            autoScrollSpeed = 0
-        }
-
-        /// `pt` is in the scroll view's frame coordinate space.
-        private func updateAutoScroll(frameRelativeTouch pt: CGPoint) {
-            guard let scrollView = installedScrollView else { return }
-            let frameHeight = scrollView.frame.height
-
-            if pt.y < edgeInset {
-                let ratio = min(1, max(0, (edgeInset - pt.y) / edgeInset))
-                autoScrollSpeed = -maxScrollSpeed * ratio
-                startAutoScroll()
-            } else if pt.y > frameHeight - edgeInset {
-                let ratio = min(1, max(0, (pt.y - (frameHeight - edgeInset)) / edgeInset))
-                autoScrollSpeed = maxScrollSpeed * ratio
-                startAutoScroll()
-            } else {
-                stopAutoScroll()
-            }
-        }
-
-        @objc private func autoScrollTick(_ link: CADisplayLink) {
-            guard let scrollView = installedScrollView,
-                  let gesture = pan,
-                  gesture.state == .changed || gesture.state == .began else {
-                stopAutoScroll()
-                return
-            }
-
-            let dt = CGFloat(link.targetTimestamp - link.timestamp)
-            let delta = autoScrollSpeed * dt
-            var offset = scrollView.contentOffset
-            let inset = scrollView.adjustedContentInset
-
-            offset.y += delta
-            let minY = -inset.top
-            let maxY = max(minY, scrollView.contentSize.height - scrollView.bounds.height + inset.bottom)
-            offset.y = min(max(offset.y, minY), maxY)
-            scrollView.contentOffset = offset
-
-            let loc = gesture.location(in: scrollView)
-            onChanged?(loc)
-        }
-
-        @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard isEnabled, let scrollView = installedScrollView else { return }
-            let loc = gesture.location(in: scrollView)
-
-            switch gesture.state {
-            case .began:
-                scrollWasEnabled = scrollView.isScrollEnabled
-                scrollView.isScrollEnabled = false
-                onBegan?(loc)
-            case .changed:
-                onChanged?(loc)
-                let touchRelative = CGPoint(x: loc.x, y: loc.y - scrollView.contentOffset.y)
-                updateAutoScroll(frameRelativeTouch: touchRelative)
-            case .ended, .cancelled, .failed:
-                stopAutoScroll()
-                scrollView.isScrollEnabled = scrollWasEnabled
-                onEnded?()
-            default:
-                break
-            }
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard isEnabled else { return false }
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                  let view = pan.view else { return false }
-            let vel = pan.velocity(in: view)
-            return abs(vel.x) > abs(vel.y)
-        }
-
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
-        ) -> Bool {
-            true
+        if let index = item(at: gesture.location(in: scrollView)) {
+            onChanged?(index)
         }
     }
+
+    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard isEnabled, let scrollView = collectionView else { return }
+        let loc = gesture.location(in: scrollView)
+
+        switch gesture.state {
+        case .began:
+            // Disable only the scroll pan: toggling isScrollEnabled left the
+            // iOS 26 scroll edge effect opaque until the next real scroll.
+            scrollView.panGestureRecognizer.isEnabled = false
+            if let index = item(at: loc) { onBegan?(index) }
+        case .changed:
+            if let index = item(at: loc) { onChanged?(index) }
+            let touchRelative = CGPoint(x: loc.x, y: loc.y - scrollView.contentOffset.y)
+            updateAutoScroll(frameRelativeTouch: touchRelative)
+        case .ended, .cancelled, .failed:
+            stopAutoScroll()
+            scrollView.panGestureRecognizer.isEnabled = true
+            onEnded?()
+        default:
+            break
+        }
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard isEnabled else { return false }
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer,
+              let view = pan.view else { return false }
+        let vel = pan.velocity(in: view)
+        return abs(vel.x) > abs(vel.y)
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+}
+
+// MARK: - Photo Grid Collection View
+
+/// Square cells in a fixed number of columns, sized from the current width.
+private final class SquareGridLayout: UICollectionViewFlowLayout {
+    let columnCount: Int
+    let spacing: CGFloat
+    let horizontalPadding: CGFloat
+
+    init(columnCount: Int, spacing: CGFloat, horizontalPadding: CGFloat) {
+        self.columnCount = columnCount
+        self.spacing = spacing
+        self.horizontalPadding = horizontalPadding
+        super.init()
+        minimumInteritemSpacing = spacing
+        minimumLineSpacing = spacing
+        sectionInset = UIEdgeInsets(top: 0, left: horizontalPadding, bottom: 0, right: horizontalPadding)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func prepare() {
+        if let collectionView {
+            let usable = collectionView.bounds.width - horizontalPadding * 2 - spacing * CGFloat(columnCount - 1)
+            let scale = collectionView.traitCollection.displayScale
+            // Round down to whole pixels so rounding never wraps the last column.
+            let side = max(1, floor(usable / CGFloat(columnCount) * scale) / scale)
+            itemSize = CGSize(width: side, height: side)
+        }
+        super.prepare()
+    }
+
+    override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
+        newBounds.width != collectionView?.bounds.width
+    }
+}
+
+/// UIKit grid with reused cells. LazyVGrid kept every scrolled-past cell's
+/// view graph alive, so memory grew with scroll distance on large libraries.
+private struct PhotoGridCollectionView<Cell: View>: UIViewRepresentable {
+    let itemCount: Int
+    /// Changes when the grid must return to the top (filter change, manual refresh).
+    let resetToken: UUID
+    let isSelectionMode: Bool
+    let columnCount: Int
+    let spacing: CGFloat
+    let horizontalPadding: CGFloat
+    let cell: (Int) -> Cell
+    let onScrolledPastTopChanged: (Bool) -> Void
+    let onRefresh: () async -> Void
+    let onDragBegan: (Int) -> Void
+    let onDragChanged: (Int) -> Void
+    let onDragEnded: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UICollectionView {
+        let layout = SquareGridLayout(
+            columnCount: columnCount, spacing: spacing, horizontalPadding: horizontalPadding
+        )
+        let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView.backgroundColor = .clear
+        collectionView.alwaysBounceVertical = true
+        collectionView.register(PhotoGridCell.self, forCellWithReuseIdentifier: Coordinator.reuseIdentifier)
+        collectionView.dataSource = context.coordinator
+        collectionView.delegate = context.coordinator
+
+        let refreshControl = UIRefreshControl()
+        refreshControl.addTarget(context.coordinator, action: #selector(Coordinator.handleRefresh(_:)), for: .valueChanged)
+        collectionView.refreshControl = refreshControl
+
+        context.coordinator.dragSelection.install(on: collectionView)
+        context.coordinator.applyDragHandlers()
+        return collectionView
+    }
+
+    func updateUIView(_ collectionView: UICollectionView, context: Context) {
+        let coordinator = context.coordinator
+        let previous = coordinator.parent
+        coordinator.parent = self
+        coordinator.inputsVersion &+= 1
+        coordinator.applyDragHandlers()
+
+        if resetToken != previous.resetToken {
+            collectionView.reloadData()
+            // A pull-to-refresh is already at the top; moving the offset under
+            // the active refresh control makes its animation stutter.
+            if collectionView.refreshControl?.isRefreshing != true {
+                collectionView.layoutIfNeeded()
+                collectionView.setContentOffset(
+                    CGPoint(x: 0, y: -collectionView.adjustedContentInset.top), animated: false
+                )
+            }
+        } else if itemCount != previous.itemCount {
+            collectionView.reloadData()
+        } else {
+            // Rebind visible cells to the latest SwiftUI inputs; cell views react
+            // to index/refresh changes themselves. Prefetched off-screen cells are
+            // rebound in willDisplay.
+            for indexPath in collectionView.indexPathsForVisibleItems {
+                if let cell = collectionView.cellForItem(at: indexPath) as? PhotoGridCell {
+                    coordinator.configure(cell, item: indexPath.item)
+                }
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegate {
+        static var reuseIdentifier: String { "PhotoGridCell" }
+
+        var parent: PhotoGridCollectionView
+        let dragSelection = DragSelectionGesture()
+        private var isScrolledPastTop = false
+        /// Bumped on every SwiftUI update; cells record the version they were built from.
+        var inputsVersion = 0
+
+        init(parent: PhotoGridCollectionView) {
+            self.parent = parent
+        }
+
+        func applyDragHandlers() {
+            dragSelection.isEnabled = parent.isSelectionMode
+            dragSelection.onBegan = parent.onDragBegan
+            dragSelection.onChanged = parent.onDragChanged
+            dragSelection.onEnded = parent.onDragEnded
+        }
+
+        func configure(_ cell: PhotoGridCell, item: Int) {
+            // Identity per item gives each reuse fresh SwiftUI state and lifecycle.
+            cell.contentConfiguration = UIHostingConfiguration {
+                parent.cell(item).id(item)
+            }
+            .margins(.all, 0)
+            cell.configuredVersion = inputsVersion
+        }
+
+        func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+            parent.itemCount
+        }
+
+        func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: Self.reuseIdentifier, for: indexPath)
+            if let cell = cell as? PhotoGridCell {
+                configure(cell, item: indexPath.item)
+            }
+            return cell
+        }
+
+        func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+            // Cell prefetching can configure a cell before a later update changed its inputs.
+            guard let cell = cell as? PhotoGridCell, cell.configuredVersion != inputsVersion else { return }
+            configure(cell, item: indexPath.item)
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            let isPast = scrollView.contentOffset.y + scrollView.adjustedContentInset.top > 0
+            guard isPast != isScrolledPastTop else { return }
+            isScrolledPastTop = isPast
+            parent.onScrolledPastTopChanged(isPast)
+        }
+
+        @objc func handleRefresh(_ sender: UIRefreshControl) {
+            Task { @MainActor in
+                await parent.onRefresh()
+                sender.endRefreshing()
+            }
+        }
+    }
+}
+
+private final class PhotoGridCell: UICollectionViewCell {
+    var configuredVersion = -1
 }
 
 // MARK: - Date Formatting
@@ -416,20 +542,21 @@ struct PhotoGridView: View {
     private static let gridSpacing: CGFloat = 2
     private static let gridHorizontalPadding: CGFloat = 1
     
-    private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: Self.gridSpacing), count: Self.columnCount)
-    }
-    
     private let prefetchBuffer = 12
+
+    /// Point side of one square cell; nil until the container is measured.
+    private var gridCellSide: CGFloat? {
+        guard gridContainerWidth > 0 else { return nil }
+        let spacing = CGFloat(Self.columnCount - 1) * Self.gridSpacing
+        let usable = gridContainerWidth - Self.gridHorizontalPadding * 2 - spacing
+        return max(1, usable / CGFloat(Self.columnCount))
+    }
 
     /// One pixel size for the uniform three-column grid, used by both visible
     /// thumbnail requests and PhotoKit preheating/cancellation.
     private var thumbnailTargetSize: CGSize {
-        guard gridContainerWidth > 0 else { return ThumbnailCache.defaultTargetSize }
-        let spacing = CGFloat(Self.columnCount - 1) * Self.gridSpacing
-        let usable = gridContainerWidth - Self.gridHorizontalPadding * 2 - spacing
-        let cellWidth = max(1, usable / CGFloat(Self.columnCount))
-        return ThumbnailCache.targetSize(forGridCellWidth: cellWidth, displayScale: displayScale)
+        guard let gridCellSide else { return ThumbnailCache.defaultTargetSize }
+        return ThumbnailCache.targetSize(forGridCellWidth: gridCellSide, displayScale: displayScale)
     }
     
     private var displayCount: Int {
@@ -757,16 +884,13 @@ struct PhotoGridView: View {
                 filteredIndicesGeneration = nil
                 if currentFilter != .all { isFilterLoading = true }
             }
-            // Old full-library ranges refer to the previous fetch. Avoid
-            // interpreting them against the newly swapped result.
+            // Old ranges refer to the previous fetch and were never stopped, so every
+            // PhotoKit notification (iCloud thumbnail downloads arrive constantly while
+            // scrolling) leaked a preheat window. Drop all preheats; visible cells
+            // re-preheat their neighbors on the next appear.
+            ThumbnailCache.shared.stopAllPrefetching()
             lastPrefetchedRange = nil
-            if !lastPrefetchedFilteredAssets.isEmpty {
-                ThumbnailCache.shared.stopPrefetching(
-                    for: lastPrefetchedFilteredAssets,
-                    targetSize: lastPrefetchedTargetSize ?? thumbnailTargetSize
-                )
-                lastPrefetchedFilteredAssets = []
-            }
+            lastPrefetchedFilteredAssets = []
             lastPrefetchedTargetSize = nil
             refreshToken = UUID()
         }
@@ -1023,6 +1147,9 @@ struct PhotoGridView: View {
                 }
 
                 simpleGridView
+                    // Scroll content under the tab bar, as SwiftUI's ScrollView did;
+                    // the collection view insets its content for the safe area.
+                    .ignoresSafeArea(.container, edges: .bottom)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .task(id: hashManager.isProcessing) {
@@ -1071,56 +1198,22 @@ struct PhotoGridView: View {
     }
     
     private var simpleGridView: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: Self.gridSpacing) {
-                ForEach(0..<displayCount, id: \.self) { displayIndex in
-                    let actualIndex = resolveActualIndex(displayIndex)
-                    gridItemView(assetIndex: actualIndex, displayIndex: displayIndex)
-                        .background(
-                            Group {
-                                if displayIndex == 0 {
-                                    firstRowTracker
-                                }
-                            }
-                        )
-                }
-            }
-            .padding(.horizontal, Self.gridHorizontalPadding)
-            .background {
-                ScrollViewGestureInjector(
-                    isEnabled: isSelectionMode,
-                    onBegan: { handleDragBegan(at: $0) },
-                    onChanged: { handleDragChanged(at: $0) },
-                    onEnded: { handleDragEnded() }
-                )
-                .frame(width: 0, height: 0)
-            }
-            // Keep existing visible cells during PhotoKit refreshes. Reset
-            // grid/scroll position only when the user explicitly changes filter.
-            .id(gridResetToken)
-        }
-        .coordinateSpace(name: "scrollView")
-        .refreshable {
-            await refreshPhotosAsync()
-        }
-    }
-    
-    /// Invisible view to track the first row's position relative to scroll view
-    private var firstRowTracker: some View {
-        GeometryReader { geo in
-            Color.clear
-                .preference(
-                    key: FirstRowOffsetKey.self,
-                    value: geo.frame(in: .named("scrollView")).minY
-                )
-        }
-        .onPreferenceChange(FirstRowOffsetKey.self) { offset in
-            // Fires every scroll frame; only the threshold crossing affects the body.
-            let isScrolled = offset < 0
-            if isScrolledPastFirstRow != isScrolled {
-                isScrolledPastFirstRow = isScrolled
-            }
-        }
+        PhotoGridCollectionView(
+            itemCount: displayCount,
+            resetToken: gridResetToken,
+            isSelectionMode: isSelectionMode,
+            columnCount: Self.columnCount,
+            spacing: Self.gridSpacing,
+            horizontalPadding: Self.gridHorizontalPadding,
+            cell: { displayIndex in
+                gridItemView(assetIndex: resolveActualIndex(displayIndex), displayIndex: displayIndex)
+            },
+            onScrolledPastTopChanged: { isScrolledPastFirstRow = $0 },
+            onRefresh: { await refreshPhotosAsync() },
+            onDragBegan: { handleDragBegan(at: $0) },
+            onDragChanged: { handleDragChanged(at: $0) },
+            onDragEnded: { handleDragEnded() }
+        )
     }
     
     private func updateVisibleDate(for displayIndex: Int, assetIndex: Int, isAppearing: Bool) {
@@ -1172,7 +1265,7 @@ struct PhotoGridView: View {
     private func gridItemView(assetIndex: Int, displayIndex: Int) -> some View {
         PhotoGridItemView(
             photoLibraryManager: photoLibraryManager,
-            hashManager: hashManager,
+            statusCache: hashManager.syncStatusCache,
             filteredFetchSnapshot: currentFilter == .all ? nil : fetchStorage.filteredSnapshot,
             displayIndex: displayIndex,
             assetIndex: assetIndex,
@@ -1183,33 +1276,36 @@ struct PhotoGridView: View {
             thumbnailTargetSize: thumbnailTargetSize,
             showingPhotoDetail: showingPhotoDetail,
             selectedPhotoIndex: selectedPhotoIndex,
-            onTap: {
-                if isSelectionMode {
-                    guard canSelectDisplayedPhotos else { return }
-                    toggleSelection(at: assetIndex)
-                } else {
-                    // Detail navigation still needs the current fetch generation.
-                    openPhotoDetail(at: displayIndex)
-                }
-            },
-            onLongPress: {
-                guard canSelectDisplayedPhotos else { return }
-                if !isSelectionMode {
-                    isSelectionMode = true
-                    if let id = assetForDisplay(at: assetIndex)?.localIdentifier {
-                        selectedAssets.insert(id)
-                    }
-                }
-            },
-            onAppear: {
-                onItemAppear(displayIndex: displayIndex, assetIndex: assetIndex)
-            },
-            onDisappear: {
-                onItemDisappear(displayIndex: displayIndex, assetIndex: assetIndex)
+            onEvent: { event in
+                handleCellEvent(event, displayIndex: displayIndex, assetIndex: assetIndex)
             }
         )
-        .aspectRatio(1, contentMode: .fill)
         .clipped()
+    }
+
+    private func handleCellEvent(_ event: GridCellEvent, displayIndex: Int, assetIndex: Int) {
+        switch event {
+        case .tap:
+            if isSelectionMode {
+                guard canSelectDisplayedPhotos else { return }
+                toggleSelection(at: assetIndex)
+            } else {
+                // Detail navigation still needs the current fetch generation.
+                openPhotoDetail(at: displayIndex)
+            }
+        case .longPress:
+            guard canSelectDisplayedPhotos else { return }
+            if !isSelectionMode {
+                isSelectionMode = true
+                if let id = assetForDisplay(at: assetIndex)?.localIdentifier {
+                    selectedAssets.insert(id)
+                }
+            }
+        case .appear:
+            onItemAppear(displayIndex: displayIndex, assetIndex: assetIndex)
+        case .disappear:
+            onItemDisappear(displayIndex: displayIndex, assetIndex: assetIndex)
+        }
     }
     
     private var filterIndicatorView: some View {
@@ -1824,10 +1920,6 @@ struct PhotoGridView: View {
         isScrolledPastFirstRow = false
         
         refreshToken = UUID()
-        // Preserve the original intentional scroll reset on manual refresh,
-        // while keeping background PhotoKit updates free of grid-wide flashes.
-        gridResetToken = UUID()
-
         recomputeCounts()
     }
     
@@ -1880,29 +1972,9 @@ struct PhotoGridView: View {
     
     // MARK: - Drag-to-Select
     
-    private var cellSize: CGFloat {
-        let usable = gridContainerWidth - Self.gridHorizontalPadding * 2
-        let gaps = Self.gridSpacing * CGFloat(Self.columnCount - 1)
-        return max((usable - gaps) / CGFloat(Self.columnCount), 1)
-    }
-    
-    private func displayIndex(at point: CGPoint) -> Int? {
-        let side = cellSize
-        let stride = side + Self.gridSpacing
-        let originX = Self.gridHorizontalPadding
-        
-        let col = Int((point.x - originX) / stride)
-        let row = Int(point.y / stride)
-        
-        guard col >= 0, col < Self.columnCount, row >= 0 else { return nil }
-        
-        let index = row * Self.columnCount + col
-        guard index >= 0, index < displayCount else { return nil }
-        return index
-    }
-    
-    private func handleDragBegan(at point: CGPoint) {
-        guard canSelectDisplayedPhotos, let idx = displayIndex(at: point) else { return }
+    /// Display indices come from the collection view's own hit testing.
+    private func handleDragBegan(at idx: Int) {
+        guard canSelectDisplayedPhotos, idx < displayCount else { return }
         let actualIdx = resolveActualIndex(idx)
         
         dragState.baseSelection = selectedAssets
@@ -1916,9 +1988,8 @@ struct PhotoGridView: View {
         applyDragRange(from: idx, to: idx)
     }
     
-    private func handleDragChanged(at point: CGPoint) {
-        guard canSelectDisplayedPhotos, let anchor = dragState.anchorIndex else { return }
-        guard let idx = displayIndex(at: point) else { return }
+    private func handleDragChanged(at idx: Int) {
+        guard canSelectDisplayedPhotos, let anchor = dragState.anchorIndex, idx < displayCount else { return }
         guard idx != dragState.currentIndex else { return }
         
         dragState.currentIndex = idx
@@ -2101,9 +2172,15 @@ struct PhotoGridView: View {
 
 // MARK: - PhotoGridItemView
 
+private enum GridCellEvent {
+    case tap, longPress, appear, disappear
+}
+
 private struct PhotoGridItemView: View {
     let photoLibraryManager: PhotoLibraryManager
-    let hashManager: HashManager
+    /// Read in body rather than subscribed per cell, so a status flush costs
+    /// no Combine delivery per cell.
+    let statusCache: [String: PhotoSyncStatus]
     let filteredFetchSnapshot: PhotoGridFetchStorage<PHFetchResult<PHAsset>>.Snapshot?
     let displayIndex: Int
     let assetIndex: Int
@@ -2114,17 +2191,13 @@ private struct PhotoGridItemView: View {
     let thumbnailTargetSize: CGSize
     let showingPhotoDetail: Bool
     let selectedPhotoIndex: Int
-    let onTap: () -> Void
-    let onLongPress: () -> Void
-    let onAppear: () -> Void
-    let onDisappear: () -> Void
+    let onEvent: (GridCellEvent) -> Void
     
     @State private var asset: PHAsset?
     @State private var isCellActive = false
     @State private var appliedEditGeneration: Int?
     @State private var observedAssetIdentifier: String?
     @State private var observedContentRevision: PhotoAssetContentRevision?
-    @State private var syncStatus: PhotoSyncStatus = .pending
     
     var body: some View {
         Group {
@@ -2135,7 +2208,7 @@ private struct PhotoGridItemView: View {
                     asset: asset,
                     isSelected: selectedAssets.contains(asset.localIdentifier),
                     isSelectionMode: isSelectionMode,
-                    syncStatus: syncStatus,
+                    syncStatus: statusCache[asset.localIdentifier] ?? .pending,
                     namespace: namespace,
                     refreshToken: refreshToken,
                     targetSize: thumbnailTargetSize,
@@ -2152,24 +2225,24 @@ private struct PhotoGridItemView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            onTap()
+            onEvent(.tap)
         }
         .onLongPressGesture {
-            onLongPress()
+            onEvent(.longPress)
         }
         .onAppear {
             isCellActive = true
             loadAsset()
-            onAppear()
+            onEvent(.appear)
         }
         .onDisappear {
             isCellActive = false
-            // LazyVGrid may retain offscreen rows; drop their PhotoKit objects.
+            // Prefetched or recycled cells must not keep PhotoKit objects.
             asset = nil
             appliedEditGeneration = nil
             observedAssetIdentifier = nil
             observedContentRevision = nil
-            onDisappear()
+            onEvent(.disappear)
         }
         .onChange(of: assetIndex) { _, _ in
             // Rebind only visible rows. Offscreen rows have released their assets.
@@ -2177,15 +2250,8 @@ private struct PhotoGridItemView: View {
         }
         .onChange(of: refreshToken) { _, _ in
             // Update visible cells after a PhotoKit fetch replacement without
-            // rematerializing assets in offscreen LazyVGrid state.
+            // rematerializing assets for cells that are not on screen.
             if isCellActive { loadAsset() }
-        }
-        .onReceive(hashManager.$syncStatusCache.receive(on: RunLoop.main)) { newCache in
-            guard let id = asset?.localIdentifier else { return }
-            let newStatus = newCache[id] ?? .pending
-            if syncStatus != newStatus {
-                syncStatus = newStatus
-            }
         }
     }
     
@@ -2228,7 +2294,6 @@ private struct PhotoGridItemView: View {
                 observedAssetIdentifier = id
                 observedContentRevision = revision
             }
-            syncStatus = hashManager.getSyncStatus(for: id)
         } else {
             appliedEditGeneration = nil
             observedAssetIdentifier = nil

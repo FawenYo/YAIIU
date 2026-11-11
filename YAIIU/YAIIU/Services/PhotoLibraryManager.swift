@@ -452,8 +452,12 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // changedIndexes uses after-state positions, including in-place edits.
         // Prefer a pooled indexed lookup; fallback identifiers were gathered
         // above only when PhotoKit did not provide any changed positions.
-        var changedIdentifiers = fallbackChangedIdentifiers
+        // Only assets whose image content changed need new thumbnails or a
+        // version check: iCloud thumbnail downloads triggered by scrolling arrive
+        // as metadata-only updates and would otherwise start a replay each time.
+        var contentChangedIdentifiers = fallbackChangedIdentifiers
         var changedVersions = fallbackChangedVersions
+        let isStructurallyStable = hasIncrementalChanges && insertedCount == 0 && removedCount == 0 && !hasMoves
         if hasIncrementalChanges, let changedIndexes, !changedIndexes.isEmpty {
             let inspectVersions = PhotoKitInventoryChangePolicy.shouldInspectVersions(
                 isIncremental: hasIncrementalChanges, insertedCount: insertedCount,
@@ -461,16 +465,24 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             )
             PhotoLibraryEnumeration.forEach(
                 indices: changedIndexes, objectAt: { updatedResult.object(at: $0) }
-            ) { asset, _ in
-                changedIdentifiers.insert(asset.localIdentifier)
+            ) { asset, index in
+                // Without structural changes, before- and after-state positions match.
+                let contentChanged = !isStructurallyStable ||
+                    changeInstance.changeDetails(for: currentResult.object(at: index))?.assetContentChanged != false
+                guard contentChanged else { return }
+                contentChangedIdentifiers.insert(asset.localIdentifier)
                 if inspectVersions {
                     changedVersions[asset.localIdentifier] = PhotoAssetAdjustmentVersion.make(for: asset)
                 }
             }
         }
-        let identifiersToInvalidate = changedIdentifiers
+        let identifiersToInvalidate = contentChangedIdentifiers
         let requiresInventoryReconciliation: Bool
-        if !changedVersions.isEmpty,
+        if isStructurallyStable && contentChangedIdentifiers.isEmpty {
+            // Adjustment versions change only with content, and hidden assets
+            // leave this fetch structurally, so nothing persisted can be stale.
+            requiresInventoryReconciliation = false
+        } else if !changedVersions.isEmpty,
            let storedVersions = Self.storedAdjustmentVersions(for: Array(changedVersions.keys)) {
             requiresInventoryReconciliation = PhotoKitInventoryChangePolicy.requiresReconciliation(
                 isIncremental: hasIncrementalChanges, insertedCount: insertedCount,
@@ -482,7 +494,8 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
         if !requiresInventoryReconciliation {
             logDebug(
-                "PhotoKit metadata-only update skipped inventory reconciliation: changed=\(changedVersions.count)",
+                "PhotoKit metadata-only update skipped inventory reconciliation: " +
+                "changed=\(changedIndexes?.count ?? 0), contentChanged=\(contentChangedIdentifiers.count)",
                 category: .hash
             )
         }
