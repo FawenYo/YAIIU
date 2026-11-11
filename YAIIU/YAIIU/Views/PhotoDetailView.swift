@@ -751,6 +751,8 @@ struct PhotoDetailView: View {
     @State private var imageRequestID: PHImageRequestID?
     /// The zoom-quality image is requested only once the user zooms in.
     @State private var didRequestZoomResolution = false
+    /// Asset content generation whose panel-only details (place name, EXIF) were requested.
+    @State private var panelDetailsGeneration: Int?
     @State private var imageLoadGeneration = 0
     @State private var assetContentGeneration = 0
     @State private var imageLoadFailed: Bool = false
@@ -918,6 +920,11 @@ struct PhotoDetailView: View {
         }
         .onDisappear {
             cleanupCurrentAsset()
+        }
+        .onChange(of: isInfoPanelVisible) { _, visible in
+            if visible, let asset = currentAsset {
+                loadPanelDetails(for: asset)
+            }
         }
         .onChange(of: currentIndex) { _, _ in
             // An index correction after a PhotoKit refresh is not navigation to
@@ -1712,7 +1719,16 @@ struct PhotoDetailView: View {
                 self.fileSize = fileSizeValue
             }
         }
-        
+    }
+
+    /// Reverse geocoding and EXIF need a network call and a content-editing input
+    /// (which downloads iCloud originals and holds a display-size image); load
+    /// them only when the info panel is opened, not for every swiped photo.
+    private func loadPanelDetails(for asset: PHAsset) {
+        let contentGeneration = assetContentGeneration
+        guard panelDetailsGeneration != contentGeneration else { return }
+        panelDetailsGeneration = contentGeneration
+
         if let loc = location {
             Task.detached(priority: .utility) {
                 let geocoder = CLGeocoder()
