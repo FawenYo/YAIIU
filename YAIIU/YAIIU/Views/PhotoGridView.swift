@@ -517,6 +517,11 @@ struct PhotoGridView: View {
     @State private var cachedNotUploadedGeneration: Int?
     /// nil means the full, matching-generation count is not yet trustworthy.
     @State private var cachedNotUploadedCount: Int?
+    /// Index generation the last count recompute started from. iCloud thumbnail
+    /// downloads during scrolling publish a PhotoKit change every few hundred ms
+    /// without moving positions; recounting the library for each one burned
+    /// seconds of CPU after every scroll.
+    @State private var countedIndexGeneration: Int?
     @State private var waitingForPostUploadRefresh = false
     @State private var countRefreshTask: Task<Void, Never>?
     @State private var recomputeTask: Task<Void, Never>?
@@ -853,7 +858,9 @@ struct PhotoGridView: View {
             }
         }
         .onReceive(photoLibraryManager.$assetFetchGeneration.receive(on: RunLoop.main)) { _ in
-            cachedNotUploadedCount = nil
+            if photoLibraryManager.assetIndexGeneration != countedIndexGeneration {
+                cachedNotUploadedCount = nil
+            }
             // A filtered index is a position within one particular PHFetchResult.
             // Invalidate it immediately when that fetch is replaced, before a
             // delayed identifier enumeration can publish its replacement.
@@ -917,7 +924,8 @@ struct PhotoGridView: View {
             startBackgroundProcessing()
         }
         .onReceive(photoLibraryManager.$libraryRevision.receive(on: RunLoop.main)) { _ in
-            cachedNotUploadedCount = nil
+            let positionsChanged = photoLibraryManager.assetIndexGeneration != countedIndexGeneration
+            if positionsChanged { cachedNotUploadedCount = nil }
             // Coalesce PhotoKit notifications (including album membership edits).
             libraryRefreshTask?.cancel()
             libraryRefreshTask = Task { @MainActor in
@@ -937,7 +945,7 @@ struct PhotoGridView: View {
                         photoLibraryManager.requestIdentifierSnapshot()
                     }
                 }
-                recomputeCounts()
+                if positionsChanged { recomputeCounts() }
                 if currentFilter == .favorites || currentFilter == .album {
                     refreshPhotoKitFilter()
                 }
@@ -1651,6 +1659,7 @@ struct PhotoGridView: View {
             manager.requestIdentifierSnapshot()
             return
         }
+        countedIndexGeneration = manager.assetIndexGeneration
 
         // An indexed gallery is a presentation cache, never an authoritative
         // badge count. Rebind reusable positions, but always refresh the badge
@@ -1693,8 +1702,10 @@ struct PhotoGridView: View {
             if !requiresIndices || snapshotGeneration != generation {
                 guard let count = sqlCount else { return }
                 await MainActor.run {
+                    // The badge counts library-wide rows, so a content-only fetch
+                    // replacement (same positions) must not discard it.
                     guard !Task.isCancelled, version == self.countComputeVersion,
-                          manager.assetFetchGeneration == generation,
+                          manager.assetIndexGeneration == indexGeneration,
                           self.syncStatusGeneration == statusGeneration,
                           self.canPresentNotUploadedCount else { return }
                     // This count cannot be used as a PhotoKit display index.

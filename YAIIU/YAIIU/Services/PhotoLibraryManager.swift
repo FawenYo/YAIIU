@@ -747,10 +747,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         // immediately via lazy `asset(at:)` access. Enumerating every identifier for a
         // large library takes several seconds and must not block the first paint.
         let result = await Task.detached(priority: .userInitiated) {
-            let fetchOptions = PHFetchOptions()
-            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-            fetchOptions.includeHiddenAssets = false
-            return PHAsset.fetchAssets(with: fetchOptions)
+            PHAsset.fetchAssets(with: Self.libraryFetchOptions())
         }.value
 
         indexGeneration.recordReload()
@@ -803,18 +800,52 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         }
     }
 
+    /// The grid's library fetch. Identifier scans use the same options so their
+    /// positions match the displayed fetch result.
+    nonisolated private static func libraryFetchOptions() -> PHFetchOptions {
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        fetchOptions.includeHiddenAssets = false
+        return fetchOptions
+    }
+
     @MainActor
     private func startIdentifierScan(for result: PHFetchResult<PHAsset>) -> Task<[String]?, Never> {
         identifierScanTask?.cancel()
+        let expectedCount = result.count
         let task = Task.detached(priority: .utility) { () -> [String]? in
+            // A PHFetchResult caches every batch it has served (~150 MB for a 100k
+            // library). Read fixed windows, each from a fresh fetch released right
+            // after, so at most one window's batches are alive at once.
+            let chunkSize = 10_000
             var identifiers: [String] = []
-            identifiers.reserveCapacity(result.count)
-            let completed = PhotoLibraryEnumeration.forEach(
-                in: result, shouldStop: { Task.isCancelled }
-            ) { asset, _ in
-                identifiers.append(asset.localIdentifier)
+            identifiers.reserveCapacity(expectedCount)
+            var start = 0
+            while start < expectedCount {
+                if Task.isCancelled { return nil }
+                let end = min(start + chunkSize, expectedCount)
+                let completed: Bool = autoreleasepool {
+                    let options = Self.libraryFetchOptions()
+                    options.wantsIncrementalChangeDetails = false
+                    let scanResult = PHAsset.fetchAssets(with: options)
+                    // A change not yet delivered to the grid would misalign positions:
+                    // require the same count and the same assets at the window edges.
+                    guard scanResult.count == expectedCount,
+                          scanResult.object(at: start).localIdentifier == result.object(at: start).localIdentifier,
+                          scanResult.object(at: end - 1).localIdentifier == result.object(at: end - 1).localIdentifier
+                    else { return false }
+                    return PhotoLibraryEnumeration.forEach(
+                        indices: start..<end,
+                        objectAt: { scanResult.object(at: $0) },
+                        shouldStop: { Task.isCancelled }
+                    ) { asset, _ in
+                        identifiers.append(asset.localIdentifier)
+                    }
+                }
+                guard completed else { return nil }
+                start += chunkSize
             }
-            return completed ? identifiers : nil
+            return identifiers
         }
         identifierScanTask = task
         return task
