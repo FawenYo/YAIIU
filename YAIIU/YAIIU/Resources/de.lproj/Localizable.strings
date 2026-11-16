@@ -274,7 +274,8 @@
 
 // MARK: - Photo Detail View
 "photoDetail.fileNameUnknown" = "Unbekannt";
-"photoDetail.openInMaps" = "Öffnen";
+"photoDetail.screenshot" = "Bildschirmfoto";
+"photoDetail.noLensInfo" = "Keine Objektivinformationen";
 "photoDetail.previewRequiresAssets" = "Vorschau erfordert ein echtes PHAsset-Array";
 
 // MARK: - iCloud ID Sync
