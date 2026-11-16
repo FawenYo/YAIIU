@@ -99,6 +99,8 @@
 "settings.refreshLogs" = "새로고침";
 "settings.scrollToBottom" = "맨 아래로 스크롤";
 "settings.noLogsAvailable" = "로그가 없습니다";
+"settings.logCategory" = "카테고리";
+"settings.logLevel" = "로그 레벨";
 "settings.language" = "언어";
 "settings.languageSection" = "언어 설정";
 "settings.currentLanguage" = "현재 언어";

@@ -25,7 +25,7 @@ class ImmichSQLiteImporter {
     }
     
     private init() {
-        logInfo("ImmichSQLiteImporter initialized", category: .importer)
+        logDebug("ImmichSQLiteImporter initialized", category: .importer)
     }
     
     func importFromFile(fileURL: URL) -> ImportResult {

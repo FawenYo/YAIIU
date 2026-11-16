@@ -117,6 +117,7 @@ struct SettingsView: View {
     @State private var hashCacheStats: (total: Int, checked: Int, onServer: Int) = (0, 0, 0)
     @State private var logFileSize: String = "0 KB"
     @State private var logCount: Int = 0
+    @State private var logLevel = SharedSettings.shared.logLevel
     @State private var exportedLogURL: URL?
     @State private var exportedDatabaseURL: URL?
     @State private var backgroundUploadEnabled = false
@@ -372,6 +373,15 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text(L10n.Settings.logs)) {
+                    Picker(L10n.Settings.logLevel, selection: $logLevel) {
+                        ForEach(LogLevel.allCases, id: \.self) { level in
+                            Text(level.rawValue).tag(level)
+                        }
+                    }
+                    .onChange(of: logLevel) { _, level in
+                        SharedSettings.shared.logLevel = level
+                    }
+                    
                     HStack {
                         Text(L10n.Settings.logCount)
                         Spacer()

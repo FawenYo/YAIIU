@@ -56,7 +56,7 @@ enum ImageTimezoneMetadata {
                 try? FileManager.default.removeItem(at: outputURL)
                 return fileURL
             }
-            logInfo("Added capture timezone \(offset) to \(filename)", category: .upload)
+            logDebug("Added capture timezone \(offset) to \(filename)", category: .upload)
             return outputURL
         }
 
@@ -122,7 +122,7 @@ enum ImageTimezoneMetadata {
             try? FileManager.default.removeItem(at: outputURL)
             return fileURL
         }
-        logInfo("Added capture timezone \(offset) to \(filename)", category: .upload)
+        logDebug("Added capture timezone \(offset) to \(filename)", category: .upload)
         return outputURL
     }
 

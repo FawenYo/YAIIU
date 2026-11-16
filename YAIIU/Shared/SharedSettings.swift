@@ -22,6 +22,7 @@ class SharedSettings {
     private let lastAppVersionKey = "yaiiu_last_app_version"
     private let cloudIdSyncCompletedKey = "yaiiu_cloud_id_sync_completed"
     private let lastBackgroundUploadAtKey = "yaiiu_last_background_upload_at"
+    private let logLevelKey = "yaiiu_log_level"
     
     // MARK: - Keychain
     private let keychainService = "com.fawenyo.yaiiu.shared"
@@ -117,6 +118,16 @@ class SharedSettings {
         }
         set {
             userDefaults?.set(newValue?.timeIntervalSince1970, forKey: lastBackgroundUploadAtKey)
+        }
+    }
+
+    /// Minimum level recorded by both the app and the background upload extension.
+    var logLevel: LogLevel {
+        get {
+            userDefaults?.string(forKey: logLevelKey).flatMap(LogLevel.init(rawValue:)) ?? .info
+        }
+        set {
+            userDefaults?.set(newValue.rawValue, forKey: logLevelKey)
         }
     }
 

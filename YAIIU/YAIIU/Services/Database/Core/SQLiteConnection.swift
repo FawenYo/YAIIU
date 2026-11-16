@@ -26,7 +26,7 @@ final class SQLiteConnection {
             self.initLock.lock()
             self.isInitialized = true
             self.initLock.unlock()
-            logInfo("SQLiteConnection initialized", category: .database)
+            logDebug("SQLiteConnection initialized", category: .database)
         }
     }
 
@@ -367,9 +367,9 @@ final class SQLiteConnection {
         
         if !hasICloudIdColumn {
             executeStatement("ALTER TABLE server_assets_cache ADD COLUMN icloud_id TEXT;")
-            logInfo("Added icloud_id column to server_assets_cache", category: .database)
+            logDebug("Added icloud_id column to server_assets_cache", category: .database)
         } else {
-            logInfo("icloud_id column already exists, skipping", category: .database)
+            logDebug("icloud_id column already exists, skipping", category: .database)
         }
     }
 
@@ -395,9 +395,9 @@ final class SQLiteConnection {
 
         if !hasColumn {
             executeStatement("ALTER TABLE hash_cache ADD COLUMN asset_modification_date REAL;")
-            logInfo("Added asset_modification_date column to hash_cache", category: .database)
+            logDebug("Added asset_modification_date column to hash_cache", category: .database)
         } else {
-            logInfo("asset_modification_date column already exists, skipping", category: .database)
+            logDebug("asset_modification_date column already exists, skipping", category: .database)
         }
     }
 
@@ -423,7 +423,7 @@ final class SQLiteConnection {
 
         if !hasLastAck {
             executeStatement("ALTER TABLE sync_metadata ADD COLUMN last_ack TEXT;")
-            logInfo("Added last_ack column to sync_metadata", category: .database)
+            logDebug("Added last_ack column to sync_metadata", category: .database)
         }
 
         let assetCheckSql = "PRAGMA table_info(server_assets_cache);"
@@ -444,7 +444,7 @@ final class SQLiteConnection {
         if !hasOwnerId {
             executeStatement("ALTER TABLE server_assets_cache ADD COLUMN owner_id TEXT;")
             executeStatement("CREATE INDEX IF NOT EXISTS idx_server_cache_owner_id ON server_assets_cache(owner_id);")
-            logInfo("Added owner_id column to server_assets_cache", category: .database)
+            logDebug("Added owner_id column to server_assets_cache", category: .database)
         }
     }
 
@@ -531,7 +531,7 @@ final class SQLiteConnection {
     private func migrateToV10() {
         logInfo("Migrating database to version 10: adding asset_adjustment_version column", category: .database)
         guard !tableColumns("hash_cache").contains("asset_adjustment_version") else {
-            logInfo("asset_adjustment_version column already exists, skipping", category: .database)
+            logDebug("asset_adjustment_version column already exists, skipping", category: .database)
             return
         }
         executeStatement("ALTER TABLE hash_cache ADD COLUMN asset_adjustment_version TEXT;")
@@ -543,7 +543,7 @@ final class SQLiteConnection {
     private func migrateToV11() {
         logInfo("Migrating database to version 11: adding uploaded asset adjustment version", category: .database)
         guard !tableColumns("uploaded_assets").contains("asset_adjustment_version") else {
-            logInfo("uploaded asset adjustment version column already exists, skipping", category: .database)
+            logDebug("uploaded asset adjustment version column already exists, skipping", category: .database)
             return
         }
         executeStatement("ALTER TABLE uploaded_assets ADD COLUMN asset_adjustment_version TEXT;")

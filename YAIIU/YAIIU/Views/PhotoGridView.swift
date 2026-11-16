@@ -1104,18 +1104,18 @@ struct PhotoGridView: View {
         // A newer live PhotoKit event can arrive while the journal is replaying.
         // Acknowledge only the revision this pass was initiated to cover.
         let inventoryRevision = manager.inventoryChangeRevision
-        logInfo("Foreground PhotoKit work preparation started", category: .hash)
+        logDebug("Foreground PhotoKit work preparation started", category: .hash)
         Task.detached(priority: .utility) {
             // PhotoKit hash invalidation must not race with a server checksum
             // check that is about to write its verification result.
-            logInfo("Foreground PhotoKit work waiting for verification gate", category: .hash)
+            logDebug("Foreground PhotoKit work waiting for verification gate", category: .hash)
             await ServerAssetVerificationGate.shared.acquire()
-            logInfo("Foreground PhotoKit verification gate acquired", category: .hash)
+            logDebug("Foreground PhotoKit verification gate acquired", category: .hash)
             let work = manager.prepareForegroundPhotoWork()
             await ServerAssetVerificationGate.shared.release()
-            logInfo("Foreground PhotoKit verification gate released", category: .hash)
+            logDebug("Foreground PhotoKit verification gate released", category: .hash)
             await MainActor.run {
-                logInfo("Foreground PhotoKit preparation completed", category: .hash)
+                logDebug("Foreground PhotoKit preparation completed", category: .hash)
                 foregroundWorkPreparing = false
                 if hashManager.hasActivePipeline {
                     // Another legitimate hash run won admission while PhotoKit
@@ -1484,7 +1484,7 @@ struct PhotoGridView: View {
             }
             let isCurrent = filteredIndicesGeneration == photoLibraryManager.assetFetchGeneration
             isFilterLoading = !isCurrent && photoLibraryManager.assetCount > 0
-            logInfo(
+            logDebug(
                 "Not-uploaded filter opened: visible=\(displayCount), current=\(isCurrent), " +
                 "assets=\(photoLibraryManager.assetCount), generation=\(photoLibraryManager.assetFetchGeneration)",
                 category: .app
@@ -1582,7 +1582,7 @@ struct PhotoGridView: View {
         guard !updates.isEmpty else { return }
         hashManager.pendingICloudIdUpdates = []
 
-        logInfo("Syncing \(updates.count) pending iCloud ID updates to server", category: .api)
+        logDebug("Syncing \(updates.count) pending iCloud ID updates to server", category: .api)
 
         Task {
             let batchSize = 500

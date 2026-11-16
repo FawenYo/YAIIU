@@ -99,6 +99,8 @@
 "settings.refreshLogs" = "Actualizar";
 "settings.scrollToBottom" = "Ir al final";
 "settings.noLogsAvailable" = "No hay registros disponibles";
+"settings.logCategory" = "Categoría";
+"settings.logLevel" = "Nivel de registro";
 "settings.language" = "Idioma";
 "settings.languageSection" = "Ajustes de idioma";
 "settings.currentLanguage" = "Idioma actual";

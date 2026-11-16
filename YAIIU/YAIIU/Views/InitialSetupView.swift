@@ -233,7 +233,7 @@ struct InitialSetupView: View {
     }
     
     private func skipInitialSync() {
-        logWarning("User skipped initial sync", category: .app)
+        logInfo("User skipped initial sync", category: .app)
         settingsManager.completeInitialSetup()
     }
 }

@@ -43,7 +43,7 @@ class BackgroundUploadManager: ObservableObject {
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
             }
-            logError("Photo library not authorized: \(status)", category: .upload)
+            logWarning("Photo library not authorized: \(status)", category: .upload)
             throw error
         }
         
@@ -53,7 +53,7 @@ class BackgroundUploadManager: ObservableObject {
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
             }
-            logError("Not logged in", category: .upload)
+            logWarning("Not logged in", category: .upload)
             throw error
         }
 
@@ -230,7 +230,7 @@ class BackgroundUploadManager: ObservableObject {
                 await MainActor.run {
                     self.errorMessage = error.localizedDescription
                 }
-                logError("Background upload blocked: /health does not match immich-proxy", category: .upload)
+                logWarning("Background upload blocked: /health does not match immich-proxy", category: .upload)
                 throw error
             }
 
@@ -242,7 +242,7 @@ class BackgroundUploadManager: ObservableObject {
                 await MainActor.run {
                     self.errorMessage = error.localizedDescription
                 }
-                logError("Background upload blocked: health response format does not match immich-proxy", category: .upload)
+                logWarning("Background upload blocked: health response format does not match immich-proxy", category: .upload)
                 throw error
             }
         } catch let error as BackgroundUploadError {

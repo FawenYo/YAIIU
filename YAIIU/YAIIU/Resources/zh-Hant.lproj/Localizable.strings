@@ -100,6 +100,8 @@
 "settings.refreshLogs" = "重新整理";
 "settings.scrollToBottom" = "滾動到底部";
 "settings.noLogsAvailable" = "沒有可用的日誌";
+"settings.logCategory" = "分類";
+"settings.logLevel" = "日誌等級";
 "settings.language" = "語言";
 "settings.languageSection" = "語言設定";
 "settings.currentLanguage" = "目前語言";

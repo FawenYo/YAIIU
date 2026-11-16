@@ -99,6 +99,8 @@
 "settings.refreshLogs" = "更新";
 "settings.scrollToBottom" = "最下部へスクロール";
 "settings.noLogsAvailable" = "ログがありません";
+"settings.logCategory" = "カテゴリ";
+"settings.logLevel" = "ログレベル";
 "settings.language" = "言語";
 "settings.languageSection" = "言語設定";
 "settings.currentLanguage" = "現在の言語";

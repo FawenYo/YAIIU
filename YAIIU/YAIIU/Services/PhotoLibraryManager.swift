@@ -1047,7 +1047,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 PhotoKitBaselineProgress(completed: completed, total: totalRows, stage: .hashVersions)
             )
         }
-        logInfo(
+        logDebug(
             "PhotoKit hash-version baseline: needingMetadata=\(totalRows), foundAsset=\(matched), filled=\(filled), invalidated=\(invalidated), unresolved=\(totalRows - filled - invalidated)",
             category: .hash
         )
@@ -1277,7 +1277,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     let totalElapsed = Date().timeIntervalSince(startedAt)
                     totalSQLiteElapsed += max(0, totalElapsed - photoKitElapsed)
                     if totalElapsed >= 1 || identifiers.count >= 300 {
-                        logInfo(
+                        logDebug(
                             "Foreground PhotoKit window: events=\(window.changeCount), " +
                             "changedIDs=\(identifiers.count), fetched=\(snapshots.count), " +
                             "photoKit=\(String(format: "%.3f", photoKitElapsed))s " +
@@ -1300,10 +1300,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                         return nil
                     case .cursorMoved:
                         guard cursorMoveRestarts < Self.maxCursorMoveRestarts else {
-                            logInfo("Foreground PhotoKit cursor keeps moving; leaving the journal tail to the extension, which applies foreground effects in lockstep", category: .hash)
+                            logDebug("Foreground PhotoKit cursor keeps moving; leaving the journal tail to the extension, which applies foreground effects in lockstep", category: .hash)
                             return .incremental(visibleForegroundPendingIdentifiers())
                         }
-                        logInfo("Foreground PhotoKit cursor advanced by extension; restarting replay", category: .hash)
+                        logDebug("Foreground PhotoKit cursor advanced by extension; restarting replay", category: .hash)
                         return prepareForegroundPhotoWorkLocked(
                             allowRealign: false, cursorMoveRestarts: cursorMoveRestarts + 1
                         )
@@ -1386,7 +1386,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 // Version backfill runs on the serialized queue after this replay.
                 let pendingStartedAt = Date()
                 let pendingIdentifiers = visibleForegroundPendingIdentifiers()
-                logInfo(
+                logDebug(
                     "Foreground PhotoKit post-replay: baseline=deferred, " +
                     "pendingReconciliation=\(String(format: "%.1f", Date().timeIntervalSince(pendingStartedAt)))s, " +
                     "queued=\(pendingIdentifiers.count)",
@@ -1489,7 +1489,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 visible.contains($0) && retained.contains($0)
             })
         }
-        logInfo(
+        logDebug(
             "Foreground pending reconciliation: knownVisible=\(knownVisible.count), " +
             "knownHidden=\(knownHidden.count), verifiedWithPhotoKit=\(needsPhotoKit.count), " +
             "fetchedVisible=\(fetchedVisible), temporarilyMissing=\(missingFromPhotoKit), " +
@@ -1535,7 +1535,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
 
         // The caller must first replay the old token (including events that
         // arrived during this enumeration) before committing readiness.
-        logInfo("Local PhotoKit inventory baseline staged: assets=\(assets.count)", category: .hash)
+        logDebug("Local PhotoKit inventory baseline staged: assets=\(assets.count)", category: .hash)
         return true
     }
 
@@ -1564,10 +1564,10 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
         let elapsed = String(format: "%.3f", Date().timeIntervalSince(startedAt))
         switch result {
         case .committed:
-            logInfo("Foreground PhotoKit cursor realigned with extension: assets=\(snapshots.count), elapsed=\(elapsed)s", category: .hash)
+            logDebug("Foreground PhotoKit cursor realigned with extension: assets=\(snapshots.count), elapsed=\(elapsed)s", category: .hash)
             return prepareForegroundPhotoWorkLocked(allowRealign: false)
         case .cursorMoved:
-            logInfo("Foreground PhotoKit realign skipped: extension cursor moved during snapshot", category: .hash)
+            logDebug("Foreground PhotoKit realign skipped: extension cursor moved during snapshot", category: .hash)
             return nil
         case .failed:
             logWarning("Foreground PhotoKit realign failed; replaying own cursor", category: .hash)

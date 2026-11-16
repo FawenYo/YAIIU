@@ -100,6 +100,8 @@
 "settings.refreshLogs" = "Refresh";
 "settings.scrollToBottom" = "Scroll to Bottom";
 "settings.noLogsAvailable" = "No logs available";
+"settings.logCategory" = "Category";
+"settings.logLevel" = "Log Level";
 "settings.language" = "Language";
 "settings.languageSection" = "Language Settings";
 "settings.currentLanguage" = "Current Language";

@@ -641,7 +641,7 @@ class HashManager: ObservableObject {
         // identifiers-only path cannot compare modificationDate; no invalidation here
         DatabaseManager.shared.getAssetsNeedingHashAsync(allIdentifiers: identifiers) { [weak self] needingHash in
             guard let self = self else { return }
-            logInfo("Hash cache lookup complete: total=\(identifiers.count), needingHash=\(needingHash.count)", category: .hash)
+            logDebug("Hash cache lookup complete: total=\(identifiers.count), needingHash=\(needingHash.count)", category: .hash)
 
             Task { @MainActor in
                 guard self.isCurrentRun(runID), !self.shouldStop else {
@@ -680,7 +680,7 @@ class HashManager: ObservableObject {
     /// do not cache it or mark the current version uploaded without hashing.
     private func tryICloudIdMatching(identifiers: [String], runID: UUID, completion: @escaping ([String]) -> Void) {
         guard isCurrentRun(runID), !shouldStop else { return }
-        logInfo(
+        logDebug(
             "iCloud ID checksum shortcut skipped: verifying local resources for \(identifiers.count) asset(s)",
             category: .hash
         )

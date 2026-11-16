@@ -16,10 +16,10 @@ extension LogLevel {
 
 // MARK: - Log Entry
 
-struct LogEntry: Identifiable, Codable {
+struct LogEntry: Identifiable {
     let id: UUID
     let timestamp: Date
-    let level: String
+    let level: LogLevel
     let category: String
     let message: String
     let file: String
@@ -31,12 +31,9 @@ struct LogEntry: Identifiable, Codable {
     }
     
     var formattedEntry: String {
-        guard let logLevel = LogLevel(rawValue: level) else {
-            return "\(formattedTimestamp) [?] [\(category)] \(message)"
-        }
-        return LogFormatter.formatLogEntry(
+        LogFormatter.formatLogEntry(
             timestamp: timestamp,
-            level: logLevel,
+            level: level,
             category: category,
             message: message
         )
@@ -50,7 +47,7 @@ struct LogEntry: Identifiable, Codable {
     init(from parsed: ParsedLogEntry) {
         self.id = UUID()
         self.timestamp = parsed.timestamp
-        self.level = parsed.level.rawValue
+        self.level = parsed.level
         self.category = parsed.category
         self.message = parsed.message
         self.file = ""
@@ -58,7 +55,7 @@ struct LogEntry: Identifiable, Codable {
         self.line = 0
     }
     
-    init(id: UUID, timestamp: Date, level: String, category: String, message: String, file: String, function: String, line: Int) {
+    init(id: UUID, timestamp: Date, level: LogLevel, category: String, message: String, file: String, function: String, line: Int) {
         self.id = id
         self.timestamp = timestamp
         self.level = level
@@ -91,8 +88,6 @@ class LogService {
     private static let legacyLogRegex = try! NSRegularExpression(pattern: #"^\[([^\]]+)\] (.+)$"#)
     private static let legacyTimestampFormatter = ISO8601DateFormatter()
     
-    var minimumLogLevel: LogLevel = .debug
-    
     private init() {
         // First item on logQueue, so later appends land after the loaded history.
         logQueue.async { [weak self] in
@@ -119,14 +114,13 @@ class LogService {
     }
     
     private func log(_ message: String, level: LogLevel, category: LogCategory, file: String, function: String, line: Int) {
-        guard level >= minimumLogLevel else { return }
-        
+        guard level >= SharedSettings.shared.logLevel else { return }
         let fileName = (file as NSString).lastPathComponent
         
         let entry = LogEntry(
             id: UUID(),
             timestamp: Date(),
-            level: level.rawValue,
+            level: level,
             category: category.rawValue,
             message: message,
             file: fileName,
@@ -179,56 +173,10 @@ class LogService {
     
     // MARK: - Export Functions
     
-    func getLogEntries(level: LogLevel? = nil, category: LogCategory? = nil, limit: Int? = nil) -> [LogEntry] {
-        var result = logEntries
-        
-        if let level = level {
-            result = result.filter { LogLevel(rawValue: $0.level)! >= level }
-        }
-        
-        if let category = category {
-            result = result.filter { $0.category == category.rawValue }
-        }
-        
-        if let limit = limit {
-            result = Array(result.suffix(limit))
-        }
-        
-        return result
-    }
-    
-    func exportLogsAsString(includeDebug: Bool = false) -> String {
-        logQueue.sync {
-            let entries = includeDebug ? logEntries : logEntries.filter { $0.level != "DEBUG" }
-            return entries.map { $0.formattedEntry }.joined(separator: "\n")
-        }
-    }
-    
-    func exportLogsAsData(includeDebug: Bool = false) -> Data? {
-        return exportLogsAsString(includeDebug: includeDebug).data(using: .utf8)
-    }
-    
     func getLogFileURL() -> URL? {
         let fileURL = logFileURL
         guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
         return fileURL
-    }
-    
-    func exportLogsToFile() -> URL? {
-        let exportDirectory = FileManager.default.temporaryDirectory
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
-        let fileName = "yaiiu_log_\(dateFormatter.string(from: Date())).txt"
-        let exportURL = exportDirectory.appendingPathComponent(fileName)
-        
-        do {
-            let content = exportLogsAsString(includeDebug: true)
-            try content.write(to: exportURL, atomically: true, encoding: .utf8)
-            return exportURL
-        } catch {
-            self.error("Failed to export logs: \(error.localizedDescription)", category: .app)
-            return nil
-        }
     }
     
     func clearLogs() {
@@ -292,7 +240,7 @@ class LogService {
         for line in lines.reversed() {
             if let limit = limit, entries.count >= limit { break }
             guard let entry = parseBackgroundLogLine(String(line)) else { continue }
-            if let level = level, let entryLevel = LogLevel(rawValue: entry.level), entryLevel < level { continue }
+            if let level = level, entry.level < level { continue }
             entries.append(entry)
         }
         
@@ -330,7 +278,7 @@ class LogService {
         return LogEntry(
             id: UUID(),
             timestamp: timestamp,
-            level: LogLevel.info.rawValue,
+            level: .info,
             category: LogCategory.backgroundUpload.rawValue,
             message: message,
             file: "",
@@ -356,10 +304,7 @@ class LogService {
         
         // Filter by level if specified
         if let level = level {
-            allEntries = allEntries.filter { entry in
-                guard let entryLevel = LogLevel(rawValue: entry.level) else { return false }
-                return entryLevel >= level
-            }
+            allEntries = allEntries.filter { $0.level >= level }
         }
         
         // Apply limit

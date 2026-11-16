@@ -45,7 +45,7 @@ final class BackgroundUploadExtensionCore {
             self.pathLock.unlock()
         }
         networkMonitor.start(queue: networkQueue)
-        log("Initialized")
+        logDebug("Initialized")
     }
 
     deinit {
@@ -142,7 +142,7 @@ final class BackgroundUploadExtensionCore {
             let elapsed = Date().timeIntervalSince(started)
             let outcome = succeeded ? "succeeded" : "failed"
             let line = "Stage \(name) \(outcome) in \(String(format: "%.1f", elapsed))s"
-            if elapsed > 1 || !succeeded { log(line) } else { logDebug(line) }
+            if !succeeded { logWarning(line) } else if elapsed > 1 { log(line) } else { logDebug(line) }
         }
         logDebug("Stage \(name) starting")
         let result = try body()
@@ -322,7 +322,7 @@ final class BackgroundUploadExtensionCore {
                             resourceType: identity.resourceType
                         )
                         retriedAny = true
-                        logWarning("Cancelled retry job \(job.localIdentifier) because upload destination changed")
+                        log("Cancelled retry job \(job.localIdentifier) because upload destination changed")
                     }
                 } else {
                     // Early PhotoKit background-upload releases cannot cancel retry
@@ -498,7 +498,7 @@ final class BackgroundUploadExtensionCore {
 
         let capacity = uploadJobCapacity()
         guard capacity > 0 else {
-            logWarning("PhotoKit job limit already reached; waiting for acknowledgements before creating new jobs")
+            logDebug("PhotoKit job limit already reached; waiting for acknowledgements before creating new jobs")
             return .remaining
         }
 
@@ -599,7 +599,7 @@ final class BackgroundUploadExtensionCore {
             batch.append(contentsOf: group)
         }
         guard !batch.isEmpty else {
-            logWarning("Remaining pending assets need more capacity than available; deferring whole groups")
+            logDebug("Remaining pending assets need more capacity than available; deferring whole groups")
             return .remaining
         }
         // An incomplete discovery scan (limit or time budget hit) means unscheduled
@@ -871,7 +871,7 @@ final class BackgroundUploadExtensionCore {
                 case .cursorMoved:
                     // The app replayed this range in lockstep and already applied
                     // the background effects. Resume from its cursor next run.
-                    log("Persistent change cursor advanced by the app; stopping this ingestion pass")
+                    logDebug("Persistent change cursor advanced by the app; stopping this ingestion pass")
                     break ingestion
                 case .failed:
                     throw NSError(
@@ -1064,7 +1064,7 @@ final class BackgroundUploadExtensionCore {
             scanned += 1
             if Date().timeIntervalSince(lastProgressLog) >= 2 {
                 lastProgressLog = Date()
-                self.log("Discovery progress: scanned \(scanned), found \(pending.count) pending")
+                self.logDebug("Discovery progress: scanned \(scanned), found \(pending.count) pending")
             }
             let resources = PHAssetResource.assetResources(for: asset)
             for r in resources where self.shouldUpload(r) {
@@ -1538,6 +1538,7 @@ final class BackgroundUploadExtensionCore {
     }()
     
     private func log(_ message: String, level: LogLevel = .info) {
+        guard level >= settings.logLevel else { return }
         let formatted = LogFormatter.formatLogEntry(
             timestamp: Date(),
             level: level,

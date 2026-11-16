@@ -28,7 +28,7 @@ final class FavoriteSyncService {
         isSyncing = true
         defer { isSyncing = false }
         
-        logInfo("Starting favorite status sync", category: .sync)
+        logDebug("Starting favorite status sync", category: .sync)
         
         do {
             let changes = await detectFavoriteChanges()
@@ -38,7 +38,7 @@ final class FavoriteSyncService {
                 return
             }
             
-            logInfo("Detected \(changes.count) favorite status changes", category: .sync)
+            logDebug("Detected \(changes.count) favorite status changes", category: .sync)
             
             // Group changes by new favorite status for batch updates
             let toFavorite = changes.filter { $0.newFavorite }.map { $0.immichId }
