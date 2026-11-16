@@ -41,7 +41,7 @@ final class CloudIdSyncService {
             return 0
         }
         
-        logInfo("Found \(mappings.count) uploaded assets for iCloud ID sync", category: .sync)
+        logDebug("Found \(mappings.count) uploaded assets for iCloud ID sync", category: .sync)
         progressHandler?(0.05, "Found \(mappings.count) assets")
         
         // Collect local identifiers
@@ -64,7 +64,7 @@ final class CloudIdSyncService {
             allCloudIds.merge(cloudIds) { _, new in new }
         }
         
-        logInfo("Retrieved \(allCloudIds.count) valid iCloud IDs", category: .sync)
+        logDebug("Retrieved \(allCloudIds.count) valid iCloud IDs", category: .sync)
         
         guard !allCloudIds.isEmpty else {
             logInfo("No valid iCloud IDs found", category: .sync)
@@ -100,7 +100,7 @@ final class CloudIdSyncService {
             return 0
         }
         
-        logInfo("Sending \(updateItems.count) iCloud ID updates to server", category: .sync)
+        logDebug("Sending \(updateItems.count) iCloud ID updates to server", category: .sync)
         
         // Send updates in batches
         var totalUpdated = 0

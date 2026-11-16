@@ -4,36 +4,58 @@ import SwiftUI
 
 struct LogViewerView: View {
     @StateObject private var viewModel = LogViewerViewModel()
-    @State private var selectedLevel: LogLevel? = nil
+    @State private var minimumLevel: LogLevel = .info
+    @State private var selectedCategory: LogCategory?
     @State private var searchText = ""
+    @State private var scrollToBottomRequests = 0
     
     var body: some View {
+        let logs = filteredLogs
+        
         VStack(spacing: 0) {
-            // Filter bar
-            filterBar
+            levelBar(matchCount: logs.count)
+            Divider()
             
-            // Log content
-            if viewModel.isLoading {
+            if !logs.isEmpty {
+                logList(logs)
+            } else if viewModel.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if filteredLogs.isEmpty {
-                emptyState
             } else {
-                logList
+                emptyState
             }
         }
         .navigationTitle(L10n.Settings.viewLogs)
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(
+            text: $searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: Text(L10n.Settings.searchLogs)
+        )
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Menu {
-                    Button(action: viewModel.refreshLogs) {
+                    Picker(L10n.Settings.logCategory, selection: $selectedCategory) {
+                        Text(L10n.Settings.filterAll).tag(LogCategory?.none)
+                        ForEach(LogCategory.allCases, id: \.self) { category in
+                            Text(category.rawValue).tag(LogCategory?.some(category))
+                        }
+                    }
+                } label: {
+                    Label(
+                        L10n.Settings.logCategory,
+                        systemImage: selectedCategory == nil
+                            ? "line.3.horizontal.decrease.circle"
+                            : "line.3.horizontal.decrease.circle.fill"
+                    )
+                }
+                
+                Menu {
+                    Button(action: { viewModel.refreshLogs(minimumLevel: minimumLevel) }) {
                         Label(L10n.Settings.refreshLogs, systemImage: "arrow.clockwise")
                     }
                     
-                    Button(action: {
-                        viewModel.scrollToBottom = true
-                    }) {
+                    Button(action: { scrollToBottomRequests += 1 }) {
                         Label(L10n.Settings.scrollToBottom, systemImage: "arrow.down.to.line")
                     }
                 } label: {
@@ -41,81 +63,58 @@ struct LogViewerView: View {
                 }
             }
         }
-        .onAppear {
-            viewModel.refreshLogs()
+        .onChange(of: minimumLevel, initial: true) { _, level in
+            viewModel.refreshLogs(minimumLevel: level)
         }
     }
     
-    // MARK: - Filter Bar
+    // MARK: - Level Bar
     
-    private var filterBar: some View {
-        VStack(spacing: 8) {
-            // Search field
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                TextField(L10n.Settings.searchLogs, text: $searchText)
-                    .textFieldStyle(.plain)
-                if !searchText.isEmpty {
-                    Button(action: { searchText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .padding(8)
-            .background(Color(.systemGray6))
-            .cornerRadius(8)
-            .padding(.horizontal)
-            
-            // Level filter
+    private func levelBar(matchCount: Int) -> some View {
+        HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    FilterChip(
-                        title: L10n.Settings.filterAll,
-                        isSelected: selectedLevel == nil
-                    ) {
-                        selectedLevel = nil
-                    }
-                    
                     ForEach(LogLevel.allCases, id: \.self) { level in
+                        // The selection is a threshold, so every level it lets through lights up.
                         FilterChip(
                             title: level.rawValue,
-                            isSelected: selectedLevel == level,
-                            color: colorForLevel(level)
+                            isSelected: level >= minimumLevel,
+                            color: level.color
                         ) {
-                            selectedLevel = level
+                            minimumLevel = level
                         }
                     }
                 }
-                .padding(.horizontal)
+                .padding(.leading)
             }
-            .padding(.vertical, 4)
+            
+            Text([selectedCategory?.rawValue, "\(matchCount)"].compactMap { $0 }.joined(separator: " · "))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .padding(.trailing)
         }
         .padding(.vertical, 8)
-        .background(Color(.systemBackground))
     }
     
     // MARK: - Log List
     
-    private var logList: some View {
+    private func logList(_ logs: [LogEntry]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(filteredLogs) { entry in
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(logs) { entry in
                         LogEntryRow(entry: entry)
-                            .id(entry.id)
+                        Divider()
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
             }
-            .onChange(of: viewModel.scrollToBottom) { _, shouldScroll in
-                if shouldScroll, let lastEntry = filteredLogs.last {
-                    withAnimation {
-                        proxy.scrollTo(lastEntry.id, anchor: .bottom)
-                    }
-                    viewModel.scrollToBottom = false
+            // Entries are chronological; open on the newest.
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: scrollToBottomRequests) {
+                guard let lastEntry = logs.last else { return }
+                withAnimation {
+                    proxy.scrollTo(lastEntry.id, anchor: .bottom)
                 }
             }
         }
@@ -138,31 +137,22 @@ struct LogViewerView: View {
     // MARK: - Filtered Logs
     
     private var filteredLogs: [LogEntry] {
-        var logs = viewModel.logEntries
-        
-        // Filter by level
-        if let level = selectedLevel {
-            logs = logs.filter { entry in
-                guard let entryLevel = LogLevel(rawValue: entry.level) else { return false }
-                return entryLevel >= level
+        viewModel.logEntries.filter { entry in
+            if let selectedCategory, entry.category != selectedCategory.rawValue {
+                return false
             }
+            return searchText.isEmpty
+                || entry.message.localizedCaseInsensitiveContains(searchText)
+                || entry.category.localizedCaseInsensitiveContains(searchText)
         }
-        
-        // Filter by search text
-        if !searchText.isEmpty {
-            logs = logs.filter { entry in
-                entry.message.localizedCaseInsensitiveContains(searchText) ||
-                entry.category.localizedCaseInsensitiveContains(searchText)
-            }
-        }
-        
-        return logs
     }
-    
-    // MARK: - Helpers
-    
-    private func colorForLevel(_ level: LogLevel) -> Color {
-        switch level {
+}
+
+// MARK: - Level Color
+
+private extension LogLevel {
+    var color: Color {
+        switch self {
         case .debug: return .gray
         case .info: return .blue
         case .warning: return .orange
@@ -178,65 +168,56 @@ struct LogEntryRow: View {
     @State private var isExpanded = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            // Header line: timestamp, level, category
-            HStack(spacing: 4) {
-                Text(entry.formattedTimestamp)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(entry.level.rawValue)
                     .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(.secondary)
-                
-                Text(levelSymbol)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundColor(levelColor)
                     .fontWeight(.bold)
+                    .foregroundColor(entry.level.color)
                 
-                Text("[\(entry.category)]")
+                Text(entry.category)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                
+                Spacer(minLength: 4)
+                
+                // Drop the year: "MM-dd HH:mm:ss.SSS".
+                Text(entry.formattedTimestamp.dropFirst(5))
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
             }
             
-            // Message
             Text(entry.message)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundColor(.primary)
+                .foregroundColor(entry.level == .debug ? .secondary : .primary)
                 .lineLimit(isExpanded ? nil : 3)
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        isExpanded.toggle()
-                    }
-                }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
-        .background(levelBackgroundColor)
-        .cornerRadius(4)
-    }
-    
-    private var levelSymbol: String {
-        switch entry.level {
-        case "DEBUG": return "[D]"
-        case "INFO": return "[I]"
-        case "WARNING": return "[W]"
-        case "ERROR": return "[E]"
-        default: return "[?]"
+        .padding(.vertical, 6)
+        .padding(.leading, 14)
+        .padding(.trailing, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowTint)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(entry.level.color)
+                .frame(width: 3)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isExpanded.toggle()
+            }
         }
     }
     
-    private var levelColor: Color {
+    private var rowTint: Color {
         switch entry.level {
-        case "DEBUG": return .gray
-        case "INFO": return .blue
-        case "WARNING": return .orange
-        case "ERROR": return .red
-        default: return .secondary
-        }
-    }
-    
-    private var levelBackgroundColor: Color {
-        switch entry.level {
-        case "ERROR": return Color.red.opacity(0.1)
-        case "WARNING": return Color.orange.opacity(0.1)
-        default: return Color(.systemGray6).opacity(0.5)
+        case .error: return Color.red.opacity(0.08)
+        case .warning: return Color.orange.opacity(0.08)
+        case .debug, .info: return .clear
         }
     }
 }
@@ -260,8 +241,9 @@ struct FilterChip: View {
                 .foregroundColor(isSelected ? color : .secondary)
                 .cornerRadius(16)
                 .overlay(
+                    // Inset stroke: a centered one overflows the chip and the scroll view clips it.
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(isSelected ? color : Color.clear, lineWidth: 1)
+                        .strokeBorder(isSelected ? color : Color.clear, lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
@@ -271,20 +253,26 @@ struct FilterChip: View {
 // MARK: - View Model
 
 class LogViewerViewModel: ObservableObject {
-    @Published var logEntries: [LogEntry] = []
-    @Published var isLoading = false
-    @Published var scrollToBottom = false
+    @Published private(set) var logEntries: [LogEntry] = []
+    @Published private(set) var isLoading = false
     
-    func refreshLogs() {
+    private var loadGeneration = 0
+    
+    /// Loads the newest entries at or above `minimumLevel` (app + background upload).
+    /// Filtering at load keeps lower levels from crowding matches out of the limit.
+    func refreshLogs(minimumLevel: LogLevel) {
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            // Get all merged logs (app + background upload)
-            let entries = LogService.shared.getAllMergedLogEntries(limit: 5000)
+            let entries = LogService.shared.getAllMergedLogEntries(level: minimumLevel, limit: 5000)
             
             DispatchQueue.main.async {
-                self?.logEntries = entries
-                self?.isLoading = false
+                // A newer request supersedes this one.
+                guard let self, generation == self.loadGeneration else { return }
+                self.logEntries = entries
+                self.isLoading = false
             }
         }
     }

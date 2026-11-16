@@ -1980,7 +1980,7 @@ final class HashCacheRepository {
                   self.connection.commitTransaction() else { return .failed }
             committed = true
             if let counters, !snapshots.isEmpty {
-                logInfo(
+                logDebug(
                     "Foreground PhotoKit cache reconciliation: snapshots=\(snapshots.count), cachedUnchanged=\(counters.unchangedCached), noCache=\(counters.missingCache), invalidatedAdjustmentVersion=\(counters.invalidatedAdjustmentVersion), missingAdjustmentVersion=\(counters.missingAdjustmentVersion), adjustmentVersionUnknown=\(counters.unknownAdjustmentVersion), currentDateUnknown=\(counters.missingCurrentDate)",
                     category: .hash
                 )
@@ -1992,7 +1992,7 @@ final class HashCacheRepository {
                 }
             }
             if let backgroundSummary {
-                logInfo(
+                logDebug(
                     "Foreground PhotoKit window advanced background cursor: retained=\(backgroundSummary.retainedVersions), invalidated=\(backgroundSummary.invalidatedVersions)",
                     category: .hash
                 )

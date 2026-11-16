@@ -185,7 +185,7 @@ class UploadManager: ObservableObject {
     }
     
     init() {
-        logInfo("UploadManager initialized", category: .upload)
+        logDebug("UploadManager initialized", category: .upload)
         loadUploadedCountAsync()
     }
     
@@ -234,7 +234,7 @@ class UploadManager: ObservableObject {
                     let cachedCount = entries.reduce(0) { count, entry in
                         count + (cached.contains(entry.asset.localIdentifier) ? 1 : 0)
                     }
-                    logInfo(
+                    logDebug(
                         "Upload hash cache preflight: total=\(entries.count), cached=\(cachedCount), missing=\(entries.count - cachedCount)",
                         category: .hash
                     )
@@ -331,7 +331,7 @@ class UploadManager: ObservableObject {
         let apiKey = settingsManager.apiKey
         
         guard !serverURL.isEmpty && !apiKey.isEmpty else {
-            logError("Cannot process upload queue: server URL or API key is empty", category: .upload)
+            logWarning("Cannot process upload queue: server URL or API key is empty", category: .upload)
             await MainActor.run {
                 isUploading = false
                 setIdleTimerDisabled(false)

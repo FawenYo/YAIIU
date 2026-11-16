@@ -2,12 +2,16 @@ import Foundation
 
 // MARK: - Log Level
 
-/// Represents severity levels for log entries.
-/// Shared between main app and background upload extension.
+/// Severity levels, shared between the main app and the background upload extension.
+/// A level also acts as a threshold: filtering by a level keeps that level and above.
 public enum LogLevel: String, CaseIterable, Comparable, Sendable {
+    /// Diagnostic detail: internal steps, per-item or per-request traces, skip reasons.
     case debug = "DEBUG"
+    /// Milestones of a user-visible operation: started, finished with a summary, state changed.
     case info = "INFO"
+    /// Unexpected or degraded but handled: fallback taken, work skipped or retried later.
     case warning = "WARNING"
+    /// An operation failed and its result was lost.
     case error = "ERROR"
     
     public var symbol: String {
@@ -47,7 +51,7 @@ public enum LogLevel: String, CaseIterable, Comparable, Sendable {
 // MARK: - Log Category
 
 /// Categories for organizing log entries by subsystem.
-public enum LogCategory: String, Sendable {
+public enum LogCategory: String, CaseIterable, Sendable {
     case app = "App"
     case api = "API"
     case upload = "Upload"

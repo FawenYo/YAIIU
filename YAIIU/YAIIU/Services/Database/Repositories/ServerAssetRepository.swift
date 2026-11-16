@@ -15,7 +15,7 @@ final class ServerAssetRepository {
         connection.dbQueue.sync { [weak self] in
             guard let self = self else { return false }
             
-            logInfo("Saving \(assets.count) server assets to cache (sync type: \(syncType))", category: .database)
+            logDebug("Saving \(assets.count) server assets to cache (sync type: \(syncType))", category: .database)
             
             guard self.connection.beginTransaction() else {
                 logError("Failed to begin server asset transaction: \(self.connection.lastErrorMessage)", category: .database)
@@ -113,7 +113,7 @@ final class ServerAssetRepository {
                 self.connection.rollbackTransaction()
                 return false
             }
-            logInfo("Server assets cache updated successfully", category: .database)
+            logDebug("Server assets cache updated successfully", category: .database)
             return true
         }
     }
@@ -246,7 +246,7 @@ final class ServerAssetRepository {
                 self.connection.rollbackTransaction()
                 return false
             }
-            logInfo("Updated iCloud IDs for \(iCloudIdsByImmichId.count) cached assets", category: .database)
+            logDebug("Updated iCloud IDs for \(iCloudIdsByImmichId.count) cached assets", category: .database)
             return true
         }
     }
@@ -313,7 +313,7 @@ final class ServerAssetRepository {
                 self.connection.rollbackTransaction()
                 return false
             }
-            logInfo("Cleared iCloud IDs for \(immichIds.count) cached assets", category: .database)
+            logDebug("Cleared iCloud IDs for \(immichIds.count) cached assets", category: .database)
             return true
         }
     }
@@ -384,7 +384,7 @@ final class ServerAssetRepository {
                 self.connection.rollbackTransaction()
                 return false
             }
-            logInfo("Updated source checksums for \(sourceChecksumsByImmichId.count) cached assets", category: .database)
+            logDebug("Updated source checksums for \(sourceChecksumsByImmichId.count) cached assets", category: .database)
             return true
         }
     }
@@ -441,7 +441,7 @@ final class ServerAssetRepository {
             guard let self = self else { return false }
             guard !immichIds.isEmpty else { return true }
             
-            logInfo("Deleting \(immichIds.count) assets from server cache", category: .database)
+            logDebug("Deleting \(immichIds.count) assets from server cache", category: .database)
             
             guard self.connection.beginTransaction() else {
                 logError("Failed to begin server asset delete transaction: \(self.connection.lastErrorMessage)", category: .database)
@@ -787,7 +787,7 @@ final class ServerAssetRepository {
     func clearServerAssetsCache() -> Bool {
         connection.dbQueue.sync { [weak self] in
             guard let self else { return false }
-            logInfo("Clearing server assets cache", category: .database)
+            logDebug("Clearing server assets cache", category: .database)
             guard self.connection.beginTransaction() else {
                 logError("Failed to begin server cache clear: \(self.connection.lastErrorMessage)", category: .database)
                 return false

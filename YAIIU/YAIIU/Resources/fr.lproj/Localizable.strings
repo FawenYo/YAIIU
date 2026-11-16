@@ -99,6 +99,8 @@
 "settings.refreshLogs" = "Actualiser";
 "settings.scrollToBottom" = "Défiler vers le bas";
 "settings.noLogsAvailable" = "Aucun journal disponible";
+"settings.logCategory" = "Catégorie";
+"settings.logLevel" = "Niveau de journal";
 "settings.language" = "Langue";
 "settings.languageSection" = "Paramètres de langue";
 "settings.currentLanguage" = "Langue actuelle";

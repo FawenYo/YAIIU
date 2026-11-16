@@ -68,7 +68,7 @@ final class ThumbnailCache {
     
     @objc private func handleMemoryWarning() {
         clearCache()
-        logInfo("ThumbnailCache cleared due to memory warning", category: .app)
+        logWarning("ThumbnailCache cleared due to memory warning", category: .app)
     }
     
     @objc private func handleBackgroundTransition() {

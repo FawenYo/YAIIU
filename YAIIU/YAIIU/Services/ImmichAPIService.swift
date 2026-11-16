@@ -69,7 +69,7 @@ class ImmichAPIService: NSObject {
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         
         uploadSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        logInfo("ImmichAPIService initialized with upload session", category: .api)
+        logDebug("ImmichAPIService initialized with upload session", category: .api)
     }
     
     func uploadResourceNonBlocking(
@@ -175,7 +175,7 @@ class ImmichAPIService: NSObject {
 
         let fileSizeMB = Double(assetFileSize) / 1024.0 / 1024.0
         let cloudIdInfo = iCloudId != nil ? ", iCloudId: \(iCloudId!.prefix(20))..." : ""
-        logInfo("Starting streaming upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
+        logDebug("Starting streaming upload: \(filename) (\(String(format: "%.2f", fileSizeMB)) MB)\(cloudIdInfo)", category: .api)
 
         // A fresh CompositeInputStream is built whenever URLSession requests
         // the body, including authentication challenges and request replay.
@@ -366,7 +366,7 @@ class ImmichAPIService: NSObject {
                         return exists
                     }
                 }
-                logDebug("Asset check result: not found (parse failed)", category: .api)
+                logWarning("Asset check result: not found (parse failed)", category: .api)
                 return false
             }
         } catch let error as ImmichAPIError {
@@ -378,7 +378,7 @@ class ImmichAPIService: NSObject {
     }
     
     func login(email: String, password: String, serverURL: String) async throws -> String {
-        logInfo("Logging in with email: \(email)", category: .api)
+        logDebug("Logging in with email: \(email)", category: .api)
 
         guard let url = URL(string: "\(serverURL)/api/auth/login") else {
             logError("Invalid URL for login", category: .api)
@@ -420,7 +420,7 @@ class ImmichAPIService: NSObject {
     }
 
     func getCurrentUser(serverURL: String, apiKey: String) async throws -> UserInfo {
-        logInfo("Fetching current user info", category: .api)
+        logDebug("Fetching current user info", category: .api)
 
         guard let url = URL(string: "\(serverURL)/api/users/me") else {
             logError("Invalid URL for getCurrentUser", category: .api)
@@ -448,7 +448,7 @@ class ImmichAPIService: NSObject {
             }
             
             let userInfo = try JSONDecoder().decode(UserInfo.self, from: data)
-            logInfo("User info fetched: \(userInfo.email)", category: .api)
+            logDebug("User info fetched: \(userInfo.email)", category: .api)
             return userInfo
         } catch let error as ImmichAPIError {
             throw error
@@ -563,7 +563,7 @@ class ImmichAPIService: NSObject {
     }
     
     func batchCheckAssets(checksums: [(String, String)], serverURL: String, apiKey: String) async throws -> [(String, Bool)] {
-        logInfo("Batch checking \(checksums.count) assets", category: .api)
+        logDebug("Batch checking \(checksums.count) assets", category: .api)
         var results: [(String, Bool)] = []
         var existsCount = 0
         
@@ -578,7 +578,7 @@ class ImmichAPIService: NSObject {
             }
         }
         
-        logInfo("Batch check complete: \(existsCount)/\(checksums.count) assets exist on server", category: .api)
+        logDebug("Batch check complete: \(existsCount)/\(checksums.count) assets exist on server", category: .api)
         return results
     }
     
@@ -628,7 +628,7 @@ class ImmichAPIService: NSObject {
             return
         }
         
-        logInfo("Updating favorite status for \(assetIds.count) assets to \(isFavorite)", category: .api)
+        logDebug("Updating favorite status for \(assetIds.count) assets to \(isFavorite)", category: .api)
         
         guard let url = URL(string: "\(serverURL)/api/assets") else {
             logError("Invalid URL for updateAssetsFavorite", category: .api)
@@ -662,7 +662,7 @@ class ImmichAPIService: NSObject {
                 throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
             
-            logInfo("Successfully updated favorite status for \(assetIds.count) assets", category: .api)
+            logDebug("Successfully updated favorite status for \(assetIds.count) assets", category: .api)
         } catch let error as ImmichAPIError {
             throw error
         } catch {
@@ -783,7 +783,7 @@ class ImmichAPIService: NSObject {
         apiKey: String,
         onBatch: ([StreamAsset]) throws -> Void
     ) async throws -> SyncStreamSummary {
-        logInfo("Fetching assets via sync stream", category: .api)
+        logDebug("Fetching assets via sync stream", category: .api)
         // AssetsV2 replaces the deprecated AssetsV1 request type in Immich 3.0.
         let bytes = try await openSyncStream(types: ["AssetsV2"], serverURL: serverURL, apiKey: apiKey)
         do {
@@ -792,7 +792,7 @@ class ImmichAPIService: NSObject {
                 assetCount += batch.count
                 try onBatch(batch)
             }
-            logInfo("Asset stream returned \(assetCount) assets and \(summary.acks.count) checkpoints", category: .api)
+            logDebug("Asset stream returned \(assetCount) assets and \(summary.acks.count) checkpoints", category: .api)
             return summary
         } catch {
             bytes.task.cancel()
@@ -808,7 +808,7 @@ class ImmichAPIService: NSObject {
         apiKey: String,
         onBatch: (AssetMetadataChanges) throws -> Void
     ) async throws -> SyncStreamSummary {
-        logInfo("Fetching asset metadata via sync stream", category: .api)
+        logDebug("Fetching asset metadata via sync stream", category: .api)
         let bytes = try await openSyncStream(types: ["AssetMetadataV1"], serverURL: serverURL, apiKey: apiKey)
         do {
             var upserts = 0
@@ -818,7 +818,7 @@ class ImmichAPIService: NSObject {
                 deletes += changes.iCloudIdDeletes.count
                 try onBatch(changes)
             }
-            logInfo(
+            logDebug(
                 "Sync stream returned \(upserts) iCloudId upserts, \(deletes) deletes, and \(summary.acks.count) checkpoints",
                 category: .api
             )
@@ -1194,7 +1194,7 @@ class ImmichAPIService: NSObject {
             return
         }
         
-        logInfo("Updating metadata for \(items.count) assets", category: .api)
+        logDebug("Updating metadata for \(items.count) assets", category: .api)
         
         guard let url = URL(string: "\(serverURL)/api/assets/metadata") else {
             logError("Invalid URL for updateBulkAssetMetadata", category: .api)
@@ -1224,7 +1224,7 @@ class ImmichAPIService: NSObject {
                 throw ImmichAPIError.serverError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
             
-            logInfo("Successfully updated metadata for \(items.count) assets", category: .api)
+            logDebug("Successfully updated metadata for \(items.count) assets", category: .api)
         } catch let error as ImmichAPIError {
             throw error
         } catch {
@@ -1617,9 +1617,9 @@ extension ImmichAPIService: URLSessionTaskDelegate, URLSessionDataDelegate {
             let uploadResponse = try JSONDecoder().decode(UploadResponse.self, from: delegate.responseData)
             
             if uploadResponse.duplicate == true {
-                logInfo("Upload completed (duplicate): \(delegate.filename), immichId: \(uploadResponse.id)", category: .api)
+                logDebug("Upload completed (duplicate): \(delegate.filename), immichId: \(uploadResponse.id)", category: .api)
             } else {
-                logInfo("Upload completed: \(delegate.filename), immichId: \(uploadResponse.id)", category: .api)
+                logDebug("Upload completed: \(delegate.filename), immichId: \(uploadResponse.id)", category: .api)
             }
             
             delegate.completion(.success(uploadResponse))

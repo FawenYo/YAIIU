@@ -19,7 +19,7 @@ final class DatabaseManager {
         self.hashRepo = HashCacheRepository(connection: connection)
         self.serverRepo = ServerAssetRepository(connection: connection)
         self.favoriteRepo = FavoriteRepository(connection: connection)
-        logInfo("DatabaseManager initialized", category: .database)
+        logDebug("DatabaseManager initialized", category: .database)
     }
     
     // MARK: - Upload Record Management

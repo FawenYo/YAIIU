@@ -157,7 +157,7 @@ class ServerAssetSyncService {
 
             let shouldProceed = self.syncQueue.sync { () -> Bool in
                 guard !self.isSyncing else {
-                    logWarning("Sync already in progress, skipping", category: .sync)
+                    logDebug("Sync already in progress, skipping", category: .sync)
                     return false
                 }
                 self.isSyncing = true

@@ -99,6 +99,8 @@
 "settings.refreshLogs" = "Aktualisieren";
 "settings.scrollToBottom" = "Nach unten scrollen";
 "settings.noLogsAvailable" = "Keine Protokolle verfügbar";
+"settings.logCategory" = "Kategorie";
+"settings.logLevel" = "Protokollstufe";
 "settings.language" = "Sprache";
 "settings.languageSection" = "Spracheinstellungen";
 "settings.currentLanguage" = "Aktuelle Sprache";

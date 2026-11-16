@@ -242,6 +242,8 @@ enum L10n {
         static var refreshLogs: String { "settings.refreshLogs".localized }
         static var scrollToBottom: String { "settings.scrollToBottom".localized }
         static var noLogsAvailable: String { "settings.noLogsAvailable".localized }
+        static var logCategory: String { "settings.logCategory".localized }
+        static var logLevel: String { "settings.logLevel".localized }
         static var language: String { "settings.language".localized }
         static var languageSection: String { "settings.languageSection".localized }
         static var currentLanguage: String { "settings.currentLanguage".localized }
