@@ -766,6 +766,7 @@ struct PhotoDetailView: View {
     @State private var isInfoPanelScrollAtTop = true
     @State private var infoPanelOverscroll: CGFloat = 0
     @State private var isDraggingInfoPanel = false
+    @State private var infoPanelDragBaseline: CGFloat = 0
     private static let infoPanelScrollSpace = "infoPanelScroll"
     @State private var location: CLLocation?
     @State private var locationName: String?
@@ -1353,8 +1354,11 @@ struct PhotoDetailView: View {
                     if !isDraggingInfoPanel {
                         guard isInfoPanelScrollAtTop, dy > abs(value.translation.width) else { return }
                         isDraggingInfoPanel = true
+                        // Distance already spent scrolling the content back to the top
+                        // must not move the panel.
+                        infoPanelDragBaseline = dy
                     }
-                    infoPanelProgress = max(0, min(1, 1 - dy / panelHeight))
+                    infoPanelProgress = max(0, min(1, 1 - (dy - infoPanelDragBaseline) / panelHeight))
                 }
                 .onEnded { value in
                     guard isDraggingInfoPanel else { return }
