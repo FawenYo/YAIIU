@@ -81,6 +81,7 @@
 		AU0000010000000000000001 /* AuthenticationPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AU0000020000000000000001 /* AuthenticationPersistenceTests.swift */; };
 		TS0000020000000000000001 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = TS0000050000000000000001 /* XCTest.framework */; };
 		UQ0000010000000000000001 /* UploadQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = UQ0000020000000000000001 /* UploadQueueTests.swift */; };
+		PI0000010000000000000001 /* PhotoInfoFormatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PI0000020000000000000001 /* PhotoInfoFormatTests.swift */; };
 		SR0000010000000000000001 /* CoalescingRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = SR0000020000000000000001 /* CoalescingRefresh.swift */; };
 		FC0000010000000000000001 /* FavoriteChangeDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC0000020000000000000001 /* FavoriteChangeDetector.swift */; };
 		ST0000010000000000000001 /* CoalescingRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ST0000020000000000000001 /* CoalescingRefreshTests.swift */; };
@@ -208,6 +209,7 @@
 		TS0000040000000000000001 /* YAIIUTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YAIIUTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		TS0000050000000000000001 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
 		UQ0000020000000000000001 /* UploadQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadQueueTests.swift; sourceTree = "<group>"; };
+		PI0000020000000000000001 /* PhotoInfoFormatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoInfoFormatTests.swift; sourceTree = "<group>"; };
 		SR0000020000000000000001 /* CoalescingRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoalescingRefresh.swift; sourceTree = "<group>"; };
 		FC0000020000000000000001 /* FavoriteChangeDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoriteChangeDetector.swift; sourceTree = "<group>"; };
 		ST0000020000000000000001 /* CoalescingRefreshTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoalescingRefreshTests.swift; sourceTree = "<group>"; };
@@ -449,6 +451,7 @@
                 TS0000150000000000000001 /* BackgroundUploadPolicyTests.swift */,
 				A15000040000000000000001 /* CompositeInputStreamTests.swift */,
 				UQ0000020000000000000001 /* UploadQueueTests.swift */,
+				PI0000020000000000000001 /* PhotoInfoFormatTests.swift */,
 				TS0000170000000000000001 /* HashPipelinePolicyTests.swift */,
 				PT0000020000000000000001 /* PhotoLibraryEnumerationTests.swift */,
 				CT0000020000000000000001 /* PhotoLibraryStatusCountTests.swift */,
@@ -679,6 +682,7 @@
                 TS0000140000000000000001 /* BackgroundUploadPolicyTests.swift in Sources */,
 				A15000030000000000000001 /* CompositeInputStreamTests.swift in Sources */,
 				UQ0000010000000000000001 /* UploadQueueTests.swift in Sources */,
+				PI0000010000000000000001 /* PhotoInfoFormatTests.swift in Sources */,
 				TS0000160000000000000001 /* HashPipelinePolicyTests.swift in Sources */,
 				PT0000010000000000000001 /* PhotoLibraryEnumerationTests.swift in Sources */,
 				CT0000010000000000000001 /* PhotoLibraryStatusCountTests.swift in Sources */,

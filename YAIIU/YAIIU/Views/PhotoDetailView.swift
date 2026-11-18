@@ -739,7 +739,6 @@ struct PhotoDetailView: View {
     let namespace: Namespace.ID
     let refreshToken: UUID?
     @Binding var isPresented: Bool
-    @Environment(\.colorScheme) private var colorScheme
     
     @State private var currentIndex: Int
     @State private var currentAsset: PHAsset?
@@ -764,11 +763,18 @@ struct PhotoDetailView: View {
     @State private var showVideoControls: Bool = true
     
     @State private var infoPanelProgress: CGFloat = 0
+    @State private var isInfoPanelScrollAtTop = true
+    @State private var infoPanelOverscroll: CGFloat = 0
+    @State private var isDraggingInfoPanel = false
+    @State private var infoPanelDragBaseline: CGFloat = 0
+    private static let infoPanelScrollSpace = "infoPanelScroll"
     @State private var location: CLLocation?
     @State private var locationName: String?
     @State private var cameraInfo: String?
-    @State private var lensInfo: String?
-    @State private var exposureInfo: String?
+    @State private var lensSummary: String?
+    @State private var exifItems: [String] = []
+    @State private var panelMetadataTask: Task<Void, Never>?
+    @State private var isExifLoaded = false
     @State private var fileName: String?
     @State private var fileSize: Int64?
     @State private var horizontalOffset: CGFloat = 0
@@ -796,40 +802,17 @@ struct PhotoDetailView: View {
     private let dismissThreshold: CGFloat = 150
     private let horizontalSwipeThreshold: CGFloat = 80
     
+    /// Fixed per device so the panel and photo keep the same size across assets.
     private func infoPanelHeight(for geometry: GeometryProxy) -> CGFloat {
-        let isPhone = UIDevice.current.userInterfaceIdiom == .phone
-        let isLandscape = geometry.size.width > geometry.size.height
-        let hasCamera = cameraInfo != nil || exposureInfo != nil || lensInfo != nil
-        let hasMap = location != nil
-        let hasLocation = locationName != nil || location != nil
-        
-        var ratio: CGFloat
-        var maxRatio: CGFloat
-        
-        if isPhone {
-            ratio = 0.42
-            if hasCamera { ratio += 0.10 }
-            if hasMap { ratio += 0.20 }
-            else if hasLocation { ratio += 0.10 }
-            maxRatio = 0.72
-        } else if isLandscape {
-            // iPad landscape
-            ratio = 0.38
-            if hasCamera { ratio += 0.08 }
-            if hasMap { ratio += 0.18 }
-            else if hasLocation { ratio += 0.08 }
-            maxRatio = 0.68
+        let ratio: CGFloat
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            ratio = 0.72
+        } else if geometry.size.width > geometry.size.height {
+            ratio = 0.64
         } else {
-            // iPad portrait
-            ratio = 0.32
-            if hasCamera { ratio += 0.06 }
-            if hasMap { ratio += 0.15 }
-            else if hasLocation { ratio += 0.06 }
-            maxRatio = 0.58
+            ratio = 0.53
         }
-        
-        let screenHeight = geometry.size.height
-        return screenHeight * min(ratio, maxRatio)
+        return geometry.size.height * ratio
     }
     
     private var totalCount: Int {
@@ -1017,7 +1000,7 @@ struct PhotoDetailView: View {
     
     // MARK: - Drag Handling
     
-    private func handleUIKitDragChanged(translation: CGPoint) {
+    private func handleUIKitDragChanged(translation: CGPoint, panelHeight: CGFloat) {
         let dx = translation.x
         let dy = translation.y
         
@@ -1034,14 +1017,14 @@ struct PhotoDetailView: View {
             }
         }
         
-        let panelDragRange: CGFloat = 200
+        // Track the finger 1:1; a fixed short range moved the panel faster than the drag.
         switch currentDragMode {
         case .horizontal:
             horizontalOffset = dx
         case .openPanel:
-            infoPanelProgress = max(0, min(1, -dy / panelDragRange))
+            infoPanelProgress = max(0, min(1, -dy / panelHeight))
         case .closePanel:
-            infoPanelProgress = max(0, min(1, 1.0 - dy / panelDragRange))
+            infoPanelProgress = max(0, min(1, 1.0 - dy / panelHeight))
         case .dismiss:
             offset = CGSize(width: dx, height: dy)
             dragProgress = min(1, max(0, dy / dismissThreshold))
@@ -1182,7 +1165,7 @@ struct PhotoDetailView: View {
                     }
                 },
                 onDragChanged: { translation in
-                    handleUIKitDragChanged(translation: translation)
+                    handleUIKitDragChanged(translation: translation, panelHeight: infoPanelHeight(for: geometry))
                 },
                 onDragEnded: { translation, velocity in
                     handleUIKitDragEnded(translation: translation, velocity: velocity)
@@ -1251,7 +1234,7 @@ struct PhotoDetailView: View {
                             handleVideoTap()
                         },
                         onDragChanged: { translation in
-                            handleUIKitDragChanged(translation: translation)
+                            handleUIKitDragChanged(translation: translation, panelHeight: infoPanelHeight(for: geometry))
                         },
                         onDragEnded: { translation, velocity in
                             handleUIKitDragEnded(translation: translation, velocity: velocity)
@@ -1327,212 +1310,179 @@ struct PhotoDetailView: View {
     
     // MARK: - Info Panel
     
-    private var infoPanelBackground: Color {
-        colorScheme == .dark
-            ? Color(white: 0.12)
-            : Color(UIColor.systemBackground)
-    }
-    
-    private var infoPanelSectionBackground: Color {
-        colorScheme == .dark
-            ? Color(white: 0.18)
-            : Color(UIColor.secondarySystemGroupedBackground)
-    }
-    
-    private var infoPanelHandleColor: Color {
-        colorScheme == .dark
-            ? Color(white: 0.4)
-            : Color(white: 0.5)
+    private var cardBackground: Color {
+        Color(UIColor.secondarySystemGroupedBackground)
     }
     
     @ViewBuilder
     private func infoPanelView(geometry: GeometryProxy) -> some View {
         let panelHeight = infoPanelHeight(for: geometry)
         
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(infoPanelHandleColor)
-                .frame(width: 36, height: 5)
-                .padding(.top, 8)
-                .padding(.bottom, 16)
-            
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 10) {
-                    dateTimeSection
-                    
-                    if cameraInfo != nil || exposureInfo != nil || lensInfo != nil {
-                        cameraSection
-                    }
-                    
-                    if locationName != nil || location != nil {
-                        locationSection
-                    }
-                    
-                    fileInfoSection
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 16) {
+                mainInfoCard
+                
+                // MapKit allocates a Metal renderer and tile caches per instance; build
+                // it only while the panel is on screen, not for every swiped photo.
+                if let loc = location, isInfoPanelVisible {
+                    LocationMapView(coordinate: loc.coordinate, locationName: locationName, thumbnail: fullImage)
+                        .background(cardBackground)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        // Map(initialPosition:) ignores later coordinate changes.
+                        .id(currentAsset?.localIdentifier)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 32)
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 32)
+            // The panel itself follows the finger; cancel the scroll view's rubber band
+            // so the content does not move twice as far.
+            .offset(y: isDraggingInfoPanel ? -infoPanelOverscroll : 0)
+            // Measured outside the offset to avoid feedback. Bool and clamped values change
+            // only at the top edge, so normal scrolling does not re-render every frame.
+            .onGeometryChange(for: Bool.self) {
+                $0.frame(in: .named(Self.infoPanelScrollSpace)).minY >= -1
+            } action: { isInfoPanelScrollAtTop = $0 }
+            .onGeometryChange(for: CGFloat.self) {
+                max(0, $0.frame(in: .named(Self.infoPanelScrollSpace)).minY)
+            } action: { infoPanelOverscroll = $0 }
         }
+        .coordinateSpace(name: Self.infoPanelScrollSpace)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 10, coordinateSpace: .global)
+                .onChanged { value in
+                    let dy = value.translation.height
+                    if !isDraggingInfoPanel {
+                        guard isInfoPanelScrollAtTop, dy > abs(value.translation.width) else { return }
+                        isDraggingInfoPanel = true
+                        // Distance already spent scrolling the content back to the top
+                        // must not move the panel.
+                        infoPanelDragBaseline = dy
+                    }
+                    infoPanelProgress = max(0, min(1, 1 - (dy - infoPanelDragBaseline) / panelHeight))
+                }
+                .onEnded { value in
+                    guard isDraggingInfoPanel else { return }
+                    isDraggingInfoPanel = false
+                    let shouldClose = infoPanelProgress < 0.7 || value.velocity.height > 300
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                        infoPanelProgress = shouldClose ? 0 : 1
+                    }
+                }
+        )
         .frame(maxWidth: .infinity)
         .frame(height: panelHeight)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(infoPanelBackground)
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.15), radius: 20, y: -5)
+                .fill(Color(UIColor.systemGroupedBackground))
+                .shadow(color: .black.opacity(0.3), radius: 20, y: -5)
         )
         .offset(y: geometry.size.height - panelHeight + infoPanelCurrentOffset(for: geometry))
     }
     
-    private var dateTimeSection: some View {
-        HStack(spacing: 0) {
-            if let asset = currentAsset, let date = asset.creationDate {
-                Text(formatDateTime(date))
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 4)
-    }
-    
-    private var cameraSection: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "camera.fill")
-                .font(.system(size: 20))
-                .foregroundColor(.secondary)
-                .frame(width: 28)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                if let camera = cameraInfo {
-                    if let lens = lensInfo {
-                        Text("\(camera) · \(lens)")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    } else {
-                        Text(camera)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.primary)
-                    }
-                } else if let lens = lensInfo {
-                    Text(lens)
-                        .font(.system(size: 14, weight: .medium))
+    private var mainInfoCard: some View {
+        let badge = PhotoInfoFormat.formatBadge(fileName: fileName)
+        let isScreenshot = currentAsset?.mediaSubtypes.contains(.photoScreenshot) ?? false
+        let cameraText = cameraInfo ?? (isScreenshot ? L10n.PhotoDetail.screenshot : nil)
+        return VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let date = currentAsset?.creationDate {
+                    Text(formatDateTime(date))
+                        .font(.system(size: 17, weight: .medium))
                         .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                 }
-                
-                if let exposure = exposureInfo {
-                    Text(exposure)
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            Spacer()
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 16)
-        .background(infoPanelSectionBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-    
-    private var locationSection: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Image(systemName: "location.fill")
-                    .font(.system(size: 20))
+                Text(fileName.map { ($0 as NSString).deletingPathExtension } ?? L10n.PhotoDetail.fileNameUnknown)
+                    .font(.system(size: 15))
                     .foregroundColor(.secondary)
-                    .frame(width: 28)
-                
-                VStack(alignment: .leading, spacing: 1) {
-                    if let name = locationName {
-                        Text(name)
-                            .font(.system(size: 14))
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
-                    }
-                    
-                    if let loc = location {
-                        Text(formatCoordinates(loc))
-                            .font(.system(size: 12))
+                    .lineLimit(1)
+            }
+            .infoCardRow()
+            
+            if cameraText != nil || badge != nil {
+                Divider()
+                HStack {
+                    Text(cameraText ?? "")
+                        .font(.system(size: 17))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Spacer()
+                    if let badge {
+                        Text(badge)
+                            .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color(UIColor.tertiarySystemFill), in: Capsule())
+                    }
+                    if isScreenshot {
+                        Image(systemName: "camera.viewfinder")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                            .frame(width: 30, height: 30)
+                            .background(Color(UIColor.tertiarySystemFill), in: Circle())
                     }
                 }
-                
-                Spacer()
+                .infoCardRow()
             }
-            .padding(.vertical, 10)
-            .padding(.horizontal, 16)
             
-            // MapKit allocates a Metal renderer and tile caches per instance; build
-            // it only while the panel is on screen, not for every swiped photo.
-            if let loc = location, isInfoPanelVisible {
-                LocationMapView(coordinate: loc.coordinate, locationName: locationName)
-                    .frame(height: 140)
-                    .clipShape(
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: 0,
-                            bottomLeadingRadius: 12,
-                            bottomTrailingRadius: 12,
-                            topTrailingRadius: 0
-                        )
-                    )
-            }
-        }
-        .background(infoPanelSectionBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-    
-    private var fileInfoSection: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "doc.fill")
-                .font(.system(size: 20))
-                .foregroundColor(.secondary)
-                .frame(width: 28)
-            
-            VStack(alignment: .leading, spacing: 1) {
-                Text(fileName ?? L10n.PhotoDetail.fileNameUnknown)
-                    .font(.system(size: 14))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                
-                Text(fileMetadataString)
-                    .font(.system(size: 12))
+            Divider()
+            VStack(alignment: .leading, spacing: 4) {
+                Text(lensSummary ?? L10n.PhotoDetail.noLensInfo)
+                    .font(.system(size: 16))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+                    .redacted(reason: isExifLoaded ? [] : .placeholder)
+                Text(fileMetadataString)
+                    .font(.system(size: 16))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
+            .infoCardRow()
             
-            Spacer()
+            Divider()
+            HStack(spacing: 0) {
+                let items = exifItems.isEmpty ? Array(repeating: "-", count: 5) : exifItems
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    if index > 0 {
+                        Divider().frame(height: 18)
+                    }
+                    Text(item)
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 12)
+            .redacted(reason: isExifLoaded ? [] : .placeholder)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 16)
-        .background(infoPanelSectionBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
     
     private var fileMetadataString: String {
         guard let asset = currentAsset else { return "" }
         var parts: [String] = []
-        parts.append("\(asset.pixelWidth)×\(asset.pixelHeight)")
+        if let mp = PhotoInfoFormat.megapixels(width: asset.pixelWidth, height: asset.pixelHeight) {
+            parts.append(mp)
+        }
+        parts.append("\(asset.pixelWidth) × \(asset.pixelHeight)")
         if let size = fileSize {
             parts.append(formatFileSize(size))
         }
         if asset.mediaType == .video {
             parts.append(formatDuration(asset.duration))
         }
-        return parts.joined(separator: " · ")
+        return parts.joined(separator: " • ")
     }
     
     private func formatDateTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .long
-        formatter.timeStyle = .medium
-        formatter.doesRelativeDateFormatting = false
-        return formatter.string(from: date)
+        date.formatted(.dateTime.year().month(.wide).day().weekday(.wide).hour().minute())
     }
     
     private func formatFileSize(_ bytes: Int64) -> String {
@@ -1553,8 +1503,8 @@ struct PhotoDetailView: View {
             loadFullImage(for: asset, maxDimension: Self.screenImageDimension)
         }
         loadMetadata(for: asset)
-        // Navigation closes the panel, but a reload with the panel open must
-        // still fetch the new asset's place and EXIF details.
+        // The panel stays open across navigation, so the new asset needs its
+        // place and EXIF details right away.
         if isInfoPanelVisible {
             loadPanelDetails(for: asset)
         }
@@ -1563,6 +1513,10 @@ struct PhotoDetailView: View {
     private func cleanupCurrentAsset() {
         imageLoadGeneration &+= 1
         assetContentGeneration &+= 1
+        // Navigation must not leave original reads or iCloud downloads running for
+        // photos that are no longer shown.
+        panelMetadataTask?.cancel()
+        panelMetadataTask = nil
         if let requestID = imageRequestID {
             PHImageManager.default().cancelImageRequest(requestID)
             imageRequestID = nil
@@ -1587,12 +1541,12 @@ struct PhotoDetailView: View {
         isVideoLoading = false
         isVideoPlaying = false
         showVideoControls = true
-        infoPanelProgress = 0
         location = nil
         locationName = nil
         cameraInfo = nil
-        lensInfo = nil
-        exposureInfo = nil
+        lensSummary = nil
+        exifItems = []
+        isExifLoaded = false
         fileName = nil
         fileSize = nil
     }
@@ -1745,17 +1699,13 @@ struct PhotoDetailView: View {
                 do {
                     let placemarks = try await geocoder.reverseGeocodeLocation(loc)
                     if let placemark = placemarks.first {
-                        var parts: [String] = []
-                        if let locality = placemark.locality {
-                            parts.append(locality)
-                        }
-                        if let administrativeArea = placemark.administrativeArea {
-                            parts.append(administrativeArea)
-                        }
-                        if let country = placemark.country {
-                            parts.append(country)
-                        }
-                        let locationString = parts.joined(separator: ", ")
+                        let district = [placemark.locality, placemark.subLocality]
+                            .compactMap { $0 }.joined(separator: " - ")
+                        let locationString = district.isEmpty
+                            ? [placemark.locality, placemark.administrativeArea, placemark.country]
+                                .compactMap { $0 }.joined(separator: ", ")
+                            : district
+                        guard !locationString.isEmpty else { return }
                         await MainActor.run {
                             guard self.assetContentGeneration == contentGeneration else { return }
                             self.locationName = locationString
@@ -1765,85 +1715,68 @@ struct PhotoDetailView: View {
             }
         }
         
-        Task.detached(priority: .userInitiated) {
-            let options = PHContentEditingInputRequestOptions()
-            options.isNetworkAccessAllowed = true
+        panelMetadataTask?.cancel()
+        panelMetadataTask = Task.detached(priority: .userInitiated) {
+            // Only the header is needed: stream it and stop once EXIF is found.
+            // requestContentEditingInput and full-file copies lagged by seconds on
+            // large RAW+JPEG assets.
+            let resources = PHAssetResource.assetResources(for: asset)
+            let photoResource = resources.first { $0.type == .photo }
+                ?? resources.first { $0.type == .alternatePhoto }
+            var metadata: [String: Any] = [:]
+            if let photoResource {
+                metadata = await ResourceMetadataReader.properties(of: photoResource)
+            }
+            guard !Task.isCancelled else { return }
             
-            let metadataResult: (exif: [String: Any]?, tiff: [String: Any]?)? = await withCheckedContinuation { continuation in
-                asset.requestContentEditingInput(with: options) { input, info in
-                    guard let url = input?.fullSizeImageURL,
-                          let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                          let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else {
-                        continuation.resume(returning: nil)
-                        return
-                    }
-                    
-                    let exif = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any]
-                    let tiff = metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any]
-                    continuation.resume(returning: (exif, tiff))
+            let exif = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
+            let tiff = metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+            
+            let focal = ((exif[kCGImagePropertyExifFocalLenIn35mmFilm as String] as? Double)
+                ?? (exif[kCGImagePropertyExifFocalLength as String] as? Double)).map { Int($0.rounded()) }
+            let fNumber = exif[kCGImagePropertyExifFNumber as String] as? Double
+            let exposureTime = (exif[kCGImagePropertyExifExposureTime as String] as? Double).flatMap { $0 > 0 ? $0 : nil }
+            let iso = (exif[kCGImagePropertyExifISOSpeedRatings as String] as? [Int])?.first
+            let bias = exif[kCGImagePropertyExifExposureBiasValue as String] as? Double
+            
+            var items: [String] = []
+            if let iso { items.append("ISO \(iso)") }
+            if let focal { items.append("\(focal) mm") }
+            if let bias { items.append(PhotoInfoFormat.exposureBias(bias)) }
+            if let fNumber { items.append(PhotoInfoFormat.aperture(fNumber)) }
+            if let exposureTime { items.append(PhotoInfoFormat.shutter(exposureTime)) }
+            
+            let make = tiff[kCGImagePropertyTIFFMake as String] as? String
+            let model = tiff[kCGImagePropertyTIFFModel as String] as? String
+            var cameraName: String?
+            if let model {
+                cameraName = model
+                if let make, !model.lowercased().contains(make.lowercased()) {
+                    cameraName = "\(make) \(model)"
                 }
             }
             
-            guard let result = metadataResult else { return }
-            
-            if let exif = result.exif {
-                var exposureParts: [String] = []
-                
-                if let fNumber = exif[kCGImagePropertyExifFNumber as String] as? Double {
-                    exposureParts.append("ƒ/\(String(format: "%.1f", fNumber))")
-                }
-                
-                if let exposureTime = exif[kCGImagePropertyExifExposureTime as String] as? Double {
-                    if exposureTime >= 1 {
-                        exposureParts.append("\(String(format: "%.1f", exposureTime))s")
-                    } else {
-                        exposureParts.append("1/\(Int(1/exposureTime))s")
-                    }
-                }
-                
-                if let iso = exif[kCGImagePropertyExifISOSpeedRatings as String] as? [Int], let isoValue = iso.first {
-                    exposureParts.append("ISO \(isoValue)")
-                }
-                
-                if let focalLength = exif[kCGImagePropertyExifFocalLength as String] as? Double {
-                    exposureParts.append("\(Int(focalLength)) mm")
-                }
-                
-                let finalExposureInfo = exposureParts.isEmpty ? nil : exposureParts.joined(separator: "  ")
-                let lensModel = exif[kCGImagePropertyExifLensModel as String] as? String
-                
-                await MainActor.run {
-                    guard self.assetContentGeneration == contentGeneration else { return }
-                    self.exposureInfo = finalExposureInfo
-                    self.lensInfo = lensModel
-                }
+            // Built-in phone lens models repeat the camera name and focal data; only a distinct lens name adds information.
+            let lensModel = exif[kCGImagePropertyExifLensModel as String] as? String
+            let short = [focal.map { "\($0) mm" }, fNumber.map(PhotoInfoFormat.aperture)]
+                .compactMap { $0 }.joined(separator: " ")
+            let lensSummary: String?
+            if let lensModel, !(model.map { lensModel.hasPrefix($0) } ?? false) {
+                lensSummary = lensModel
+            } else {
+                lensSummary = short.isEmpty ? nil : short
             }
             
-            if let tiff = result.tiff {
-                let make = tiff[kCGImagePropertyTIFFMake as String] as? String
-                let model = tiff[kCGImagePropertyTIFFModel as String] as? String
-                
-                if let model = model {
-                    var cameraName = model
-                    if let make = make, !model.lowercased().contains(make.lowercased()) {
-                        cameraName = "\(make) \(model)"
-                    }
-                    
-                    await MainActor.run {
-                        guard self.assetContentGeneration == contentGeneration else { return }
-                        self.cameraInfo = cameraName
-                    }
-                }
+            let finalItems = items
+            let finalCamera = cameraName
+            await MainActor.run {
+                guard self.assetContentGeneration == contentGeneration else { return }
+                self.exifItems = finalItems
+                self.cameraInfo = finalCamera
+                self.lensSummary = lensSummary
+                self.isExifLoaded = true
             }
         }
-    }
-    
-    private func formatCoordinates(_ location: CLLocation) -> String {
-        let lat = location.coordinate.latitude
-        let lon = location.coordinate.longitude
-        let latDir = lat >= 0 ? "N" : "S"
-        let lonDir = lon >= 0 ? "E" : "W"
-        return String(format: "%.4f° %@, %.4f° %@", abs(lat), latDir, abs(lon), lonDir)
     }
     
     private func formatDuration(_ duration: TimeInterval) -> String {
@@ -1859,51 +1792,103 @@ struct PhotoDetailView: View {
     
 }
 
+private extension View {
+    func infoCardRow() -> some View {
+        padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+enum PhotoInfoFormat {
+    /// "1.78", "2.8", "2": at most two decimals, trailing zeros trimmed, locale-independent.
+    private static func trimmed(_ value: Double) -> String {
+        var s = String(format: "%.2f", value)
+        while s.hasSuffix("0") { s.removeLast() }
+        if s.hasSuffix(".") { s.removeLast() }
+        return s
+    }
+    static func aperture(_ fNumber: Double) -> String { "ƒ\(trimmed(fNumber))" }
+    static func shutter(_ seconds: Double) -> String {
+        seconds >= 1 ? "\(trimmed(seconds)) s" : "1/\(Int((1 / seconds).rounded())) s"
+    }
+    static func exposureBias(_ ev: Double) -> String {
+        let rounded = (ev * 100).rounded() / 100
+        return rounded == 0 ? "0 ev" : "\(rounded > 0 ? "+" : "-")\(trimmed(abs(rounded))) ev"
+    }
+    /// Floored like Photos (6048x8064 -> "48 MP"); nil below 1 MP.
+    static func megapixels(width: Int, height: Int) -> String? {
+        let mp = width * height / 1_000_000
+        return mp >= 1 ? "\(mp) MP" : nil
+    }
+    static func formatBadge(fileName: String?) -> String? {
+        guard let ext = fileName.map({ ($0 as NSString).pathExtension.uppercased() }), !ext.isEmpty else { return nil }
+        switch ext {
+        case "HEIC", "HEIF": return "HEIF"
+        case "JPG", "JPEG": return "JPEG"
+        default: return ext
+        }
+    }
+}
+
 // MARK: - LocationMapView
 
 struct LocationMapView: View {
     let coordinate: CLLocationCoordinate2D
     var locationName: String?
-    
-    @State private var region: MKCoordinateRegion
-    
-    init(coordinate: CLLocationCoordinate2D, locationName: String? = nil) {
-        self.coordinate = coordinate
-        self.locationName = locationName
-        _region = State(initialValue: MKCoordinateRegion(
-            center: coordinate,
-            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-        ))
-    }
+    var thumbnail: UIImage?
     
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Map(coordinateRegion: $region, annotationItems: [LocationPin(coordinate: coordinate)]) { pin in
-                MapMarker(coordinate: pin.coordinate, tint: .red)
+        VStack(spacing: 0) {
+            Map(initialPosition: .region(MKCoordinateRegion(
+                    center: coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))),
+                interactionModes: []) {
+                Annotation("", coordinate: coordinate, anchor: .bottom) { pin }
             }
-            .disabled(true)
+            .frame(height: 160)
             
-            Button {
-                openInMaps()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 12, weight: .medium))
-                    Text(L10n.PhotoDetail.openInMaps)
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(.ultraThinMaterial)
-                .clipShape(Capsule())
+            HStack(spacing: 6) {
+                Text(locationName ?? formatCoordinates(coordinate))
+                    .font(.system(size: 16))
+                    .foregroundColor(.accentColor)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(UIColor.tertiaryLabel))
+                Spacer()
             }
-            .padding(8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
         }
         .contentShape(Rectangle())
         .onTapGesture {
             openInMaps()
         }
+    }
+    
+    @ViewBuilder
+    private var pin: some View {
+        if let thumbnail {
+            Image(uiImage: thumbnail)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding(3)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                .shadow(radius: 2)
+        } else {
+            Image(systemName: "mappin.circle.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(.white, .red)
+        }
+    }
+    
+    private func formatCoordinates(_ c: CLLocationCoordinate2D) -> String {
+        let latDir = c.latitude >= 0 ? "N" : "S"
+        let lonDir = c.longitude >= 0 ? "E" : "W"
+        return String(format: "%.4f° %@, %.4f° %@", abs(c.latitude), latDir, abs(c.longitude), lonDir)
     }
     
     private func openInMaps() {
@@ -1915,11 +1900,6 @@ struct LocationMapView: View {
             MKLaunchOptionsMapSpanKey: NSValue(mkCoordinateSpan: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01))
         ])
     }
-}
-
-private struct LocationPin: Identifiable {
-    let id = UUID()
-    let coordinate: CLLocationCoordinate2D
 }
 
 // MARK: - Preview

@@ -466,7 +466,8 @@ enum L10n {
     // MARK: - Photo Detail
     enum PhotoDetail {
         static var fileNameUnknown: String { "photoDetail.fileNameUnknown".localized }
-        static var openInMaps: String { "photoDetail.openInMaps".localized }
+        static var screenshot: String { "photoDetail.screenshot".localized }
+        static var noLensInfo: String { "photoDetail.noLensInfo".localized }
         static var previewRequiresAssets: String { "photoDetail.previewRequiresAssets".localized }
     }
     
