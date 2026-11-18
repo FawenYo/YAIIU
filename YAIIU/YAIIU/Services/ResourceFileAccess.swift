@@ -1,5 +1,6 @@
 import Foundation
 import Photos
+import ImageIO
 
 /// Delivers original photo-library bytes through a temp file for uploads, which
 /// need a re-readable body for URLSession retries. Hashing streams through
@@ -247,6 +248,141 @@ enum ResourceStreamHasher {
             category: .hash
         )
         return result
+    }
+}
+
+/// Reads image properties from the head of a resource instead of copying the
+/// whole original: the PhotoKit request is cancelled as soon as ImageIO finds
+/// EXIF. JPEG, HEIF and DNG keep their metadata ahead of the image data.
+enum ResourceMetadataReader {
+    /// Files whose EXIF sits past this point (e.g. trailing TIFF IFDs) report none
+    /// rather than holding a whole RAW original in memory.
+    static let maxBytes = 16 * 1024 * 1024
+
+    /// Returns an empty dictionary on failure or task cancellation; cancelling
+    /// the task also cancels the PhotoKit request and any iCloud download.
+    static func properties(of resource: PHAssetResource) async -> [String: Any] {
+        let manager = PHAssetResourceManager.default()
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+
+        let request = MetadataRequest()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard request.install(continuation) else { return }
+                let requestID = manager.requestData(
+                    for: resource,
+                    options: options,
+                    dataReceivedHandler: { chunk in
+                        autoreleasepool {
+                            request.receive(chunk)
+                        }
+                    },
+                    completionHandler: { _ in
+                        request.finish()
+                    }
+                )
+                request.attachCancellation {
+                    manager.cancelDataRequest(requestID)
+                }
+            }
+        } onCancel: {
+            request.cancel()
+        }
+    }
+
+    static func imageProperties(from data: Data) -> [String: Any]? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
+    }
+
+    /// Exactly-once resume; the PhotoKit request is cancelled on every early exit.
+    private final class MetadataRequest: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+        private var continuation: CheckedContinuation<[String: Any], Never>?
+        private var cancelRequest: (() -> Void)?
+        private var isDone = false
+
+        /// Returns false when already cancelled; the continuation is resumed here.
+        func install(_ continuation: CheckedContinuation<[String: Any], Never>) -> Bool {
+            lock.lock()
+            if isDone {
+                lock.unlock()
+                continuation.resume(returning: [:])
+                return false
+            }
+            self.continuation = continuation
+            lock.unlock()
+            return true
+        }
+
+        /// Runs `cancel` immediately when the read already ended.
+        func attachCancellation(_ cancel: @escaping () -> Void) {
+            lock.lock()
+            if isDone {
+                lock.unlock()
+                cancel()
+                return
+            }
+            cancelRequest = cancel
+            lock.unlock()
+        }
+
+        func receive(_ chunk: Data) {
+            lock.lock()
+            guard !isDone else {
+                lock.unlock()
+                return
+            }
+            data.append(chunk)
+            let properties = ResourceMetadataReader.imageProperties(from: data)
+            let hasExif = properties?[kCGImagePropertyExifDictionary as String] != nil
+            guard hasExif || data.count >= ResourceMetadataReader.maxBytes else {
+                lock.unlock()
+                return
+            }
+            let (continuation, cancelRequest) = end()
+            lock.unlock()
+            cancelRequest?()
+            continuation?.resume(returning: properties ?? [:])
+        }
+
+        /// The request delivered the whole file (or failed) without EXIF being found early.
+        func finish() {
+            lock.lock()
+            guard !isDone else {
+                lock.unlock()
+                return
+            }
+            let properties = ResourceMetadataReader.imageProperties(from: data)
+            let (continuation, _) = end()
+            lock.unlock()
+            continuation?.resume(returning: properties ?? [:])
+        }
+
+        func cancel() {
+            lock.lock()
+            guard !isDone else {
+                lock.unlock()
+                return
+            }
+            let (continuation, cancelRequest) = end()
+            lock.unlock()
+            cancelRequest?()
+            continuation?.resume(returning: [:])
+        }
+
+        /// Caller holds the lock.
+        private func end() -> (CheckedContinuation<[String: Any], Never>?, (() -> Void)?) {
+            isDone = true
+            data = Data()
+            defer {
+                continuation = nil
+                cancelRequest = nil
+            }
+            return (continuation, cancelRequest)
+        }
     }
 }
 

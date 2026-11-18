@@ -773,6 +773,7 @@ struct PhotoDetailView: View {
     @State private var cameraInfo: String?
     @State private var lensSummary: String?
     @State private var exifItems: [String] = []
+    @State private var panelMetadataTask: Task<Void, Never>?
     @State private var isExifLoaded = false
     @State private var fileName: String?
     @State private var fileSize: Int64?
@@ -1512,6 +1513,10 @@ struct PhotoDetailView: View {
     private func cleanupCurrentAsset() {
         imageLoadGeneration &+= 1
         assetContentGeneration &+= 1
+        // Navigation must not leave original reads or iCloud downloads running for
+        // photos that are no longer shown.
+        panelMetadataTask?.cancel()
+        panelMetadataTask = nil
         if let requestID = imageRequestID {
             PHImageManager.default().cancelImageRequest(requestID)
             imageRequestID = nil
@@ -1710,20 +1715,19 @@ struct PhotoDetailView: View {
             }
         }
         
-        Task.detached(priority: .userInitiated) {
-            // Only the header is needed. requestContentEditingInput prepares a full
-            // editing input first and lagged by seconds on large RAW+JPEG assets.
+        panelMetadataTask?.cancel()
+        panelMetadataTask = Task.detached(priority: .userInitiated) {
+            // Only the header is needed: stream it and stop once EXIF is found.
+            // requestContentEditingInput and full-file copies lagged by seconds on
+            // large RAW+JPEG assets.
             let resources = PHAssetResource.assetResources(for: asset)
             let photoResource = resources.first { $0.type == .photo }
                 ?? resources.first { $0.type == .alternatePhoto }
             var metadata: [String: Any] = [:]
-            if let photoResource, let fileURL = try? await ResourceFileAccess.tempFile(for: photoResource) {
-                if let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
-                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
-                    metadata = properties
-                }
-                try? FileManager.default.removeItem(at: fileURL)
+            if let photoResource {
+                metadata = await ResourceMetadataReader.properties(of: photoResource)
             }
+            guard !Task.isCancelled else { return }
             
             let exif = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
             let tiff = metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
