@@ -25,11 +25,15 @@ class UploadItem: Identifiable, ObservableObject {
     let isVideo: Bool
     let hasRAW: Bool
     
-    @Published var status: UploadStatus = .pending
+    @Published var status: UploadStatus = .pending {
+        didSet { if status != oldValue { onStatusChange?() } }
+    }
     @Published var progress: Double = 0.0
     @Published var errorMessage: String?
     
     var resourcesUploaded: [String: Bool] = [:]
+    /// The queue header aggregates item statuses; it observes only the manager.
+    var onStatusChange: (() -> Void)?
     var totalResources: Int = 0
     
     init(asset: PHAsset, filename: String, hasRAW: Bool) {
@@ -283,6 +287,7 @@ class UploadManager: ObservableObject {
                 guard queuedIdentifiers.insert(identifier).inserted else { return }
                 let item = UploadItem(asset: entry.asset, filename: entry.filename, hasRAW: entry.hasRAW)
                 item.totalResources = entry.resourceCount
+                item.onStatusChange = { [weak self] in self?.objectWillChange.send() }
                 newItems.append(item)
             }
         }
