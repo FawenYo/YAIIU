@@ -49,6 +49,38 @@ enum PhotoAssetAdjustmentVersion {
     }
 }
 
+// Only a burst's representative frame is backed up, matching what default
+// PhotoKit fetches (and the Photos grid) expose. The other frames still appear
+// in persistent change history, so callers must exclude them explicitly or
+// they look permanently unresolvable.
+enum PhotoBurstFrames {
+    /// The subset of `identifiers` that resolves only when every burst frame is
+    /// included. Pass identifiers a default fetch could not resolve.
+    static func nonRepresentativeIdentifiers(among identifiers: [String]) -> Set<String> {
+        guard !identifiers.isEmpty else { return [] }
+        let options = PHFetchOptions()
+        options.includeAllBurstAssets = true
+        options.includeHiddenAssets = true
+        options.wantsIncrementalChangeDetails = false
+        var frames = Set<String>()
+        for start in stride(from: 0, to: identifiers.count, by: 300) {
+            autoreleasepool {
+                let end = min(start + 300, identifiers.count)
+                let assets = PHAsset.fetchAssets(
+                    withLocalIdentifiers: Array(identifiers[start..<end]),
+                    options: options
+                )
+                assets.enumerateObjects { asset, _, _ in
+                    if asset.burstIdentifier != nil && !asset.representsBurst {
+                        frames.insert(asset.localIdentifier)
+                    }
+                }
+            }
+        }
+        return frames
+    }
+}
+
 /// PhotoKit updated identifiers also include changes that do not modify media.
 /// Reuse a cache entry only when both the stored and current versions are known.
 enum PhotoAssetVersionPolicy {

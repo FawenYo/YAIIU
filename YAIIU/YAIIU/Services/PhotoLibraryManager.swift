@@ -1256,9 +1256,16 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     )
                     totalFetchElapsed += windowFetchElapsed
                     fetchedSnapshotCount += snapshots.count
-                    unresolvedLookups += max(0, identifiers.count - snapshots.count)
+                    let resolvedIdentifiers = Set(snapshots.map(\.localIdentifier))
+                    let burstFrames = PhotoBurstFrames.nonRepresentativeIdentifiers(
+                        among: identifiers.filter { !resolvedIdentifiers.contains($0) }
+                    )
+                    unresolvedLookups += max(0, identifiers.count - snapshots.count - burstFrames.count)
+                    var range = window.journalRange(snapshots: snapshots)
+                    range.insertedIdentifiers.subtract(burstFrames)
+                    range.updatedIdentifiers.subtract(burstFrames)
                     let result = db.commitForegroundPhotoJournalWindow(
-                        range: window.journalRange(snapshots: snapshots),
+                        range: range,
                         snapshots: snapshots,
                         expectedTokenData: expectedTokenData,
                         tokenData: tokenData
@@ -1476,7 +1483,14 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 }
             }
             snapshotEnumerationElapsed += Date().timeIntervalSince(enumerationStartedAt)
-            missingFromPhotoKit += max(0, identifiers.count - result.count)
+            let burstFrames = PhotoBurstFrames.nonRepresentativeIdentifiers(
+                among: identifiers.filter { !visible.contains($0) && !hidden.contains($0) }
+            )
+            if !burstFrames.isEmpty && !db.discardForegroundPendingIdentifiers(burstFrames) {
+                logWarning("Failed to discard burst frame foreground pending work", category: .hash)
+                return []
+            }
+            missingFromPhotoKit += max(0, identifiers.count - result.count - burstFrames.count)
             let reconcileStartedAt = Date()
             if !hidden.isEmpty && !db.discardForegroundPendingIdentifiers(hidden) {
                 logWarning("Failed to discard hidden foreground pending work", category: .hash)

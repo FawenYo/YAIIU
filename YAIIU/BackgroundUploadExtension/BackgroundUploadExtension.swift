@@ -853,11 +853,20 @@ final class BackgroundUploadExtensionCore {
                         }
                     }
                 }
+                let burstFrames = PhotoBurstFrames.nonRepresentativeIdentifiers(
+                    among: changed.filter { assetStates[$0] == nil }
+                )
+                let uploadableUpdated = updated.subtracting(burstFrames)
+                let unresolvedUpdates = uploadableUpdated.subtracting(deleted)
+                    .filter { assetStates[$0] == nil }
+                if !unresolvedUpdates.isEmpty {
+                    logWarning("Persistent change has \(unresolvedUpdates.count) unresolved updated asset(s); retrying next run: \(unresolvedUpdates.sorted().prefix(5).joined(separator: ", "))")
+                }
                 let nextTokenData = try archiveChangeToken(change.changeToken)
 
                 let result = database.commitPersistentChange(
-                    insertedAssetIds: inserted,
-                    updatedAssetIds: updated,
+                    insertedAssetIds: inserted.subtracting(burstFrames),
+                    updatedAssetIds: uploadableUpdated,
                     deletedAssetIds: deleted,
                     assetStates: assetStates,
                     expectedTokenData: expectedTokenData,
@@ -1020,7 +1029,11 @@ final class BackgroundUploadExtensionCore {
         // A local identifier can be temporarily unresolvable during iCloud restore
         // or Photos library synchronization. Explicit persistent deletion changes
         // already remove queue rows, so keep unresolved identifiers durable here.
-        let unresolvedAssetIds = Set(assetIds).subtracting(foundIds)
+        var unresolvedAssetIds = Set(assetIds).subtracting(foundIds)
+        for frameId in PhotoBurstFrames.nonRepresentativeIdentifiers(among: Array(unresolvedAssetIds)) {
+            database.removeQueuedAsset(frameId)
+            unresolvedAssetIds.remove(frameId)
+        }
         let hasUnresolvedAssets = !unresolvedAssetIds.isEmpty
         if hasUnresolvedAssets {
             try database.deferQueuedAssets(unresolvedAssetIds)
