@@ -899,7 +899,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     func allAssetSnapshots(includingHidden: Bool = false) -> [PhotoAssetSnapshot] {
         let result: PHFetchResult<PHAsset>
         if includingHidden {
-            let options = PHFetchOptions()
+            let options = PHFetchOptions.includingAllBurstAssets()
             options.includeHiddenAssets = true
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             result = PHAsset.fetchAssets(with: options)
@@ -973,7 +973,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             }
         }
 
-        let options = PHFetchOptions()
+        let options = PHFetchOptions.includingAllBurstAssets()
         options.includeHiddenAssets = true
         options.wantsIncrementalChangeDetails = false
         let batchSize = 300
@@ -1195,7 +1195,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     }
                     totalTokenArchiveElapsed += Date().timeIntervalSince(tokenStartedAt)
                     let startedAt = Date()
-                    let options = PHFetchOptions()
+                    let options = PHFetchOptions.includingAllBurstAssets()
                     options.includeHiddenAssets = true
                     options.wantsIncrementalChangeDetails = false
                     let identifiers = Array(window.affectedIdentifiers)
@@ -1256,16 +1256,9 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                     )
                     totalFetchElapsed += windowFetchElapsed
                     fetchedSnapshotCount += snapshots.count
-                    let resolvedIdentifiers = Set(snapshots.map(\.localIdentifier))
-                    let burstFrames = PhotoBurstFrames.nonRepresentativeIdentifiers(
-                        among: identifiers.filter { !resolvedIdentifiers.contains($0) }
-                    )
-                    unresolvedLookups += max(0, identifiers.count - snapshots.count - burstFrames.count)
-                    var range = window.journalRange(snapshots: snapshots)
-                    range.insertedIdentifiers.subtract(burstFrames)
-                    range.updatedIdentifiers.subtract(burstFrames)
+                    unresolvedLookups += max(0, identifiers.count - snapshots.count)
                     let result = db.commitForegroundPhotoJournalWindow(
-                        range: range,
+                        range: window.journalRange(snapshots: snapshots),
                         snapshots: snapshots,
                         expectedTokenData: expectedTokenData,
                         tokenData: tokenData
@@ -1447,7 +1440,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
             return []
         }
 
-        let options = PHFetchOptions()
+        let options = PHFetchOptions.includingAllBurstAssets()
         options.includeHiddenAssets = true
         var output = knownVisible
         var fetchedVisible = 0
@@ -1483,14 +1476,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
                 }
             }
             snapshotEnumerationElapsed += Date().timeIntervalSince(enumerationStartedAt)
-            let burstFrames = PhotoBurstFrames.nonRepresentativeIdentifiers(
-                among: identifiers.filter { !visible.contains($0) && !hidden.contains($0) }
-            )
-            if !burstFrames.isEmpty && !db.discardForegroundPendingIdentifiers(burstFrames) {
-                logWarning("Failed to discard burst frame foreground pending work", category: .hash)
-                return []
-            }
-            missingFromPhotoKit += max(0, identifiers.count - result.count - burstFrames.count)
+            missingFromPhotoKit += max(0, identifiers.count - result.count)
             let reconcileStartedAt = Date()
             if !hidden.isEmpty && !db.discardForegroundPendingIdentifiers(hidden) {
                 logWarning("Failed to discard hidden foreground pending work", category: .hash)
@@ -1520,7 +1506,7 @@ final class PhotoLibraryManager: NSObject, ObservableObject, PHPhotoLibraryChang
     /// windows. Never enumerate full PHAssetSnapshot contents or advance the
     /// existing foreground change token here.
     private func bootstrapLocalPhotoInventory() -> Bool {
-        let options = PHFetchOptions()
+        let options = PHFetchOptions.includingAllBurstAssets()
         options.includeHiddenAssets = true
         let assets = PHAsset.fetchAssets(with: options)
         let db = DatabaseManager.shared

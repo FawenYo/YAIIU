@@ -759,7 +759,7 @@ class HashManager: ObservableObject {
             self.bufferHashUpdate(.processing, for: identifier, runID: runID, processed: false)
         }
 
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: .includingAllBurstAssets())
         guard isCurrentRun(runID), !shouldStop, !Task.isCancelled else { return }
 
         guard let asset = fetchResult.firstObject,
@@ -819,7 +819,7 @@ class HashManager: ObservableObject {
 
         // The asset may be edited while its resources are being hashed.
         // Never persist a hash or clear pending work for a superseded version.
-        let options = PHFetchOptions()
+        let options = PHFetchOptions.includingAllBurstAssets()
         options.includeHiddenAssets = true
         let currentAsset = PHAsset.fetchAssets(
             withLocalIdentifiers: [identifier], options: options
@@ -925,7 +925,7 @@ class HashManager: ObservableObject {
         // Only visible, accessible PhotoKit assets can be verified. Missing
         // fetch results are NOT deletions (iCloud/hidden/Limited Photos).
         let allIdentifiers = records.map(\.assetId)
-        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: allIdentifiers, options: nil)
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: allIdentifiers, options: .includingAllBurstAssets())
         var accessible = Set<String>()
         fetched.enumerateObjects { asset, _, _ in
             accessible.insert(asset.localIdentifier)
