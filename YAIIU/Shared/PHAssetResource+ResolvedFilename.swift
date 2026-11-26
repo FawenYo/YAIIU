@@ -13,7 +13,7 @@ extension PHAssetResource {
 
         let assets = PHAsset.fetchAssets(
             withLocalIdentifiers: [assetLocalIdentifier],
-            options: nil
+            options: .includingAllBurstAssets()
         )
         guard let asset = assets.firstObject else {
             return filename

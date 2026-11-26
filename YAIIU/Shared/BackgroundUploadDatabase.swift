@@ -49,6 +49,18 @@ enum PhotoAssetAdjustmentVersion {
     }
 }
 
+// Every burst frame is backed up, but default fetches return only each burst's
+// representative. Every fetch outside the grid display must include all frames:
+// a fetch that omits them treats their journal updates as unresolvable and
+// their receipts and queue rows as orphaned.
+extension PHFetchOptions {
+    static func includingAllBurstAssets() -> PHFetchOptions {
+        let options = PHFetchOptions()
+        options.includeAllBurstAssets = true
+        return options
+    }
+}
+
 /// PhotoKit updated identifiers also include changes that do not modify media.
 /// Reuse a cache entry only when both the stored and current versions are known.
 enum PhotoAssetVersionPolicy {

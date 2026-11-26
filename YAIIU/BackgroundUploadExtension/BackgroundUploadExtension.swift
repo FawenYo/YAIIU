@@ -830,7 +830,7 @@ final class BackgroundUploadExtensionCore {
                 var assetStates: [String: PhotoAssetChangeState] = [:]
                 let changed = Array(inserted.union(updated).subtracting(deleted))
                 if !changed.isEmpty {
-                    let options = PHFetchOptions()
+                    let options = PHFetchOptions.includingAllBurstAssets()
                     options.includeHiddenAssets = true
                     options.wantsIncrementalChangeDetails = false
                     for start in stride(from: 0, to: changed.count, by: 300) {
@@ -852,6 +852,10 @@ final class BackgroundUploadExtensionCore {
                             }
                         }
                     }
+                }
+                let unresolvedUpdates = updated.subtracting(deleted).filter { assetStates[$0] == nil }
+                if !unresolvedUpdates.isEmpty {
+                    logWarning("Persistent change has \(unresolvedUpdates.count) unresolved updated asset(s); retrying next run: \(unresolvedUpdates.sorted().prefix(5).joined(separator: ", "))")
                 }
                 let nextTokenData = try archiveChangeToken(change.changeToken)
 
@@ -940,7 +944,9 @@ final class BackgroundUploadExtensionCore {
         let inflightKeys = database.getInflightJobKeys()
         let fullyOnServer = database.getAllAssetsOnServer()
         let partial = database.getPartialServerCopyAssets()
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: nil)
+        let fetchResult = PHAsset.fetchAssets(
+            withLocalIdentifiers: assetIds, options: .includingAllBurstAssets()
+        )
 
         var foundIds = Set<String>()
         var pending = [PHAssetResource]()
@@ -1042,7 +1048,7 @@ final class BackgroundUploadExtensionCore {
         let partial = database.getPartialServerCopyAssets()
         let inflightKeys = database.getInflightJobKeys()
 
-        let opts = PHFetchOptions()
+        let opts = PHFetchOptions.includingAllBurstAssets()
         opts.sortDescriptors = [
             NSSortDescriptor(key: "creationDate", ascending: false)
         ]
@@ -1366,7 +1372,9 @@ final class BackgroundUploadExtensionCore {
         // restoration or library sync, and a cached miss would strand the job as
         // unresolvable for the rest of the process.
         if assetExistenceCache.withLock({ $0.contains(identifier) }) { return true }
-        let exists = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).count > 0
+        let exists = PHAsset.fetchAssets(
+            withLocalIdentifiers: [identifier], options: .includingAllBurstAssets()
+        ).count > 0
         if exists {
             assetExistenceCache.withLock { _ = $0.insert(identifier) }
         }
@@ -1450,7 +1458,7 @@ final class BackgroundUploadExtensionCore {
     private func captureTimezones(for resources: [PHAssetResource]) -> [String: TimeZone] {
         let fallback = TimeZone.current
         let identifiers = Array(Set(resources.map(\.assetLocalIdentifier)))
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: .includingAllBurstAssets())
         let group = DispatchGroup()
         let lock = NSLock()
         var resolved = Dictionary(uniqueKeysWithValues: identifiers.map { ($0, fallback) })
@@ -1489,7 +1497,7 @@ final class BackgroundUploadExtensionCore {
     }
 
     private func fetchAsset(identifier: String) -> PHAsset? {
-        PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject
+        PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: .includingAllBurstAssets()).firstObject
     }
     
     // MARK: - iCloud Identifier

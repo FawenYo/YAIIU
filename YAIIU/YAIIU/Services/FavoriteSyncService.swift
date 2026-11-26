@@ -69,7 +69,7 @@ final class FavoriteSyncService {
         await Task.detached(priority: .utility) {
             let uploadedAssets = DatabaseManager.shared.getUploadedAssetsFavoriteStatus()
             return FavoriteChangeDetector.detectChanges(in: uploadedAssets) { identifiers in
-                let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: .includingAllBurstAssets())
                 var favorites: [String: Bool] = [:]
                 PhotoLibraryEnumeration.forEach(in: result) { asset, _ in
                     favorites[asset.localIdentifier] = asset.isFavorite
